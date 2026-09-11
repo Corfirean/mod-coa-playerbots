@@ -1,0 +1,118 @@
+diff --git a/src/server/game/Handlers/CharacterHandler.cpp b/src/server/game/Handlers/CharacterHandler.cpp
+index 19a6fb4bd..fc2e7fe57 100644
+--- a/src/server/game/Handlers/CharacterHandler.cpp
++++ b/src/server/game/Handlers/CharacterHandler.cpp
+@@ -64,19 +64,8 @@
+ #include "WorldSession.h"
+ #include "WorldSessionMgr.h"
+ 
+-class LoginQueryHolder : public CharacterDatabaseQueryHolder
+-{
+-private:
+-    uint32 m_accountId;
+-    ObjectGuid m_guid;
+-public:
+-    LoginQueryHolder(uint32 accountId, ObjectGuid guid)
+-        : m_accountId(accountId), m_guid(guid) { }
+-
+-    ObjectGuid GetGuid() const { return m_guid; }
+-    uint32 GetAccountId() const { return m_accountId; }
+-    bool Initialize();
+-};
++LoginQueryHolder::LoginQueryHolder(uint32 accountId, ObjectGuid guid)
++    : m_accountId(accountId), m_guid(guid) { }
+ 
+ bool LoginQueryHolder::Initialize()
+ {
+diff --git a/src/server/game/Server/WorldSession.h b/src/server/game/Server/WorldSession.h
+index ba2f0e34c..ef5dd9f4e 100644
+--- a/src/server/game/Server/WorldSession.h
++++ b/src/server/game/Server/WorldSession.h
+@@ -30,6 +30,7 @@
+ #include "DatabaseEnv.h"
+ #include "Duration.h"
+ #include "GossipDef.h"
++#include "QueryHolder.h"
+ #include "Packet.h"
+ #include "SharedDefines.h"
+ #include "World.h"
+@@ -291,6 +292,20 @@ enum CharterTypes
+     ARENA_TEAM_CHARTER_5v5_TYPE                   = 5
+ };
+ 
++class LoginQueryHolder : public CharacterDatabaseQueryHolder
++{
++    private:
++        uint32 m_accountId;
++        ObjectGuid m_guid;
++
++    public:
++        LoginQueryHolder(uint32 accountId, ObjectGuid guid);
++
++        ObjectGuid GetGuid() const { return m_guid; }
++        uint32 GetAccountId() const { return m_accountId; }
++        bool Initialize();
++};
++
+ constexpr Seconds PLAY_TIME_LIMIT_APPROACHING_PARTIAL = Hours(2) + Minutes(30);
+ constexpr Seconds PLAY_TIME_LIMIT_PARTIAL             = Hours(3);
+ constexpr Seconds PLAY_TIME_LIMIT_APPROACHING_FULL    = Hours(4) + Minutes(30);
+diff --git a/src/server/game/World/IWorld.h b/src/server/game/World/IWorld.h
+index 81edb7675..9d01b76ca 100644
+--- a/src/server/game/World/IWorld.h
++++ b/src/server/game/World/IWorld.h
+@@ -22,6 +22,7 @@
+ #include "Common.h"
+ #include "Duration.h"
+ #include "ObjectGuid.h"
++#include "QueryHolder.h"
+ #include "SharedDefines.h"
+ #include "WorldConfig.h"
+ #include <unordered_map>
+@@ -110,6 +111,7 @@ public:
+     virtual void   ResetEventSeasonalQuests(uint16 event_id) = 0;
+     [[nodiscard]] virtual std::string const& GetRealmName() const = 0;
+     virtual void SetRealmName(std::string name) = 0;
++    virtual SQLQueryHolderCallback& AddQueryHolderCallback(SQLQueryHolderCallback&& callback) = 0;
+     virtual void ReloadRBAC() = 0;
+ };
+ 
+diff --git a/src/server/game/World/World.cpp b/src/server/game/World/World.cpp
+index 28351daab..774b7239b 100644
+--- a/src/server/game/World/World.cpp
++++ b/src/server/game/World/World.cpp
+@@ -1901,6 +1901,12 @@ void World::UpdateAreaDependentAuras()
+ void World::ProcessQueryCallbacks()
+ {
+     _queryProcessor.ProcessReadyCallbacks();
++    _queryHolderProcessor.ProcessReadyCallbacks();
++}
++
++SQLQueryHolderCallback& World::AddQueryHolderCallback(SQLQueryHolderCallback&& callback)
++{
++    return _queryHolderProcessor.AddCallback(std::move(callback));
+ }
+ 
+ bool World::IsPvPRealm() const
+diff --git a/src/server/game/World/World.h b/src/server/game/World/World.h
+index df877be35..265faebd0 100644
+--- a/src/server/game/World/World.h
++++ b/src/server/game/World/World.h
+@@ -258,6 +258,9 @@ protected:
+     void ResetRandomBG();
+     void CalendarDeleteOldEvents();
+     void ResetGuildCap();
++
++    SQLQueryHolderCallback& AddQueryHolderCallback(SQLQueryHolderCallback&& callback) override;
++
+ private:
+     WorldConfig _worldConfig;
+ 
+@@ -305,6 +308,7 @@ private:
+ 
+     void ProcessQueryCallbacks();
+     QueryCallbackProcessor _queryProcessor;
++    AsyncCallbackProcessor<SQLQueryHolderCallback> _queryHolderProcessor;
+ 
+     /**
+      * @brief Executed when a World Session is being finalized. Be it from a normal login or via queue popping.

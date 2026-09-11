@@ -90,12 +90,73 @@ READMEs. Read that file before touching anything architectural.
   logic that must be preserved verbatim** because it exists specifically for
   a session-less bot `Player`.
 
+- **Pilot succeeded (2026-09-11): the fake-session chassis works on real CoA
+  core.** A real `Player`, driven by a `WorldSession` with a `nullptr`
+  socket, logged in (via an existing character), went through genuine
+  `Player::LoadFromDB` validation, fired real `ScriptMgr` login hooks
+  (including `mod-ascension-compat`'s own), stayed in world for several
+  minutes of live ticking, and the server shut down cleanly with it still
+  present — all verified against the actual running `CoA-Repack` instance,
+  not simulated. Full writeup, the module source, and the exact core patch:
+  `pilot/README.md`. **This is no longer an open architectural risk** — the
+  remaining work is building the real module on top of this proven chassis,
+  not re-litigating whether the approach works.
+- The pilot surfaced one core-patch item that wasn't anticipated: a
+  detached bot session's login-callback needs `sWorld->AddQueryHolderCallback`
+  (a small addition to `World`/`IWorld`), not the per-session one, because
+  `WorldSession::ProcessQueryCallbacks()` is private/friend-only to `World`
+  and a never-registered session has no other path to get it called. See
+  `pilot/README.md` for the full reasoning — worth knowing before assuming
+  the full-parity patch plan in `core-diff-analysis.md` is complete as
+  written; it should get this same addition when written for real.
+
+## Build environment notes (learned the hard way during the pilot)
+
+`azerothcore-wotlk-coa/build` may exist but be configured for something
+*other* than a real server build (it was, for an earlier unrelated tool) —
+check `APPS_BUILD`/`SCRIPTS`/`MODULES` in `build/CMakeCache.txt` before
+assuming a worldserver build is one `ninja worldserver` away. For a real
+build on this machine:
+
+- Toolchain: MSVC via Visual Studio 18 Insiders + vcpkg
+  (`C:\vcpkg`, toolchain file already wired into the cache,
+  triplet `x64-windows-static-md`). `vswhere.exe` isn't on `PATH` by
+  default — add `C:\Program Files (x86)\Microsoft Visual Studio\Installer`
+  to `PATH` before calling `vcvarsall.bat`, or `cmake`/`ninja` invocations
+  fail confusingly.
+- `libmysql` was never installed under vcpkg on this machine — install with
+  `vcpkg install libmysql:x64-windows-static-md`, then also
+  `vcpkg install boost:x64-windows-static-md` (AzerothCore's own
+  `find_package(Boost COMPONENTS ...)` only requests 4 components, but the
+  source uses several header-only boost libraries — like `boost/heap/` in
+  `ThreatManager.cpp` — that need their own vcpkg sub-port installed even
+  though nothing links them).
+- Even after that, CMake's `find_library(MYSQL_LIBRARY NAMES libmysql ...)`
+  in `src/cmake/macros/FindMySQL.cmake` won't find it — this vcpkg port
+  builds `mysqlclient.lib`, not `libmysql.lib`. Pass
+  `-DMYSQL_LIBRARY=C:/vcpkg/installed/x64-windows-static-md/lib/mysqlclient.lib`
+  explicitly at configure time rather than editing `FindMySQL.cmake`.
+- That same vcpkg `libmysql` build exports its own `localtime_r`, which
+  collides with CoA's own Windows shim in `common/Utilities/Timer.cpp` at
+  link time (`LNK2005`/`LNK1169`). Fix with
+  `-DCMAKE_EXE_LINKER_FLAGS=/FORCE:MULTIPLE` at configure time — do not
+  "fix" this by editing `Timer.cpp`, it's an artifact of this specific
+  vcpkg build.
+- Deploying to `CoA-Repack`: stop with
+  `Runtime/python/python.exe -B Scripts/manage.py stop-all`, copy the new
+  `worldserver.exe` into `Core/`, restart with `... start-world` (does not
+  restart `authserver` — use `... start-auth` too if it was running before).
+  RA (remote console) is enabled on this repack
+  (`Settings/repack.json`: port 3443, user/pass `local`/`local`) — far
+  easier for scripted testing than driving an actual game client; see
+  `pilot/` for a minimal Python RA client.
+
 ## Not yet decided
 
-- No architectural scope questions remain open. Next real work is either (a)
-  actually writing the core patch + module skeleton per the resolutions
-  above, or (b) fleshing out custom AI-behavior ideas beyond stock
-  Playerbots parity — ask the user which to start with rather than assuming.
+- Scope and the core-patch categorization are settled; the chassis is
+  proven. What's actually undecided now: whether to build the real module
+  next (group/loot/guild, then bot AI) or continue exploring custom
+  AI-behavior ideas first — ask the user rather than assuming.
 
 ## Publishing
 
