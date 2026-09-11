@@ -3,8 +3,30 @@
 **Status: succeeded, 2026-09-11.** Builds on `pilot/` (proved a bot can exist via a
 null-socket `WorldSession`). This milestone proves a bot can be a **real group
 member** alongside the GM's actual client — confirmed both server-side (`.group
-list`) and visually (bot showing in the real party frame). **Auto-accept added and
-confirmed working same day** — bots no longer need a manual command to join a group.
+list`) and visually (bot showing in the real party frame). **Auto-accept, loot-roll
+auto-Greed, teleport-to-leader, follow, and `.botcmd despawn` all added and confirmed
+working (loot-roll pending a live test) same day.**
+
+### The teleport gotcha (worth knowing before touching bot movement again)
+
+`Player::TeleportTo()` only **requests** a move — for a same-map ("near") teleport,
+the real position isn't applied until the client sends `MSG_MOVE_TELEPORT_ACK`
+(`WorldSession::HandleMoveTeleportAck` → `Player::UpdatePosition`); for a cross-map
+("far") one it's `HandleMoveWorldportAck`. A bot has no client to ever send that ack,
+so it silently stayed semaphore-locked at its old position forever — `TeleportTo()`
+itself never errors, which is why this wasn't visible from logs alone (diagnostic
+logging confirmed every earlier step succeeded before finding this). `MoveFollow` had
+nothing real to work from as a result — the bot looked simply frozen.
+
+**Fix**: after `TeleportTo()`, check `bot->IsBeingTeleportedNear()` /
+`IsBeingTeleportedFar()` and call the matching ack directly.
+`HandleMoveWorldportAck()` already has a no-packet "for server-side calls" overload
+for the far case; the near case needs a minimal packed-guid `WorldPacket`
+(`bot->GetGUID().WriteAsPacked()` + two unused `uint32`s), same "call the real
+handler directly" pattern this module already uses for login/group-accept/loot-roll.
+Confirmed working live. **Any future code that force-moves a bot (not just this one
+spot) needs this same ack step** — it's a property of `TeleportTo()` generally, not
+specific to the group-join flow.
 
 ## What changed from `pilot/`
 
