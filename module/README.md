@@ -18,15 +18,35 @@ itself never errors, which is why this wasn't visible from logs alone (diagnosti
 logging confirmed every earlier step succeeded before finding this). `MoveFollow` had
 nothing real to work from as a result — the bot looked simply frozen.
 
-**Fix**: after `TeleportTo()`, check `bot->IsBeingTeleportedNear()` /
-`IsBeingTeleportedFar()` and call the matching ack directly.
-`HandleMoveWorldportAck()` already has a no-packet "for server-side calls" overload
-for the far case; the near case needs a minimal packed-guid `WorldPacket`
+**Fix, attempt 1 (crashed)**: after `TeleportTo()`, check
+`bot->IsBeingTeleportedNear()` / `IsBeingTeleportedFar()` and call the matching ack
+directly — `HandleMoveWorldportAck()` already has a no-packet "for server-side calls"
+overload for the far case; the near case needs a minimal packed-guid `WorldPacket`
 (`bot->GetGUID().WriteAsPacked()` + two unused `uint32`s), same "call the real
 handler directly" pattern this module already uses for login/group-accept/loot-roll.
-Confirmed working live. **Any future code that force-moves a bot (not just this one
-spot) needs this same ack step** — it's a property of `TeleportTo()` generally, not
-specific to the group-join flow.
+This part was right — but calling it **synchronously, in the same tick as
+`TeleportTo()` itself**, crashed live with an `IsInGrid()` assertion failure inside
+`Map::PlayerRelocation` (full stack in the crash dump:
+`GridObject<Player>::RemoveFromGrid` ← `Map::PlayerRelocation` ← `Unit::UpdatePosition`
+← `Player::UpdatePosition` ← `HandleMoveTeleportAck` ← `BotMgr::DoAcceptInvite`). A real
+client's ack only ever arrives after its own network round trip — never in the same
+tick as the teleport request — so firing it inline races whatever per-tick
+grid/relocation bookkeeping `TeleportTo()`'s near-teleport branch expects to have
+already happened. (`Unit::NearTeleportTo` doesn't sidestep this either: for a `Player`
+it's just a thin wrapper around the same `TeleportTo()` — only `Creature` gets a truly
+synchronous path.)
+
+**Fix, attempt 2 (confirmed working live, no crash)**: `DoAcceptInvite` now only
+calls `TeleportTo()` and queues the session in a `_pendingTeleportAck` list;
+`BotMgr::Update()` drains that queue (via `FinishPendingTeleport`, which also starts
+the `MoveFollow` once the teleport has actually landed) at the very top of the
+function — before that same tick's own invite-check loop gets a chance to queue a
+*fresh* one. That guarantees at least one full world tick of separation between
+`TeleportTo()` and its ack, mirroring the real network delay instead of trying to
+remove it. **Any future code that force-moves a bot needs this same
+"queue the ack, fire it next tick" shape** — it's a property of `TeleportTo()`
+generally, not specific to the group-join flow, and skipping the one-tick gap crashes
+the server, not just "doesn't work."
 
 ## What changed from `pilot/`
 
