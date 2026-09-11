@@ -105,21 +105,60 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
     // real future problem (re-follow after combat, obstacles, etc.), not this pass.
     Player* bot = session->GetPlayer();
     if (!bot)
+    {
+        LOG_ERROR("module.coa-playerbots", "BotMgr: DoAcceptInvite: session has no Player after HandleGroupAcceptOpcode.");
         return;
+    }
 
     Group* group = bot->GetGroup();
     if (!group)
+    {
+        LOG_ERROR("module.coa-playerbots", "BotMgr: DoAcceptInvite: bot '{}' has no group after HandleGroupAcceptOpcode -- AddMember must have failed or returned early.", bot->GetName());
         return;
+    }
+
+    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' is now in a group, leader guid {}.", bot->GetName(), group->GetLeaderGUID().ToString());
 
     if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
     {
+        LOG_INFO("module.coa-playerbots", "BotMgr: resolved leader '{}' (in world: {}).", leader->GetName(), leader->IsInWorld());
         if (leader != bot)
         {
             LOG_INFO("module.coa-playerbots", "BotMgr: teleporting bot '{}' to group leader '{}' and starting follow.",
                 bot->GetName(), leader->GetName());
             bot->TeleportTo(leader->GetWorldLocation());
+
+            // TeleportTo() only *requests* the move: for a same-map (near) teleport the
+            // actual position isn't applied until the client sends MSG_MOVE_TELEPORT_ACK
+            // (WorldSession::HandleMoveTeleportAck -> Player::UpdatePosition); for a
+            // cross-map (far) one it's HandleMoveWorldportAck. A bot has no client to
+            // ever send that ack, so without this the bot stays semaphore-locked at its
+            // old position forever and MoveFollow has nothing real to work from. Found
+            // empirically: the teleport call produced no error, but the bot never
+            // actually moved. HandleMoveWorldportAck() already has a no-packet
+            // "for server-side calls" overload; the near case needs a minimal packed-guid
+            // packet built the same way as every other "call the real handler directly"
+            // trick this module already uses.
+            if (bot->IsBeingTeleportedNear())
+            {
+                WorldPacket ackPacket;
+                ackPacket << bot->GetGUID().WriteAsPacked();
+                ackPacket << uint32(0); // flags, unused by the handler
+                ackPacket << uint32(0); // time, unused by the handler
+                session->HandleMoveTeleportAck(ackPacket);
+            }
+            else if (bot->IsBeingTeleportedFar())
+            {
+                session->HandleMoveWorldportAck();
+            }
+
             bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, bot->GetFollowAngle());
         }
+    }
+    else
+    {
+        LOG_ERROR("module.coa-playerbots", "BotMgr: DoAcceptInvite: ObjectAccessor::FindPlayer could not resolve leader guid {}.",
+            group->GetLeaderGUID().ToString());
     }
 }
 
