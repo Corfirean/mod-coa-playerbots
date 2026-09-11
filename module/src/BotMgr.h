@@ -31,24 +31,30 @@ public:
     // not returned synchronously.
     void SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
 
-    // Accepts a pending group invite on a bot's behalf by calling the real
-    // WorldSession::HandleGroupAcceptOpcode handler directly (a minimal
-    // padding WorldPacket stands in for the network payload it reads and
-    // discards) — reuses all of the real validation logic instead of
-    // duplicating it. The GM still has to issue the invite themselves via a
-    // real client; there is no GM-console equivalent of /invite for party
-    // invites (unlike guild invites).
+    // Manual/debug entry point: accepts a pending group invite on a bot's
+    // behalf right now, reporting success/failure to handler. Bots normally
+    // don't need this called explicitly any more (see Update() below) — kept
+    // as an explicit override for testing/debugging.
     void AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
 
-    // Called every world tick via a WorldScript hook. Logs a periodic
-    // heartbeat for every active bot session so a human watching the log
-    // can confirm bots are still alive without polling in-game.
+    // Called every world tick via a WorldScript hook. Auto-accepts any
+    // pending group invite on every active bot (checked every tick, not
+    // throttled — a human player expects a near-instant response to an
+    // invite) and logs a periodic (throttled) heartbeat so a human watching
+    // the log can confirm bots are still alive without polling in-game.
     void Update(uint32 diff);
 
 private:
     BotMgr() = default;
 
     WorldSession* FindBotSession(ObjectGuid::LowType charLowGuid) const;
+
+    // Calls the real WorldSession::HandleGroupAcceptOpcode handler directly
+    // (a minimal padding WorldPacket stands in for the network payload it
+    // reads and discards) — reuses all of the real validation logic instead
+    // of duplicating it. Caller must have already confirmed there's a
+    // pending invite (session->GetPlayer()->GetGroupInvite()).
+    void DoAcceptInvite(WorldSession* session);
 
     std::vector<WorldSession*> _botSessions;
     uint32 _heartbeatTimer = 0;

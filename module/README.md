@@ -3,7 +3,8 @@
 **Status: succeeded, 2026-09-11.** Builds on `pilot/` (proved a bot can exist via a
 null-socket `WorldSession`). This milestone proves a bot can be a **real group
 member** alongside the GM's actual client — confirmed both server-side (`.group
-list`) and visually (bot showing in the real party frame).
+list`) and visually (bot showing in the real party frame). **Auto-accept added and
+confirmed working same day** — bots no longer need a manual command to join a group.
 
 ## What changed from `pilot/`
 
@@ -11,12 +12,19 @@ Renamed, not rewritten — the proven login mechanism (`sWorld->AddQueryHolderCa
 the `WorldScript::OnUpdate` heartbeat) is untouched:
 
 - `PilotBotMgr` → `BotMgr`, `.pilot spawnbot` → `.botcmd spawnbot` (unchanged logic).
-- New: `.botcmd acceptinvite <charLowGuid>` — finds the bot's session, confirms
+- `.botcmd acceptinvite <charLowGuid>` — finds the bot's session, confirms
   `Player::GetGroupInvite()` is set, builds a 4-byte padding `WorldPacket`, and calls
   `WorldSession::HandleGroupAcceptOpcode` directly. That handler only does
   `recvData.read_skip<uint32>()` before its real logic (`RemoveInvite`, validation,
   `Group::Create`-if-new, `AddMember`, `BroadcastGroupUpdate`) — calling it directly
-  reuses all of that real validation instead of re-deriving it.
+  reuses all of that real validation instead of re-deriving it. **Kept as a manual
+  override/debug tool**, no longer needed for normal use (see below).
+- **Auto-accept**: `BotMgr::Update()` now checks every active bot's
+  `Player::GetGroupInvite()` on **every tick** (not throttled, unlike the heartbeat —
+  a human expects a near-instant response to an invite) and calls the same
+  `HandleGroupAcceptOpcode` logic automatically the moment one is pending. GM invites
+  the bot by name from a real client exactly like inviting another player; the bot
+  joins with no further action needed. Confirmed working live.
 
 **No core patch was needed for grouping.** The hypothesis from `AGENTS.md` — that
 `Group::AddMember(Player*)` needs nothing bot-specific — held. `Group.cpp`'s

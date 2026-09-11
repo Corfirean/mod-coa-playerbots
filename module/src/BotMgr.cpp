@@ -84,6 +84,17 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
         handler->PSendSysMessage("BotMgr: login query issued for guid {}, watch the server log for the result.", charLowGuid);
 }
 
+void BotMgr::DoAcceptInvite(WorldSession* session)
+{
+    // HandleGroupAcceptOpcode only does recvData.read_skip<uint32>() before the real logic
+    // (RemoveInvite, validation, Create-if-new, AddMember, BroadcastGroupUpdate) — calling it
+    // directly with a minimal padding packet reuses that real logic verbatim instead of
+    // duplicating it by hand. Same trick pilot/ already used for login.
+    WorldPacket fakePacket;
+    fakePacket << uint32(0);
+    session->HandleGroupAcceptOpcode(fakePacket);
+}
+
 void BotMgr::AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
 {
     WorldSession* session = FindBotSession(charLowGuid);
@@ -109,13 +120,7 @@ void BotMgr::AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
         return;
     }
 
-    // HandleGroupAcceptOpcode only does recvData.read_skip<uint32>() before the real logic
-    // (RemoveInvite, validation, Create-if-new, AddMember, BroadcastGroupUpdate) — calling it
-    // directly with a minimal padding packet reuses that real logic verbatim instead of
-    // duplicating it by hand. Same trick pilot/ already used for login.
-    WorldPacket fakePacket;
-    fakePacket << uint32(0);
-    session->HandleGroupAcceptOpcode(fakePacket);
+    DoAcceptInvite(session);
 
     if (handler)
         handler->PSendSysMessage("BotMgr: accept-invite issued for bot '{}', check .group list to confirm.", bot->GetName());
@@ -125,6 +130,18 @@ void BotMgr::Update(uint32 diff)
 {
     if (_botSessions.empty())
         return;
+
+    // Auto-accept: checked every tick, not throttled. A bot with a real Player
+    // and a pending invite accepts it immediately, same as a human would.
+    for (WorldSession* session : _botSessions)
+    {
+        Player* bot = session->GetPlayer();
+        if (bot && bot->GetGroupInvite())
+        {
+            LOG_INFO("module.coa-playerbots", "BotMgr: auto-accepting pending group invite for bot '{}'.", bot->GetName());
+            DoAcceptInvite(session);
+        }
+    }
 
     _heartbeatTimer += diff;
     if (_heartbeatTimer < 10000)
