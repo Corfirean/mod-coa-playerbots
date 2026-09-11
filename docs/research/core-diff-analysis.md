@@ -32,9 +32,11 @@ in the separate `mod-playerbots/mod-playerbots` module, not in the core fork).
   **34 have at least one genuine conflict marker** — **104 conflict markers
   total**, heavily concentrated: `Unit.cpp` (14) and `Creature.cpp` (10) alone
   account for 24 of the 104; every other file has 1–5.
-- **Net: 43 of 77 files (56%) need zero manual work.** The other 34 need
-  review, but the actual judgment-call subset is much smaller than 34 files —
-  see the categorization below.
+- **Net: 43 of 77 files (56%) need zero manual work.** The other 34 need a
+  merge decision, but after actually reading every hunk (categorization
+  below), only **3 files** carry logic that must be preserved verbatim
+  because it's bot-specific — everything else is a mechanical take-CoA's-side
+  or keep-both-additions resolution.
 
 ## What the conflicts actually are, categorized
 
@@ -103,76 +105,141 @@ verbatim, not discarded as "just their older version."
   position) — not a version-drift artifact, an actual addition to bring
   forward.
 
-### D. Real overlapping changes to the same feature — both projects modified
-the same logic for their own reasons; needs an actual decision, not a
-mechanical pick-a-side.
+### D. Real overlapping changes to the same feature — RESOLVED 2026-09-11
 
-- **`Creature.cpp`** (the other big conflict count, 10) — both sides touch
-  the charmed-creature/pet spell-cooldown-notification path
-  (`_AddCreatureSpellCooldown` and the code that reports cooldowns back to
-  `GetCharmerOrOwnerPlayerOrPlayerItself()`). CoA refactored this into a
-  batched-packet send and fixed a real bug ("a longer-running category
-  cooldown must not be shortened by a shorter one just applied"; see the
-  `hasCategoryCooldown` / `if (GetSpellCooldown(categorySpellId) >
-  categorycooldown) continue;` guard). playerbots-fork's version is
-  structurally older/simpler and sends per-spell instead of batched, but
-  *may* also carry bot-specific relevance (a bot's own charmed pet needs its
-  owner-bot, not a real client, to receive this notification correctly —
-  unconfirmed, needs checking whether playerbots-fork's difference here is
-  really bot-specific or just the same version-drift pattern as category A).
-  **Not resolved yet — needs a real look at whether CoA's refactor breaks
-  anything playerbots specifically depends on here.**
-- **`Pet.cpp`/`Pet.h`** — CoA refactored inline "cast a pending spell after
-  the current channel ends" logic into a named `Pet::CastPendingSpell()`
-  method; playerbots-fork has its own differently-shaped inline version.
-  Same open question as Creature.cpp: is playerbots-fork's shape here
-  incidental (pre-refactor baseline) or does it matter for how a
-  session-less bot's pet casts queued spells.
-- **`PlayerUpdates.cpp`** (5 conflicts) — two independent overlaps: (1)
-  unread-mail-count bookkeeping (CoA recalculates from the mailbox on
-  demand; playerbots-fork clears a cached timer field instead — different
-  approaches to avoiding stale unread counts) and (2) **`CraftSkillGainChance`
-  vs `SkillGainChance`** — this one needs a close look before assuming it's
-  safe, because it reads like an actual *formula* difference (skill-up
-  chance calculation), not just a rename. Confirm whether the two produce
-  the same numbers before picking one — if they don't, that's a real
-  gameplay-affecting decision, not a mechanical merge.
-- **`Player.h`/`PlayerStorage.cpp`** — CoA changed
-  `MoveItemToInventory`'s return type from `void` to `Item*` (to support its
-  new `OnPlayerAfterMoveItemToInventory` hook, category B above). Need to
-  confirm playerbots-fork's call sites don't break when the signature
-  changes (they shouldn't — a wider return type callers can ignore — but
-  verify, since playerbots-fork calls this method directly, bypassing a
-  packet handler).
-- **`MailHandler.cpp`** (4 conflicts) — genuinely tangled: CoA added a
-  `stored` variable + an `OnPlayerAfterTakeItemFromMail` hook call;
-  playerbots-fork has a from-scratch mail-packet-size precalculation
-  (`next_mail_size`) that CoA doesn't have, *and* both sides separately carry
-  a "prevent client crash" subject/body sanitization block (near-identical
-  code, different location in the function) — this one needs an actual
-  side-by-side line-level merge, not a pick-a-side.
-- **`PetHandler.cpp`** (5 conflicts) — CoA added `COMMAND_STAY`-aware
-  handling around channeled pet spells (don't let a stationary channel get
-  interrupted by a movement update; explicit stay-vs-forced-spell state
-  clearing). playerbots-fork's side is mostly absent here except one
-  simplified condition. Likely category A (CoA added a real fix playerbots
-  never got), but confirm a stay-commanded pet still behaves correctly under
-  bot control before assuming so.
-- **`SmartScript.cpp`** conflict 1 — CoA generalized a `SMART_ACTION_MOVE_RANDOM`
-  handler to work for any `WorldObject` target, not just `me` (the smart
-  script's own owner) — genuinely more capable, but confirm nothing in
-  playerbots-fork depended on the narrower `me`-only version.
+Read every one of these 7 files' actual conflict hunks against CoA's *live*
+checkout (not just the scratch `merge_test/*.merged` output) to settle each
+one. **Verdict: none of the 7 contain bot-specific logic that needs
+preserving.** Every hunk is CoA making an unrelated improvement that
+playerbots-fork's older baseline predates — mechanically the same as
+category A, just missed by the file-level `diff3` conflict count because the
+changes happen to land on the same lines. One file (`Creature.cpp`) has a
+single genuinely-missing line worth carrying over from playerbots-fork, for
+an unrelated reason (see below). **Decision for all 7: take CoA's side**,
+plus the one small addition noted under `Creature.cpp`.
+
+- **`Creature.cpp`** (10 conflict markers, the file's actual conflict count
+  is now effectively 1) — **important methodology finding**: 9 of the 10
+  markers, all in `Creature::AddSpellCooldown` (the charmed-creature
+  cooldown-notification path), turned out to be a **false conflict**. Direct
+  diff of CoA's live `src/server/game/Entities/Creature/Creature.cpp` against
+  `playerbots-fork`'s version of the same function shows **byte-identical
+  code** — CoA simply hasn't pulled the newer upstream (vanilla AzerothCore)
+  batching refactor that the `vanilla-core` scratch clone already had at
+  research time. The `merge_test/*.merged` diff3 output is correct as far as
+  it goes, but its "CoA" side there is actually reproducing `vanilla-core`'s
+  content for this hunk, not CoA's real content — a reminder that
+  `vanilla-core` in this research is a snapshot, not a live source, and can
+  drift further from CoA than CoA was from it at the moment of cloning. No
+  merge work needed here at all.
+  The 10th marker is real and tiny: CoA's `Creature::SaveToDB(uint32, uint8,
+  uint32)` never sets `data.spawnId = m_spawnId;` after
+  `sObjectMgr->NewOrExistCreatureData(m_spawnId)` — confirmed by reading
+  `ObjectMgr::NewOrExistCreatureData` (`ObjectMgr.h:1244`, a bare
+  `_creatureDataStore[spawnId]`) and `SpawnData`'s default member
+  (`SpawnData.h:68`, `spawnId{0}`): a brand-new creature's first `SaveToDB()`
+  call leaves the cached `CreatureData::spawnId` at `0` instead of the real
+  value. This is a **pre-existing CoA gap, unrelated to bots** — playerbots-
+  fork's `// mod_playerbots`-commented line just happens to fix it as a side
+  effect. **Take the fix**: add `data.spawnId = m_spawnId;` back in.
+- **`Pet.cpp`/`Pet.h`** — CoA extracted the inline "cast a pending spell
+  once in range/off cooldown" logic out of `Pet::Update()` into its own
+  `Pet::CastPendingSpell()` method, and along the way fixed a real
+  interrupt-order bug (calling `AttackStop()` instead of `PetStopAttack()`
+  so the spell just cast isn't immediately interrupted; see the method's
+  in-code comment) and added a `REACT_PASSIVE` + `COMMAND_FOLLOW` branch
+  playerbots-fork's inline version lacks. Playerbots-fork's shape is simply
+  the pre-refactor version — same triggers (`m_tempspell` set/cleared the
+  same way), no bot-specific behavior in either. **Take CoA's side**
+  (keep `CastPendingSpell()` as its own method, called from `Update()`).
+- **`PlayerUpdates.cpp`** (5 conflicts, all resolved) —
+  1. **Unread-mail bookkeeping**: CoA's `UpdateNextMailTimeAndUnreads()`
+     (`PlayerUpdates.cpp:441`) fully recomputes both `unReadMails` and
+     `m_nextMailDelivereTime` by re-scanning `GetMails()`. Playerbots-fork's
+     inline `++unReadMails; m_nextMailDelivereTime = time_t(0);` only
+     increments the counter and **unconditionally zeroes the next-delivery
+     timer even if other mail is still pending delivery** — a real
+     correctness gap in playerbots-fork's simpler version, not a feature to
+     preserve. Take CoA's side.
+  2. **`CraftSkillGainChance` vs `SkillGainChance`** (the formula flagged as
+     needing verification) — confirmed by reading both: this **is** a real,
+     deliberate formula difference. CoA's `CraftSkillGainChance`
+     (`PlayerUpdates.cpp:813`) linearly interpolates skill-up chance between
+     the yellow and gray skill thresholds; playerbots-fork reuses the
+     coarser 4-tier `SkillGainChance` (the same function used for gathering
+     skills) with a computed midpoint. This is CoA's own shipped crafting
+     tuning, unrelated to bots — playerbots-fork's baseline simply predates
+     it. **Take CoA's side** (`CraftSkillGainChance`); the "verify these
+     produce the same numbers" question from the original write-up is moot,
+     they're intentionally different by design and there's no bot-specific
+     reason to keep the older one.
+  3. **Weather on zone change**: CoA additionally sends
+     `Weather::SendFineWeatherUpdateToPlayer(this)` when
+     `GetOrGenerateZoneDefaultWeather()` returns false; playerbots-fork
+     doesn't check the return value at all. CoA's is a real fix, unrelated
+     to bots. Take CoA's side.
+- **`Player.h`/`PlayerStorage.cpp`** — confirmed: `MoveItemToInventory`'s
+  `void`→`Item*` return-type change exists solely to support CoA's own
+  `OnPlayerAfterMoveItemToInventory` hook (category B). A wider return type
+  is source-compatible with any caller that discards it, including
+  playerbots-fork's own call sites. **Take CoA's side** — not even really a
+  judgment call, just a compatible signature widening.
+- **`MailHandler.cpp`** (4 conflicts, all resolved) — the `stored`/hook pair
+  (mail-item-take) is the same `MoveItemToInventory`-return-type decision
+  applied at a call site: take CoA's side, capture `stored`, fire
+  `OnPlayerAfterTakeItemFromMail`. The mail-list packet-size precalculation
+  turned out to have a clean explanation once read end-to-end: CoA sanitizes
+  `subject`/`body` (the "prevent client crash" `\| \|`-replacement) **before**
+  computing `next_mail_size`, so the declared packet size and the bytes
+  actually written are guaranteed to match exactly. Playerbots-fork
+  estimates `next_mail_size` from the **raw, unsanitized** strings and only
+  sanitizes afterward in a second, separately-placed block — safe (sanitizing
+  only ever shortens the string, so its size estimate is a conservative
+  overestimate) but redundant and less precise than CoA's single-pass
+  version. **Take CoA's side entirely**; playerbots-fork's second
+  sanitization block is now fully subsumed and can be dropped, no bot-
+  specific need lost.
+- **`PetHandler.cpp`** (5 conflicts, all resolved) — all five are CoA adding
+  `charmInfo->HasCommandState(COMMAND_STAY)` checks around channeled-spell
+  casts/failures (don't let a stay-commanded pet's channel get interrupted by
+  the default movement/AI-reset path; explicit forced-spell state clearing
+  when stay is active) plus one motion fix (stop the current spline before a
+  movement update can interrupt a just-started stationary channel). None of
+  it touches session/socket state — it's pure pet-command-state logic, same
+  for a bot's pet as a real player's. **Take CoA's side for all 5.** Still
+  worth a live in-game check once bots exist (does a bot correctly issue
+  "stay" to its pet through this path) — a testing note, not a reason to
+  withhold the code.
+- **`SmartScript.cpp`** (2 conflicts, coupled — must be resolved together) —
+  CoA generalized `SMART_ACTION_MOVE_FORWARD` (`SmartScript.cpp:1516`) to
+  move any `WorldObject` in the event's `targets` list instead of hardcoding
+  `me`. The second conflict, ~2000 lines away, is `InstallTemplate`'s
+  `SMARTAI_TEMPLATE_CAGED_NPC_PART` case (`SmartScript.cpp:3507`), which
+  constructs the `SMART_ACTION_MOVE_FORWARD` event and must pass a target
+  type consistent with whichever handler shape is in effect: CoA passes
+  `SMART_TARGET_SELF` (correct for the generalized, targets-list handler);
+  playerbots-fork passes `SMART_TARGET_NONE` (correct only for the old,
+  hardcoded-`me` handler). **These two hunks are a matched pair — taking
+  CoA's generalized handler but playerbots-fork's `SMART_TARGET_NONE` call
+  site would silently break the caged-NPC SmartAI template** (empty targets
+  list → the move-forward action does nothing). **Take CoA's side on both,
+  never just one.** Purely a generic SmartAI engine change, no bot-specific
+  logic anywhere in it.
 
 ## What this means for the patch plan
 
 Category A + B (roughly 20 of the 34 conflicted files) are mechanical: take
-CoA's side for A, keep both additions for B. That leaves **category C (3
-files: `Item.cpp`, `Group.cpp`, `PointMovementGenerator.h`) as
-must-preserve-verbatim bot fixes**, and **category D (7 files: `Creature.cpp`,
-`Pet.cpp/h`, `PlayerUpdates.cpp`, `Player.h`/`PlayerStorage.cpp`,
-`MailHandler.cpp`, `PetHandler.cpp`, `SmartScript.cpp`) as the actual review
-work** — read each one, decide per-case, test in-game. That is a bounded,
-estimable amount of work, not "re-derive the whole patch from scratch."
+CoA's side for A, keep both additions for B. **Category D turned out to
+collapse into the same "take CoA's side" bucket once actually read** — the
+only line of playerbots-fork code worth carrying over from the whole
+7-file/21-conflict set is the one-line `Creature.cpp` `spawnId` fix (and
+that's for an unrelated pre-existing CoA gap, not a bot need). That leaves
+**category C (3 files: `Item.cpp`, `Group.cpp`, `PointMovementGenerator.h`)
+as the only must-preserve-verbatim bot-specific fixes** in the entire 77-file
+patch. Net effect: of 77 files, 43 apply with zero conflict, ~31 more are a
+mechanical take-CoA's-side or keep-both resolution, and only **3 files**
+carry logic that exists specifically because the bot is a session-less
+`Player`.
 
 ## Files with zero conflict (safe to apply mechanically)
 

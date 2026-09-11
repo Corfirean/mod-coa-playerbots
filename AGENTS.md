@@ -70,16 +70,32 @@ READMEs. Read that file before touching anything architectural.
   see `ascension-class-status.md`. Source-file presence is not a reliable
   signal of whether a class actually works; test in-game.
 
+## Decided
+
+- **Scope (decided 2026-09-11): full Playerbots-equivalent** — real group
+  member, loot-roll participation, guild-capable, fully geared/talented.
+  Not a scoped-down companion. See `architecture.md`'s Scoping section. This
+  also means the project isn't obligated to just replicate Playerbots'
+  stock-class bot behavior once the chassis works — custom AI ideas for
+  Ascension classes are explicitly in scope, write them down as they come up
+  (`architecture.md`'s "Beyond parity" section, or a new `docs/ai-ideas.md`
+  once there's enough to warrant its own file).
+- **Category D files (the 7 "real overlapping changes" from
+  `core-diff-analysis.md`) are resolved**: all 7 turned out to need CoA's
+  side taken (no bot-specific logic was actually in any of them), plus one
+  unrelated one-line bugfix worth carrying over from playerbots-fork in
+  `Creature.cpp`. Full per-file reasoning is in that doc — nothing left to
+  re-derive here. **Only 3 files in the entire 77-file patch
+  (`Item.cpp`, `Group.cpp`, `PointMovementGenerator.h` — category C) contain
+  logic that must be preserved verbatim** because it exists specifically for
+  a session-less bot `Player`.
+
 ## Not yet decided
 
-- **Scope**: full Playerbots-equivalent (real group member, loot rolls,
-  guild-capable) vs. a lighter "AI companion" that doesn't need full party
-  UI parity. This decision changes how much of the measured patch is
-  actually required — see `architecture.md`'s Scoping section. Decide this
-  before writing the first line of patch or module code.
-- The `docs/research/core-diff-analysis.md` category D files (real
-  overlapping changes, not mechanical) haven't been individually resolved
-  yet — they're categorized, not fixed.
+- No architectural scope questions remain open. Next real work is either (a)
+  actually writing the core patch + module skeleton per the resolutions
+  above, or (b) fleshing out custom AI-behavior ideas beyond stock
+  Playerbots parity — ask the user which to start with rather than assuming.
 
 ## Publishing
 

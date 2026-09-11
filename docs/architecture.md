@@ -79,15 +79,33 @@ categories of core changes are:
    methods directly/synchronously instead of through the normal
    packet-round-trip path.
 
-## Scoping question — decide before writing any code
+## Scoping decision — DECIDED 2026-09-11: full Playerbots-equivalent
 
-Full Playerbots-equivalent (real group member, loot rolls, guild-capable,
-can be geared by the player) requires accepting something close to the full
-measured patch. A scoped-down "AI companion" (follows you, fights with real
-Ascension-class abilities, doesn't need to show up in the party frame as a
-distinguishable geared character) could plausibly stay much smaller — worth
-re-measuring the *minimum* required subset once this is decided, rather than
-assuming the full 2700-line patch is the target. **Not decided yet.**
+Full parity: real group member, loot-roll participation, guild-capable,
+geared/talented like a real character, party-frame visible. Accept
+something close to the full measured patch (~2700 lines / 77 files) rather
+than trying to shrink it to a bare "follows you and fights" companion — the
+user explicitly chose this over the smaller scoped-down alternative, wanting
+a solo-play experience that feels like a real group, not a simplified
+pet-substitute. Guild support (category 3 above, ~830 lines) stays in scope
+under this decision — do not drop it as an optimization without asking
+first.
+
+This also means: don't reflexively trim playerbots-fork functionality to
+"only what Ascension classes need." Bring over the general-purpose bot
+framework (grouping, loot, commands, guild) wholesale, and layer
+Ascension-class rotation AI on top of it.
+
+## Beyond parity: this project is not required to just copy Playerbots
+
+Playerbots is the *base* (proven session/group/loot plumbing), not the
+ceiling. Once the chassis exists, custom AI behavior for Ascension's classes
+is 100% new design space anyway (see below) — there's no existing prior art
+to match or preserve, so improvements/deviations from how Playerbots'
+stock-class bots behave are explicitly welcome, not just tolerated. Ideas
+raised in future sessions should be written down here (or in a new
+`docs/ai-ideas.md` if the list gets long) rather than left only in chat, per
+this project's own standing documentation rule.
 
 ## Zero bot AI exists for any of the 21 Ascension classes, in either base project
 
