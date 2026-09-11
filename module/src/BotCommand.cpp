@@ -17,7 +17,8 @@ public:
         static ChatCommandTable botcmdCommandTable =
         {
             { "spawnbot",     HandleBotSpawnCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
-            { "acceptinvite", HandleBotAcceptInviteCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
+            { "acceptinvite", HandleBotAcceptInviteCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "despawn",      HandleBotDespawnCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
         static ChatCommandTable commandTable =
@@ -37,6 +38,12 @@ public:
     static bool HandleBotAcceptInviteCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
         sBotMgr->AcceptInvite(charLowGuid, handler);
+        return true;
+    }
+
+    static bool HandleBotDespawnCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        sBotMgr->DespawnBot(charLowGuid, handler);
         return true;
     }
 };

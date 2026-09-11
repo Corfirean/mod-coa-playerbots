@@ -38,6 +38,12 @@ public:
     // as an explicit override for testing/debugging.
     void AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
 
+    // Cleanly logs a bot out: LogoutPlayer(true) (saves + removes the Player
+    // from world, same path a real disconnect takes) then frees the
+    // WorldSession. Without this there was previously no way to remove a bot
+    // short of restarting the whole server.
+    void DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
+
     // Called every world tick via a WorldScript hook. Auto-accepts any
     // pending group invite and auto-rolls Greed on any pending loot roll for
     // every active bot (both checked every tick, not throttled — a human
@@ -56,9 +62,10 @@ private:
     // reads and discards) — reuses all of the real validation logic instead
     // of duplicating it. Caller must have already confirmed there's a
     // pending invite (session->GetPlayer()->GetGroupInvite()). Also
-    // teleports the bot to the group leader's exact spot on success — no
-    // follow/movement AI yet, this is a stopgap so the bot ends up near the
-    // human instead of wherever it happened to log in.
+    // teleports the bot to the group leader's exact spot on success and
+    // starts a MotionMaster follow on the leader (same mechanism pets use) —
+    // no combat AI yet to interrupt it, so this is set-once-and-left, not a
+    // continuously-managed follow state.
     void DoAcceptInvite(WorldSession* session);
 
     // Calls the real WorldSession::HandleLootRoll handler directly with a

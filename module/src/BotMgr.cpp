@@ -1,4 +1,5 @@
 #include "BotMgr.h"
+#include <algorithm>
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
@@ -6,6 +7,7 @@
 #include "Log.h"
 #include "LootMgr.h"
 #include "ObjectAccessor.h"
+#include "PetDefines.h"
 #include "Player.h"
 #include "QueryHolder.h"
 #include "SharedDefines.h"
@@ -97,10 +99,10 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
     fakePacket << uint32(0);
     session->HandleGroupAcceptOpcode(fakePacket);
 
-    // No follow/movement AI yet (that's real future work — pathing, combat-aware
-    // re-follow, etc.) — for now, snap the bot to the group leader's exact spot the
-    // moment it joins, same as real Playerbots does on invite-accept, so the bot is
-    // at least standing next to the human instead of wherever it happened to log in.
+    // Snap to the leader first, then start following — a real MotionMaster follow
+    // generator, the same mechanism pets/NPC escorts use, not anything bot-specific.
+    // No combat AI exists yet, so nothing will interrupt this once set; that's a
+    // real future problem (re-follow after combat, obstacles, etc.), not this pass.
     Player* bot = session->GetPlayer();
     if (!bot)
         return;
@@ -113,9 +115,10 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
     {
         if (leader != bot)
         {
-            LOG_INFO("module.coa-playerbots", "BotMgr: teleporting bot '{}' to group leader '{}'.",
+            LOG_INFO("module.coa-playerbots", "BotMgr: teleporting bot '{}' to group leader '{}' and starting follow.",
                 bot->GetName(), leader->GetName());
             bot->TeleportTo(leader->GetWorldLocation());
+            bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, bot->GetFollowAngle());
         }
     }
 }
@@ -149,6 +152,36 @@ void BotMgr::AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
 
     if (handler)
         handler->PSendSysMessage("BotMgr: accept-invite issued for bot '{}', check .group list to confirm.", bot->GetName());
+}
+
+void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
+{
+    auto itr = std::find_if(_botSessions.begin(), _botSessions.end(), [charLowGuid](WorldSession* session)
+    {
+        Player* bot = session->GetPlayer();
+        return bot && bot->GetGUID().GetCounter() == charLowGuid;
+    });
+
+    if (itr == _botSessions.end())
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no active bot session for guid {}.", charLowGuid);
+        return;
+    }
+
+    WorldSession* session = *itr;
+    std::string name = session->GetPlayer() ? session->GetPlayer()->GetName() : "?";
+
+    // Same shape as the failure-path cleanup already used in SpawnBot: LogoutPlayer
+    // saves+removes the Player from world, but does not delete the WorldSession
+    // itself -- that's still on us, same as any other owner of a WorldSession.
+    session->LogoutPlayer(true);
+    delete session;
+    _botSessions.erase(itr);
+
+    LOG_INFO("module.coa-playerbots", "BotMgr: despawned bot '{}' (guid {}).", name, charLowGuid);
+    if (handler)
+        handler->PSendSysMessage("BotMgr: bot '{}' despawned.", name);
 }
 
 void BotMgr::DoRollGreed(WorldSession* session, Roll* roll)
