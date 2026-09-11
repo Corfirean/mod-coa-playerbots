@@ -2,7 +2,10 @@
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
+#include "Group.h"
 #include "Log.h"
+#include "LootMgr.h"
+#include "ObjectAccessor.h"
 #include "Player.h"
 #include "QueryHolder.h"
 #include "SharedDefines.h"
@@ -93,6 +96,28 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
     WorldPacket fakePacket;
     fakePacket << uint32(0);
     session->HandleGroupAcceptOpcode(fakePacket);
+
+    // No follow/movement AI yet (that's real future work — pathing, combat-aware
+    // re-follow, etc.) — for now, snap the bot to the group leader's exact spot the
+    // moment it joins, same as real Playerbots does on invite-accept, so the bot is
+    // at least standing next to the human instead of wherever it happened to log in.
+    Player* bot = session->GetPlayer();
+    if (!bot)
+        return;
+
+    Group* group = bot->GetGroup();
+    if (!group)
+        return;
+
+    if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+    {
+        if (leader != bot)
+        {
+            LOG_INFO("module.coa-playerbots", "BotMgr: teleporting bot '{}' to group leader '{}'.",
+                bot->GetName(), leader->GetName());
+            bot->TeleportTo(leader->GetWorldLocation());
+        }
+    }
 }
 
 void BotMgr::AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
@@ -126,6 +151,19 @@ void BotMgr::AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
         handler->PSendSysMessage("BotMgr: accept-invite issued for bot '{}', check .group list to confirm.", bot->GetName());
 }
 
+void BotMgr::DoRollGreed(WorldSession* session, Roll* roll)
+{
+    // HandleLootRoll reads itemGUID/itemSlot/rollType then calls Group::CountRollVote,
+    // which does the real vote bookkeeping and broadcasts the update via SendLootRoll
+    // (already null-socket-tolerant). Same "build the real packet, call the real
+    // handler" pattern as DoAcceptInvite/login.
+    WorldPacket packet;
+    packet << roll->itemGUID;
+    packet << uint32(roll->itemSlot);
+    packet << uint8(ROLL_GREED);
+    session->HandleLootRoll(packet);
+}
+
 void BotMgr::Update(uint32 diff)
 {
     if (_botSessions.empty())
@@ -140,6 +178,30 @@ void BotMgr::Update(uint32 diff)
         {
             LOG_INFO("module.coa-playerbots", "BotMgr: auto-accepting pending group invite for bot '{}'.", bot->GetName());
             DoAcceptInvite(session);
+        }
+    }
+
+    // Loot rolls: also checked every tick. Policy for now is always Greed — real
+    // need-eligibility (armor type/class fit) is future AI work, not this milestone.
+    for (WorldSession* session : _botSessions)
+    {
+        Player* bot = session->GetPlayer();
+        if (!bot)
+            continue;
+
+        Group* group = bot->GetGroup();
+        if (!group)
+            continue;
+
+        for (Roll* roll : group->GetRolls())
+        {
+            auto voteItr = roll->playerVote.find(bot->GetGUID());
+            if (voteItr != roll->playerVote.end() && voteItr->second == NOT_EMITED_YET)
+            {
+                LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' rolling Greed on item {} (slot {}).",
+                    bot->GetName(), roll->itemid, roll->itemSlot);
+                DoRollGreed(session, roll);
+            }
         }
     }
 

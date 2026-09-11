@@ -18,6 +18,7 @@
 #include <vector>
 
 class ChatHandler;
+class Roll;
 class WorldSession;
 
 class BotMgr
@@ -38,10 +39,11 @@ public:
     void AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
 
     // Called every world tick via a WorldScript hook. Auto-accepts any
-    // pending group invite on every active bot (checked every tick, not
-    // throttled — a human player expects a near-instant response to an
-    // invite) and logs a periodic (throttled) heartbeat so a human watching
-    // the log can confirm bots are still alive without polling in-game.
+    // pending group invite and auto-rolls Greed on any pending loot roll for
+    // every active bot (both checked every tick, not throttled — a human
+    // player expects a near-instant response to either), and logs a
+    // periodic (throttled) heartbeat so a human watching the log can confirm
+    // bots are still alive without polling in-game.
     void Update(uint32 diff);
 
 private:
@@ -53,8 +55,17 @@ private:
     // (a minimal padding WorldPacket stands in for the network payload it
     // reads and discards) — reuses all of the real validation logic instead
     // of duplicating it. Caller must have already confirmed there's a
-    // pending invite (session->GetPlayer()->GetGroupInvite()).
+    // pending invite (session->GetPlayer()->GetGroupInvite()). Also
+    // teleports the bot to the group leader's exact spot on success — no
+    // follow/movement AI yet, this is a stopgap so the bot ends up near the
+    // human instead of wherever it happened to log in.
     void DoAcceptInvite(WorldSession* session);
+
+    // Calls the real WorldSession::HandleLootRoll handler directly with a
+    // Greed vote for the given roll (itemGUID/itemSlot read straight off the
+    // Roll object — no packet-guessing needed). Caller must have already
+    // confirmed this bot has a pending, not-yet-answered vote on this roll.
+    void DoRollGreed(WorldSession* session, Roll* roll);
 
     std::vector<WorldSession*> _botSessions;
     uint32 _heartbeatTimer = 0;
