@@ -1,0 +1,14 @@
+/*
+ * Copyright (C) 2016+ AzerothCore <www.azerothcore.org>, released under GNU AGPL v3 license: https://github.com/azerothcore/azerothcore-wotlk/blob/master/LICENSE-AGPL3
+ */
+
+void AddSC_botcmd_commandscript();
+void AddSC_coa_playerbots_worldscript();
+
+// cf. the naming convention https://github.com/azerothcore/azerothcore-wotlk/blob/master/doc/changelog/master.md#how-to-upgrade-4
+// module folder name is mod-coa-playerbots, '-' replaced with '_'
+void Addmod_coa_playerbotsScripts()
+{
+    AddSC_botcmd_commandscript();
+    AddSC_coa_playerbots_worldscript();
+}

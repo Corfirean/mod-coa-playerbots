@@ -110,6 +110,39 @@ READMEs. Read that file before touching anything architectural.
   the full-parity patch plan in `core-diff-analysis.md` is complete as
   written; it should get this same addition when written for real.
 
+- **Module milestone 1 succeeded (2026-09-11): a bot can be a real group member.**
+  `.botcmd spawnbot <guid>` + GM `/invite <name>` (real client) + `.botcmd acceptinvite
+  <guid>` (calls `WorldSession::HandleGroupAcceptOpcode` directly with a padding
+  packet) → confirmed via `.group list` on both sides AND visually in the GM's real
+  party frame. **No `Group.cpp`/`.h` core patch was needed** — grouping worked on
+  CoA's stock, unpatched `Group.cpp`; the Category-C double-invite fix stays
+  unapplied until (if ever) it's actually triggered. Full writeup: `module/README.md`.
+- **The real blocker wasn't core code at all — it was test-account hygiene.** The
+  first attempt used a bot character on the *same account* as the GM's own login
+  (`Test`, guid 1, account `LOCAL`/1 — same account the GM plays from). Two
+  simultaneous sessions on one account is a state normal login never produces;
+  the bot came up visibly wrong (`.pinfo` showed `GM Mode active, Phase: -1`) and
+  `/invite` couldn't find it by name. **Bots must run on a different account than
+  whichever account the human tester is using that session** — this is exactly why
+  real Playerbots always separates `masterAccountId` from the bot's own account.
+  Current state on this repack: `LOCAL` (account 1) has `Test` (guid 1) and `Mesha`
+  (guid 3); `Shaniel` (guid 2) was moved to `ADMIN` (account 2) specifically to be a
+  collision-free bot test character — reuse `Shaniel`/account 2 for bot testing
+  going forward rather than `Test`/`Mesha`, or set up a dedicated bot account before
+  testing with more than one bot at once.
+- Two red herrings hit during that same test, worth knowing so they don't cost time
+  again: the WotLK client's Friends List "Invite" button has its own cooldown
+  (shows greyed out "in N minutes") unrelated to the server — use `/invite <name>`
+  typed in chat instead, no cooldown there. And GM-issued invites skip the
+  same-faction check entirely (`HandleGroupInviteOpcode`'s guard is
+  `!invitingPlayer->IsGameMaster() && ...`), so cross-faction GM/bot pairings (which
+  happened here) were never actually a problem.
+- **Standing decision (2026-09-11): stop restoring the original `worldserver.exe`
+  after every test.** The pilot and this milestone both defaulted to backing up and
+  restoring the binary per session; the user says not to bother going forward —
+  the fork's own devs keep a Discord backup, so rollback is cheap if ever needed.
+  Keep working directly on the patched binary across sessions unless told otherwise.
+
 ## Build environment notes (learned the hard way during the pilot)
 
 `azerothcore-wotlk-coa/build` may exist but be configured for something
@@ -153,10 +186,11 @@ build on this machine:
 
 ## Not yet decided
 
-- Scope and the core-patch categorization are settled; the chassis is
-  proven. What's actually undecided now: whether to build the real module
-  next (group/loot/guild, then bot AI) or continue exploring custom
-  AI-behavior ideas first — ask the user rather than assuming.
+- Scope, the core-patch categorization, and the chassis are all settled and proven.
+  Module milestone 1 (real group membership) is done too. What's actually open now:
+  which of loot-roll participation, guild support, auto-accept-on-invite, a proper
+  dedicated bot account, or custom AI-behavior ideas to tackle next — ask the user
+  rather than assuming.
 
 ## Publishing
 
