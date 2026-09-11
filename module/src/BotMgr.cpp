@@ -99,10 +99,6 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
     fakePacket << uint32(0);
     session->HandleGroupAcceptOpcode(fakePacket);
 
-    // Snap to the leader first, then start following — a real MotionMaster follow
-    // generator, the same mechanism pets/NPC escorts use, not anything bot-specific.
-    // No combat AI exists yet, so nothing will interrupt this once set; that's a
-    // real future problem (re-follow after combat, obstacles, etc.), not this pass.
     Player* bot = session->GetPlayer();
     if (!bot)
     {
@@ -124,41 +120,60 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
         LOG_INFO("module.coa-playerbots", "BotMgr: resolved leader '{}' (in world: {}).", leader->GetName(), leader->IsInWorld());
         if (leader != bot)
         {
-            LOG_INFO("module.coa-playerbots", "BotMgr: teleporting bot '{}' to group leader '{}' and starting follow.",
+            LOG_INFO("module.coa-playerbots", "BotMgr: teleporting bot '{}' to group leader '{}'.",
                 bot->GetName(), leader->GetName());
             bot->TeleportTo(leader->GetWorldLocation());
 
-            // TeleportTo() only *requests* the move: for a same-map (near) teleport the
-            // actual position isn't applied until the client sends MSG_MOVE_TELEPORT_ACK
-            // (WorldSession::HandleMoveTeleportAck -> Player::UpdatePosition); for a
-            // cross-map (far) one it's HandleMoveWorldportAck. A bot has no client to
-            // ever send that ack, so without this the bot stays semaphore-locked at its
-            // old position forever and MoveFollow has nothing real to work from. Found
-            // empirically: the teleport call produced no error, but the bot never
-            // actually moved. HandleMoveWorldportAck() already has a no-packet
-            // "for server-side calls" overload; the near case needs a minimal packed-guid
-            // packet built the same way as every other "call the real handler directly"
-            // trick this module already uses.
-            if (bot->IsBeingTeleportedNear())
-            {
-                WorldPacket ackPacket;
-                ackPacket << bot->GetGUID().WriteAsPacked();
-                ackPacket << uint32(0); // flags, unused by the handler
-                ackPacket << uint32(0); // time, unused by the handler
-                session->HandleMoveTeleportAck(ackPacket);
-            }
-            else if (bot->IsBeingTeleportedFar())
-            {
-                session->HandleMoveWorldportAck();
-            }
-
-            bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, bot->GetFollowAngle());
+            // Don't fire the ack here -- see FinishPendingTeleport's comment in the
+            // header for why doing it in the same tick as TeleportTo() crashes.
+            _pendingTeleportAck.push_back(session);
         }
     }
     else
     {
         LOG_ERROR("module.coa-playerbots", "BotMgr: DoAcceptInvite: ObjectAccessor::FindPlayer could not resolve leader guid {}.",
             group->GetLeaderGUID().ToString());
+    }
+}
+
+void BotMgr::FinishPendingTeleport(WorldSession* session)
+{
+    Player* bot = session->GetPlayer();
+    if (!bot)
+        return;
+
+    // HandleMoveWorldportAck() already has a no-packet "for server-side calls"
+    // overload; the near case needs a minimal packed-guid packet built the same
+    // way as every other "call the real handler directly" trick this module uses.
+    if (bot->IsBeingTeleportedNear())
+    {
+        WorldPacket ackPacket;
+        ackPacket << bot->GetGUID().WriteAsPacked();
+        ackPacket << uint32(0); // flags, unused by the handler
+        ackPacket << uint32(0); // time, unused by the handler
+        session->HandleMoveTeleportAck(ackPacket);
+    }
+    else if (bot->IsBeingTeleportedFar())
+    {
+        session->HandleMoveWorldportAck();
+    }
+    else
+    {
+        // Not (or no longer) mid-teleport -- nothing to finish.
+        return;
+    }
+
+    LOG_INFO("module.coa-playerbots", "BotMgr: finished pending teleport for bot '{}'.", bot->GetName());
+
+    // Start following only once the teleport has actually landed -- doing this
+    // before the ack would give MoveFollow a stale/pre-teleport position to work from.
+    if (Group* group = bot->GetGroup())
+    {
+        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+        {
+            if (leader != bot)
+                bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, bot->GetFollowAngle());
+        }
     }
 }
 
@@ -217,6 +232,9 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
     session->LogoutPlayer(true);
     delete session;
     _botSessions.erase(itr);
+    // Also drop it from the pending-teleport-ack queue if it's there -- otherwise
+    // the next Update() tick would call FinishPendingTeleport on a freed session.
+    _pendingTeleportAck.erase(std::remove(_pendingTeleportAck.begin(), _pendingTeleportAck.end(), session), _pendingTeleportAck.end());
 
     LOG_INFO("module.coa-playerbots", "BotMgr: despawned bot '{}' (guid {}).", name, charLowGuid);
     if (handler)
@@ -240,6 +258,18 @@ void BotMgr::Update(uint32 diff)
 {
     if (_botSessions.empty())
         return;
+
+    // Finish any teleport queued on a *previous* tick first, before this tick's
+    // invite-check loop below has a chance to queue a fresh one -- that's what
+    // gives it the one-tick separation from TeleportTo() it needs (see
+    // FinishPendingTeleport's header comment).
+    if (!_pendingTeleportAck.empty())
+    {
+        std::vector<WorldSession*> due;
+        due.swap(_pendingTeleportAck);
+        for (WorldSession* session : due)
+            FinishPendingTeleport(session);
+    }
 
     // Auto-accept: checked every tick, not throttled. A bot with a real Player
     // and a pending invite accepts it immediately, same as a human would.

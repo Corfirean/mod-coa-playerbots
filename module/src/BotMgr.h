@@ -62,11 +62,21 @@ private:
     // reads and discards) — reuses all of the real validation logic instead
     // of duplicating it. Caller must have already confirmed there's a
     // pending invite (session->GetPlayer()->GetGroupInvite()). Also
-    // teleports the bot to the group leader's exact spot on success and
-    // starts a MotionMaster follow on the leader (same mechanism pets use) —
-    // no combat AI yet to interrupt it, so this is set-once-and-left, not a
-    // continuously-managed follow state.
+    // teleports the bot to the group leader's exact spot on success — the
+    // teleport-ack (see FinishPendingTeleport below) and MoveFollow happen
+    // later, once the teleport has actually landed.
     void DoAcceptInvite(WorldSession* session);
+
+    // A Player-type TeleportTo() (near or far) only *requests* the move --
+    // the real position/grid update happens inside the ack handler
+    // (HandleMoveTeleportAck / HandleMoveWorldportAck), which a real client
+    // sends after its own network round trip. Firing that ack synchronously,
+    // in the same tick as TeleportTo() itself, crashes with an IsInGrid()
+    // assert in Map::PlayerRelocation -- confirmed live via a crash dump.
+    // So: queue it here, and fire it from the *next* Update() tick instead,
+    // giving the map's own per-tick processing a chance to settle first,
+    // same as the real network delay would.
+    void FinishPendingTeleport(WorldSession* session);
 
     // Calls the real WorldSession::HandleLootRoll handler directly with a
     // Greed vote for the given roll (itemGUID/itemSlot read straight off the
@@ -75,6 +85,7 @@ private:
     void DoRollGreed(WorldSession* session, Roll* roll);
 
     std::vector<WorldSession*> _botSessions;
+    std::vector<WorldSession*> _pendingTeleportAck;
     uint32 _heartbeatTimer = 0;
 };
 
