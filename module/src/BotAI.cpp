@@ -44,8 +44,10 @@
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "ObjectDefines.h"
+#include "ObjectMgr.h"
 #include "PetDefines.h"
 #include "Player.h"
+#include "QuestDef.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Unit.h"
@@ -138,6 +140,12 @@ struct BotAIState
     // IsNonMeleeSpellCast first reports the Fishing cast as finished -- confirmed live that the
     // two don't land the same tick.
     uint32 fishingBobberGraceMs = 0;
+
+    // See TryStartQuesting/TryContinueQuestWalk. No separate "in progress" state is needed
+    // beyond this -- unlike gathering/fishing, accepting or turning in a quest is instant (no
+    // cast time), so the walk is the only phase that can span more than one tick.
+    ObjectGuid questWalkTargetGuid;
+    uint32 nextQuestScanMs = 0;
 };
 
 // How long a freshly-dead bot waits, body not yet released, before giving up on a real
@@ -183,6 +191,9 @@ constexpr float FISHING_MIN_DISTANCE = 5.0f;
 constexpr float FISHING_MAX_DISTANCE = 18.0f;
 constexpr uint32 FISHING_SCAN_INTERVAL_MS = 6000;
 constexpr uint32 FISHING_BITE_TIMEOUT_MS = 40000;
+
+constexpr float QUEST_SEARCH_RADIUS = 20.0f;
+constexpr uint32 QUEST_SCAN_INTERVAL_MS = 5000;
 
 std::unordered_map<ObjectGuid, BotAIState> states;
 
@@ -819,6 +830,164 @@ bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
     return true;
 }
 
+// Same shrinking-radius nearest-in-range shape as every other search in this file, but for a
+// quest-giver creature that currently has something for this bot -- the exact same DIALOG_STATUS
+// check that drives the real "!"/"?" minimap icons (Player::GetQuestDialogStatus), checked here
+// just to decide who's worth walking to. GameObject quest givers (mailboxes, some quest chains'
+// item-triggered turn-ins) aren't covered -- creatures are the large majority of quest givers,
+// and this is deliberately the simpler slice for a first pass.
+class QuestGiverCheck
+{
+public:
+    QuestGiverCheck(Player* bot, float range) : _bot(bot), _range(range) { }
+    bool operator()(Creature* creature)
+    {
+        if (!creature->IsAlive() || !creature->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER))
+            return false;
+        if (!_bot->IsWithinDistInMap(creature, _range))
+            return false;
+
+        switch (_bot->GetQuestDialogStatus(creature))
+        {
+            case DIALOG_STATUS_REWARD:
+            case DIALOG_STATUS_REWARD2:
+            case DIALOG_STATUS_REWARD_REP:
+            case DIALOG_STATUS_AVAILABLE:
+            case DIALOG_STATUS_AVAILABLE_REP:
+                break;
+            default:
+                return false; // nothing for this bot here right now
+        }
+
+        _range = _bot->GetDistance(creature); // shrink the search radius to the closest hit so far
+        return true;
+    }
+
+private:
+    Player* _bot;
+    float _range;
+};
+
+// No attempt at "best" reward scoring here (mod-playerbots' own StatsWeightCalculator does that
+// properly) -- a solo bot with nobody to ask just takes the first choice. Deliberately the
+// simplest thing that unblocks turning the quest in at all, not an optimal pick.
+uint32 PickQuestRewardIndex(Quest const* /*quest*/)
+{
+    return 0;
+}
+
+// Turns in every quest this questgiver has ready for the bot, then accepts every quest it's
+// currently offering -- both via the same real Player methods a client's own quest-dialog
+// clicks ultimately call (CanRewardQuest/RewardQuest, CanTakeQuest/AddQuest), not packet
+// simulation. A quest's own start spell (if any) is cast exactly like a real accept would
+// trigger it.
+void ProcessQuestGiver(Player* bot, Creature* npc)
+{
+    QuestRelationBounds involved = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(npc->GetEntry());
+    for (auto itr = involved.first; itr != involved.second; ++itr)
+    {
+        uint32 questId = itr->second;
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest || bot->GetQuestStatus(questId) == QUEST_STATUS_NONE || bot->GetQuestRewardStatus(questId))
+            continue;
+
+        // Some quests (go here, report to X) only ever reach QUEST_STATUS_COMPLETE via this
+        // call -- a real client's quest-giver dialog triggers it implicitly on open, this is
+        // the direct equivalent.
+        if (bot->CanCompleteQuest(questId))
+            bot->CompleteQuest(questId);
+        if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+            continue;
+        if (!bot->CanRewardQuest(quest, false))
+            continue;
+
+        bot->RewardQuest(quest, PickQuestRewardIndex(quest), npc, true);
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' turned in quest {} ('{}').",
+            bot->GetName(), questId, quest->GetTitle());
+    }
+
+    QuestRelationBounds offered = sObjectMgr->GetCreatureQuestRelationBounds(npc->GetEntry());
+    for (auto itr = offered.first; itr != offered.second; ++itr)
+    {
+        uint32 questId = itr->second;
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest || bot->GetQuestStatus(questId) != QUEST_STATUS_NONE)
+            continue;
+        if (!bot->CanTakeQuest(quest, false) || !bot->CanAddQuest(quest, false))
+            continue;
+
+        bot->AddQuest(quest, npc);
+        if (uint32 srcSpell = quest->GetSrcSpell())
+            bot->CastSpell(bot, srcSpell, true);
+
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' accepted quest {} ('{}').",
+            bot->GetName(), questId, quest->GetTitle());
+    }
+}
+
+// Checked every idle-solo tick while state.questWalkTargetGuid is set -- mirrors
+// TryContinueGatherWalk exactly (see its own comment for why a separate walk-tracking guid,
+// not the grind anchor's POINT_MOTION_TYPE, is required). Once in range,
+// Player::GetNPCIfCanInteractWith re-validates distance/alive/flag exactly like a real client's
+// own interaction check before actually processing the quest giver.
+void TryContinueQuestWalk(Player* bot, BotAIState& state)
+{
+    Creature* npc = ObjectAccessor::GetCreature(*bot, state.questWalkTargetGuid);
+    if (!npc || !npc->IsAlive())
+    {
+        state.questWalkTargetGuid = ObjectGuid::Empty;
+        return;
+    }
+
+    if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
+        return; // still walking
+
+    state.questWalkTargetGuid = ObjectGuid::Empty;
+
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        bot->GetMotionMaster()->Clear();
+
+    if (Creature* validated = bot->GetNPCIfCanInteractWith(npc->GetGUID(), UNIT_NPC_FLAG_QUESTGIVER))
+        ProcessQuestGiver(bot, validated);
+}
+
+// Called from the idle-solo routine, only when no gather/fish activity is already claiming this
+// tick and no quest walk is already underway. Scans for a nearby quest giver with something for
+// this bot and either processes it immediately (already in range) or walks to it first --
+// exactly the same "scan, walk if needed, act" shape as gathering.
+bool TryStartQuesting(Player* bot, uint32 diff, BotAIState& state)
+{
+    if (state.nextQuestScanMs > diff)
+    {
+        state.nextQuestScanMs -= diff;
+        return false;
+    }
+    state.nextQuestScanMs = QUEST_SCAN_INTERVAL_MS;
+
+    Creature* npc = nullptr;
+    QuestGiverCheck check(bot, QUEST_SEARCH_RADIUS);
+    Acore::CreatureLastSearcher<QuestGiverCheck> searcher(bot, npc, check);
+    Cell::VisitObjects(bot, searcher, QUEST_SEARCH_RADIUS);
+
+    if (!npc)
+        return false;
+
+    if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
+    {
+        state.questWalkTargetGuid = npc->GetGUID();
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+            bot->GetMotionMaster()->MovePoint(0, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ());
+        return true;
+    }
+
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        bot->GetMotionMaster()->Clear();
+
+    if (Creature* validated = bot->GetNPCIfCanInteractWith(npc->GetGUID(), UNIT_NPC_FLAG_QUESTGIVER))
+        ProcessQuestGiver(bot, validated);
+    return true;
+}
+
 // Stops whatever follow motion is already running -- needed because a FOLLOW_MOTION_TYPE
 // generator, once started, keeps chasing its target on its own every tick until something
 // explicitly clears it. Simply skipping a *new* MoveFollow call (what this function used to
@@ -984,11 +1153,11 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
             // purely additive: give a solo bot something of its own to do instead of standing
             // wherever it was spawned forever. Stay still means "don't go looking for a fight,"
             // same as it already means for inheriting a leader's target above. Peaceful
-            // activities take priority over grinding (a real player would rather gather/fish
-            // than start a fight) -- an in-progress one is always continued/finished first;
-            // otherwise a fresh scan for something to do runs (gathering before fishing, simply
-            // because that check was written first -- neither is inherently more "important")
-            // before falling back to looking for something to kill.
+            // activities take priority over grinding (a real player would rather quest/gather/
+            // fish than start a fight) -- an in-progress one is always continued/finished first;
+            // otherwise a fresh scan runs in the order the user asked for these features
+            // (quests, then gathering, then fishing) before falling back to looking for
+            // something to kill.
             if (!bot->GetGroup() && state.manualCommand != BotManualCommand::Stay)
             {
                 if (!state.gatherTargetGuid.IsEmpty())
@@ -999,7 +1168,9 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
                     TryFinishFishing(bot, diff, state);
                 else if (state.fishingCastInProgress)
                     TryWaitForFishingCast(bot, diff, state);
-                else if (!TryStartGathering(bot, diff, state) && !TryStartFishing(bot, diff, state))
+                else if (!state.questWalkTargetGuid.IsEmpty())
+                    TryContinueQuestWalk(bot, state);
+                else if (!TryStartQuesting(bot, diff, state) && !TryStartGathering(bot, diff, state) && !TryStartFishing(bot, diff, state))
                     TryGrindWhenSolo(bot, diff, state);
             }
         }
