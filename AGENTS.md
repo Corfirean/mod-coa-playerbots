@@ -1533,3 +1533,84 @@ advanced if the right creature happened to wander into range on its own.
   fall back to the core's own `.quest complete`/`.quest reward` GM commands (both already
   RA-console accessible, `Console::Yes`, and take an optional player-name target) as the
   deliberate manual escape hatch for a bot that can't make progress any other way.
+
+## Mounts and gear upgrades (2026-09-15)
+
+`TryMaintainProgression` (`BotAI.cpp`, called unconditionally every tick from `BotAI::Update`,
+throttled internally to once per `PROGRESSION_CHECK_INTERVAL_MS`) bundles two independent
+checks:
+
+- `EnsureBotHasMount` grants a real, verified (parsed directly out of this server's own
+  Spell.dbc, not recalled from memory) race-thematic basic ground mount via `Player::learnSpell`
+  if the bot doesn't already know any mount spell at all (`SelectKnownMountSpell` scans the
+  bot's own spellbook for `SPELL_AURA_MOUNTED` first, so a bot that already owns a better one
+  is left alone). **Confirmed live**: Stormbot (Dwarf) had no mount at spawn; within one
+  progression-check tick he'd learned spell 6777 (Gray Ram), confirmed via
+  `character_spell`. Actually *riding* one for zone-to-zone travel is a follow-up, not done yet
+  — see "Not yet decided" below.
+- `TryUpgradeGearOnce` scans the bot's own bags each tick (throttled) for anything that beats
+  what's currently worn in the same slot. Reuses the real engine's own authoritative
+  eligibility checks — `Player::FindEquipSlot` (the same real method
+  `WorldSession::HandleAutoEquipItemOpcode` calls to pick the correct slot for a two-hander,
+  ring, trinket, etc.) and `Player::CanEquipItem` (covers armor-type proficiency, weapon-type
+  proficiency, level requirement — everything) — so no hand-rolled class/armor restriction
+  table was needed. Comparison metric is `ItemTemplate::ItemLevel`: a real, always-present,
+  designer-calibrated "how good is this overall" scalar, deliberately not a per-class/per-spec
+  stat-priority system (that needs the same kind of dedicated research as a class's combat
+  rotation, which doesn't exist yet for most of the 21 custom classes) — a floor, not a
+  ceiling, same as everything else in this file. **Confirmed live**: gave Stormbot a "Collar of
+  Command" (ilvl 100) via `.additem` while he had a "Static Cowl" (ilvl 1) equipped; one
+  progression-check tick later the better item was worn, confirmed via `character_inventory`.
+
+## Reaper (class 30) combat rotation (2026-09-15)
+
+Kept in its own file pair (`BotClassRotationsReaper.h/.cpp`), separate from
+`BotClassRotations.h/.cpp` (the Barbarian/Venomancer/Pyromancer rotations — see the git log for
+who added those and when) purely to avoid two people editing the same rotation-dispatch file at
+once while both were being written concurrently — nothing architectural about the split.
+`BotAI.cpp`'s `UpdateOffensive` tries `BotAI::SelectClassRotationSpell` first, then
+`BotAI::SelectReaperRotationSpell`, then the generic fallback.
+
+Reaper had an explicit, already-documented bug under the generic engine alone
+("Reaperbot's resource-builder spells never actually kill anything," noted earlier in this
+file). See `BotClassRotationsReaper.cpp`'s own header comment for the full investigation —
+short version: `AscensionCoATalentData.h`'s raw spell-id rows are *not* a reliable guide to a
+class's real attacks (only 4 of ~140 Reaper entries have a real damage effect in their own
+native SpellInfo data; the rest are implemented via dedicated per-class C++ scripts like
+`AscensionReaperSoulStrike.cpp`/`AscensionReaperDirge.cpp`, keying off `SpellFamilyName`/
+`SpellFamilyFlags`, not visible to a DBC-only scan). The rotation prioritizes Dirge (a
+dual-wield finisher, checked against `Player::GetWeaponForAttack` before ever being offered so
+it can't wake the equipped-item-class bug) over Soul Strike (the six-rank basic weapon attack,
+whose own registered on-hit script heals the caster automatically — nothing extra needed for
+that sustain).
+
+Two more real bugs were caught live testing this (against an actual stationary Training Dummy
+— testing against a wandering/fleeing critter gives false `SPELL_FAILED_OUT_OF_RANGE` positives
+that have nothing to do with the rotation logic) and are now fixed in the file: this rotation
+originally returned a candidate with no regard for whether it was actually in melee range
+(`UpdateOffensive` casts directly rather than chasing first when a rotation function returns
+non-zero, so an out-of-range return here meant the cast just failed forever) or affordable
+(Soul Strike costs a real 400 points of its own resource — PowerType 6, "Runic Power" per
+`DBCStructure.h`'s own label, repurposed for Reaper's "Souls" — and a bot that just entered
+combat starts near empty on it). Both are fixed via the same real `SpellInfo::GetMaxRange`/
+`GetMinRange`/`Player::CalcPowerCost` checks `SelectKnownSpell` already performs in `BotAI.cpp`
+— returns 0 rather than a doomed candidate when either check fails, so the caller falls through
+to its own melee-chase logic or the generic fallback instead of spamming a failing cast.
+
+**Not yet decided / left for next time:**
+- With both fixed, an unaffordable Soul Strike correctly falls through to generic
+  `SelectSpell` — which, on the one live run tested this far, itself picked a spell that failed
+  `SPELL_FAILED_CASTER_AURASTATE` (a precondition `IsUsableOffensiveSpell` doesn't check). This
+  is a separate, pre-existing gap in the *generic* engine, same category as the
+  already-documented facing/weapon-class bugs, not a Reaper-rotation problem — but it means
+  Reaper combat isn't fully reliable end-to-end yet until either that generic gap closes or a
+  real, affordable-from-empty resource generator is identified and added here as a third
+  priority tier ahead of Soul Strike. Not found this session — Reaperbot's own spellbook has
+  thousands of entries (many unrelated vanity/collection spells from however these test
+  characters were originally set up) and the one obvious-looking candidate ("Soul Generator,"
+  520056) turned out to be a passive percent-modifier talent, not a cast.
+- Verified DBC field indices for future reference (cross-checked against this repo's own
+  `DBCStructure.h` comments, not guessed): `PowerType`=41, `ManaCost`=42, `Effect[0..2]`=71-73,
+  `EffectApplyAuraName[0..2]`=95-97, `SpellFamilyName`=208, `SpellName[0]` (enUS)=136.
+- Actually *riding* a mount for travel (see "Mounts and gear upgrades" above) is still open —
+  the bot owns one now, nothing casts it yet.

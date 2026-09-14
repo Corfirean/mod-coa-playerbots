@@ -26,6 +26,8 @@
  */
 
 #include "BotAI.h"
+#include "BotClassRotations.h"
+#include "BotClassRotationsReaper.h"
 #include "ClassSpecRoles.h"
 #include "Bag.h"
 #include "CellImpl.h"
@@ -48,6 +50,7 @@
 #include "PetDefines.h"
 #include "Player.h"
 #include "QuestDef.h"
+#include "SharedDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Unit.h"
@@ -153,6 +156,10 @@ struct BotAIState
     // at a quest *objective* GameObject instead calls its own real Use() -- same "dedicated walk
     // guid per distinct arrival action" shape as gatherWalkTargetGuid vs. the grind anchor.
     ObjectGuid questObjectiveWalkTargetGuid;
+
+    // See TryMaintainProgression -- shared throttle for both the mount-ownership check and the
+    // gear-upgrade bag scan.
+    uint32 nextProgressionCheckMs = 0;
 };
 
 // How long a freshly-dead bot waits, body not yet released, before giving up on a real
@@ -202,7 +209,138 @@ constexpr uint32 FISHING_BITE_TIMEOUT_MS = 40000;
 constexpr float QUEST_SEARCH_RADIUS = 20.0f;
 constexpr uint32 QUEST_SCAN_INTERVAL_MS = 5000;
 
+// How often TryMaintainProgression re-checks mount/gear state -- infrequent on purpose (a
+// bot's spellbook/bags don't change fast enough to need per-tick scanning), shared by both
+// checks it bundles so there's one throttle field, not two.
+constexpr uint32 PROGRESSION_CHECK_INTERVAL_MS = 10000;
+
 std::unordered_map<ObjectGuid, BotAIState> states;
+
+// Real, verified (checked by parsing this server's own Spell.dbc byte-for-byte -- SpellName and
+// EffectApplyAuraName fields, not recalled from memory) basic 60%-speed racial ground mount for
+// each WotLK race. Used only to guarantee every bot owns *something* thematic to ride -- a bot
+// that already knows a mount keeps using that (SelectKnownMountSpell always prefers whatever's
+// already known), this is strictly a "never own zero mounts" floor, granted through the same
+// real Player::learnSpell a trainer purchase or quest reward would call. Actually riding one for
+// zone-to-zone travel is a follow-up (see AGENTS.md) -- this alone only guarantees the bot HAS a
+// mount to use once that travel logic exists.
+uint32 RacialGroundMountSpellFor(uint8 race)
+{
+    switch (race)
+    {
+        case RACE_HUMAN:         return 458;   // Brown Horse
+        case RACE_ORC:           return 6654;  // Brown Wolf
+        case RACE_DWARF:         return 6777;  // Gray Ram
+        case RACE_NIGHTELF:      return 10793; // Striped Nightsaber
+        case RACE_UNDEAD_PLAYER: return 13819; // Warhorse
+        case RACE_TAUREN:        return 18990; // Brown Kodo
+        case RACE_GNOME:         return 10873; // Red Mechanostrider
+        case RACE_TROLL:         return 8395;  // Emerald Raptor
+        case RACE_BLOODELF:      return 34795; // Red Hawkstrider
+        case RACE_DRAENEI:       return 34406; // Brown Elekk
+        default:                 return 0;
+    }
+}
+
+bool IsMountSpell(SpellInfo const* spellInfo)
+{
+    return spellInfo && !spellInfo->IsPassive() && spellInfo->HasAura(SPELL_AURA_MOUNTED);
+}
+
+// Same "first known match wins" shape as SelectKnownSpell, but for whatever mount(s) this bot
+// already knows -- doesn't rank multiple known mounts by speed (no CanFly-aware "best mount"
+// logic yet), just "something to ride beats walking."
+uint32 SelectKnownMountSpell(Player* bot)
+{
+    for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+    {
+        if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+            continue;
+        if (IsMountSpell(sSpellMgr->GetSpellInfo(spellId)))
+            return spellId;
+    }
+    return 0;
+}
+
+// A freshly-leveled or GM-created bot typically owns no mount at all.
+void EnsureBotHasMount(Player* bot)
+{
+    if (SelectKnownMountSpell(bot))
+        return;
+    if (uint32 spellId = RacialGroundMountSpellFor(bot->getRace()))
+        bot->learnSpell(spellId);
+}
+
+// Periodic, throttled bag scan for a gear upgrade -- same shape as TryMaintainBuff. Reuses the
+// real engine's own authoritative "can this class/race actually equip this" check
+// (Player::CanEquipItem, the same one WorldSession::HandleAutoEquipItemOpcode itself calls --
+// covers armor-type proficiency, weapon-type proficiency, level requirement, everything) and
+// Player::FindEquipSlot (the same real method that picks the correct slot for a two-hander, a
+// ring, a trinket, etc). Deliberately does NOT attempt a per-class/per-spec stat-priority system
+// -- that needs the same kind of dedicated per-class research as BotClassRotations.cpp, which
+// doesn't exist yet for most of the 21 custom classes. ItemTemplate::ItemLevel is used as the
+// single comparison metric instead: a real, always-present, designer-calibrated "how good is
+// this overall" scalar -- a floor, not a ceiling, exactly like the rest of this file's
+// class-agnostic heuristics.
+void TryUpgradeGearOnce(Player* bot)
+{
+    auto considerItem = [&](Item* item) -> bool
+    {
+        if (!item)
+            return false;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto)
+            return false;
+
+        uint8 eslot = bot->FindEquipSlot(proto, NULL_SLOT, true);
+        if (eslot == NULL_SLOT)
+            return false;
+
+        Item* current = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, eslot);
+        if (current && current->GetTemplate()->ItemLevel >= proto->ItemLevel)
+            return false; // not an upgrade over what's already worn there
+
+        uint16 dest = uint16(eslot) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
+        if (bot->CanEquipItem(NULL_SLOT, dest, item, true) != EQUIP_ERR_OK)
+            return false; // class/race/level can't actually use this one
+
+        bot->SwapItem(item->GetPos(), dest);
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' equipped '{}' (ilvl {}) over slot {} (was ilvl {}).",
+            bot->GetName(), proto->Name1, proto->ItemLevel, uint32(eslot), current ? current->GetTemplate()->ItemLevel : 0);
+        return true;
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (considerItem(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot)))
+            return; // one upgrade per scan is plenty -- avoids repeated bag-order churn same tick
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Bag* pBag = bot->GetBagByPos(bag);
+        if (!pBag)
+            continue;
+        for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+            if (considerItem(pBag->GetItemByPos(j)))
+                return;
+    }
+}
+
+// Called every tick from BotAI::Update, unconditional on role/combat/group state (gearing up
+// and owning a mount matter regardless of what else the bot is doing right now, same reasoning
+// as TryMaintainBuff running independent of combat state) -- throttled internally so the actual
+// bag scan and spellbook scan only run once every PROGRESSION_CHECK_INTERVAL_MS.
+void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
+{
+    if (state.nextProgressionCheckMs > diff)
+    {
+        state.nextProgressionCheckMs -= diff;
+        return;
+    }
+    state.nextProgressionCheckMs = PROGRESSION_CHECK_INTERVAL_MS;
+
+    EnsureBotHasMount(bot);
+    TryUpgradeGearOnce(bot);
+}
 
 // Filters a learned spell down to "looks like something a player would press on an enemy
 // in combat," without knowing anything about what the spell is actually named or which of
@@ -294,6 +432,8 @@ uint32 SelectKnownSpell(Player* bot, Unit* target, bool positiveRange, bool (*pr
         if (!predicate(spellInfo))
             continue;
         if (bot->HasSpellCooldown(spellId))
+            continue;
+        if (!bot->HasItemFitToSpellRequirements(spellInfo))
             continue;
 
         // Both bounds matter for a ranged spell: SelectKnownSpell used to only check
@@ -1226,11 +1366,19 @@ Player* FindHealTarget(Player* bot)
     return best;
 }
 
-void LogCastAttempt(Player* bot, uint32 spellId, Unit* target, char const* verb)
+SpellCastResult LogCastAttempt(Player* bot, uint32 spellId, Unit* target, char const* verb)
 {
+    if (target && target != bot)
+    {
+        bot->SetInFront(target);
+        bot->SetFacingToObject(target);
+    }
     SpellCastResult result = bot->CastSpell(target, spellId, false);
     LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' {} spell {} on '{}' (result {}).",
         bot->GetName(), verb, spellId, target->GetName(), uint32(result));
+    if (result != SPELL_CAST_OK)
+        BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
+    return result;
 }
 
 // Support-only: periodically (not every tick -- a spellbook scan for something that changes
@@ -1363,6 +1511,13 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     if (role == BotRole::Tank && target->GetVictim() != bot)
         spellId = SelectTauntSpell(bot, target);
     if (!spellId)
+    {
+        uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        spellId = BotAI::SelectClassRotationSpell(bot, target, bot->getClass(), activeSpec);
+    }
+    if (!spellId)
+        spellId = BotAI::SelectReaperRotationSpell(bot, target);
+    if (!spellId)
         spellId = SelectSpell(bot, target);
 
     if (spellId)
@@ -1370,8 +1525,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         // A castable spell was found in its own valid range -- no need to close distance.
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
             bot->GetMotionMaster()->Clear();
-        LogCastAttempt(bot, spellId, target, "cast");
-        state.nextCastAllowedMs = APPROXIMATE_GCD_MS;
+        SpellCastResult result = LogCastAttempt(bot, spellId, target, "cast");
+        state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? APPROXIMATE_GCD_MS : NO_CANDIDATE_RETRY_MS;
         return;
     }
 
@@ -1442,8 +1597,8 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 
     if (uint32 spellId = SelectHealSpell(bot, healTarget))
     {
-        LogCastAttempt(bot, spellId, healTarget, "cast heal");
-        state.nextCastAllowedMs = APPROXIMATE_GCD_MS;
+        SpellCastResult result = LogCastAttempt(bot, spellId, healTarget, "cast heal");
+        state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? APPROXIMATE_GCD_MS : NO_CANDIDATE_RETRY_MS;
         return;
     }
 
@@ -1571,6 +1726,10 @@ void Update(Player* bot, uint32 diff)
         return;
     }
 
+    // Mount ownership and gear upgrades matter regardless of role/combat/group state -- same
+    // reasoning as TryMaintainBuff running independent of combat state.
+    TryMaintainProgression(bot, diff, state);
+
     // Pull is one-shot: force the engage now, then fall through to normal role logic for the
     // resulting fight (UpdateOffensive/UpdateHealer/UpdateSupport all start from
     // bot->GetVictim(), which Attack() below just set) -- nothing else needs to know a Pull
@@ -1601,6 +1760,7 @@ void Update(Player* bot, uint32 diff)
 void Forget(ObjectGuid botGuid)
 {
     states.erase(botGuid);
+    BotAI::ForgetRotationState(botGuid);
 }
 
 void SetRole(ObjectGuid botGuid, BotRole role)
