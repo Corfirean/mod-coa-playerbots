@@ -1446,6 +1446,45 @@ this doc.
 
 ## Publishing
 
-Intended to eventually go to GitHub, publicly. Nothing has been pushed yet —
-confirm with the user before any push (per this session's own standing
-rule about explicit confirmation before publishing/pushing).
+Now public: https://github.com/Corfirean/mod-coa-playerbots (2026-09-14).
+
+## Solo idle behavior (2026-09-14): grind, auto-loot, gathering done; fishing TODO
+
+Added to `BotAI.cpp` for an ungrouped bot with nothing else to do (grouped bots and manual
+Stay are unaffected) — see that file's own comments for the exact mechanics:
+- `TryGrindWhenSolo` — finds and attacks a nearby, level-appropriate hostile, anchored to one
+  spot so it doesn't wander the whole zone.
+- `TryAutoLootDeadTarget` — opens/loots a solo kill (`HandleLootOpcode` ->
+  `HandleAutostoreLootItemOpcode` -> `HandleLootReleaseOpcode`, same pattern as everywhere
+  else in this file). Without this, grinding kills just sat there unlooted.
+- `TryStartGathering`/`TryContinueGatherWalk`/`TryFinishGathering` — scans for a nearby
+  herbalism/mining node the bot's own skill can open, walks to it, casts the real gathering
+  spell (2366/2575), loots the result. **Confirmed live end-to-end** (Cultistbot, Elwynn
+  Forest: scan -> cast -> loot -> Silverleaf in inventory).
+
+**Fishing: TODO, not working yet.** `TryStartFishing`/`TryWaitForFishingCast`/
+`TryFinishFishing` are written and the cast itself succeeds cleanly (`CastSpell` returns
+`SPELL_CAST_OK`, pole auto-equips, `FindNearbyWater`'s ring-sample correctly finds real
+water — confirmed live near an actual fish-school spawn in Silverpine Forest) — but the
+resulting `GAMEOBJECT_TYPE_FISHINGNODE` bobber (entry 35591) never actually appears in the
+world afterward, checked repeatedly over a 2-second grace window with zero candidates found
+by an unfiltered nearby-bobber scan (not an ownership-mismatch, an entry-mismatch, or a
+missing-DB-template issue — all three ruled out directly: `gameobject_template` 35591 exists,
+no "not exist and not created" error in Errors.log, and the scan doesn't filter by owner
+until after confirming at least one candidate exists). Read through `Spell::EffectTransmitted`
+(`SpellEffects.cpp:5698`, the handler for effect id 50 that Fishing's `Spell.dbc` entry
+reuses to summon the bobber) and found nothing obviously wrong in the placement logic. Root
+cause not identified — next session should either add more targeted logging inside
+`EffectTransmitted` itself (does it even get called for this cast at all? what's
+`effectHandleMode` when it doesn't fire?) or compare against a real client's own fishing cast
+packet capture to see what's actually different about a bot's self-cast here.
+
+**Also found along the way, not fixed (separate, pre-existing bugs)**: several bot fights
+never end because the bot's chosen spell keeps failing a real-cast-time check
+`SelectKnownSpell`'s own pre-filters don't catch — seen as `SPELL_FAILED_UNIT_NOT_INFRONT`
+(facing) and `SPELL_FAILED_EQUIPPED_ITEM_CLASS` (wrong weapon type for that spell), repeating
+forever since nothing marks a chosen spell as "bad" after a failed cast attempt. Also: some
+classes' role auto-detection route into `UpdateHealer`, which can loop self-healing
+indefinitely if the class has an unusual passive health-cost/regen mechanic pushing it just
+under the 95% `FindHealTarget` threshold every tick. Both are real, live-confirmed bugs
+worth a dedicated look, not touched this session (out of scope for the gather/fish work).

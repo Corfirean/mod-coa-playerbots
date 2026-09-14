@@ -27,6 +27,7 @@
 
 #include "BotAI.h"
 #include "ClassSpecRoles.h"
+#include "Bag.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "Corpse.h"
@@ -37,6 +38,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
+#include "Item.h"
 #include "Log.h"
 #include "LootMgr.h"
 #include "MotionMaster.h"
@@ -49,6 +51,7 @@
 #include "Unit.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include <cmath>
 #include <unordered_map>
 
 namespace
@@ -122,6 +125,19 @@ struct BotAIState
     // node kept getting found fresh every scan, at a *different* distance each time, because the
     // bot kept being yanked back toward its grind anchor mid-walk instead of ever reaching it.
     ObjectGuid gatherWalkTargetGuid;
+
+    // See TryStartFishing/TryWaitForFishingCast/TryFinishFishing. fishingCastInProgress covers
+    // the real cast-time delay between casting Fishing and its bobber actually existing;
+    // fishingBobberGuid then covers the (much longer, variable) wait for that bobber to reach
+    // GO_READY once it does.
+    bool fishingCastInProgress = false;
+    ObjectGuid fishingBobberGuid;
+    uint32 fishingTimeoutMs = 0;
+    uint32 nextFishingScanMs = 0;
+    // Grace window (see TryWaitForFishingCast) for the bobber to actually appear after
+    // IsNonMeleeSpellCast first reports the Fishing cast as finished -- confirmed live that the
+    // two don't land the same tick.
+    uint32 fishingBobberGraceMs = 0;
 };
 
 // How long a freshly-dead bot waits, body not yet released, before giving up on a real
@@ -154,6 +170,19 @@ constexpr uint32 SPELL_HERB_GATHERING = 2366;
 constexpr uint32 SPELL_MINING = 2575;
 constexpr float GATHER_SEARCH_RADIUS = 30.0f;
 constexpr uint32 GATHER_SCAN_INTERVAL_MS = 4000;
+
+// Real WotLK Fishing (confirmed against Spell.dbc: EquippedItemClass/SubclassMask requires a
+// fishing pole, Effect 0 is a summon-object effect whose EffectMiscValue is 35591 -- the real
+// bobber GameObject template). Deliberately does not search for water the way it searches for
+// hostiles/nodes -- FindNearbyWater only samples a ring around wherever the bot already is (see
+// its own comment), so this only ever fires for a bot already standing near a lake/river, not
+// one that goes looking for the nearest water in the zone.
+constexpr uint32 SPELL_FISHING = 7620;
+constexpr uint32 FISHING_BOBBER_ENTRY = 35591;
+constexpr float FISHING_MIN_DISTANCE = 5.0f;
+constexpr float FISHING_MAX_DISTANCE = 18.0f;
+constexpr uint32 FISHING_SCAN_INTERVAL_MS = 6000;
+constexpr uint32 FISHING_BITE_TIMEOUT_MS = 40000;
 
 std::unordered_map<ObjectGuid, BotAIState> states;
 
@@ -584,6 +613,212 @@ bool TryStartGathering(Player* bot, uint32 diff, BotAIState& state)
     return true;
 }
 
+bool IsFishingPole(Item const* item)
+{
+    if (!item)
+        return false;
+    ItemTemplate const* proto = item->GetTemplate();
+    return proto && proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE;
+}
+
+// Real Fishing (7620) is gated on EquippedItemClass/SubclassMask like any weapon-restricted
+// spell -- casting it at all requires a fishing pole in the mainhand slot first. Only equips one
+// the bot already owns (bags checked, then equipped bags); doesn't acquire one from a vendor.
+// bot->SwapItem is the same real Player method WorldSession::HandleAutoEquipItemSlotOpcode
+// itself calls once it's unpacked the client's packet -- calling it directly skips synthesizing
+// a packet for a case with no other validation worth reusing.
+bool EnsureFishingPoleEquipped(Player* bot)
+{
+    if (IsFishingPole(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND)))
+        return true;
+
+    uint16 mainHandDst = uint16(EQUIPMENT_SLOT_MAINHAND) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    {
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot); IsFishingPole(item))
+        {
+            bot->SwapItem(item->GetPos(), mainHandDst);
+            return true;
+        }
+    }
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Bag* pBag = bot->GetBagByPos(bag);
+        if (!pBag)
+            continue;
+        for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+        {
+            if (Item* item = pBag->GetItemByPos(j); IsFishingPole(item))
+            {
+                bot->SwapItem(item->GetPos(), mainHandDst);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Deliberately simple compared to mod-playerbots' own FishingAction, which walks the shoreline
+// to find water anywhere nearby -- this only samples a ring of points at the real spell's own
+// casting distance around wherever the bot already is. Good enough for "already standing near a
+// lake/river" (which idle solo bots will be plenty of the time just by existing in most outdoor
+// zones), not "go seek out the nearest water in the zone."
+bool FindNearbyWater(Player* bot, float& outX, float& outY, float& outZ)
+{
+    Map* map = bot->GetMap();
+    uint32 phaseMask = bot->GetPhaseMask();
+    float bx = bot->GetPositionX(), by = bot->GetPositionY(), bz = bot->GetPositionZ();
+
+    for (float dist : {FISHING_MAX_DISTANCE, (FISHING_MIN_DISTANCE + FISHING_MAX_DISTANCE) / 2.0f, FISHING_MIN_DISTANCE})
+    {
+        for (int i = 0; i < 16; ++i)
+        {
+            float angle = (2.0f * float(M_PI) * i) / 16.0f;
+            float x = bx + dist * std::cos(angle);
+            float y = by + dist * std::sin(angle);
+
+            LiquidData liquid = map->GetLiquidData(phaseMask, x, y, bz + 2.0f, 2.0f, std::nullopt);
+            if (liquid.Status == LIQUID_MAP_NO_WATER)
+                continue;
+            if (!bot->IsWithinLOS(x, y, liquid.Level))
+                continue;
+
+            outX = x;
+            outY = y;
+            outZ = liquid.Level;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Checked every idle-solo tick while state.fishingBobberGuid is set. The bobber (spawned by
+// Fishing's own summon-object effect once the cast in TryStartFishing actually finishes) reaches
+// GO_READY once something bites -- using it then is exactly what a real player's click on it
+// does, and loots via the same open/store/release shape as everything else in this file. Gives
+// up after FISHING_BITE_TIMEOUT_MS with nothing (a real player would eventually reel in and
+// recast too, rather than wait forever).
+void TryFinishFishing(Player* bot, uint32 diff, BotAIState& state)
+{
+    GameObject* bobber = ObjectAccessor::GetGameObject(*bot, state.fishingBobberGuid);
+    if (!bobber || bobber->GetOwnerGUID() != bot->GetGUID())
+    {
+        state.fishingBobberGuid = ObjectGuid::Empty;
+        return;
+    }
+
+    if (bobber->getLootState() != GO_READY)
+    {
+        if (state.fishingTimeoutMs <= diff)
+            state.fishingBobberGuid = ObjectGuid::Empty;
+        else
+            state.fishingTimeoutMs -= diff;
+        return;
+    }
+
+    state.fishingBobberGuid = ObjectGuid::Empty;
+    bobber->Use(bot);
+
+    if (bot->GetLootGUID() != bobber->GetGUID())
+        return;
+
+    Loot& loot = bobber->loot;
+    for (uint8 slot = 0; slot < loot.items.size(); ++slot)
+    {
+        WorldPacket storePacket;
+        storePacket << slot;
+        bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
+    }
+
+    WorldPacket releasePacket;
+    releasePacket << bobber->GetGUID();
+    bot->GetSession()->HandleLootReleaseOpcode(releasePacket);
+
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' caught something fishing.", bot->GetName());
+}
+
+// Checked every idle-solo tick while state.fishingCastInProgress is set -- waits for the real,
+// skill-adjusted cast time from TryStartFishing's CastSpell to actually finish (the bobber
+// doesn't exist as a GameObject until the cast's own effect summons it, so there's nothing to
+// look for before then), then scans for it by entry+ownership rather than assuming any
+// particular guid.
+void TryWaitForFishingCast(Player* bot, uint32 diff, BotAIState& state)
+{
+    if (bot->IsNonMeleeSpellCast(false))
+        return; // still casting -- check again next tick
+
+    std::list<GameObject*> nearby;
+    Acore::AllGameObjectsWithEntryInRange check(bot, FISHING_BOBBER_ENTRY, FISHING_MAX_DISTANCE + 5.0f);
+    Acore::GameObjectListSearcher<Acore::AllGameObjectsWithEntryInRange> searcher(bot, nearby, check);
+    Cell::VisitObjects(bot, searcher, FISHING_MAX_DISTANCE + 5.0f);
+
+    LOG_INFO("module.coa-playerbots", "BotAI DEBUG: bot '{}' bobber search found {} candidate(s), botGuid={}.",
+        bot->GetName(), nearby.size(), bot->GetGUID().ToString());
+    for (GameObject* go : nearby)
+        LOG_INFO("module.coa-playerbots", "BotAI DEBUG:   candidate owner={} state={} spawned={}.",
+            go->GetOwnerGUID().ToString(), uint32(go->getLootState()), go->isSpawned());
+
+    for (GameObject* go : nearby)
+    {
+        if (go->GetOwnerGUID() == bot->GetGUID())
+        {
+            state.fishingCastInProgress = false;
+            state.fishingBobberGuid = go->GetGUID();
+            state.fishingTimeoutMs = FISHING_BITE_TIMEOUT_MS;
+            return;
+        }
+    }
+
+    // Not found yet -- IsNonMeleeSpellCast(false) going false and the summon-object effect that
+    // actually creates the bobber GameObject don't land on the same tick (confirmed live: every
+    // attempt failed here on the very first check). Keep checking for a couple of seconds before
+    // concluding the cast genuinely failed after CastSpell's own initial OK (interrupted, moved,
+    // whatever) rather than giving up on the first miss.
+    constexpr uint32 BOBBER_APPEAR_GRACE_MS = 2000;
+    if (state.fishingBobberGraceMs == 0)
+        state.fishingBobberGraceMs = BOBBER_APPEAR_GRACE_MS;
+    else if (state.fishingBobberGraceMs <= diff)
+    {
+        state.fishingCastInProgress = false;
+        state.fishingBobberGraceMs = 0;
+    }
+    else
+        state.fishingBobberGraceMs -= diff;
+}
+
+// Called from the idle-solo routine, only when nothing else (gathering, an in-progress fishing
+// cast or bite-wait) is already claiming this tick. Only ever fires for a bot already near open
+// water (see FindNearbyWater) with a fishing pole somewhere in its own bags -- faces the water
+// and casts the real spell exactly like a player's own cast would, then hands off to
+// TryWaitForFishingCast for the rest.
+bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
+{
+    if (state.nextFishingScanMs > diff)
+    {
+        state.nextFishingScanMs -= diff;
+        return false;
+    }
+    state.nextFishingScanMs = FISHING_SCAN_INTERVAL_MS;
+
+    float waterX = 0.0f, waterY = 0.0f, waterZ = 0.0f;
+    if (!FindNearbyWater(bot, waterX, waterY, waterZ))
+        return false;
+
+    if (!EnsureFishingPoleEquipped(bot))
+        return false;
+
+    bot->SetOrientation(bot->GetAngle(waterX, waterY));
+
+    SpellCastResult result = bot->CastSpell(bot, SPELL_FISHING, false);
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' cast Fishing (result {}).", bot->GetName(), uint32(result));
+    if (result != SPELL_CAST_OK)
+        return false;
+
+    state.fishingCastInProgress = true;
+    return true;
+}
+
 // Stops whatever follow motion is already running -- needed because a FOLLOW_MOTION_TYPE
 // generator, once started, keeps chasing its target on its own every tick until something
 // explicitly clears it. Simply skipping a *new* MoveFollow call (what this function used to
@@ -748,17 +983,23 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
             // above already reduces to a no-op for that case (nothing to clear), so this is
             // purely additive: give a solo bot something of its own to do instead of standing
             // wherever it was spawned forever. Stay still means "don't go looking for a fight,"
-            // same as it already means for inheriting a leader's target above. Gathering takes
-            // priority over grinding (a real player would rather peacefully pick an herb than
-            // start a fight) -- an in-progress cast or walk is continued first; otherwise a scan
-            // for a new node runs before falling back to looking for something to kill.
+            // same as it already means for inheriting a leader's target above. Peaceful
+            // activities take priority over grinding (a real player would rather gather/fish
+            // than start a fight) -- an in-progress one is always continued/finished first;
+            // otherwise a fresh scan for something to do runs (gathering before fishing, simply
+            // because that check was written first -- neither is inherently more "important")
+            // before falling back to looking for something to kill.
             if (!bot->GetGroup() && state.manualCommand != BotManualCommand::Stay)
             {
                 if (!state.gatherTargetGuid.IsEmpty())
                     TryFinishGathering(bot, state);
                 else if (!state.gatherWalkTargetGuid.IsEmpty())
                     TryContinueGatherWalk(bot, state);
-                else if (!TryStartGathering(bot, diff, state))
+                else if (!state.fishingBobberGuid.IsEmpty())
+                    TryFinishFishing(bot, diff, state);
+                else if (state.fishingCastInProgress)
+                    TryWaitForFishingCast(bot, diff, state);
+                else if (!TryStartGathering(bot, diff, state) && !TryStartFishing(bot, diff, state))
                     TryGrindWhenSolo(bot, diff, state);
             }
         }
