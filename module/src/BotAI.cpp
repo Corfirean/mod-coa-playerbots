@@ -55,6 +55,7 @@
 #include "WorldSession.h"
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace
 {
@@ -146,6 +147,12 @@ struct BotAIState
     // cast time), so the walk is the only phase that can span more than one tick.
     ObjectGuid questWalkTargetGuid;
     uint32 nextQuestScanMs = 0;
+
+    // See TryStartQuesting/TryContinueQuestObjectiveWalk. Separate from questWalkTargetGuid
+    // (which is always a quest-giver Creature, processed via ProcessQuestGiver) because arriving
+    // at a quest *objective* GameObject instead calls its own real Use() -- same "dedicated walk
+    // guid per distinct arrival action" shape as gatherWalkTargetGuid vs. the grind anchor.
+    ObjectGuid questObjectiveWalkTargetGuid;
 };
 
 // How long a freshly-dead bot waits, body not yet released, before giving up on a real
@@ -322,16 +329,60 @@ uint32 SelectHealSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot,
 // so the range check in SelectKnownSpell trivially passes regardless of maxRange.
 uint32 SelectBuffSpell(Player* bot) { return SelectKnownSpell(bot, bot, true, IsUsableBuffSpell); }
 
+// Reads this bot's own quest log (Player::GetQuestSlotQuestId/GetQuestSlotCounter -- the same
+// real quest-log data a client's own quest log window reads, not a synthetic re-derivation) to
+// find which specific creatures and GameObjects still owe this bot kill/use credit toward an
+// active quest (Quest::RequiredNpcOrGo: positive is a creature entry, negative is a GameObject
+// entry -- QuestDef.h). Used to bias grind target selection toward creatures a quest actually
+// wants dead (see GrindHostileUnitCheck/TryGrindWhenSolo) and to find quest objects worth
+// walking to and using (see QuestObjectiveGoCheck/TryStartQuesting). Without this, a solo bot's
+// grind only ever kills whatever's nearest, so kill/collect quests only progress by luck when
+// the right creature happens to wander by -- kill/loot credit itself already fires for free via
+// the normal engine paths (Unit::Kill -> RewardPlayerAndGroupAtKill -> KilledMonsterCredit, and
+// Player::StoreItem's own ItemAddedQuestCheck) the instant a bot lands the real kill or loot,
+// same as any other player; the only missing piece was ever choosing the right target.
+void CollectQuestObjectiveEntries(Player* bot, std::unordered_set<uint32>& wantedCreatures, std::unordered_set<uint32>& wantedGameObjects)
+{
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 questId = bot->GetQuestSlotQuestId(slot);
+        if (!questId || bot->GetQuestStatus(questId) != QUEST_STATUS_INCOMPLETE)
+            continue;
+
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest)
+            continue;
+
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        {
+            int32 entry = quest->RequiredNpcOrGo[i];
+            if (!entry || bot->GetQuestSlotCounter(slot, i) >= quest->RequiredNpcOrGoCount[i])
+                continue; // no such objective slot, or already satisfied
+
+            if (entry > 0)
+                wantedCreatures.insert(uint32(entry));
+            else
+                wantedGameObjects.insert(uint32(-entry));
+        }
+    }
+}
+
 // Same shrinking-radius nearest-hostile shape as BotMgr::AttackNearestHostile's own
 // NearestHostileUnitInObjectRangeCheck, plus a level cap that check doesn't need: a directed
 // `.botcmd attack` trusts whatever the caller aimed it at, but a bot picking its own fights
 // while nobody's around to notice it dying must not pick something far above its own level.
+// Optionally restricted to a specific set of creature entries (see CollectQuestObjectiveEntries)
+// -- TryGrindWhenSolo runs this twice, once with the bot's own wanted-kill entries to prefer a
+// quest target over a random one, then again unrestricted as the normal fallback.
 class GrindHostileUnitCheck
 {
 public:
-    GrindHostileUnitCheck(Unit const* me, float range, uint32 maxLevel) : _me(me), _range(range), _maxLevel(maxLevel) { }
+    GrindHostileUnitCheck(Unit const* me, float range, uint32 maxLevel, std::unordered_set<uint32> const* requiredEntries = nullptr)
+        : _me(me), _range(range), _maxLevel(maxLevel), _requiredEntries(requiredEntries) { }
     bool operator()(Unit* u)
     {
+        if (_requiredEntries && !_requiredEntries->count(u->GetEntry()))
+            return false;
         if (!_me->IsWithinDistInMap(u, _range, true, false, false))
             return false;
         if (!_me->IsValidAttackTarget(u))
@@ -346,6 +397,7 @@ private:
     Unit const* _me;
     float _range;
     uint32 _maxLevel;
+    std::unordered_set<uint32> const* _requiredEntries;
 };
 
 // Real "open, take everything, release" loot flow for a bot's own solo kill -- same
@@ -439,9 +491,25 @@ void TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
     state.nextGrindScanMs = GRIND_SCAN_INTERVAL_MS;
 
     Unit* target = nullptr;
-    GrindHostileUnitCheck check(bot, GRIND_SEARCH_RADIUS, bot->GetLevel() + GRIND_MAX_LEVEL_ABOVE);
-    Acore::UnitLastSearcher<GrindHostileUnitCheck> searcher(bot, target, check);
-    Cell::VisitObjects(bot, searcher, GRIND_SEARCH_RADIUS);
+
+    // Prefer a creature an active quest actually wants dead over a random one, when there's a
+    // choice -- see CollectQuestObjectiveEntries's own comment for why this is the only piece
+    // missing for kill/collect quests to progress on their own.
+    std::unordered_set<uint32> wantedCreatures, wantedGameObjects;
+    CollectQuestObjectiveEntries(bot, wantedCreatures, wantedGameObjects);
+    if (!wantedCreatures.empty())
+    {
+        GrindHostileUnitCheck questCheck(bot, GRIND_SEARCH_RADIUS, bot->GetLevel() + GRIND_MAX_LEVEL_ABOVE, &wantedCreatures);
+        Acore::UnitLastSearcher<GrindHostileUnitCheck> questSearcher(bot, target, questCheck);
+        Cell::VisitObjects(bot, questSearcher, GRIND_SEARCH_RADIUS);
+    }
+
+    if (!target)
+    {
+        GrindHostileUnitCheck check(bot, GRIND_SEARCH_RADIUS, bot->GetLevel() + GRIND_MAX_LEVEL_ABOVE);
+        Acore::UnitLastSearcher<GrindHostileUnitCheck> searcher(bot, target, check);
+        Cell::VisitObjects(bot, searcher, GRIND_SEARCH_RADIUS);
+    }
 
     if (target)
         bot->Attack(target, true);
@@ -868,6 +936,42 @@ private:
     float _range;
 };
 
+// Same shrinking-radius shape as GatherableNodeCheck, but for an in-world GameObject an active
+// quest still wants used (see CollectQuestObjectiveEntries) -- deliberately restricted to
+// GAMEOBJECT_TYPE_GOOBER, the real WotLK "click this lever/mechanism/pile of goo" quest-object
+// shape: GameObject::Use's own GOOBER case (GameObject.cpp) already calls
+// player->KillCreditGO(...) itself once used, exactly like a real client's right-click, so
+// nothing beyond calling the real Use() is needed for this type. GAMEOBJECT_TYPE_CHEST quest
+// objectives (a lootable box, not a "use" trigger) are deliberately NOT matched here --
+// GameObject::Use() has no case for CHEST at all (confirmed reading its switch in
+// GameObject.cpp: it falls to `default:` and silently does nothing), so pathing a bot up to one
+// would just get it stuck retrying forever with nothing to show for it. Those, plus every other
+// objective shape this file doesn't attempt (escort, explore, dialogue), fall back to the
+// `.quest complete`/`.quest reward` GM commands (both already RA-console accessible) as the
+// deliberate manual escape hatch for a bot that can't make progress any other way.
+class QuestObjectiveGoCheck
+{
+public:
+    QuestObjectiveGoCheck(Player const* bot, float range, std::unordered_set<uint32> const& wantedEntries)
+        : _bot(bot), _range(range), _wantedEntries(wantedEntries) { }
+
+    bool operator()(GameObject* go)
+    {
+        if (go->GetGoType() != GAMEOBJECT_TYPE_GOOBER || !_wantedEntries.count(go->GetEntry()))
+            return false;
+        if (!go->isSpawned() || !_bot->IsWithinDistInMap(go, _range))
+            return false;
+
+        _range = _bot->GetDistance(go); // shrink the search radius to the closest hit so far
+        return true;
+    }
+
+private:
+    Player const* _bot;
+    float _range;
+    std::unordered_set<uint32> const& _wantedEntries;
+};
+
 // No attempt at "best" reward scoring here (mod-playerbots' own StatsWeightCalculator does that
 // properly) -- a solo bot with nobody to ask just takes the first choice. Deliberately the
 // simplest thing that unblocks turning the quest in at all, not an optimal pick.
@@ -951,10 +1055,38 @@ void TryContinueQuestWalk(Player* bot, BotAIState& state)
         ProcessQuestGiver(bot, validated);
 }
 
+// Checked every idle-solo tick while state.questObjectiveWalkTargetGuid is set -- mirrors
+// TryContinueGatherWalk/TryContinueQuestWalk exactly (see gatherWalkTargetGuid's own comment for
+// why a dedicated walk-tracking guid, not the grind anchor's own POINT_MOTION_TYPE, is
+// required). Once in range, calls the object's own real Use() -- see QuestObjectiveGoCheck's
+// comment for why this alone is enough for a GOOBER-type quest object.
+void TryContinueQuestObjectiveWalk(Player* bot, BotAIState& state)
+{
+    GameObject* go = ObjectAccessor::GetGameObject(*bot, state.questObjectiveWalkTargetGuid);
+    if (!go || !go->isSpawned())
+    {
+        state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
+        return;
+    }
+
+    if (bot->GetDistance(go) > INTERACTION_DISTANCE)
+        return; // still walking
+
+    state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
+
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        bot->GetMotionMaster()->Clear();
+
+    go->Use(bot);
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' used quest object (entry {}).", bot->GetName(), go->GetEntry());
+}
+
 // Called from the idle-solo routine, only when no gather/fish activity is already claiming this
 // tick and no quest walk is already underway. Scans for a nearby quest giver with something for
-// this bot and either processes it immediately (already in range) or walks to it first --
-// exactly the same "scan, walk if needed, act" shape as gathering.
+// this bot and either processes it immediately (already in range) or walks to it first -- and if
+// no quest giver has anything right now, falls back to looking for an in-world quest object an
+// active quest still wants used (see QuestObjectiveGoCheck) -- exactly the same "scan, walk if
+// needed, act" shape as gathering, just with two possible kinds of target.
 bool TryStartQuesting(Player* bot, uint32 diff, BotAIState& state)
 {
     if (state.nextQuestScanMs > diff)
@@ -965,26 +1097,56 @@ bool TryStartQuesting(Player* bot, uint32 diff, BotAIState& state)
     state.nextQuestScanMs = QUEST_SCAN_INTERVAL_MS;
 
     Creature* npc = nullptr;
-    QuestGiverCheck check(bot, QUEST_SEARCH_RADIUS);
-    Acore::CreatureLastSearcher<QuestGiverCheck> searcher(bot, npc, check);
-    Cell::VisitObjects(bot, searcher, QUEST_SEARCH_RADIUS);
+    QuestGiverCheck giverCheck(bot, QUEST_SEARCH_RADIUS);
+    Acore::CreatureLastSearcher<QuestGiverCheck> giverSearcher(bot, npc, giverCheck);
+    Cell::VisitObjects(bot, giverSearcher, QUEST_SEARCH_RADIUS);
 
-    if (!npc)
+    if (npc)
+    {
+        if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
+        {
+            state.questWalkTargetGuid = npc->GetGUID();
+            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+                bot->GetMotionMaster()->MovePoint(0, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ());
+            return true;
+        }
+
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            bot->GetMotionMaster()->Clear();
+
+        if (Creature* validated = bot->GetNPCIfCanInteractWith(npc->GetGUID(), UNIT_NPC_FLAG_QUESTGIVER))
+            ProcessQuestGiver(bot, validated);
+        return true;
+    }
+
+    // Nothing for a quest giver to do right now -- see if an active quest still needs an
+    // in-world object used instead.
+    std::unordered_set<uint32> wantedCreatures, wantedGameObjects;
+    CollectQuestObjectiveEntries(bot, wantedCreatures, wantedGameObjects);
+    if (wantedGameObjects.empty())
         return false;
 
-    if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
+    GameObject* go = nullptr;
+    QuestObjectiveGoCheck objectiveCheck(bot, QUEST_SEARCH_RADIUS, wantedGameObjects);
+    Acore::GameObjectLastSearcher<QuestObjectiveGoCheck> objectiveSearcher(bot, go, objectiveCheck);
+    Cell::VisitObjects(bot, objectiveSearcher, QUEST_SEARCH_RADIUS);
+
+    if (!go)
+        return false;
+
+    if (bot->GetDistance(go) > INTERACTION_DISTANCE)
     {
-        state.questWalkTargetGuid = npc->GetGUID();
+        state.questObjectiveWalkTargetGuid = go->GetGUID();
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
-            bot->GetMotionMaster()->MovePoint(0, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ());
+            bot->GetMotionMaster()->MovePoint(0, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
         return true;
     }
 
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
         bot->GetMotionMaster()->Clear();
 
-    if (Creature* validated = bot->GetNPCIfCanInteractWith(npc->GetGUID(), UNIT_NPC_FLAG_QUESTGIVER))
-        ProcessQuestGiver(bot, validated);
+    go->Use(bot);
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' used quest object (entry {}).", bot->GetName(), go->GetEntry());
     return true;
 }
 
@@ -1170,6 +1332,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
                     TryWaitForFishingCast(bot, diff, state);
                 else if (!state.questWalkTargetGuid.IsEmpty())
                     TryContinueQuestWalk(bot, state);
+                else if (!state.questObjectiveWalkTargetGuid.IsEmpty())
+                    TryContinueQuestObjectiveWalk(bot, state);
                 else if (!TryStartQuesting(bot, diff, state) && !TryStartGathering(bot, diff, state) && !TryStartFishing(bot, diff, state))
                     TryGrindWhenSolo(bot, diff, state);
             }

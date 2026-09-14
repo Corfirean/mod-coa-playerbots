@@ -1488,3 +1488,48 @@ classes' role auto-detection route into `UpdateHealer`, which can loop self-heal
 indefinitely if the class has an unusual passive health-cost/regen mechanic pushing it just
 under the 95% `FindHealTarget` threshold every tick. Both are real, live-confirmed bugs
 worth a dedicated look, not touched this session (out of scope for the gather/fish work).
+
+## Quest-aware targeting (2026-09-14): kill/collect quests seek their target, GOOBER-use quests too
+
+Quests only ever progressed by luck before this: kill/collect credit already fires for free
+through the normal engine path the instant a bot lands a real kill or loots a real item
+(`Unit::Kill` -> `Player::RewardPlayerAndGroupAtKill` -> `KilledMonsterCredit`;
+`Player::StoreItem`'s own `ItemAddedQuestCheck`) — a bot is a real `Player`, so it gets this
+automatically, no special code needed — but `TryGrindWhenSolo` picked the nearest hostile
+with zero regard for what any active quest actually wanted dead, so a kill quest only
+advanced if the right creature happened to wander into range on its own.
+
+- `CollectQuestObjectiveEntries` reads the bot's own quest log the same way a client's own
+  quest log window would (`Player::GetQuestSlotQuestId`/`GetQuestSlotCounter` against each
+  active quest's `RequiredNpcOrGo`/`RequiredNpcOrGoCount`, `QuestDef.h`) and returns which
+  creature entries (positive) and GameObject entries (negative, per `RequiredNpcOrGo`'s own
+  sign convention) still owe this bot credit.
+- `TryGrindWhenSolo` now runs `GrindHostileUnitCheck` once restricted to those wanted creature
+  entries first, falling back to the old unrestricted nearest-hostile search only if no wanted
+  target is in range. **Confirmed live**: Xorothbot (GM mode, level 80) placed in the mixed
+  Frostmane Troll Whelp / Small Crag Boar / Burly Rockjaw Trogg cluster near Grelin Whitebeard
+  (Dun Morogh, ~-6356,778) with quest 182 ("The Troll Cave," kill 10x entry 706 Frostmane Troll
+  Whelp) active — every single engagement in the resulting `Server.log` targeted the Whelp,
+  never the physically closer Boar (~6-7yd away vs. the Whelp's ~15-20yd), confirming the
+  quest-priority pass actually overrides plain nearest-first selection. (Xorothbot's own
+  pre-existing `SPELL_FAILED_EQUIPPED_ITEM_CLASS` spell-selection bug, noted above, meant no
+  kill actually landed in this particular test run since he never falls through to a melee
+  swing — that's the already-documented, unrelated bug Gemini's per-class rotation task is
+  meant to fix, not a problem with the targeting logic itself.)
+- `TryStartQuesting` now also looks for a nearby `GAMEOBJECT_TYPE_GOOBER` GameObject any active
+  quest wants used (same wanted-entries set, `QuestObjectiveGoCheck`), walks to it like a
+  gathering node, and calls its real `Use(bot)` — `GameObject::Use`'s own GOOBER case already
+  calls `player->KillCreditGO(...)` itself (`GameObject.cpp`), exactly like a real client's
+  right-click, so nothing beyond calling the real method was needed. Verified by reading
+  `GameObject::Use`'s switch directly, not live-tested this session (no GOOBER-type quest
+  object was found near any available test character/zone in the time available) — same
+  "real engine call, not synthesized" shape as everything else in this file, so this carries
+  the same confidence as the gathering code it structurally mirrors, just without its own live
+  confirmation yet.
+- Deliberately NOT matched: `GAMEOBJECT_TYPE_CHEST` quest objectives (a lootable box, not a
+  "use" trigger) — `GameObject::Use()` has no case for `CHEST` at all (falls to `default:`,
+  does nothing), so pathing a bot up to one would just strand it retrying forever. Those, plus
+  every quest shape this file still doesn't attempt (escort, explore, dialogue chains, PvP),
+  fall back to the core's own `.quest complete`/`.quest reward` GM commands (both already
+  RA-console accessible, `Console::Yes`, and take an optional player-name target) as the
+  deliberate manual escape hatch for a bot that can't make progress any other way.
