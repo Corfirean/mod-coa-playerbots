@@ -125,7 +125,38 @@ per test session.
 
 ## Next milestones (not done yet)
 
-Loot-roll participation, guild support, gearing/talents, auto-accept-on-invite (still
-manual via `.botcmd acceptinvite`), bot character creation from scratch (still reusing
-existing test characters), a real dedicated bot account, any AI/rotation logic. See
-`AGENTS.md` for the full-parity scope this is incrementally building toward.
+Guild support, gearing/talents, bot character creation from scratch (still reusing
+existing test characters), any AI/rotation logic. See `AGENTS.md` for the full-parity
+scope this is incrementally building toward.
+
+## Dedicated bot account question — settled 2026-09-12, no new account needed
+
+Tested whether multiple bots need separate accounts from each other (not just from the
+human's own account): spawned `Shaniel` (guid 2) and `Necrotest` (guid 6) simultaneously,
+both already on account `ADMIN` (id 2) — both came up healthy (`Phase: 1`, no GM-mode
+artifact), confirmed via `.pinfo` on both while the server also reported "Characters in
+world: 2". **Multiple bots can safely share one account at the same time** — the
+account-collision bug documented above was specifically about a bot sharing identity with
+a session the *human* is actively using that session, not about bots sharing an account
+with each other. `ADMIN` (account 2) already holds 8 idle test characters across a decent
+class spread (see `docs/research/ascension-class-status.md`'s caveat: names don't reliably
+match actual class/testing status, e.g. `Stormtest` is actually class 28 Tinker, not
+Stormbringer — verify by querying `characters.class` before trusting a name) and works
+fine as a shared bot pool as-is. No new account was created. Genuine from-scratch
+character creation (via a synthesized `CMSG_CHAR_CREATE` packet through
+`HandleCharCreateOpcode`, the same "call the real handler" pattern used elsewhere in this
+module) is still not implemented — deferred, since the existing idle characters already
+cover enough classes for near-term AI work; picking it up only becomes necessary once a
+class with no existing test character needs a bot.
+
+## RA console tooling note
+
+`tools/ra_client.py` (raw sockets, not `telnetlib` — removed in the bundled Python 3.14)
+now lives in this repo instead of being rewritten ad hoc per session. Observed: rapid
+successive RA connections intermittently get "Authentication failed" with correct
+credentials — `RASession::CheckAccessLevel`/`CheckPassword` (`RASession.cpp`) have no
+lockout/backoff logic at all, so this isn't a documented rate limit, just an observed
+flakiness pattern (recovers within a few seconds to ~20s). The script retries with backoff
+rather than failing outright; if this starts actually blocking work, it's worth reading
+`RASession::Start()`'s connection-negotiation handling more closely rather than continuing
+to paper over it with retries.

@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: CoA Bot Control Panel
+## Notes: Floating companion bot control panel for Conquest of Azeroth
+## Author: CoABots Team
+## Version: 1.0.0
+## SavedVariables: CoABotUIDB
+
+CoABotUI.lua
