@@ -188,6 +188,20 @@ private:
     // confirmed this bot has a pending, not-yet-answered vote on this roll.
     void DoRollGreed(WorldSession* session, Roll* roll);
 
+    // Checked alongside the heartbeat (every 10s): if every currently active bot session is
+    // already at the level cap, logs a one-time (edge-triggered) notice that there's no lower-
+    // level companion left in the active roster to send out leveling in the world.
+    // Deliberately does NOT pick a character and auto-spawn it: unlike everything else in this
+    // file, "which characters count as part of our companion roster" isn't something SpawnBot's
+    // own account-agnostic design tracks anywhere (there's no roster/pool concept at all -- any
+    // guid on any account works), so silently guessing at that pool risks pulling in a character
+    // nobody meant to include, and creating a brand new one outright is against this project's
+    // own standing rule of never creating characters without being asked. See AGENTS.md's open
+    // question on this for what a real answer needs (an explicit config-listed twink pool, at
+    // minimum) before this can safely go further than a notice.
+    void CheckAllBotsMaxLevel();
+    bool _allBotsMaxLevelNotified = false;
+
     std::vector<WorldSession*> _botSessions;
     std::vector<WorldSession*> _pendingTeleportAck;
     uint32 _heartbeatTimer = 0;

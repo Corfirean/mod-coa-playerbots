@@ -782,4 +782,43 @@ void BotMgr::Update(uint32 diff)
             session->GetAccountId(),
             bot ? (bot->IsInWorld() ? "in world" : "player exists, not in world") : "no player yet (login pending)");
     }
+
+    CheckAllBotsMaxLevel();
+}
+
+void BotMgr::CheckAllBotsMaxLevel()
+{
+    uint8 maxLevel = uint8(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL));
+
+    bool anyBot = false;
+    bool allMax = true;
+    for (WorldSession* session : _botSessions)
+    {
+        Player* bot = session->GetPlayer();
+        if (!bot || !bot->IsInWorld())
+            continue;
+        anyBot = true;
+        if (bot->GetLevel() < maxLevel)
+        {
+            allMax = false;
+            break;
+        }
+    }
+
+    if (!anyBot || !allMax)
+    {
+        _allBotsMaxLevelNotified = false; // re-arm: a fresh notice is warranted next time this becomes true
+        return;
+    }
+
+    if (_allBotsMaxLevelNotified)
+        return;
+    _allBotsMaxLevelNotified = true;
+
+    LOG_INFO("module.coa-playerbots",
+        "BotMgr: every active bot companion is already level {} -- no lower-level one left in the "
+        "active roster to keep leveling. Spawning a fresh 'twink' isn't automated (no config-listed "
+        "twink pool exists yet, and this project never creates characters without being asked) -- "
+        "spawn an existing lower-level character yourself with `.botcmd spawnbot <guid>` if you want "
+        "someone leveling in the world again.", uint32(maxLevel));
 }
