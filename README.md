@@ -3,8 +3,11 @@
 AI companion bots that can play [Conquest of AzerothCore](https://github.com/jealous-sound/azerothcore-wotlk-coa)'s
 custom Ascension classes, for solo play.
 
-**Status: research/planning. No code yet.** See `docs/` for what's been
-figured out so far and why.
+**Status: working, in active development.** `module/` has a real playerbot
+module (login, grouping, combat AI, talent/spec management) running on a live
+CoA server, plus `addon/CoABotUI` — a client-side addon for controlling bots
+in-game. See `module/README.md` for what's been built and confirmed working,
+and `docs/` for the research this was built on.
 
 ## Why this exists
 
