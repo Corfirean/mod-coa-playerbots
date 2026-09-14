@@ -27,12 +27,21 @@
 
 #include "BotAI.h"
 #include "ClassSpecRoles.h"
+#include "CellImpl.h"
 #include "Chat.h"
 #include "Corpse.h"
+#include "Creature.h"
+#include "DBCStores.h"
+#include "DBCStructure.h"
+#include "GameObject.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "Log.h"
+#include "LootMgr.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
+#include "ObjectDefines.h"
 #include "PetDefines.h"
 #include "Player.h"
 #include "SpellInfo.h"
@@ -82,6 +91,37 @@ struct BotAIState
 
     // See BotAI::SetSuspended's comment in BotAI.h.
     bool suspended = false;
+
+    // See TryGrindWhenSolo -- the point an ungrouped bot wanders back to once it's fought its
+    // way too far away, so a solo bot roughly stays in one area instead of drifting across the
+    // whole zone one grind-chase at a time. Set the first time this bot is ever seen idle and
+    // ungrouped; re-set if a map change (teleport/summon) makes the old one meaningless.
+    bool hasGrindAnchor = false;
+    uint32 grindAnchorMapId = 0;
+    float grindAnchorX = 0.0f, grindAnchorY = 0.0f, grindAnchorZ = 0.0f;
+    uint32 nextGrindScanMs = 0;
+
+    // The most recent Unit this bot had as Unit::GetVictim(), remembered across the single tick
+    // where that stops being true (killed, fled out of range, whatever) so TryAutoLootDeadTarget
+    // has something to check -- by the time a tick sees GetVictim()==null, the fight is already
+    // over and there's no other way to ask "what was I just fighting."
+    ObjectGuid lastCombatTargetGuid;
+
+    // See TryStartGathering/TryFinishGathering. Set once a gathering cast is actually underway;
+    // empty means "not currently gathering anything."
+    ObjectGuid gatherTargetGuid;
+    uint32 nextGatherScanMs = 0;
+
+    // Set by TryStartGathering while walking toward a node found by an earlier scan, cleared
+    // once in range (see TryContinueGatherWalk). Deliberately separate from gatherTargetGuid
+    // (the casting phase) and checked before ever falling through to TryGrindWhenSolo -- without
+    // that separation, TryGrindWhenSolo's own "clear a stray POINT_MOTION_TYPE once back near my
+    // anchor" cleanup fired on the *gather* walk instead (both reuse the same generic
+    // POINT_MOTION_TYPE, and the gather scan's own 4-second throttle meant grinding ran on the
+    // in-between ticks), cancelling the walk before the bot ever arrived -- confirmed live: the
+    // node kept getting found fresh every scan, at a *different* distance each time, because the
+    // bot kept being yanked back toward its grind anchor mid-walk instead of ever reaching it.
+    ObjectGuid gatherWalkTargetGuid;
 };
 
 // How long a freshly-dead bot waits, body not yet released, before giving up on a real
@@ -94,6 +134,26 @@ constexpr uint32 DEATH_REZ_GRACE_MS = 15000;
 // Ascension buffs of this shape run tens of minutes; checking every 15s is cheap and still
 // reapplies promptly after a dispel/death/relog without scanning the spellbook every tick.
 constexpr uint32 BUFF_CHECK_INTERVAL_MS = 15000;
+
+// A grouped bot has a leader to fight alongside or follow; an ungrouped one has neither, and
+// without this would just stand exactly where it was spawned forever. These four constants
+// govern that solo behavior -- see TryGrindWhenSolo.
+constexpr float GRIND_SEARCH_RADIUS = 30.0f;         // matches BotMgr::AttackNearestHostile's default
+constexpr float GRIND_LEASH_RADIUS = 40.0f;          // don't drift farther than this from the anchor
+constexpr uint32 GRIND_SCAN_INTERVAL_MS = 3000;      // idle behavior -- no need to grid-scan every tick
+constexpr uint32 GRIND_MAX_LEVEL_ABOVE = 3;          // skip mobs this far above the bot's own level
+
+// Herbalism/Mining nodes only, for this increment -- LOCKTYPE_PICKLOCK, LOCKTYPE_FISHING and
+// LOCKTYPE_INSCRIPTION (SkillByLockType's other three mappings) are separate features
+// (lockboxes, fishing's own water-finding geometry, and inscription's milling minigame
+// respectively), not what "gathering" means here. These are the real WotLK gathering spell
+// ids (confirmed against the client's own Spell.dbc: both have SPELL_EFFECT_OPEN_LOCK with
+// EffectMiscValue 2/3 matching LOCKTYPE_HERBALISM/LOCKTYPE_MINING) -- casting one at a node is
+// exactly what a real player's right-click on it does.
+constexpr uint32 SPELL_HERB_GATHERING = 2366;
+constexpr uint32 SPELL_MINING = 2575;
+constexpr float GATHER_SEARCH_RADIUS = 30.0f;
+constexpr uint32 GATHER_SCAN_INTERVAL_MS = 4000;
 
 std::unordered_map<ObjectGuid, BotAIState> states;
 
@@ -221,6 +281,308 @@ uint32 SelectHealSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot,
 // Self-targeted (the party/raid-area effect propagates from there) -- distance is always 0,
 // so the range check in SelectKnownSpell trivially passes regardless of maxRange.
 uint32 SelectBuffSpell(Player* bot) { return SelectKnownSpell(bot, bot, true, IsUsableBuffSpell); }
+
+// Same shrinking-radius nearest-hostile shape as BotMgr::AttackNearestHostile's own
+// NearestHostileUnitInObjectRangeCheck, plus a level cap that check doesn't need: a directed
+// `.botcmd attack` trusts whatever the caller aimed it at, but a bot picking its own fights
+// while nobody's around to notice it dying must not pick something far above its own level.
+class GrindHostileUnitCheck
+{
+public:
+    GrindHostileUnitCheck(Unit const* me, float range, uint32 maxLevel) : _me(me), _range(range), _maxLevel(maxLevel) { }
+    bool operator()(Unit* u)
+    {
+        if (!_me->IsWithinDistInMap(u, _range, true, false, false))
+            return false;
+        if (!_me->IsValidAttackTarget(u))
+            return false;
+        if (u->GetLevel() > _maxLevel)
+            return false;
+        _range = _me->GetDistance(u); // shrink the search radius to the closest hit so far
+        return true;
+    }
+
+private:
+    Unit const* _me;
+    float _range;
+    uint32 _maxLevel;
+};
+
+// Real "open, take everything, release" loot flow for a bot's own solo kill -- same
+// "synthesize the packet, call the real handler" pattern already used elsewhere in this module
+// (group-accept, corpse-reclaim, loot-roll). Without this, a solo bot's kills (from
+// TryGrindWhenSolo or anything else) would die and just sit there unlooted forever, since
+// nothing else in this module ever opens a loot window at all.
+//
+// Deliberately solo-only: a grouped kill's loot follows the group's loot method (round-robin,
+// master loot, need/greed) -- BotMgr::DoRollGreed already handles the one piece of that this
+// module deals with (rare-item rolls); normal group kill loot is a separate, unimplemented
+// question this doesn't attempt to answer.
+void TryAutoLootDeadTarget(Player* bot, BotAIState& state)
+{
+    ObjectGuid targetGuid = state.lastCombatTargetGuid;
+    state.lastCombatTargetGuid = ObjectGuid::Empty; // one-shot regardless of outcome below
+
+    if (targetGuid.IsEmpty() || bot->GetGroup())
+        return;
+
+    Creature* creature = ObjectAccessor::GetCreature(*bot, targetGuid);
+    if (!creature || creature->IsAlive() || !creature->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
+        return;
+    if (creature->loot.isLooted() || creature->GetLootRecipientGUID() != bot->GetGUID())
+        return;
+
+    WorldPacket openPacket;
+    openPacket << creature->GetGUID();
+    bot->GetSession()->HandleLootOpcode(openPacket);
+
+    if (bot->GetLootGUID() != creature->GetGUID())
+        return; // handler declined to open it (out of range/not the recipient/etc.)
+
+    Loot& loot = creature->loot;
+    for (uint8 slot = 0; slot < loot.items.size(); ++slot)
+    {
+        WorldPacket storePacket;
+        storePacket << slot;
+        bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
+    }
+    if (loot.gold)
+    {
+        WorldPacket moneyPacket;
+        bot->GetSession()->HandleLootMoneyOpcode(moneyPacket);
+    }
+
+    WorldPacket releasePacket;
+    releasePacket << creature->GetGUID();
+    bot->GetSession()->HandleLootReleaseOpcode(releasePacket);
+
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' auto-looted '{}'.", bot->GetName(), creature->GetName());
+}
+
+// Called from UpdateOffensive's idle branch, only for a bot with no group at all (a grouped
+// bot follows/assists its leader instead -- see ResumeFollowingLeader). Mirrors a real solo
+// player: look for a nearby fight, and don't wander far from one spot doing it. Manual Stay
+// already excludes this at the call site, same as it excludes inheriting the leader's target.
+void TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
+{
+    if (!state.hasGrindAnchor || state.grindAnchorMapId != bot->GetMapId())
+    {
+        // First time this bot's been seen idle and ungrouped, or the old anchor was on a map
+        // this bot isn't even on anymore (teleported/summoned elsewhere) -- anchor here instead
+        // of trying to walk back across two different maps.
+        state.hasGrindAnchor = true;
+        state.grindAnchorMapId = bot->GetMapId();
+        state.grindAnchorX = bot->GetPositionX();
+        state.grindAnchorY = bot->GetPositionY();
+        state.grindAnchorZ = bot->GetPositionZ();
+        return;
+    }
+
+    if (bot->GetDistance(state.grindAnchorX, state.grindAnchorY, state.grindAnchorZ) > GRIND_LEASH_RADIUS)
+    {
+        // A grind-chase can drag a bot well past its anchor by the time the fight ends --
+        // walk back before looking for another one, same idea as ResumeFollowingLeader walking
+        // a grouped bot back to its leader.
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+            bot->GetMotionMaster()->MovePoint(0, state.grindAnchorX, state.grindAnchorY, state.grindAnchorZ);
+        return;
+    }
+
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        bot->GetMotionMaster()->Clear();
+
+    if (state.nextGrindScanMs > diff)
+    {
+        state.nextGrindScanMs -= diff;
+        return;
+    }
+    state.nextGrindScanMs = GRIND_SCAN_INTERVAL_MS;
+
+    Unit* target = nullptr;
+    GrindHostileUnitCheck check(bot, GRIND_SEARCH_RADIUS, bot->GetLevel() + GRIND_MAX_LEVEL_ABOVE);
+    Acore::UnitLastSearcher<GrindHostileUnitCheck> searcher(bot, target, check);
+    Cell::VisitObjects(bot, searcher, GRIND_SEARCH_RADIUS);
+
+    if (target)
+        bot->Attack(target, true);
+}
+
+// Maps a gathering skill to the real spell that gathers it -- returns 0 for anything else
+// SkillByLockType can produce (lockpicking/fishing/inscription aren't "gathering" here).
+uint32 GatheringSpellFor(SkillType skillId)
+{
+    if (skillId == SKILL_HERBALISM)
+        return SPELL_HERB_GATHERING;
+    if (skillId == SKILL_MINING)
+        return SPELL_MINING;
+    return 0;
+}
+
+// The real eligibility check Spell::CanOpenLock itself makes at cast time (Spell.cpp), against
+// one already-known GameObject -- shared by GatherableNodeCheck (deciding what's worth walking
+// toward across a whole area scan) and TryContinueGatherWalk (re-checking this exact node once
+// the bot has actually arrived). Returns 0 if this bot's skill can't open it (or it isn't a
+// herbalism/mining node at all).
+uint32 GatherSpellForNode(Player const* bot, GameObject* go)
+{
+    LockEntry const* lockInfo = sLockStore.LookupEntry(go->GetGOInfo()->GetLockId());
+    if (!lockInfo)
+        return 0;
+
+    for (uint8 i = 0; i < MAX_LOCK_CASE; ++i)
+    {
+        if (lockInfo->Type[i] != LOCK_KEY_SKILL)
+            continue;
+
+        SkillType skillId = SkillByLockType(LockType(lockInfo->Index[i]));
+        uint32 spellId = GatheringSpellFor(skillId);
+        if (spellId && uint32(bot->GetSkillValue(skillId)) >= lockInfo->Skill[i])
+            return spellId;
+    }
+    return 0;
+}
+
+// Same shrinking-radius nearest-in-range shape as GrindHostileUnitCheck, but for a lockable
+// herbalism/mining node this bot's own skill can actually open. Fills in gatherSpellId with
+// whichever of the two gathering spells applies to whatever node is found.
+class GatherableNodeCheck
+{
+public:
+    GatherableNodeCheck(Player const* bot, float range, uint32& gatherSpellId)
+        : _bot(bot), _range(range), _gatherSpellId(gatherSpellId) { }
+
+    bool operator()(GameObject* go)
+    {
+        if (!go->isSpawned() || !_bot->IsWithinDistInMap(go, _range))
+            return false;
+
+        uint32 spellId = GatherSpellForNode(_bot, go);
+        if (!spellId)
+            return false;
+
+        _gatherSpellId = spellId;
+        _range = _bot->GetDistance(go); // shrink the search radius to the closest hit so far
+        return true;
+    }
+
+private:
+    Player const* _bot;
+    float _range;
+    uint32& _gatherSpellId;
+};
+
+// Checked every idle-solo tick while a gathering cast (started by TryStartGathering) is
+// underway. Player::IsNonMeleeSpellCast reflects the real, skill-adjusted cast time --  not
+// instant -- so this just waits for it to actually finish before deciding what happened.
+// Success or failure, EffectOpenLock (Spell.cpp) already did the real work: on success it
+// calls SendLoot itself, exactly as if this were HandleLootOpcode; on failure (interrupted,
+// moved out of range mid-cast, etc.) bot->GetLootGUID() simply never becomes the node's guid
+// and this quietly does nothing. Same "open, take everything, release" shape as
+// TryAutoLootDeadTarget, just against the node's own Loot instead of a creature's, and with no
+// separate open step needed since the spell effect already did that part.
+void TryFinishGathering(Player* bot, BotAIState& state)
+{
+    if (bot->IsNonMeleeSpellCast(false))
+        return; // still casting -- check again next tick
+
+    ObjectGuid nodeGuid = state.gatherTargetGuid;
+    state.gatherTargetGuid = ObjectGuid::Empty; // one-shot regardless of outcome below
+
+    GameObject* node = ObjectAccessor::GetGameObject(*bot, nodeGuid);
+    if (!node || bot->GetLootGUID() != node->GetGUID() || node->loot.isLooted())
+        return;
+
+    Loot& loot = node->loot;
+    for (uint8 slot = 0; slot < loot.items.size(); ++slot)
+    {
+        WorldPacket storePacket;
+        storePacket << slot;
+        bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
+    }
+
+    WorldPacket releasePacket;
+    releasePacket << node->GetGUID();
+    bot->GetSession()->HandleLootReleaseOpcode(releasePacket);
+
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' gathered from node {}.", bot->GetName(), node->GetEntry());
+}
+
+// Checked every idle-solo tick while state.gatherWalkTargetGuid is set (a node TryStartGathering
+// found but was too far to cast at yet). Deliberately does NOT touch movement while still out of
+// range -- the MovePoint TryStartGathering already issued keeps running on its own; re-checking
+// or re-issuing it here was the original bug (see gatherWalkTargetGuid's own comment in
+// BotAIState). Once in range, casts exactly like TryStartGathering's own immediate-range branch
+// would have.
+void TryContinueGatherWalk(Player* bot, BotAIState& state)
+{
+    GameObject* node = ObjectAccessor::GetGameObject(*bot, state.gatherWalkTargetGuid);
+    if (!node || !node->isSpawned())
+    {
+        state.gatherWalkTargetGuid = ObjectGuid::Empty;
+        return;
+    }
+
+    if (bot->GetDistance(node) > INTERACTION_DISTANCE)
+        return; // still walking -- nothing to do until it arrives or the caller re-decides
+
+    state.gatherWalkTargetGuid = ObjectGuid::Empty;
+
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        bot->GetMotionMaster()->Clear();
+
+    uint32 gatherSpellId = GatherSpellForNode(bot, node);
+    if (!gatherSpellId)
+        return; // shouldn't normally change mid-walk, but the node/skill match is re-verified anyway
+
+    SpellCastResult result = bot->CastSpell(node, gatherSpellId, false);
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' cast gathering spell {} on node {} (result {}).",
+        bot->GetName(), gatherSpellId, node->GetEntry(), uint32(result));
+    if (result == SPELL_CAST_OK)
+        state.gatherTargetGuid = node->GetGUID();
+}
+
+// Called from the idle-solo routine (same scope as TryGrindWhenSolo), only when no gathering
+// cast or walk is already in progress. Scans for a nearby eligible node and either casts the
+// real gathering spell at it immediately (already in range) or starts walking toward it and
+// hands off to TryContinueGatherWalk for the rest -- either way, exactly what a player's own
+// right-click on the node would trigger. Returns true if it did anything at all (moving counts,
+// not just casting) so the caller knows not to also try grinding this tick.
+bool TryStartGathering(Player* bot, uint32 diff, BotAIState& state)
+{
+    if (state.nextGatherScanMs > diff)
+    {
+        state.nextGatherScanMs -= diff;
+        return false;
+    }
+    state.nextGatherScanMs = GATHER_SCAN_INTERVAL_MS;
+
+    uint32 gatherSpellId = 0;
+    GameObject* node = nullptr;
+    GatherableNodeCheck check(bot, GATHER_SEARCH_RADIUS, gatherSpellId);
+    Acore::GameObjectLastSearcher<GatherableNodeCheck> searcher(bot, node, check);
+    Cell::VisitObjects(bot, searcher, GATHER_SEARCH_RADIUS);
+
+    if (!node || !gatherSpellId)
+        return false;
+
+    if (bot->GetDistance(node) > INTERACTION_DISTANCE)
+    {
+        state.gatherWalkTargetGuid = node->GetGUID();
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+            bot->GetMotionMaster()->MovePoint(0, node->GetPositionX(), node->GetPositionY(), node->GetPositionZ());
+        return true;
+    }
+
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        bot->GetMotionMaster()->Clear();
+
+    SpellCastResult result = bot->CastSpell(node, gatherSpellId, false);
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' cast gathering spell {} on node {} (result {}).",
+        bot->GetName(), gatherSpellId, node->GetEntry(), uint32(result));
+    if (result == SPELL_CAST_OK)
+        state.gatherTargetGuid = node->GetGUID();
+    return true;
+}
 
 // Stops whatever follow motion is already running -- needed because a FOLLOW_MOTION_TYPE
 // generator, once started, keeps chasing its target on its own every tick until something
@@ -363,13 +725,43 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         }
     }
 
+    // Remembered every tick there's a real, live fight, so the tick right after it ends (target
+    // dead/gone, this whole condition below becomes true) still knows what was just being
+    // fought -- see TryAutoLootDeadTarget, which is the only reader of this.
+    if (target && target->IsAlive() && bot->IsValidAttackTarget(target))
+        state.lastCombatTargetGuid = target->GetGUID();
+
     if (!target || !target->IsAlive() || !bot->IsValidAttackTarget(target))
     {
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
             bot->GetMotionMaster()->Clear();
 
         if (!bot->IsInCombat())
+        {
+            // Whatever this bot was just fighting (tracked above, every tick there was a live
+            // target) may have just died -- try to loot it exactly once before moving on.
+            TryAutoLootDeadTarget(bot, state);
+
             ResumeFollowingLeader(bot, state);
+
+            // Ungrouped means no leader to fight alongside or follow -- ResumeFollowingLeader
+            // above already reduces to a no-op for that case (nothing to clear), so this is
+            // purely additive: give a solo bot something of its own to do instead of standing
+            // wherever it was spawned forever. Stay still means "don't go looking for a fight,"
+            // same as it already means for inheriting a leader's target above. Gathering takes
+            // priority over grinding (a real player would rather peacefully pick an herb than
+            // start a fight) -- an in-progress cast or walk is continued first; otherwise a scan
+            // for a new node runs before falling back to looking for something to kill.
+            if (!bot->GetGroup() && state.manualCommand != BotManualCommand::Stay)
+            {
+                if (!state.gatherTargetGuid.IsEmpty())
+                    TryFinishGathering(bot, state);
+                else if (!state.gatherWalkTargetGuid.IsEmpty())
+                    TryContinueGatherWalk(bot, state);
+                else if (!TryStartGathering(bot, diff, state))
+                    TryGrindWhenSolo(bot, diff, state);
+            }
+        }
         return;
     }
 
