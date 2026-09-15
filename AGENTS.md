@@ -1722,3 +1722,40 @@ Remaining without a dedicated rotation (11 of 21): Witch Doctor, Witch Hunter, K
 Xoroth, Guardian, Templar, Chronomancer, Starcaller, Sun Cleric, Necromancer, Primalist,
 Runemaster. Guardian/Templar/Starcaller currently assigned to the parallel Gemini session (see
 git log / Antigravity conversation "Playerbot Class Spell Rotation" for status).
+
+**Update, same day**: Gemini finished Guardian/Templar/Starcaller (all confirmed live,
+100% `SPELL_CAST_OK`) and made two more real engine fixes worth noting here since they affect
+every class's rotation, not just hers: (1) `LogCastAttempt`'s caller now auto-targets the bot
+itself when `spellInfo->IsPositive() || !spellInfo->NeedsExplicitUnitTarget()` — previously
+every class rotation's self-buffs/stance spells were being cast *at the enemy target* and
+failing `SPELL_FAILED_BAD_TARGETS`; (2) `bot->StopMoving()` is now called before casting, since
+`GetMotionMaster()->Clear()` alone left residual spline velocity that could fail a cast-time
+spell with `SPELL_FAILED_MOVING`. Both already benefited Primalist's Magma Fissure (a
+self-targeted spell) and Runemaster's Hoarfrost without either rotation needing to know about
+the fix.
+
+## Combat AI, fourth pass: Primalist, Runemaster (2026-09-15)
+
+Two more classes -- `BotClassRotationsPrimalist.h/.cpp` and
+`BotClassRotationsRunemaster.h/.cpp`, same isolated-file pattern as the others. Both had the
+cleanest DBC-native data found so far: 16 real damage candidates across the two classes'
+combined ~390 talent-granted spells, and (unlike every class before them) *none* carried a
+`CasterAuraState`/`TargetAuraState`/`CasterAuraSpell` precondition -- only the standard
+range/cost checks were needed for most of the kit.
+
+One new failure mode, on Runemaster only: Fracture requires a specific shapeshift/stance
+(`SpellInfo::Stances`, a real bitmask field) -- caught live as `SPELL_FAILED_ONLY_SHAPESHIFT`.
+Fixed with `SpellInfo::CheckShapeshift(bot->GetShapeshiftForm())`, a real existing engine
+method built for exactly this check -- the rotation doesn't need to know which form or why,
+just whether the bot is currently in it. **Confirmed live** after the fix: 24+ consecutive
+`SPELL_CAST_OK` casts for both classes against a stationary training dummy, zero failures
+(Primalist's Seismic Tremor DoT + Terrasurge filler + a self-targeted Magma Fissure; Runemaster's
+Hoarfrost DoT + generic-fallback fillers once Fracture was correctly excluded for a bot not in
+the right form).
+
+Remaining without a dedicated rotation (8 of 21): Witch Doctor, Witch Hunter, Knight of Xoroth,
+Chronomancer, Sun Cleric, Necromancer. Chronomancer was checked and set aside this pass — its
+real kit (Ripple/Talents, ~480 lines) is almost entirely utility/defensive (teleport-swap,
+absorb shields, a "Ripple" channel) with only 3 of ~340 talent-granted spells showing a real
+damage effect in native SpellInfo data, the same low-visibility problem Reaper had, needing the
+same kind of deep per-file archaeology rather than a quick DBC scan.

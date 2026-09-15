@@ -111,8 +111,20 @@ bool CanCastSpell(Player* bot, Unit* target, uint32 spellId, bool positiveRange 
     if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
         return false;
 
+    // Specific caster / target aura requirements (SpellInfo::CasterAuraSpell / TargetAuraSpell)
+    if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
+        return false;
+    if (target && spellInfo->TargetAuraSpell && !target->HasAura(spellInfo->TargetAuraSpell))
+        return false;
+
     // Power cost check
-    if (spellInfo->PowerType != POWER_HEALTH)
+    if (spellInfo->PowerType == POWER_HEALTH)
+    {
+        int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
+        if (cost > 0 && bot->GetHealth() <= (uint32)cost)
+            return false;
+    }
+    else
     {
         int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
         if (cost > 0 && bot->GetPower(Powers(spellInfo->PowerType)) < cost)
@@ -489,6 +501,269 @@ uint32 SelectTinkerRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*
     return 0;
 }
 
+// -------------------------------------------------------------------------
+// Class 18: Guardian
+// -------------------------------------------------------------------------
+uint32 SelectGuardianRotationSpell(Player* bot, Unit* target, uint32 activeSpec)
+{
+    float dist = bot->GetDistance(target);
+
+    // 1. Maintain Stance / Formation
+    // Spec 19 is Vanguard (Tank) -> prefer Tower Formation (800317)
+    // Other specs / default -> prefer Line Formation (803130) or Assault Formation (803417)
+    if (activeSpec == 19)
+    {
+        if (!bot->HasAura(800317))
+            if (uint32 spell = TrySpell(bot, bot, 800317, true))
+                return spell;
+    }
+    else
+    {
+        if (!bot->HasAura(803130) && !bot->HasAura(803417) && !bot->HasAura(800317))
+        {
+            if (uint32 spell = TrySpell(bot, bot, 803130, true))
+                return spell;
+            if (uint32 spell = TrySpell(bot, bot, 803417, true))
+                return spell;
+            if (uint32 spell = TrySpell(bot, bot, 800317, true))
+                return spell;
+        }
+    }
+
+    // 2. Gap closers if target is at range (> 8.0f)
+    if (dist > 8.0f)
+    {
+        // Grand Entrance (root 802870)
+        if (uint32 spell = TrySpell(bot, target, 802870))
+            return spell;
+
+        // Battle Rush (root 802197) - requires Assault Formation
+        if (uint32 spell = TrySpell(bot, target, 802197))
+            return spell;
+    }
+
+    // 3. Place Standard / Banner if in combat and off cooldown
+    // Standard of Valiance (root 800319)
+    if (uint32 spell = TrySpell(bot, bot, 800319, true))
+        return spell;
+
+    // 4. Melee Priority Attacks:
+    // Pulverize (root 800311) - heavy shield strike (requires shield)
+    if (uint32 spell = TrySpell(bot, target, 800311))
+        return spell;
+
+    // Ram (root 802284) - shield ram (requires shield)
+    if (uint32 spell = TrySpell(bot, target, 802284))
+        return spell;
+
+    // Heavy Blow (root 803129) - core melee builder
+    if (uint32 spell = TrySpell(bot, target, 803129))
+        return spell;
+
+    // Broad Sweep (root 805150) - sweeping melee strike
+    if (uint32 spell = TrySpell(bot, target, 805150))
+        return spell;
+
+    // Hammer of the Law (704418) - mace strike
+    if (uint32 spell = TrySpell(bot, target, 704418))
+        return spell;
+
+    // Linebreaker (root 806220) - line formation strike
+    if (uint32 spell = TrySpell(bot, target, 806220))
+        return spell;
+
+    // Hold the Line (root 803830)
+    if (uint32 spell = TrySpell(bot, target, 803830))
+        return spell;
+
+    // Press the Attack (root 801219)
+    if (uint32 spell = TrySpell(bot, target, 801219))
+        return spell;
+
+    // 5. Defensive in close combat if needed
+    if (bot->GetHealthPct() < 70.0f)
+    {
+        if (uint32 spell = TrySpell(bot, bot, 800313, true)) // Brace
+            return spell;
+        if (uint32 spell = TrySpell(bot, bot, 500168, true)) // Raise Shield
+            return spell;
+    }
+
+    return 0;
+}
+
+// -------------------------------------------------------------------------
+// Class 19: Templar
+// -------------------------------------------------------------------------
+uint32 SelectTemplarRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
+{
+    float dist = bot->GetDistance(target);
+
+    // 1. Maintain Gift buff on self: Gift of Zeal (root 706634) or Gift of Fervor (572629)
+    if (!bot->HasAura(706634) && !bot->HasAura(300916) && !bot->HasAura(300917) &&
+        !bot->HasAura(300918) && !bot->HasAura(300919) && !bot->HasAura(300923) &&
+        !bot->HasAura(572629) && !bot->HasAura(572630))
+    {
+        if (uint32 spell = TrySpell(bot, bot, 706634, true))
+            return spell;
+        if (uint32 spell = TrySpell(bot, bot, 572629, true))
+            return spell;
+    }
+
+    // 2. Gap closer if target is at distance (> 8.0f): Divine Charge (527023)
+    if (dist > 8.0f)
+    {
+        if (uint32 spell = TrySpell(bot, target, 527023))
+            return spell;
+    }
+
+    // 3. Breakers / Spenders: require Oath Chain (704576), automatically gated by CasterAuraSpell
+    // Blade of Faith (root 803872) - highest single-target holy spender
+    if (uint32 spell = TrySpell(bot, target, 803872))
+        return spell;
+
+    // Chastise (root 803157) - holy damage and stun
+    if (uint32 spell = TrySpell(bot, target, 803157))
+        return spell;
+
+    // Righteous Tempest (root 805409) - whirlwind holy spender
+    if (uint32 spell = TrySpell(bot, target, 805409))
+        return spell;
+
+    // Benediction (root 801448) - holy blessing / burst
+    if (uint32 spell = TrySpell(bot, target, 801448))
+        return spell;
+
+    // 4. Heavy Cooldowns:
+    // Titanstrike (root 806521) - 2H holy weapon strike
+    if (uint32 spell = TrySpell(bot, target, 806521))
+        return spell;
+
+    // Divine Force (root 806153) - holy force burst
+    if (uint32 spell = TrySpell(bot, target, 806153))
+        return spell;
+
+    // Libram of Consecration (root 801441)
+    if (dist <= 8.0f)
+    {
+        if (uint32 spell = TrySpell(bot, bot, 801441, true))
+            return spell;
+    }
+
+    // Crusader's Brand (root 300513)
+    if (uint32 spell = TrySpell(bot, target, 300513))
+        return spell;
+
+    // 5. Primary Builders (generate Oaths):
+    // Righteous Lunge (root 801443) - primary builder
+    if (uint32 spell = TrySpell(bot, target, 801443))
+        return spell;
+
+    // Condemn (root 804906) - primary judgment builder
+    if (uint32 spell = TrySpell(bot, target, 804906))
+        return spell;
+
+    // Holy Cleave (root 801445) - cleave builder
+    if (uint32 spell = TrySpell(bot, target, 801445))
+        return spell;
+
+    return 0;
+}
+
+// -------------------------------------------------------------------------
+// Class 26: Starcaller
+// -------------------------------------------------------------------------
+uint32 SelectStarcallerRotationSpell(Player* bot, Unit* target, uint32 activeSpec)
+{
+    float dist = bot->GetDistance(target);
+
+    // 1. Maintain Stance / Aspect on self:
+    // Spec 45: Warden (Melee) -> Aspect of the Warden (801128)
+    // Spec 43: Sentinel (Ranged) -> Aspect of the Huntress (805356)
+    // Spec 100: Moon Guard (Tank) / others -> Aspect of the Stars (root 800510)
+    bool hasAspect = bot->HasAura(800510) || bot->HasAura(803887) || bot->HasAura(803888) ||
+                     bot->HasAura(801128) || bot->HasAura(805356) || bot->HasAura(801123);
+    if (!hasAspect)
+    {
+        if (activeSpec == 45)
+        {
+            if (uint32 spell = TrySpell(bot, bot, 801128, true))
+                return spell;
+        }
+        else if (activeSpec == 43)
+        {
+            if (uint32 spell = TrySpell(bot, bot, 805356, true))
+                return spell;
+        }
+        else
+        {
+            if (uint32 spell = TrySpell(bot, bot, 800510, true))
+                return spell;
+            if (uint32 spell = TrySpell(bot, bot, 801128, true))
+                return spell;
+            if (uint32 spell = TrySpell(bot, bot, 801123, true))
+                return spell;
+        }
+    }
+
+    // 2. In Melee Range (dist <= 6.0f):
+    if (dist <= 6.0f)
+    {
+        // Celestial Strike (root 800496) - primary astral weapon strike, generates Stars (804378)
+        if (uint32 spell = TrySpell(bot, target, 800496))
+            return spell;
+
+        // Warden's Blade (root 805508) - multi-strike melee weapon attack
+        if (uint32 spell = TrySpell(bot, target, 805508))
+            return spell;
+
+        // Starsunder (root 801127) - sunder strike
+        if (uint32 spell = TrySpell(bot, target, 801127))
+            return spell;
+
+        // Celestial Cleave (root 801181) - cleaving astral strike
+        if (uint32 spell = TrySpell(bot, target, 801181))
+            return spell;
+
+        // Starsweep (root 805550) - melee sweep (requires Scattered Stars on target)
+        if (uint32 spell = TrySpell(bot, target, 805550))
+            return spell;
+
+        // Starshatter (root 801135)
+        if (uint32 spell = TrySpell(bot, target, 801135))
+            return spell;
+
+        // Shooting Star (root 800505) - astral builder, can be cast in melee
+        if (uint32 spell = TrySpell(bot, target, 800505))
+            return spell;
+    }
+
+    // 3. At Ranged Distance:
+    // Ranged weapon shots (if equipped, checked by CanCastSpell):
+    // Moon Arrow (root 801972)
+    if (uint32 spell = TrySpell(bot, target, 801972))
+        return spell;
+
+    // Huntress Shot (root 680220)
+    if (uint32 spell = TrySpell(bot, target, 680220))
+        return spell;
+
+    // Astral Spells:
+    // Lunar Lance (root 801132) - requires Scattered Stars (804378) on target (checked by TargetAuraSpell)
+    if (uint32 spell = TrySpell(bot, target, 801132))
+        return spell;
+
+    // Shooting Star (root 800505) - primary astral ranged builder, applies Stars
+    if (uint32 spell = TrySpell(bot, target, 800505))
+        return spell;
+
+    // Moonwell Splash (root 800370) - ranged AoE/damage
+    if (uint32 spell = TrySpell(bot, target, 800370))
+        return spell;
+
+    return 0;
+}
+
 } // anonymous namespace
 
 uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32 activeSpec)
@@ -501,6 +776,12 @@ uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32
         case 12: // Barbarian
             return SelectBarbarianRotationSpell(bot, target, activeSpec);
 
+        case 18: // Guardian
+            return SelectGuardianRotationSpell(bot, target, activeSpec);
+
+        case 19: // Templar
+            return SelectTemplarRotationSpell(bot, target, activeSpec);
+
         case 21: // Ranger
             return SelectRangerRotationSpell(bot, target, activeSpec);
 
@@ -509,6 +790,9 @@ uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32
 
         case 25: // Cultist
             return SelectCultistRotationSpell(bot, target, activeSpec);
+
+        case 26: // Starcaller
+            return SelectStarcallerRotationSpell(bot, target, activeSpec);
 
         case 28: // Tinker
             return SelectTinkerRotationSpell(bot, target, activeSpec);

@@ -29,7 +29,9 @@
 #include "BotClassRotations.h"
 #include "BotClassRotationsBloodmage.h"
 #include "BotClassRotationsFelsworn.h"
+#include "BotClassRotationsPrimalist.h"
 #include "BotClassRotationsReaper.h"
+#include "BotClassRotationsRunemaster.h"
 #include "BotClassRotationsStormbringer.h"
 #include "ClassSpecRoles.h"
 #include "Bag.h"
@@ -442,6 +444,10 @@ uint32 SelectKnownSpell(Player* bot, Unit* target, bool positiveRange, bool (*pr
             continue;
         if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
             continue;
+        if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
+            continue;
+        if (target && spellInfo->TargetAuraSpell && !target->HasAura(spellInfo->TargetAuraSpell))
+            continue;
 
         if (BotAI::IsSpellInFailureCooldown(bot->GetGUID(), spellId))
             continue;
@@ -458,9 +464,18 @@ uint32 SelectKnownSpell(Player* bot, Unit* target, bool positiveRange, bool (*pr
         if (minRange > 0.0f && bot->IsWithinRange(target, minRange + bot->GetMeleeRange(target)))
             continue;
 
-        int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
-        if (cost > 0 && bot->GetPower(Powers(spellInfo->PowerType)) < cost)
-            continue;
+        if (spellInfo->PowerType == POWER_HEALTH)
+        {
+            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
+            if (cost > 0 && bot->GetHealth() <= (uint32)cost)
+                continue;
+        }
+        else
+        {
+            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
+            if (cost > 0 && bot->GetPower(Powers(spellInfo->PowerType)) < cost)
+                continue;
+        }
 
         return spellId;
     }
@@ -1534,14 +1549,29 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     if (!spellId)
         spellId = BotAI::SelectStormbringerRotationSpell(bot, target);
     if (!spellId)
+        spellId = BotAI::SelectPrimalistRotationSpell(bot, target);
+    if (!spellId)
+        spellId = BotAI::SelectRunemasterRotationSpell(bot, target);
+    if (!spellId)
         spellId = SelectSpell(bot, target);
 
     if (spellId)
     {
         // A castable spell was found in its own valid range -- no need to close distance.
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+        {
             bot->GetMotionMaster()->Clear();
-        SpellCastResult result = LogCastAttempt(bot, spellId, target, "cast");
+            bot->StopMoving();
+        }
+
+        Unit* castTarget = target;
+        if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId))
+        {
+            if (spellInfo->IsPositive() || !spellInfo->NeedsExplicitUnitTarget())
+                castTarget = bot;
+        }
+
+        SpellCastResult result = LogCastAttempt(bot, spellId, castTarget, "cast");
         if (result != SPELL_CAST_OK)
             BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
         state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? APPROXIMATE_GCD_MS : NO_CANDIDATE_RETRY_MS;
