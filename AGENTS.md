@@ -2170,24 +2170,76 @@ but a bot-initiated test join does, since nothing else was watching it.
   actually riding it for travel isn't wired to anything yet. Assigned to the parallel Gemini
   session (2026-09-15) alongside guild bank orders -- still in progress as of this note (guild
   bank orders shipped first, see below).
-- **Guild task board + crafting order system** (user request, 2026-09-15): addon UI listing
-  each guild bot's professions/skill levels/current active task with control buttons, plus a
-  crafting order board -- player requests an item, a bot with the right profession+recipe
-  gathers reagents (reuse `guildgather`'s order lifecycle) and crafts it, then mails the result
-  to the orderer or deposits it in the guild bank. Needs: a `GUILDROSTER`-shaped query verb
-  (profession/skill/current-task per bot, addon-protocol.md), a craft-order lifecycle in
-  `BotMgr` parallel to `_guildGatherOrders`, and recipe/reagent lookup (`SkillLineAbility`/
-  `item_template`'s `spell_X` recipe fields) to go from "item X" to "which spell, which
-  profession, which reagents". Assigned to Claude, not started as of this note -- next up
-  after the quick-fill group feature below.
-- **Quick-fill group for dungeons** (user request, 2026-09-15): one addon button that fills
-  the player's group up to 5 (tank + healer + 3 dps) with bots matching the player's
-  level/ilvl, guildmates prioritized over any other bot. Different from the existing LFG
-  auto-fill (`BotLfgFill.cpp`, which fills the Dungeon Finder queue) -- this is a direct group
-  invite, no queue involved. Needs a new wire verb (no botGuidLow -- applies to the
-  commander's own group) and matching/invite logic reusing `BotMgr::GetOnlineBots()` +
-  `ClassSpecRoles` role data, guild membership as the priority signal. Assigned to Claude, not
-  started as of this note.
+- **Guild task board + crafting order system -- addon UI half only** (user request,
+  2026-09-15): all server-side work is done (see the 2026-09-15 "Group quick-fill, crafting
+  orders, and the guild task-board query" entry below) -- `CRAFTORDER`, `GUILDROSTER`/`ROSTER`
+  are live on the wire. What's left is purely client-side: the task-board list itself, a
+  crafting-order submission form, and per-bot control buttons. Assigned to the parallel Gemini
+  session (2026-09-15), alongside the `GETROLES` button-greying and `QUICKFILL` button below --
+  not started as of this note.
+- **Addon UI for role-gating, quick-fill, and the task board** (2026-09-15): three small,
+  independent addon-side additions once combat AI is done -- (1) send `GETROLES` per bot row,
+  cache the `ROLES` reply, grey out role buttons the bot's class can't hold (`SETROLE` already
+  refuses these silently server-side, see its addon-protocol.md note); (2) a `QUICKFILL` button
+  that fires `QUICKFILL:0`; (3) the task-board/crafting-order UI above. All three wire verbs
+  exist and are live-tested server-side; only the client half is missing. Assigned to the
+  parallel Gemini session (2026-09-15), not started as of this note.
+
+## 2026-09-15: Group quick-fill, crafting orders, and the guild task-board query
+
+Server-side half of the user's addon-upgrade points 2 and 3 (see the TODO backlog above for
+what's still addon-side only). Three additions to `BotMgr`, all live-tested:
+
+**`QuickFillGroup(Player* commander, ChatHandler*)`** -- brings `commander`'s group up to 5
+(tank + healer + 3 dps) by inviting online bots for whichever roles are short, guildmates
+preferred, then closest level/average-ilvl. Issues a real `WorldSession::HandleGroupInviteOpcode`
+per invite from *commander's own session* -- the existing per-tick auto-accept
+(`BotMgr::Update`) already picks up each bot's resulting pending invite and teleports it in,
+so no new accept-side code was needed. `.botcmd quickfill <charLowGuid>` and the addon's
+`QUICKFILL:0` wire verb. Found and fixed one bug during testing: the candidate pool didn't
+exclude the commander itself, so a bot-tracked commander (RA testing) could invite itself.
+Live-verified against a 6-bot roster: correctly topped up a solo commander to a 5-man
+tank+healer+2dps group, and separately topped up an already-partially-filled group by only
+inviting the specific role still missing.
+
+**`CraftOrder(ObjectGuid::LowType requesterCharLowGuid, itemEntry, count, ChatHandler*)`** --
+finds an online guild-mate bot that knows a recipe spell producing `itemEntry` (any learned
+spell with a `SPELL_EFFECT_CREATE_ITEM` effect targeting it; a bot knowing the spell already
+proves it leveled the right profession, no `SkillLineAbility` bookkeeping needed --
+`CraftingRecipeIndex`, built once by scanning the full spell store), and orders it to craft
+`count` of them. Crafts immediately if reagents are on hand, otherwise queues a background
+order (`_craftOrders`) that waits for them. Finished items are mailed to the requester via a
+real `MailDraft` (works whether they're online or not) -- never deposited to the guild bank,
+a deliberate v1 simplification (mail is unconditionally correct; a bank-or-mail choice would
+need a second command/flag for no real benefit). `.botcmd craftorder <requesterGuid> <itemEntry>
+[count]` and the addon's `CRAFTORDER` verb.
+
+Live debugging surfaced two real correctness bugs in the completion check, both fixed:
+- Trusting `SPELL_CAST_OK` alone as proof an item was produced was wrong -- caught a case
+  where a second cast reported success immediately after a first cast had already consumed
+  the only reagents on hand, producing nothing for the second. Fixed by comparing the
+  crafter's item count before/after each cast rather than trusting the return code.
+- That before/after check itself needs to account for a real cast time: checking immediately
+  after `CastSpell()` returns sees the cast as just-*started*, not finished, for any recipe
+  that isn't instant. Fixed by waiting for `Unit::IsNonMeleeSpellCast()` to clear before
+  checking -- and, critically, not re-casting over an order's own in-progress cast on the next
+  tick, which would otherwise interrupt and restart it forever without ever completing.
+
+Live-verified end to end with a real recipe (spell 2963, Bolt of Linen Cloth, reagent Linen
+Cloth x2): reagent-wait behavior confirmed (order sat idle with 0 reagents, no false
+completion), then completed correctly once given exactly enough reagents for the full order,
+with the resulting mail row and its attached item stack (count matching the order) confirmed
+in the database, sender/receiver correct.
+
+**`GetGuildRosterInfo(Player* commander) const`** -- one `ROSTER:botGuidLow:name:classId:
+level:task:professions` string per online bot in `commander`'s guild. Professions via the 11
+standard WotLK profession skill lines (`Player::HasSkill`/`GetSkillValue` -- stable, not custom
+to this server). `task` reflects an active `_craftOrders`/`_guildGatherOrders` entry for that
+bot guid, or `idle`. One reply per bot rather than one combined message, since a big guild's
+full roster could exceed the chat-message length cap. `.botcmd guildroster <charLowGuid>` and
+the addon's `GUILDROSTER:0` verb (see `docs/addon-protocol.md`'s server->client replies
+section, first used for `GETROLES`/`ROLES`). Live-verified: correct idle/gathering states for
+two guild-mates via the console command.
 
 ## 2026-09-15: Guild bank orders for bots
 
