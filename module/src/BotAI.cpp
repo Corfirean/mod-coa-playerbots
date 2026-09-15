@@ -28,7 +28,9 @@
 #include "BotAI.h"
 #include "BotClassRotations.h"
 #include "BotClassRotationsBloodmage.h"
+#include "BotClassRotationsChronomancer.h"
 #include "BotClassRotationsFelsworn.h"
+#include "BotClassRotationsNecromancer.h"
 #include "BotClassRotationsPrimalist.h"
 #include "BotClassRotationsReaper.h"
 #include "BotClassRotationsRunemaster.h"
@@ -1555,6 +1557,10 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         spellId = BotAI::SelectRunemasterRotationSpell(bot, target);
     if (!spellId)
         spellId = BotAI::SelectXorothRotationSpell(bot, target);
+    if (!spellId)
+        spellId = BotAI::SelectChronomancerRotationSpell(bot, target);
+    if (!spellId)
+        spellId = BotAI::SelectNecromancerRotationSpell(bot, target);
     if (!spellId)
         spellId = SelectSpell(bot, target);
 

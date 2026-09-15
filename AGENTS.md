@@ -1777,3 +1777,62 @@ other documented cases above.
 
 Remaining without a dedicated rotation (7 of 21): Witch Doctor, Witch Hunter, Sun Cleric
 (currently assigned to the parallel Gemini session), Chronomancer, Necromancer.
+
+## Combat AI, sixth pass: Chronomancer, Necromancer (2026-09-15)
+
+**Research-methodology bug found and fixed first**: every DBC scan script this session (used
+for Reaper, Felsworn, Bloodmage, Stormbringer, Primalist, Runemaster, Xoroth) used
+`SPELL_EFFECT_WEAPON_PERCENT_DAMAGE = 62`, which is actually `SPELL_EFFECT_POWER_BURN`; the
+real value (confirmed via `grep` on `SharedDefines.h`) is `31`. Re-scanning Chronomancer with
+the corrected constant surfaced one additional real candidate ("Shatter Echo") beyond the 3
+found with the buggy constant -- the class's kit is still genuinely thin (its "Time"/Healer
+spec has zero damage candidates at all among dozens of talent-granted spells), not a
+scan-completeness artifact. Doesn't invalidate any already-shipped rotation since all were
+live-verified independently of scan-trust, but worth re-auditing older classes' scans if a
+rotation ever looks suspiciously incomplete.
+
+`BotClassRotationsChronomancer.h/.cpp` -- 4 real candidates across the class's ~340
+talent-granted spells: Melt Reality (806335, DoT, no precondition), Chromatic Shard (801292, no
+precondition), Shatter Echo (804503, 3s cd) and Arc Collision (524853, DoT) both gated on
+`CasterAuraSpell` 804455 (checked via `HasAura`, same pattern as every prior aura-gated class).
+**Confirmed live**, with a caveat: this class already has full DPS coverage from the
+pre-existing generic dispatcher (`SelectClassRotationSpell`, checked before every per-class
+override) via spell 804418, which both DPS specs (Infinite 32, Artificer 33) know and which
+never showed a cooldown gap long enough for this rotation to actually fire in a 10+ second
+combat window on live-tested characters. The dispatch is still correctly wired and safe --
+confirmed via `.botcmd hasspells` that Artificer knows Shatter Echo/Arc Collision and Infinite
+knows Melt Reality/Chromatic Shard, and confirmed no crash/regression and a clean
+`SPELL_FAILED`-free fallback to 804418 -- but this rotation is currently dormant filler for a
+class the generic system already fully covers, not independently exercised end-to-end the way
+every other class's rotation has been. Flagged here rather than claimed as fully live-verified.
+
+`BotClassRotationsNecromancer.h/.cpp` -- deliberately scoped narrow. Necromancer's real kit
+spans 7 `mod-ascension-compat` files (~2500 lines, pet/summon architecture answering "which
+minion to raise," not "which spell to cast" like every other class this session) -- pet
+management is explicitly NOT attempted here. Found via `AscensionNecromancerData.h`'s own
+`NecromancerCoefficients` table (a build-tool-generated list of real damage/heal spell
+coefficients from pinned client contracts) cross-referenced against a real Necromancer test
+character's actual `character_spell` rows -- a more direct way to separate real player-cast
+spells from pet-command/summon-scaling entries for this specific class than DBC-scanning.
+Found "Lichfrost" (13 spell IDs, ranks 501969-501980 plus 801722, free cost, no cooldown, no
+precondition) as the one confirmed real direct-damage spell, plus Ice Barrage (803779) as an
+unconfirmed secondary. **Confirmed live**: 30+ consecutive `SPELL_CAST_OK` casts of Lichfrost
+(501969) against a stationary training dummy, zero failures -- this class's generic dispatcher
+has no equivalent fallback, so this rotation is the bot's only real attack until pet
+management is separately tackled.
+
+**Also found and fixed this pass**: a stray leftover Python RA-client process (from earlier
+tooling, not the game server itself) held a dead RA session open and blocked new RA console
+connections from getting served at all -- symptom was TCP connections accepting but the
+username prompt never arriving, even though the world itself was fully live and ticking
+(confirmed via `Server.log` timestamps and live bot combat elsewhere). Killing the stray
+process immediately restored RA. Not a `worldserver` bug -- a tooling-hygiene lesson: an RA
+client script that doesn't cleanly close its socket can wedge the console for everyone,
+independent of server health.
+
+Remaining without a dedicated rotation (3 of 21): Witch Doctor, Witch Hunter, Sun Cleric --
+all three in progress on the parallel Gemini session (Witch Doctor/Witch Hunter/Sun Cleric
+rotations added to the shared `BotClassRotations.cpp`, live-tested against the training dummy
+per her own session, still undergoing iteration as of this pass). All 21 classes now have at
+least a rotation attempt; full pet-summon AI for Necromancer (and any pet-heavy portion of
+Witch Doctor) remains explicitly out of scope, undocumented future work.

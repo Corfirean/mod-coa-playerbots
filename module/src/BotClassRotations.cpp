@@ -24,6 +24,10 @@ namespace
 // Prevents an ability that failed to cast (e.g. invalid target, LOS, etc.) from being retried every tick.
 std::unordered_map<ObjectGuid, std::unordered_map<uint32, uint32>> failureCooldowns;
 constexpr uint32 FAILURE_COOLDOWN_MS = 2000;
+
+// Per-bot rotation ability throttle map: [botGuid][rootSpellId] -> expiryMSTime
+// Used for abilities without native DBC cooldowns (e.g. totems, summons, edicts).
+std::unordered_map<ObjectGuid, std::unordered_map<uint32, uint32>> abilityThrottleCooldowns;
 } // anonymous namespace
 
 bool IsSpellInFailureCooldown(ObjectGuid botGuid, uint32 spellId)
@@ -46,6 +50,28 @@ bool IsSpellInFailureCooldown(ObjectGuid botGuid, uint32 spellId)
 
 namespace
 {
+bool IsAbilityThrottled(ObjectGuid botGuid, uint32 rootSpellId)
+{
+    auto botItr = abilityThrottleCooldowns.find(botGuid);
+    if (botItr == abilityThrottleCooldowns.end())
+        return false;
+
+    auto spellItr = botItr->second.find(rootSpellId);
+    if (spellItr == botItr->second.end())
+        return false;
+
+    uint32 now = getMSTime();
+    if (now < spellItr->second)
+        return true;
+
+    botItr->second.erase(spellItr);
+    return false;
+}
+
+void SetAbilityThrottle(ObjectGuid botGuid, uint32 rootSpellId, uint32 durationMs)
+{
+    abilityThrottleCooldowns[botGuid][rootSpellId] = getMSTime() + durationMs;
+}
 
 // Finds the highest rank of the spell that this bot currently knows.
 // Traverses backwards from the last spell in the chain.
@@ -152,6 +178,22 @@ uint32 TrySpell(Player* bot, Unit* target, uint32 rootSpellId, bool positiveRang
     uint32 spellId = GetHighestLearnedRank(bot, rootSpellId);
     if (spellId && CanCastSpell(bot, target, spellId, positiveRange))
         return spellId;
+    return 0;
+}
+
+// Attempts to cast a spell with an internal rotation cooldown/throttle.
+// Useful for abilities without native DBC cooldowns (e.g. totems, summons, buffs).
+uint32 TryThrottledSpell(Player* bot, Unit* target, uint32 rootSpellId, uint32 throttleMs, bool positiveRange = false)
+{
+    if (IsAbilityThrottled(bot->GetGUID(), rootSpellId))
+        return 0;
+
+    uint32 spellId = TrySpell(bot, target, rootSpellId, positiveRange);
+    if (spellId)
+    {
+        SetAbilityThrottle(bot->GetGUID(), rootSpellId, throttleMs);
+        return spellId;
+    }
     return 0;
 }
 
@@ -764,6 +806,323 @@ uint32 SelectStarcallerRotationSpell(Player* bot, Unit* target, uint32 activeSpe
     return 0;
 }
 
+// -------------------------------------------------------------------------
+// Class 13: Witch Doctor
+// -------------------------------------------------------------------------
+uint32 SelectWitchDoctorRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
+{
+    // 1. Emergency Defense / Healing (< 50% health):
+    if (bot->GetHealthPct() < 50.0f)
+    {
+        // Loa's Brew (root 801670) - healing brew
+        if (uint32 spell = TrySpell(bot, bot, 801670, true))
+            return spell;
+
+        // Spirit in a Bottle (root 801696) - protective spirit potion
+        if (uint32 spell = TrySpell(bot, bot, 801696, true))
+            return spell;
+    }
+
+    // 2. Self Buffs / Cooldowns:
+    // Shadow Avatar (root 705943) - dark power form
+    if (!bot->HasAura(705943))
+    {
+        if (uint32 spell = TrySpell(bot, bot, 705943, true))
+            return spell;
+    }
+
+    // 3. Summons & Idols / Totems:
+    // Serpent Ward (root 500960) - offensive snake turret (lasts 30s, throttle 25s)
+    if (uint32 spell = TryThrottledSpell(bot, target, 500960, 25000))
+        return spell;
+
+    // Hexing Effigy (root 506634) - debuff effigy totem (lasts 30s, throttle 25s)
+    if (uint32 spell = TryThrottledSpell(bot, target, 506634, 25000))
+        return spell;
+
+    // Dark Idol (root 507082) - shadow idol totem (lasts 30s, throttle 25s)
+    if (uint32 spell = TryThrottledSpell(bot, target, 507082, 25000))
+        return spell;
+
+    // 4. Curses & Jinxes (Debuffs on target):
+    // Hex of Malice (root 801693) - core damage over time curse
+    uint32 hexMalice = GetHighestLearnedRank(bot, 801693);
+    if (hexMalice && !target->HasAura(hexMalice))
+    {
+        if (uint32 spell = TrySpell(bot, target, 801693))
+            return spell;
+    }
+
+    // Shrinking Jinx (root 806285) - weakening combat jinx
+    uint32 shrinkJinx = GetHighestLearnedRank(bot, 806285);
+    if (shrinkJinx && !target->HasAura(shrinkJinx))
+    {
+        if (uint32 spell = TrySpell(bot, target, 806285))
+            return spell;
+    }
+
+    // 5. High-Impact Offensive Nukes:
+    // Malefic Wrath (root 807037) - heavy shadow nuke
+    if (uint32 spell = TrySpell(bot, target, 807037))
+        return spell;
+
+    // Potion Toss (root 801661) - only usable with active brew aura (checked by CanCastSpell)
+    if (uint32 spell = TrySpell(bot, target, 801661))
+        return spell;
+
+    // Splash Potion (root 802710)
+    if (uint32 spell = TrySpell(bot, target, 802710))
+        return spell;
+
+    // Mojo Beam (root 500950) - channeled beam
+    if (uint32 spell = TrySpell(bot, target, 500950))
+        return spell;
+
+    // 6. Primary Ranged Spammer / Filler:
+    // Shadowflare (root 801669) - core dark projectile
+    if (uint32 spell = TrySpell(bot, target, 801669))
+        return spell;
+
+    return 0;
+}
+
+// -------------------------------------------------------------------------
+// Class 15: Witch Hunter
+// -------------------------------------------------------------------------
+uint32 SelectWitchHunterRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
+{
+    float dist = bot->GetDistance(target);
+
+    // 1. Maintain a Tonic buff on self if known and missing:
+    if (!bot->HasAura(802278) && !bot->HasAura(802276) && !bot->HasAura(803535) &&
+        !bot->HasAura(802826) && !bot->HasAura(680491))
+    {
+        // Witchblood Tonic (root 802278)
+        if (uint32 spell = TrySpell(bot, bot, 802278, true))
+            return spell;
+        // Vampiric Tonic (root 802276)
+        if (uint32 spell = TrySpell(bot, bot, 802276, true))
+            return spell;
+        // Holy Water Tonic (root 802826)
+        if (uint32 spell = TrySpell(bot, bot, 802826, true))
+            return spell;
+        // Dark Tonic (root 680491)
+        if (uint32 spell = TrySpell(bot, bot, 680491, true))
+            return spell;
+    }
+
+    // 2. Maintain Stance/Aura:
+    // Dark Aura (root 680535)
+    uint32 darkAura = GetHighestLearnedRank(bot, 680535);
+    if (darkAura && !bot->HasAura(darkAura))
+    {
+        if (uint32 spell = TrySpell(bot, bot, 680535, true))
+            return spell;
+    }
+
+    // 3. Emergency Defense (< 50% health):
+    if (bot->GetHealthPct() < 50.0f)
+    {
+        // Night's Watch (root 807733)
+        if (uint32 spell = TrySpell(bot, bot, 807733, true))
+            return spell;
+        // Dark Regeneration (root 500094)
+        if (uint32 spell = TrySpell(bot, bot, 500094, true))
+            return spell;
+    }
+
+    // 4. Target Brand (Apply if target doesn't have an active Witch Hunter Brand):
+    uint32 brandDamned = GetHighestLearnedRank(bot, 807682);
+    bool hasBrand = (brandDamned && target->HasAura(brandDamned)) ||
+                    target->HasAura(501380) || target->HasAura(562390) ||
+                    target->HasAura(562573) || target->HasAura(680517);
+    if (!hasBrand)
+    {
+        // Brand of the Damned (root 807682)
+        if (uint32 spell = TrySpell(bot, target, 807682))
+            return spell;
+        // Brand of the Condemned (root 562573)
+        if (uint32 spell = TrySpell(bot, target, 562573))
+            return spell;
+        // Brand of the Profane (root 562390)
+        if (uint32 spell = TrySpell(bot, target, 562390))
+            return spell;
+        // Brand of the Unworthy (root 501380)
+        if (uint32 spell = TrySpell(bot, target, 501380))
+            return spell;
+    }
+
+    // 5. Witchblight / Edicts:
+    // Witchblight (root 680494) - debuff
+    if (!target->HasAura(680494))
+    {
+        if (uint32 spell = TrySpell(bot, target, 680494))
+            return spell;
+    }
+
+    // Witching Edict (root 707684) / Inquisitor's Edict (root 706741)
+    uint32 witchingEdict = GetHighestLearnedRank(bot, 707684);
+    if (witchingEdict && !bot->HasAura(witchingEdict))
+    {
+        if (uint32 spell = TryThrottledSpell(bot, target, 707684, 25000))
+            return spell;
+    }
+    uint32 inqEdict = GetHighestLearnedRank(bot, 706741);
+    if (inqEdict && !bot->HasAura(inqEdict))
+    {
+        if (uint32 spell = TryThrottledSpell(bot, target, 706741, 25000))
+            return spell;
+    }
+
+    // 6. In Melee Range (<= 5.0f):
+    if (dist <= 5.0f)
+    {
+        // Dawn Blade (root 802024) - primary holy melee blade strike
+        if (uint32 spell = TrySpell(bot, target, 802024))
+            return spell;
+
+        // Pommel Smash (root 680515) - physical strike
+        if (uint32 spell = TrySpell(bot, target, 680515))
+            return spell;
+
+        // Guard Strike (root 804432) - defensive strike
+        if (uint32 spell = TrySpell(bot, target, 804432))
+            return spell;
+
+        // Desecrate (root 680518) - ground AoE (if aura requirements met)
+        if (uint32 spell = TrySpell(bot, target, 680518))
+            return spell;
+    }
+
+    // 7. Ranged Attacks (Guns / Crossbows / Ranged Spells):
+    // Sixfold Shot (root 807364) - channeled burst shot
+    if (uint32 spell = TrySpell(bot, target, 807364))
+        return spell;
+
+    // Shadowblast (root 804191) - primary heavy shadow/ranged attack
+    if (uint32 spell = TrySpell(bot, target, 804191))
+        return spell;
+
+    // Bola Throw (root 500093) - ranged snare & damage
+    if (uint32 spell = TrySpell(bot, target, 500093))
+        return spell;
+
+    // Darkslayer (root 804179) - ranged execute / heavy finisher
+    if (uint32 spell = TrySpell(bot, target, 804179))
+        return spell;
+
+    // Burrow Bolt (root 802269) - special bolt attack
+    if (uint32 spell = TrySpell(bot, target, 802269))
+        return spell;
+
+    // Close-range fallback if ranged failed (e.g. minimum range):
+    if (dist <= 5.0f)
+    {
+        if (uint32 spell = TrySpell(bot, target, 802024))
+            return spell;
+        if (uint32 spell = TrySpell(bot, target, 680515))
+            return spell;
+    }
+
+    return 0;
+}
+
+// -------------------------------------------------------------------------
+// Class 27: Sun Cleric
+// -------------------------------------------------------------------------
+uint32 SelectSunClericRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
+{
+    float dist = bot->GetDistance(target);
+
+    // 1. Maintain Stance / Form:
+    // Holy Form (root 805301)
+    if (!bot->HasAura(805301))
+    {
+        if (uint32 spell = TrySpell(bot, bot, 805301, true))
+            return spell;
+    }
+
+    // 2. Emergency Healing & Defense (< 50% health):
+    if (bot->GetHealthPct() < 50.0f)
+    {
+        // Sol Invictus (root 807732) - holy emergency shield / ward
+        if (uint32 spell = TrySpell(bot, bot, 807732, true))
+            return spell;
+
+        // Solar Invocation: Ascension (root 500152) - burst AoE heal
+        if (uint32 spell = TrySpell(bot, bot, 500152, true))
+            return spell;
+
+        // Revivify (root 801790) - direct heal / HoT
+        if (uint32 spell = TrySpell(bot, bot, 801790, true))
+            return spell;
+
+        // Daybreak (root 500147) - instant holy heal
+        if (uint32 spell = TrySpell(bot, bot, 500147, true))
+            return spell;
+
+        // Illumination (root 500143) - holy heal cast
+        if (uint32 spell = TrySpell(bot, bot, 500143, true))
+            return spell;
+    }
+
+    // Radiance (root 800054) - burst cooldown / holy radiance aura
+    if (!bot->HasAura(800054))
+    {
+        if (uint32 spell = TrySpell(bot, bot, 800054, true))
+            return spell;
+    }
+
+    // 4. In Melee Range (<= 5.0f, with 1H weapon equipped checked by CanCastSpell):
+    if (dist <= 5.0f)
+    {
+        // Gavel of Light (root 800611) - primary holy melee weapon strike
+        if (uint32 spell = TrySpell(bot, target, 800611))
+            return spell;
+
+        // Gavel of Grace (root 800614) - secondary holy strike
+        if (uint32 spell = TrySpell(bot, target, 800614))
+            return spell;
+
+        // Gavel of Wrath (root 800617) - burst holy strike
+        if (uint32 spell = TrySpell(bot, target, 800617))
+            return spell;
+    }
+
+    // 5. Ranged Caster Attacks:
+    // Injunction (root 800624) - holy debuff on target
+    if (!target->HasAura(800624))
+    {
+        if (uint32 spell = TrySpell(bot, target, 800624))
+            return spell;
+    }
+
+    // Dawnfall (root 806118) - heavy ground holy AoE nuke
+    if (uint32 spell = TrySpell(bot, target, 806118))
+        return spell;
+
+    // Horusath Blast (root 500154) - heavy ranged holy nuke
+    if (uint32 spell = TrySpell(bot, target, 500154))
+        return spell;
+
+    // Glare (root 805583) - instant holy damage
+    if (uint32 spell = TrySpell(bot, target, 805583))
+        return spell;
+
+    // Sunflare (root 800231) - primary holy fire ranged builder / spammer
+    if (uint32 spell = TrySpell(bot, target, 800231))
+        return spell;
+
+    // Close-range fallback:
+    if (dist <= 5.0f)
+    {
+        if (uint32 spell = TrySpell(bot, target, 800611))
+            return spell;
+    }
+
+    return 0;
+}
+
 } // anonymous namespace
 
 uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32 activeSpec)
@@ -775,6 +1134,12 @@ uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32
     {
         case 12: // Barbarian
             return SelectBarbarianRotationSpell(bot, target, activeSpec);
+
+        case 13: // Witch Doctor
+            return SelectWitchDoctorRotationSpell(bot, target, activeSpec);
+
+        case 15: // Witch Hunter
+            return SelectWitchHunterRotationSpell(bot, target, activeSpec);
 
         case 18: // Guardian
             return SelectGuardianRotationSpell(bot, target, activeSpec);
@@ -793,6 +1158,9 @@ uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32
 
         case 26: // Starcaller
             return SelectStarcallerRotationSpell(bot, target, activeSpec);
+
+        case 27: // Sun Cleric
+            return SelectSunClericRotationSpell(bot, target, activeSpec);
 
         case 28: // Tinker
             return SelectTinkerRotationSpell(bot, target, activeSpec);
@@ -815,6 +1183,7 @@ void RecordSpellCastFailure(ObjectGuid botGuid, uint32 spellId)
 void ForgetRotationState(ObjectGuid botGuid)
 {
     failureCooldowns.erase(botGuid);
+    abilityThrottleCooldowns.erase(botGuid);
 }
 
 } // namespace BotAI
