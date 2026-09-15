@@ -815,11 +815,11 @@ uint32 SelectWitchDoctorRotationSpell(Player* bot, Unit* target, uint32 /*active
     if (bot->GetHealthPct() < 50.0f)
     {
         // Loa's Brew (root 801670) - healing brew
-        if (uint32 spell = TrySpell(bot, bot, 801670, true))
+        if (uint32 spell = TryThrottledSpell(bot, bot, 801670, 8000, true))
             return spell;
 
         // Spirit in a Bottle (root 801696) - protective spirit potion
-        if (uint32 spell = TrySpell(bot, bot, 801696, true))
+        if (uint32 spell = TryThrottledSpell(bot, bot, 801696, 12000, true))
             return spell;
     }
 
@@ -831,17 +831,43 @@ uint32 SelectWitchDoctorRotationSpell(Player* bot, Unit* target, uint32 /*active
             return spell;
     }
 
-    // 3. Summons & Idols / Totems:
-    // Serpent Ward (root 500960) - offensive snake turret (lasts 30s, throttle 25s)
-    if (uint32 spell = TryThrottledSpell(bot, target, 500960, 25000))
+    // 3. Situational Guardians, Wards, Effigies & Idols:
+    // Major guardians / temporary summons:
+    if (uint32 spell = TryThrottledSpell(bot, target, 802719, 45000)) // Big Voodoo (Bwonsamdi)
+        return spell;
+    if (uint32 spell = TryThrottledSpell(bot, target, 800330, 45000)) // War Golem
+        return spell;
+    if (uint32 spell = TryThrottledSpell(bot, target, 572899, 30000)) // Call Sseratus (snakes)
+        return spell;
+    if (uint32 spell = TryThrottledSpell(bot, target, 707162, 30000)) // Mimic
         return spell;
 
-    // Hexing Effigy (root 506634) - debuff effigy totem (lasts 30s, throttle 25s)
-    if (uint32 spell = TryThrottledSpell(bot, target, 506634, 25000))
+    // Wards (WardSlot - Healing Ward if injured, Serpent Ward if healthy):
+    if (bot->GetHealthPct() < 60.0f)
+    {
+        if (uint32 spell = TryThrottledSpell(bot, bot, 500957, 25000)) // Healing Ward
+            return spell;
+    }
+    else
+    {
+        if (uint32 spell = TryThrottledSpell(bot, target, 500960, 25000)) // Serpent Ward
+            return spell;
+    }
+
+    // Effigies (EffigySlot - Hexing / Shadow / Cursed):
+    if (uint32 spell = TryThrottledSpell(bot, target, 506634, 25000)) // Hexing Effigy
+        return spell;
+    if (uint32 spell = TryThrottledSpell(bot, target, 505339, 25000)) // Shadow Effigy
+        return spell;
+    if (uint32 spell = TryThrottledSpell(bot, target, 706542, 25000)) // Cursed Effigy
         return spell;
 
-    // Dark Idol (root 507082) - shadow idol totem (lasts 30s, throttle 25s)
-    if (uint32 spell = TryThrottledSpell(bot, target, 507082, 25000))
+    // Idols (IdolSlot - Dark / Swift / Spirit):
+    if (uint32 spell = TryThrottledSpell(bot, target, 507082, 25000)) // Dark Idol
+        return spell;
+    if (uint32 spell = TryThrottledSpell(bot, target, 804226, 25000)) // Swift Idol
+        return spell;
+    if (uint32 spell = TryThrottledSpell(bot, target, 500961, 25000)) // Spirit Idol
         return spell;
 
     // 4. Curses & Jinxes (Debuffs on target):
@@ -1123,6 +1149,109 @@ uint32 SelectSunClericRotationSpell(Player* bot, Unit* target, uint32 /*activeSp
     return 0;
 }
 
+// -------------------------------------------------------------------------
+// Class 23: Necromancer
+// -------------------------------------------------------------------------
+uint32 SelectNecromancerRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
+{
+    float botHp = bot->GetHealthPct();
+
+    // 1. Situational Stance Switching (Spell Group 1137):
+    // 500982: Undead: Assault (Offensive DPS: minion attack speed & crit)
+    // 500985: Undead: Protect (Tank / Defense: minion threat, player threat reduced)
+    // 500983: Undead: Pacify  (Critical Defense / Survival: minion passive, player -20% damage taken)
+    uint32 desiredStance = 500982; // Default to Assault
+    if (botHp < 35.0f)
+        desiredStance = 500983; // Pacify for critical survival
+    else if (botHp < 60.0f || (target->GetVictim() && target->GetVictim()->GetGUID() == bot->GetGUID()))
+        desiredStance = 500985; // Protect if taking damage or targeted
+
+    if (desiredStance && !bot->HasAura(desiredStance))
+    {
+        if (uint32 spell = TrySpell(bot, bot, desiredStance, true))
+            return spell;
+    }
+
+    // 2. Emergency Survival (< 35% HP):
+    // Sacrifice Undead (root 805027, highest rank e.g. 807941)
+    if (botHp < 35.0f)
+    {
+        if (uint32 sacrifice = GetHighestLearnedRank(bot, 805027))
+        {
+            if (uint32 spell = TrySpell(bot, bot, sacrifice, true))
+                return spell;
+        }
+    }
+
+    // 3. Situational Temporary / Cooldown Summons (0 Life Force cost):
+    // Animate: Plaguefather (root 805048) - elite plague minion, throttled 30s
+    if (uint32 spell = TryThrottledSpell(bot, bot, 805048, 30000, true))
+        return spell;
+
+    // Animate: Bone Wraith (root 805032) - shadow burst wraith, throttled 30s
+    if (uint32 spell = TryThrottledSpell(bot, bot, 805032, 30000, true))
+        return spell;
+
+    // Animate: Skeletal Archer (root 805040) - ranged physical minion, throttled 30s
+    if (uint32 spell = TryThrottledSpell(bot, bot, 805040, 30000, true))
+        return spell;
+
+    // Animate: Bone Construct (root 531130) - bone construct guardian, throttled 30s
+    if (uint32 spell = TryThrottledSpell(bot, bot, 531130, 30000, true))
+        return spell;
+
+    // 4. Permanent Minions (Life Force Summons, throttled 15s so once Life Force pool is filled, DoTs/Nukes are cast):
+    // Raise: Crypt Fiend (root 504859, cost 2 LF) - ranged poison/web minion
+    if (uint32 spell = TryThrottledSpell(bot, bot, 504859, 15000, true))
+        return spell;
+
+    // Raise: Greater Skeletal Warrior (root 504901, cost 1 LF) - durable melee tank/dps
+    if (uint32 spell = TryThrottledSpell(bot, bot, 504901, 15000, true))
+        return spell;
+
+    // Raise: Ghoul (root 500971, cost 1 LF) - aggressive melee ghoul
+    if (uint32 spell = TryThrottledSpell(bot, bot, 500971, 15000, true))
+        return spell;
+
+    // Raise: Skeletal Rogue (root 500969, cost 1 LF) - burst melee rogue
+    if (uint32 spell = TryThrottledSpell(bot, bot, 500969, 15000, true))
+        return spell;
+
+    // Raise: Abomination (root 500335, cost 3 LF) - giant melee brute
+    if (uint32 spell = TryThrottledSpell(bot, bot, 500335, 15000, true))
+        return spell;
+
+    // Raise: Brittle Skeleton (root 500970, cost 1 LF) - basic skeleton
+    if (uint32 spell = TryThrottledSpell(bot, bot, 500970, 15000, true))
+        return spell;
+
+    // 5. Afflictions & Curses (Maintain DoTs):
+    // Crypt Swarm (root 500965, highest rank e.g. 501888)
+    uint32 cryptSwarm = GetHighestLearnedRank(bot, 500965);
+    if (cryptSwarm && !target->HasAura(cryptSwarm) && !target->HasAura(500965))
+    {
+        if (uint32 spell = TrySpell(bot, target, cryptSwarm))
+            return spell;
+    }
+
+    // Harvest Plague (root 500968, highest rank e.g. 583256)
+    uint32 harvestPlague = GetHighestLearnedRank(bot, 500968);
+    if (harvestPlague && !target->HasAura(harvestPlague) && !target->HasAura(500968))
+    {
+        if (uint32 spell = TrySpell(bot, target, harvestPlague))
+            return spell;
+    }
+
+    // Greater Chill of the Tomb (root 572173) - frost snare / AoE
+    if (uint32 spell = TrySpell(bot, target, 572173))
+        return spell;
+
+    // 6. Direct Damage Fallback:
+    // Return 0 so BotAI::UpdateOffensive falls through to BotAI::SelectNecromancerRotationSpell(bot, target)
+    // which casts Lichfrost (501980 / etc.) or Ice Barrage!
+    return 0;
+}
+
 } // anonymous namespace
 
 uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32 activeSpec)
@@ -1149,6 +1278,9 @@ uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32
 
         case 21: // Ranger
             return SelectRangerRotationSpell(bot, target, activeSpec);
+
+        case 23: // Necromancer
+            return SelectNecromancerRotationSpell(bot, target, activeSpec);
 
         case 24: // Pyromancer
             return SelectPyromancerRotationSpell(bot, target, activeSpec);

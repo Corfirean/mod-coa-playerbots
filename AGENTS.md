@@ -1895,3 +1895,49 @@ handles login) is future work if that becomes a real requirement. Only tested at
 far -- the account-rotation logic (creating a second/third "CoaBotHostN" account once the
 first fills up) is code-reviewed but not yet exercised live at a scale that would actually
 trigger it.
+
+## Necromancer and Witch Doctor pet-summon logic (Gemini, 2026-09-15)
+
+Scoped explicitly to situational summon choice (+ stance switching for Necromancer), not full
+pet micromanagement -- pets fight on their own via their own AI once summoned, matching the
+scope this was assigned with. Added to the shared `BotClassRotations.cpp` (case 23 added to
+`SelectClassRotationSpell`'s switch; Witch Doctor's existing case 13 extended), independent of
+`BotClassRotationsNecromancer.cpp` (mine, Lichfrost-only) -- the two compose cleanly since
+`SelectClassRotationSpell` runs before the per-class override files in `BotAI.cpp`'s dispatch
+chain, so this rotation's own `return 0` (explicitly commented "falls through to Lichfrost")
+only happens when nothing summon/stance-related is ready.
+
+**Necromancer (23)**: situational stance switching between three `spell_group` 1137
+mutually-exclusive stances (500982 Assault/offensive default, 500985 Protect when below 60%
+HP or currently tanking the target, 500983 Pacify below 35% HP for survival) via `HasAura`
+checks before recasting; an emergency self-sacrifice cooldown below 35% HP; four throttled
+(30s) temporary/cooldown summons with no Life Force cost (Plaguefather, Bone Wraith, Skeletal
+Archer, Bone Construct); six throttled (15s) permanent Life-Force-cost minions (Crypt Fiend,
+Greater Skeletal Warrior, Ghoul, Skeletal Rogue, Abomination, Brittle Skeleton); then DoT
+maintenance (Crypt Swarm, Harvest Plague, both rank-resolved via `GetHighestLearnedRank`) and
+a frost snare filler. One real engine fix needed along the way: self-cast summons with
+`RangeIndex=1` (a "self only" range entry) weren't reachable through the existing `TrySpell`
+helper without a `positiveRange=true` flag telling it the caster is a valid target -- same
+category of self-target fix as the `LogCastAttempt` auto-self-target fix from an earlier pass,
+just for a helper this file owns rather than the generic engine. **Confirmed live** (both by
+Gemini and independently re-verified after merge): all 6 permanent minions self-cast cleanly,
+all 4 temporary summons self-cast cleanly, both DoTs apply and correctly skip re-application
+while active, and the Lichfrost fallback (this session's own earlier work) picks up in the
+gaps -- e.g. a real test window showed Plaguefather summon -> two Lichfrost casts while
+summons were on cooldown -> Skeletal Archer summon, all `SPELL_CAST_OK`, zero failures.
+
+**Witch Doctor (13)**: expanded the existing summon/idol/effigy filler into full situational
+selection -- four major guardians (Big Voodoo, War Golem, Call Sseratus, Mimic, each throttled
+45s or 30s), a wards choice gated on HP (Healing Ward below 60% HP, otherwise the existing
+offensive Serpent Ward), three effigies (Hexing/Shadow/Cursed) and three idols
+(Dark/Swift/Spirit) round-robining through their own throttles, plus a fix to keep the
+existing "Loa's Brew" healing cast from spamming every GCD (now throttled to 8s, Spirit in a
+Bottle to 12s). **Confirmed live** (both by Gemini and independently re-verified after merge):
+all three effigies, all three idols, all major guardians, and the HP-gated ward all cast
+cleanly, and the Healing/Serpent Ward choice correctly switches in real time as HP crosses the
+60% threshold.
+
+All 21 classes now have a rotation attempt with live-verified pet/summon logic for both
+remaining pet-heavy classes -- the only explicitly out-of-scope item left from this session's
+combat AI work is full pet command/control (which minion to send where, focus-fire targeting
+for summoned pets, etc.), deliberately not attempted per the scope given for this pass.
