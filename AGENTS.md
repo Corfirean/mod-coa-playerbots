@@ -1670,9 +1670,55 @@ folded both into this rotation with the same real cost/aura checks, closing that
 **Confirmed live**: 100% `SPELL_CAST_OK` across 24+ consecutive casts against a stationary
 training dummy after both precondition fixes landed.
 
-Remaining classes without a dedicated rotation yet (14 of 21): Witch Doctor, Witch Hunter,
-Stormbringer, Knight of Xoroth, Guardian, Templar, Bloodmage, Chronomancer, Starcaller, Sun
-Cleric, Necromancer, Primalist, Runemaster. Necromancer was scoped out this pass —
-its real kit spans 7 dedicated source files (~2500 lines, heavy pet/summon architecture) versus
-Felsworn's ~800 lines across 2, a different and larger problem shape ("which pet to summon,"
-not "which spell to cast") not attempted yet.
+Remaining classes without a dedicated rotation yet (14 of 21) as of the previous pass: Witch
+Doctor, Witch Hunter, Stormbringer, Knight of Xoroth, Guardian, Templar, Bloodmage,
+Chronomancer, Starcaller, Sun Cleric, Necromancer, Primalist, Runemaster. Necromancer was
+scoped out this pass — its real kit spans 7 dedicated source files (~2500 lines, heavy
+pet/summon architecture) versus Felsworn's ~800 lines across 2, a different and larger problem
+shape ("which pet to summon," not "which spell to cast") not attempted yet.
+
+## Combat AI, third pass: Bloodmage, Stormbringer (2026-09-15)
+
+Two more classes, both picked specifically for their small footprint (2 and 4 dedicated
+mod-ascension-compat files respectively, smallest of the remaining 13) —
+`BotClassRotationsBloodmage.h/.cpp` and `BotClassRotationsStormbringer.h/.cpp`, same
+one-file-per-class-to-avoid-concurrent-edits pattern as Reaper/Felsworn.
+
+**New failure mode found on Bloodmage, not seen on any class so far**:
+`SpellInfo::PowerType` can be `POWER_HEALTH` (0xFFFFFFFE, i.e. -2 as a signed value) — a real
+class of spell that costs the caster's own health instead of a mana-like resource. This breaks
+the cost check every rotation so far has used (`bot->GetPower(Powers(spellInfo->PowerType))`):
+`Unit::GetPower(Powers power)` is literally `GetUInt32Value(UNIT_FIELD_POWER1 + power)` —
+pointer arithmetic using `power` as an array offset — so passing -2 reads two fields *before*
+`UNIT_FIELD_POWER1`, not current health. `BotClassRotationsBloodmage.cpp` checks
+`PowerType == POWER_HEALTH` explicitly and compares against `Unit::GetHealth()` directly in
+that case. **Not fixed in the shared generic engine** (`SelectKnownSpell` in `BotAI.cpp`,
+`CanCastSpell` in `BotClassRotations.cpp`) — a cross-cutting fix affecting every class-agnostic
+cost check in the codebase, out of scope for one class's own rotation file. Whoever next
+touches a class with a real `POWER_HEALTH` spell should either add the same explicit check
+locally (as done here) or fix it once at the shared-engine level.
+
+**Bloodmage** live test exposed a second, harder limitation, not fixed this pass: its real kit
+(`AscensionBloodmageVitality.cpp`) layers a "Pooled Vitality" mechanic where an
+`ALLSPELLHOOK_ON_SPELL_CHECK_CAST` hook dynamically injects `SPELL_FAILED_CASTER_AURASTATE` on
+certain rage-cost spells based on live stack-count state (`CanEmpower()`), not on any static
+`SpellInfo` field either rotation code or the generic engine's own `CasterAuraState` check can
+see ahead of time. The two Bloodmage spells this rotation actually offers (both gated on a
+"Night Hunter" proc buff, 524861, checked via a plain `HasAura`) never hit this — confirmed
+correctly deferring to the generic fallback when that buff isn't up — but the test character's
+*other* known spells (chosen by the generic fallback once this rotation returns 0) did hit it
+repeatedly. Documented rather than chased further: replicating `CanEmpower()`'s exact stack
+logic from a rotation file would mean partially reimplementing the class's own resource engine,
+a much bigger undertaking than this pass's scope.
+
+**Stormbringer** was more straightforward: all real damage candidates found have a 0 base
+DBC cost (the class gates on procs, not a spendable bar) — four of seven require a specific
+`CasterAuraSpell` this file didn't chase the source of (checked via `HasAura` regardless, same
+defensive shape as Felsworn's Felfury gates); the other three (Gale, Volt, Forked Lightning)
+are always-available. **Confirmed live**: 25+ consecutive `SPELL_CAST_OK` casts (Volt DoT +
+Forked Lightning filler) against a stationary training dummy, zero failures.
+
+Remaining without a dedicated rotation (11 of 21): Witch Doctor, Witch Hunter, Knight of
+Xoroth, Guardian, Templar, Chronomancer, Starcaller, Sun Cleric, Necromancer, Primalist,
+Runemaster. Guardian/Templar/Starcaller currently assigned to the parallel Gemini session (see
+git log / Antigravity conversation "Playerbot Class Spell Rotation" for status).
