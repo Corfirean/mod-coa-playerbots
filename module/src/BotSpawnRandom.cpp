@@ -240,10 +240,16 @@ ObjectGuid::LowType CloneCharacter(uint32 templateGuid, uint32 accountId, std::s
     std::string selectValsStr = selectVals.str();
     selectValsStr.pop_back();
 
-    CharacterDatabase.Execute("INSERT INTO characters (" + insertColsStr + ") SELECT " + selectValsStr +
+    // DirectExecute, not Execute: the plain Execute() overloads always queue onto the async
+    // worker pool regardless of name -- confirmed live the hard way, spawning 100 bots in a
+    // row put all 100 on the same account because FindOrCreateBotAccount's very next
+    // GetCharactersCount() check kept racing ahead of these inserts actually landing, so the
+    // count it saw never caught up to CharactersPerAccount. DirectExecute runs synchronously
+    // on the calling thread, so by the time this function returns the row genuinely exists.
+    CharacterDatabase.DirectExecute("INSERT INTO characters (" + insertColsStr + ") SELECT " + selectValsStr +
         " FROM characters WHERE guid = " + std::to_string(templateGuid));
 
-    CharacterDatabase.Execute(
+    CharacterDatabase.DirectExecute(
         "INSERT INTO character_homebind (guid, mapId, zoneId, posX, posY, posZ) "
         "SELECT {}, mapId, zoneId, posX, posY, posZ FROM character_homebind WHERE guid = {}",
         newGuid, templateGuid);

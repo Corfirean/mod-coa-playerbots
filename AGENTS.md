@@ -2020,3 +2020,33 @@ reliable way to manufacture a specific HP/mana value for a bot test is a direct
 `.modify` GM command routed through `.botcmd runchat`. Worth a real fix (route `.modify`
 through the bot's own player object when there's no selection instead of failing silently) if
 this keeps coming up.
+
+## Bulk spawner fix: account rotation never actually triggered (2026-09-15)
+
+Scaled up `.botcmd spawnrandom` from the count=3 smoke test to a real count=100 run, since the
+account-rotation logic (creating a new "CoaBotHostN" account once the current one hits
+`CharactersPerAccount`) had only been code-reviewed, not exercised. **First run found a real
+bug**: all 100 landed on the same account (which ended up with 103 characters, more than
+double the configured 50 cap) instead of rotating to a second/third account partway through.
+
+Root cause: `CloneCharacter`'s two `characters`/`character_homebind` INSERTs used
+`CharacterDatabase.Execute(...)`, which -- despite the generic-sounding name -- always queues
+onto the database's async worker pool (`DatabaseWorkerPool::Execute` calls `Enqueue()`
+unconditionally, confirmed by reading the implementation). `FindOrCreateBotAccount`'s very
+next `AccountMgr::GetCharactersCount()` call is a real, synchronous `SELECT COUNT(*)`, but it
+was racing against inserts that hadn't landed yet -- in a tight loop creating 100 characters
+back to back, the async queue never caught up, so the count it saw stayed permanently behind
+the real total and the `< CharactersPerAccount` check never failed. Fixed by switching both
+inserts to `CharacterDatabase.DirectExecute(...)`, which runs synchronously on the calling
+thread -- the same class of bug as `AccountMgr::CreateAccount`'s async `Execute()` found
+during the very first count=3 test, just missed here because the count=3 run never got large
+enough to hit a full account and expose it.
+
+**Confirmed live after the fix**: count=100 against a starting account already at 3
+characters landed exactly 47/50/3 across three accounts (`CoaBotHost1` topped up to the 50
+cap, `CoaBotHost2` created and filled to 50, `CoaBotHost3` created for the remaining 3) --
+precise rotation at the configured boundary. All 100 characters created, all 100 auto-logged
+in successfully (`Characters in world: 100`), zero errors in `Errors.log`, and no tick-time
+impact (`Update time diff` stayed in the same 2-20ms range as idle). All 100 test characters
+and the three `CoaBotHost*` accounts were deleted afterward to leave the environment clean --
+this was purely a scale test, not meant to leave a permanent bot roster.
