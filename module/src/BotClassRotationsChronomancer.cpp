@@ -19,9 +19,18 @@
  * ever seem incomplete. This file's own scan used the corrected value and is what surfaced
  * "Shatter Echo" (effects 121+31 together, a real attack) in the first place.
  *
- * Real candidates: Melt Reality (a DoT, spec32/Infinite) with no precondition; Shatter Echo
- * (spec33/Artificer, a real weapon attack, 3s cooldown) and Arc Collision (spec33, a DoT) both
- * requiring CasterAuraSpell 804455; Chromatic Shard (spec32) with no precondition.
+ * Real candidates: Melt Reality (a DoT, spec32/Infinite) and Chromatic Shard (spec32) both carry
+ * ManaCost=0 in the raw DBC field but actually cost real mana via SpellInfo::CalcPowerCost's
+ * percentage-based calculation (799 mana each on a 6253 max-mana level-80 character) -- "no
+ * precondition" in the sense of no aura/stance gate, but NOT free. This class's kit reads as a
+ * couple of expensive, deliberate casts rather than a filler-spam rotation, which fits its
+ * support/utility-heavy design (see above). Shatter Echo (spec33/Artificer, a real weapon
+ * attack, 3s cooldown) and Arc Collision (spec33, a DoT) both require CasterAuraSpell 804455 --
+ * confirmed present in the DBC data and gated via the same HasAura() pattern proven correct on
+ * Felsworn/Xoroth, but this specific aura's real source spell wasn't identified in this pass
+ * (not GM-`.cast`-able directly, so likely only granted as a proc from something else in the
+ * Artificer tree) -- live-confirmed only for Melt Reality; Shatter Echo/Arc Collision remain
+ * unexercised live pending that follow-up.
  */
 
 #include "BotClassRotationsChronomancer.h"

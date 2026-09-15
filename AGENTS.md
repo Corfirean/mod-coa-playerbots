@@ -1792,19 +1792,30 @@ live-verified independently of scan-trust, but worth re-auditing older classes' 
 rotation ever looks suspiciously incomplete.
 
 `BotClassRotationsChronomancer.h/.cpp` -- 4 real candidates across the class's ~340
-talent-granted spells: Melt Reality (806335, DoT, no precondition), Chromatic Shard (801292, no
-precondition), Shatter Echo (804503, 3s cd) and Arc Collision (524853, DoT) both gated on
-`CasterAuraSpell` 804455 (checked via `HasAura`, same pattern as every prior aura-gated class).
-**Confirmed live**, with a caveat: this class already has full DPS coverage from the
-pre-existing generic dispatcher (`SelectClassRotationSpell`, checked before every per-class
-override) via spell 804418, which both DPS specs (Infinite 32, Artificer 33) know and which
-never showed a cooldown gap long enough for this rotation to actually fire in a 10+ second
-combat window on live-tested characters. The dispatch is still correctly wired and safe --
-confirmed via `.botcmd hasspells` that Artificer knows Shatter Echo/Arc Collision and Infinite
-knows Melt Reality/Chromatic Shard, and confirmed no crash/regression and a clean
-`SPELL_FAILED`-free fallback to 804418 -- but this rotation is currently dormant filler for a
-class the generic system already fully covers, not independently exercised end-to-end the way
-every other class's rotation has been. Flagged here rather than claimed as fully live-verified.
+talent-granted spells: Melt Reality (806335, DoT), Chromatic Shard (801292), Shatter Echo
+(804503, 3s cd) and Arc Collision (524853, DoT) both gated on `CasterAuraSpell` 804455 (checked
+via `HasAura`, same pattern as every prior aura-gated class).
+
+**Follow-up pass, full live verification**: this rotation initially never fired in testing --
+804418 ("Unmake", a real spell known regardless of spec with effectively no cooldown, reached
+via a completely separate, always-checked-first codepath: it's the generic engine's own
+last-resort `SelectSpell` fallback picking off the bot's actual known spellbook, not the
+`SelectClassRotationSpell` per-class dispatcher, which has no case for class 22 at all) kept
+winning every tick before this rotation's own candidates got a real chance. Traced with a
+temporary debug log (added, used, then removed) rather than guessing further: root cause was
+that Melt Reality/Chromatic Shard both carry `ManaCost=0` in the raw DBC field but
+`SpellInfo::CalcPowerCost` computes a real percentage-based cost of 799 mana each on a 6253
+max-mana level-80 character -- "no precondition" was correct in the sense of no aura/stance
+gate, but wrong in implying free cost. Every test character's mana had been drained by earlier
+debugging passes and regenerates slowly, so `IsCastable`'s affordability check was correctly
+(not buggy) rejecting both spells every time. **Confirmed live** once mana was restored
+(direct DB `power1` write before spawning, since `.modify mana` at runtime got overwritten by
+this class's own resource handling before the next AI tick): 12+ consecutive `SPELL_CAST_OK`
+casts of Melt Reality against a stationary training dummy, zero failures. Shatter Echo/Arc
+Collision (Artificer spec) remain unexercised live -- aura 804455 isn't directly GM-`.cast`-able
+(likely only granted as a proc from something else in the Artificer talent tree, not identified
+in this pass), though the `HasAura()` gating pattern itself is already proven correct on
+Felsworn and Knight of Xoroth.
 
 `BotClassRotationsNecromancer.h/.cpp` -- deliberately scoped narrow. Necromancer's real kit
 spans 7 `mod-ascension-compat` files (~2500 lines, pet/summon architecture answering "which
