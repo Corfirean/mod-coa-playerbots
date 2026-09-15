@@ -38,12 +38,33 @@ so both sides can be developed independently against the same interface.
 | `STAY` | botGuidLow | new `BotAI::SetManualCommand(guid, Stay)` | Bot holds current position -- no follow, no auto-engage on the leader's target, still self-defends if attacked (reuses the existing attacker-retaliation fallback). |
 | `PULL` | botGuidLow | new `BotAI::SetManualCommand(guid, Pull)`, target = sender's current target | Bot immediately engages whatever unit the *commanding player* currently has selected (read via the WHISPER sender's `GetSelectedUnit()`server-side, not a guid over the wire -- avoids the addon needing to resolve/transmit a target guid itself). |
 | `STOPATTACK` | botGuidLow | `Unit::AttackStop()` + clear any manual Pull state, fall back to `Follow` | |
-| `SETROLE` | botGuidLow, role name (`dps`/`tank`/`healer`/`support`/`auto`) | existing `BotMgr::SetRole`/`ClearRoleOverride` | Reuses code already live-tested this session. |
+| `SETROLE` | botGuidLow, role name (`dps`/`tank`/`healer`/`support`/`auto`) | existing `BotMgr::SetRole`/`ClearRoleOverride` | Reuses code already live-tested this session. As of 2026-09-15: also auto-switches the bot's Ascension spec to match the requested role (via `BotMgr::LearnSpecialization`) if its current spec doesn't already map to that role, and silently refuses the whole request (spec+role both left unchanged) if the bot's class has no spec at all for that role -- see `ClassSpecRoles::FindSpecForRole`. `handler` is always `nullptr` on this wire path (see `BotAddonChat.cpp`), so refusal produces no message back to the player; the addon should pre-filter role options per bot rather than rely on server feedback (see "Addon UX expectations"). |
 | `LEARNSPEC` | botGuidLow, specId | existing `BotMgr::LearnSpecialization` | |
+| `GETROLES` | botGuidLow | server replies (see below), no bot state change | Added 2026-09-15. Query verb: ask which roles this bot's class can actually hold, so the addon can grey out impossible role buttons before the player ever clicks one (`SETROLE` refuses silently -- see its note above). |
 
 Inventory/equipment management (the other half of the user's ask) is deliberately **out of
 v1 scope** -- needs its own item-guid wire format and is lower-value than movement/role
 control for a first usable panel. Revisit once v1 round-trips cleanly.
+
+## Server -> client replies (added 2026-09-15)
+
+Every verb above is client -> server only. `GETROLES` is the first verb that needs an answer
+back, so this direction now exists too: `BotAddonChat.cpp`'s `SendCoaBotReply(Player* recipient,
+std::string const& body)` builds a `CHAT_MSG_WHISPER`/`LANG_ADDON` packet addressed from the
+player to themself (`ChatHandler::BuildChatPacket` + `Player::SendDirectMessage`, the same
+self-whisper-as-addon-channel trick as the outgoing direction, and the same technique
+`mod-ascension-compat`'s `CoABugReport.cpp` already uses for its own server->client replies) and
+hands it straight to the recipient's own session -- no real second recipient, no opcode
+changes. Body keeps the same `COABOT\t<VERB>:...` shape as the client->server direction, so the
+addon's existing `CHAT_MSG_ADDON` event handler covers both without a second code path.
+
+| Reply verb | Args | Sent when |
+|---|---|---|
+| `ROLES` | botGuidLow, comma-separated role list (e.g. `dps,tank`) | In response to `GETROLES`. Built from `ClassSpecRoles::GetAvailableRolesMask(bot->getClass())` -- always includes `dps` (every class has at least a default/shared spec), plus whichever of `tank`/`healer`/`support` that class has a real spec for. |
+
+Addon-side TODO (not yet implemented client-side as of 2026-09-15): send `GETROLES` once per
+bot when populating its row, cache the `ROLES` reply, and grey out/disable any role button not
+in that list.
 
 ## Server-side authorization (non-negotiable, implement before wiring any verb)
 

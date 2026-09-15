@@ -13,12 +13,15 @@
 
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "Chat.h"
+#include "ClassSpecRoles.h"
 #include "Group.h"
 #include "Log.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "Unit.h"
+#include "WorldPacket.h"
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -55,6 +58,20 @@ Player* ResolveAuthorizedBot(Player* commander, ObjectGuid::LowType botGuidLow)
         return nullptr;
 
     return bot;
+}
+
+// Server -> client half of the protocol -- same self-whisper trick in reverse (see
+// mod-ascension-compat's CoABugReport.cpp for the precedent this is copied from):
+// build a CHAT_MSG_WHISPER/LANG_ADDON packet addressed from the player to themself and hand
+// it directly to their own session, since a bot's own null-socket session can't send it and
+// there's no other recipient involved. Body gets the same "COABOT\t" prefix as an outgoing
+// client message so one client-side CHAT_MSG_ADDON handler covers both directions.
+void SendCoaBotReply(Player* recipient, std::string const& body)
+{
+    WorldPacket packet;
+    ChatHandler::BuildChatPacket(packet, CHAT_MSG_WHISPER, LANG_ADDON, recipient->GetGUID(), recipient->GetGUID(),
+        std::string(PROTOCOL_PREFIX) + body, 0, recipient->GetName(), recipient->GetName(), 0, false);
+    recipient->SendDirectMessage(&packet);
 }
 
 void HandleCoaBotMessage(Player* commander, std::string const& body)
@@ -107,6 +124,26 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         sBotMgr->SetRole(botGuidLow, parts[2], nullptr);
     else if (verb == "LEARNSPEC" && parts.size() >= 3)
         sBotMgr->LearnSpecialization(botGuidLow, std::strtoul(parts[2].c_str(), nullptr, 10), nullptr);
+    else if (verb == "GETROLES")
+    {
+        // Query, not a command: lets the addon grey out role buttons a bot's class can never
+        // actually hold (see SETROLE's silent-refusal note above) without needing its own copy
+        // of the classId->role table -- the addon only ever sees the bot's underlying WoW
+        // class, not its Ascension classId, so it has no way to derive this locally.
+        static char const* const ROLE_NAMES[] = { "dps", "tank", "healer", "support" };
+        uint32 mask = BotAI::GetAvailableRolesMask(bot->getClass());
+        std::string roles;
+        for (uint32 i = 0; i < 4; ++i)
+        {
+            if (mask & (1u << i))
+            {
+                if (!roles.empty())
+                    roles += ",";
+                roles += ROLE_NAMES[i];
+            }
+        }
+        SendCoaBotReply(commander, "ROLES:" + std::to_string(botGuidLow) + ":" + roles);
+    }
 }
 
 class coa_bot_addon_chat_script : public PlayerScript

@@ -58,6 +58,7 @@
 #include "PetDefines.h"
 #include "Player.h"
 #include "QuestDef.h"
+#include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -222,6 +223,20 @@ constexpr uint32 QUEST_SCAN_INTERVAL_MS = 5000;
 // checks it bundles so there's one throttle field, not two.
 constexpr uint32 PROGRESSION_CHECK_INTERVAL_MS = 10000;
 
+// TryMaintainEquipment: repair/bag-cleanup only ever fire opportunistically, when a bot
+// happens to already be standing next to the right NPC (quest hubs usually have both a
+// repairer and a vendor) -- deliberately no pathing-to-a-vendor logic, that's flight-path
+// scale future work. Kept tight (most quest-hub NPCs cluster within a few yards of each
+// other) so a bot doesn't "repair" off some unrelated vendor two zones over.
+constexpr float VENDOR_SEARCH_RADIUS = 20.0f;
+// Repair once any equipped piece drops below this percent of max durability -- proactive
+// (matches how a real player tops off before it hits 0%, not a last-second panic repair).
+constexpr uint32 DURABILITY_REPAIR_THRESHOLD_PCT = 25;
+// Bag cleanup only kicks in once free space is this low -- avoids destroying/selling grey
+// clutter a bot might still want a use for (e.g. as a gathering-node byproduct) while there's
+// still room to carry it.
+constexpr uint32 BAG_CLEANUP_FREE_SLOT_THRESHOLD = 2;
+
 std::unordered_map<ObjectGuid, BotAIState> states;
 
 // Real, verified (checked by parsing this server's own Spell.dbc byte-for-byte -- SpellName and
@@ -333,6 +348,144 @@ void TryUpgradeGearOnce(Player* bot)
     }
 }
 
+// Same shrinking-radius shape as QuestGiverCheck, but for a nearby repair vendor.
+class RepairNpcCheck
+{
+public:
+    RepairNpcCheck(Player* bot, float range) : _bot(bot), _range(range) { }
+    bool operator()(Creature* creature)
+    {
+        if (!creature->IsAlive() || !creature->IsArmorer())
+            return false;
+        if (!_bot->IsWithinDistInMap(creature, _range))
+            return false;
+        _range = _bot->GetDistance(creature);
+        return true;
+    }
+
+private:
+    Player* _bot;
+    float _range;
+};
+
+// Same idea, but for a generic item vendor (may or may not be the same NPC as above).
+class VendorNpcCheck
+{
+public:
+    VendorNpcCheck(Player* bot, float range) : _bot(bot), _range(range) { }
+    bool operator()(Creature* creature)
+    {
+        if (!creature->IsAlive() || !creature->IsVendor())
+            return false;
+        if (!_bot->IsWithinDistInMap(creature, _range))
+            return false;
+        _range = _bot->GetDistance(creature);
+        return true;
+    }
+
+private:
+    Player* _bot;
+    float _range;
+};
+
+// Opportunistic gear repair and bag-clutter cleanup -- part of TryMaintainProgression's
+// throttled bundle, so this only runs once every PROGRESSION_CHECK_INTERVAL_MS. Neither half
+// paths the bot anywhere: both only act when the right NPC is already within
+// VENDOR_SEARCH_RADIUS, i.e. the bot happens to be standing at a quest hub or town it was
+// already going to visit anyway. Real engine calls throughout (Player::DurabilityRepairAll,
+// Player::ModifyMoney, Player::DestroyItem) -- same "call the real thing" pattern as the rest
+// of this module.
+void TryMaintainEquipment(Player* bot)
+{
+    bool anyDamaged = false;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+        uint32 maxDurability = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+        if (maxDurability && item->GetUInt32Value(ITEM_FIELD_DURABILITY) * 100 < maxDurability * DURABILITY_REPAIR_THRESHOLD_PCT)
+        {
+            anyDamaged = true;
+            break;
+        }
+    }
+
+    if (anyDamaged)
+    {
+        Creature* repairNpc = nullptr;
+        RepairNpcCheck repairCheck(bot, VENDOR_SEARCH_RADIUS);
+        Acore::CreatureLastSearcher<RepairNpcCheck> repairSearcher(bot, repairNpc, repairCheck);
+        Cell::VisitObjects(bot, repairSearcher, VENDOR_SEARCH_RADIUS);
+
+        if (repairNpc)
+        {
+            uint32 cost = bot->DurabilityRepairAll(true, 1.0f, false);
+            LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' repaired gear at '{}' for {} copper.",
+                bot->GetName(), repairNpc->GetName(), cost);
+        }
+    }
+
+    if (bot->GetFreeInventorySpace() > BAG_CLEANUP_FREE_SLOT_THRESHOLD)
+        return;
+
+    Creature* vendorNpc = nullptr;
+    VendorNpcCheck vendorCheck(bot, VENDOR_SEARCH_RADIUS);
+    Acore::CreatureLastSearcher<VendorNpcCheck> vendorSearcher(bot, vendorNpc, vendorCheck);
+    Cell::VisitObjects(bot, vendorSearcher, VENDOR_SEARCH_RADIUS);
+
+    // No vendor nearby: only force clutter out as a last resort once bags are truly full --
+    // otherwise leave it for a later scan that might catch a vendor instead.
+    if (!vendorNpc && bot->GetFreeInventorySpace() > 0)
+        return;
+
+    uint32 totalEarned = 0;
+    uint32 itemsCleared = 0;
+
+    auto clearIfJunk = [&](Item* item) -> bool
+    {
+        if (!item)
+            return false;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || proto->Quality != ITEM_QUALITY_POOR)
+            return false;
+        if (item->IsNotEmptyBag() || item->IsRefundable() || bot->GetLootGUID() == item->GetGUID())
+            return false;
+
+        if (vendorNpc && proto->SellPrice > 0 && sScriptMgr->OnPlayerCanSellItem(bot, item, vendorNpc))
+        {
+            uint32 money = proto->SellPrice * item->GetCount();
+            bot->ModifyMoney(money);
+            totalEarned += money;
+        }
+        bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+        ++itemsCleared;
+        return true;
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        clearIfJunk(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Bag* pBag = bot->GetBagByPos(bag);
+        if (!pBag)
+            continue;
+        for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+            clearIfJunk(pBag->GetItemByPos(j));
+    }
+
+    if (itemsCleared)
+    {
+        if (vendorNpc)
+            LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' sold {} junk item stack(s) to '{}' for {} copper.",
+                bot->GetName(), itemsCleared, vendorNpc->GetName(), totalEarned);
+        else
+            LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' destroyed {} junk item stack(s) (bags full, no vendor nearby).",
+                bot->GetName(), itemsCleared);
+    }
+}
+
 // Called every tick from BotAI::Update, unconditional on role/combat/group state (gearing up
 // and owning a mount matter regardless of what else the bot is doing right now, same reasoning
 // as TryMaintainBuff running independent of combat state) -- throttled internally so the actual
@@ -348,6 +501,7 @@ void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
 
     EnsureBotHasMount(bot);
     TryUpgradeGearOnce(bot);
+    TryMaintainEquipment(bot);
 }
 
 // Filters a learned spell down to "looks like something a player would press on an enemy

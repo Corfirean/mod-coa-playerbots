@@ -155,4 +155,28 @@ char const* GetSpecName(uint8 classId, uint32 specId)
     }
     return nullptr;
 }
+
+uint32 GetAvailableRolesMask(uint8 classId)
+{
+    uint32 mask = 1u << uint32(BotRole::Dps); // specId 0 always falls back to Dps
+    for (auto const& entry : SPEC_ROLE_TABLE)
+    {
+        if (entry.classId == classId)
+            mask |= 1u << uint32(entry.role);
+    }
+    return mask;
+}
+
+uint32 FindSpecForRole(uint8 classId, BotRole role, uint32 preferredSpecId)
+{
+    if (preferredSpecId && GetRoleForClassSpec(classId, preferredSpecId) == role)
+        return preferredSpecId;
+
+    for (auto const& entry : SPEC_ROLE_TABLE)
+    {
+        if (entry.classId == classId && entry.role == role)
+            return entry.specId;
+    }
+    return 0;
+}
 }

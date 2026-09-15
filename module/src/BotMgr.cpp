@@ -1110,6 +1110,27 @@ void BotMgr::SetRole(ObjectGuid::LowType charLowGuid, std::string const& roleNam
         return;
     }
 
+    // A role pick must actually correspond to a spec this class has -- most classes have no
+    // Tank spec at all, several have no Healer spec either (see ClassSpecRoles.cpp's table).
+    // Picking one of those roles anyway would just leave the bot's spec/talents mismatched
+    // with what BotAI::Update now thinks its role is, silently breaking its rotation. If the
+    // bot's current spec already satisfies the requested role, FindSpecForRole returns it
+    // unchanged and no spec switch happens at all.
+    uint32 currentSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+    uint32 targetSpec = BotAI::FindSpecForRole(bot->getClass(), role, currentSpec);
+    if (!targetSpec)
+    {
+        LOG_INFO("module.coa-playerbots", "BotMgr::SetRole: bot '{}' (class {}) has no {} spec available -- role change refused.",
+            bot->GetName(), uint32(bot->getClass()), normalized);
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' has no {} spec available for its class -- role change refused.",
+                bot->GetName(), normalized);
+        return;
+    }
+
+    if (targetSpec != currentSpec)
+        LearnSpecialization(charLowGuid, targetSpec, handler);
+
     BotAI::SetRole(bot->GetGUID(), role);
     LOG_INFO("module.coa-playerbots", "BotMgr::SetRole: bot '{}' role manually set to {} (guid {}).",
         bot->GetName(), normalized, charLowGuid);
