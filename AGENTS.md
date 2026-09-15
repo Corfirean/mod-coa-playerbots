@@ -1974,3 +1974,49 @@ target whenever it's beyond `MELEE_ENGAGE_RANGE`, instead of clearing movement u
 buffs off cooldown and available) -- despawn-triggered position save showed it had closed
 ~50 of those yards under its own chase movement rather than standing still, all while its
 self-buffs kept firing.
+
+## Follow-up: Sun Cleric / Witch Doctor group healing (Gemini + Claude, 2026-09-15)
+
+Gemini's investigation (cut short by a quota limit, finished here) found the group-heal
+infrastructure this needed already existed: `BotAI.cpp`'s `FindHealTarget`/`SelectHealSpell`
+already drive `UpdateHealer` for confirmed Healer-spec bots. The gap was specifically for
+Sun Cleric/Witch Doctor bots in **dps** role (`UpdateOffensive` -> their own
+`SelectXxxRotationSpell`), whose emergency heal blocks only ever targeted themselves at
+`< 50%` HP, with no group awareness at all.
+
+Added a local `FindGroupHealTarget(bot, thresholdPct=95)` in `BotClassRotations.cpp` (mirrors
+`BotAI.cpp`'s `FindHealTarget` logic -- kept local rather than exported through `BotAI.h`,
+Gemini's planned "Variant A," since a self-contained duplicate needed touching one file
+instead of two and there's no other caller yet to justify the shared API surface): walks
+`bot->GetGroup()`'s members plus the bot itself, returns whichever is lowest HP% below the
+threshold, or nullptr if nobody needs it (so solo bots fall through to the original
+self-only behavior unchanged). Wired into both classes' heal blocks: a teammate below the
+threshold is always prioritized over self; self-only cooldowns (Witch Doctor's tonics,
+Sun Cleric's self-only Sol Invictus ward) still gate on the bot's own HP specifically, since
+they can't be redirected. Sun Cleric's Revivify/Daybreak/Illumination and Witch Doctor's
+Loa's Brew/Spirit in a Bottle now target the resolved heal target instead of always `bot`.
+
+**Confirmed live**: grouped `TcSunCleric` (127) with `Necrotest` (6), set Necrotest's stored
+`health` column to 100 (well below max) before spawning, engaged a target with TcSunCleric.
+A temporary debug trace (added, used, removed) confirmed the group was correctly detected
+(2 members) and Necrotest's low HP was read correctly; the live combat log showed TcSunCleric
+repeatedly casting its self-centered AoE heal (Solar Invocation: Ascension, resolved to rank
+572157) while Necrotest's HP climbed steadily from 19% to 50%+ over the test window --
+confirming the AoE heal was actually landing on the grouped teammate, not just healing self
+cosmetically. Witch Doctor's identical integration wasn't independently re-confirmed live in
+this pass (test-account group-membership housekeeping made setting up a second group
+timebox-inefficient) but shares the exact same `FindGroupHealTarget` call and `isTeammate`
+branching already proven correct for Sun Cleric -- low risk, but flagged here rather than
+overclaimed.
+
+**Also found, not fixed**: `.modify hp`/`.modify mana` issued through `.botcmd runchat` are
+silent no-ops on a bot -- `HandleModifyHPCommand` operates on `handler->getSelectedPlayer()`,
+and a null-socket bot session's `ChatHandler` never has a selected unit, so the command
+"succeeds" (`ParseCommands returned true`) without changing anything. This wasted real time
+across two separate testing passes this session (the earlier Chronomancer mana investigation,
+and the first attempt at this group-heal test) before the actual mechanism was found. The
+reliable way to manufacture a specific HP/mana value for a bot test is a direct
+`UPDATE characters SET health=... / power1=... WHERE guid=...` before spawning it -- not a
+`.modify` GM command routed through `.botcmd runchat`. Worth a real fix (route `.modify`
+through the bot's own player object when there's no selection instead of failing silently) if
+this keeps coming up.

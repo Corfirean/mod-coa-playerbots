@@ -8,6 +8,7 @@
 #include "CellImpl.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "Group.h"
 #include "Log.h"
 #include "Player.h"
 #include "SpellInfo.h"
@@ -195,6 +196,35 @@ uint32 TryThrottledSpell(Player* bot, Unit* target, uint32 rootSpellId, uint32 t
         return spellId;
     }
     return 0;
+}
+
+// Returns the group member (bot included) with the lowest health percentage below
+// thresholdPct, or nullptr if nobody needs healing right now.
+// Solo (no group): only ever considers the bot itself.
+// Mirrors BotAI.cpp FindHealTarget -- kept local to avoid touching the public BotAI.h API.
+Player* FindGroupHealTarget(Player* bot, float thresholdPct = 95.0f)
+{
+    Player* best = nullptr;
+    float bestPct = thresholdPct;
+
+    auto consider = [&](Player* candidate)
+    {
+        if (!candidate || !candidate->IsAlive() || !candidate->IsInWorld() || candidate->GetMap() != bot->GetMap())
+            return;
+        float pct = candidate->GetHealthPct();
+        if (pct < bestPct)
+        {
+            best = candidate;
+            bestPct = pct;
+        }
+    };
+
+    consider(bot);
+    if (Group* group = bot->GetGroup())
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            consider(itr->GetSource());
+
+    return best;
 }
 
 // -------------------------------------------------------------------------
@@ -811,16 +841,24 @@ uint32 SelectStarcallerRotationSpell(Player* bot, Unit* target, uint32 activeSpe
 // -------------------------------------------------------------------------
 uint32 SelectWitchDoctorRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
 {
-    // 1. Emergency Defense / Healing (< 50% health):
-    if (bot->GetHealthPct() < 50.0f)
+    // 1. Group Heal Priority: if any group member (or the bot itself) needs healing,
+    // use Loa's Brew / Spirit in a Bottle on the lowest-health target before attacking.
+    // Solo bots fall through to the self-only < 50% block below when nobody is low.
+    if (Player* healTarget = FindGroupHealTarget(bot))
     {
-        // Loa's Brew (root 801670) - healing brew
-        if (uint32 spell = TryThrottledSpell(bot, bot, 801670, 8000, true))
-            return spell;
+        // Prioritise a teammate over self (self will be caught by the block below too).
+        // Only spend the Brew/Bottle on a teammate if they're meaningfully hurt (< 80%).
+        bool isTeammate = (healTarget != bot);
+        if (isTeammate || bot->GetHealthPct() < 50.0f)
+        {
+            // Loa's Brew (root 801670) - healing brew
+            if (uint32 spell = TryThrottledSpell(bot, healTarget, 801670, 8000, true))
+                return spell;
 
-        // Spirit in a Bottle (root 801696) - protective spirit potion
-        if (uint32 spell = TryThrottledSpell(bot, bot, 801696, 12000, true))
-            return spell;
+            // Spirit in a Bottle (root 801696) - protective spirit potion
+            if (uint32 spell = TryThrottledSpell(bot, healTarget, 801696, 12000, true))
+                return spell;
+        }
     }
 
     // 2. Self Buffs / Cooldowns:
@@ -1078,28 +1116,38 @@ uint32 SelectSunClericRotationSpell(Player* bot, Unit* target, uint32 /*activeSp
             return spell;
     }
 
-    // 2. Emergency Healing & Defense (< 50% health):
-    if (bot->GetHealthPct() < 50.0f)
+    // 2. Group Heal Priority: heal the lowest-health group member before attacking.
+    // FindGroupHealTarget returns nullptr if nobody is below 95% HP (no action needed),
+    // or the bot itself if it's the only hurt unit (solo or nobody else is lower).
+    if (Player* healTarget = FindGroupHealTarget(bot))
     {
-        // Sol Invictus (root 807732) - holy emergency shield / ward
-        if (uint32 spell = TrySpell(bot, bot, 807732, true))
-            return spell;
+        bool isTeammate = (healTarget != bot);
+        // Always heal a teammate; only spend cooldowns on self when below 50%.
+        if (isTeammate || bot->GetHealthPct() < 50.0f)
+        {
+            // Sol Invictus (root 807732) - holy emergency shield/ward (self-only by DBC)
+            if (!isTeammate)
+            {
+                if (uint32 spell = TrySpell(bot, bot, 807732, true))
+                    return spell;
+            }
 
-        // Solar Invocation: Ascension (root 500152) - burst AoE heal
-        if (uint32 spell = TrySpell(bot, bot, 500152, true))
-            return spell;
+            // Solar Invocation: Ascension (root 500152) - burst AoE heal (hits the area around bot)
+            if (uint32 spell = TrySpell(bot, bot, 500152, true))
+                return spell;
 
-        // Revivify (root 801790) - direct heal / HoT
-        if (uint32 spell = TrySpell(bot, bot, 801790, true))
-            return spell;
+            // Revivify (root 801790) - direct single-target heal / HoT
+            if (uint32 spell = TrySpell(bot, healTarget, 801790, true))
+                return spell;
 
-        // Daybreak (root 500147) - instant holy heal
-        if (uint32 spell = TrySpell(bot, bot, 500147, true))
-            return spell;
+            // Daybreak (root 500147) - instant holy heal
+            if (uint32 spell = TrySpell(bot, healTarget, 500147, true))
+                return spell;
 
-        // Illumination (root 500143) - holy heal cast
-        if (uint32 spell = TrySpell(bot, bot, 500143, true))
-            return spell;
+            // Illumination (root 500143) - holy heal cast
+            if (uint32 spell = TrySpell(bot, healTarget, 500143, true))
+                return spell;
+        }
     }
 
     // Radiance (root 800054) - burst cooldown / holy radiance aura
