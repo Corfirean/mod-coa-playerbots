@@ -85,6 +85,17 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     }
 
     std::string const& verb = parts[0];
+
+    // QUICKFILL acts on the commander's own group as a whole, not one specific bot -- no
+    // botGuidLow/authorization gate applies (the wire format's colon-part is a "0" placeholder
+    // to satisfy the >= 2 parts check above, see docs/addon-protocol.md).
+    if (verb == "QUICKFILL")
+    {
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> QUICKFILL.", commander->GetName());
+        sBotMgr->QuickFillGroup(commander, nullptr);
+        return;
+    }
+
     ObjectGuid::LowType botGuidLow = std::strtoul(parts[1].c_str(), nullptr, 10);
     if (!botGuidLow)
     {

@@ -6,6 +6,7 @@
 #include "Chat.h"
 #include "CommandScript.h"
 #include "LFGMgr.h"
+#include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "RBAC.h"
@@ -52,7 +53,8 @@ public:
             { "suspend",      HandleBotSuspendCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "resume",       HandleBotResumeCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
-            { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
+            { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "quickfill",    HandleBotQuickFillCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
         static ChatCommandTable commandTable =
@@ -124,6 +126,22 @@ public:
     static bool HandleBotAcceptInviteCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
         sBotMgr->AcceptInvite(charLowGuid, handler);
+        return true;
+    }
+
+    // Debug/testing entry point for BotMgr::QuickFillGroup -- charLowGuid here is the
+    // *commanding* player (real character or bot, resolved the same way ListAuras/HasSpells
+    // resolve "any online player by low guid"), not a bot to act on.
+    static bool HandleBotQuickFillCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* commander = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(charLowGuid));
+        if (!commander)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online player with guid {} found.", charLowGuid);
+            return true;
+        }
+        sBotMgr->QuickFillGroup(commander, handler);
         return true;
     }
 

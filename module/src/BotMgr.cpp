@@ -1232,6 +1232,138 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
         bot->GetName(), uint32(bot->getClass()), learned, removed, specId, specName ? specName : "unknown", roleStr);
 }
 
+void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
+{
+    constexpr uint32 TARGET_TOTAL = 5;
+    constexpr uint32 TARGET_TANKS = 1;
+    constexpr uint32 TARGET_HEALERS = 1;
+    constexpr uint32 TARGET_DPS = 3;
+
+    if (!commander)
+        return;
+
+    Group* group = commander->GetGroup();
+
+    // Tally roles already covered by bots currently in the group -- real (non-bot) members
+    // are counted toward the group's total size but not toward any specific role bucket:
+    // there's no reliable way to infer a real player's role from here, and guessing wrong
+    // would under-invite a bucket that's actually still empty.
+    uint32 haveTanks = 0, haveHealers = 0, haveDps = 0;
+    uint32 currentSize = 1; // just commander, if solo
+    if (group)
+    {
+        currentSize = group->GetMembersCount();
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (!member)
+                continue;
+            if (!sBotMgr->FindBotPlayer(member->GetGUID().GetCounter()))
+                continue; // real player -- see comment above
+
+            switch (BotAI::GetRole(member->GetGUID()))
+            {
+                case BotRole::Tank:   ++haveTanks;   break;
+                case BotRole::Healer: ++haveHealers; break;
+                default:              ++haveDps;     break;
+            }
+        }
+    }
+
+    uint32 slotsLeft = (TARGET_TOTAL > currentSize) ? TARGET_TOTAL - currentSize : 0;
+    if (!slotsLeft)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: group is already full ({} members).", currentSize);
+        return;
+    }
+
+    uint32 needTanks = (haveTanks < TARGET_TANKS) ? TARGET_TANKS - haveTanks : 0;
+    uint32 needHealers = (haveHealers < TARGET_HEALERS) ? TARGET_HEALERS - haveHealers : 0;
+    uint32 needDps = (haveDps < TARGET_DPS) ? TARGET_DPS - haveDps : 0;
+
+    // Candidate pool: any online bot not already in a group (this one or another), same
+    // faction as the commander, still alive. Scored (not filtered) by guild membership and
+    // level/gear closeness so the best-fit candidate wins per role, not just the first found.
+    std::vector<Player*> pool;
+    for (Player* bot : GetOnlineBots())
+    {
+        if (bot == commander)
+            continue; // commander may itself be a tracked bot session (RA/.botcmd testing) -- never a candidate for its own group
+        if (bot->GetGroup() || !bot->IsInWorld() || !bot->IsAlive())
+            continue;
+        if (bot->GetTeamId() != commander->GetTeamId())
+            continue;
+        pool.push_back(bot);
+    }
+
+    bool commanderInGuild = commander->GetGuildId() != 0;
+    float commanderIlvl = commander->GetAverageItemLevel();
+    auto isGuildmate = [&](Player* bot) { return commanderInGuild && bot->GetGuildId() == commander->GetGuildId(); };
+    auto betterCandidate = [&](Player* a, Player* b)
+    {
+        bool aGuild = isGuildmate(a), bGuild = isGuildmate(b);
+        if (aGuild != bGuild)
+            return aGuild; // guildmates always win, regardless of level/ilvl fit
+        int32 aLevelDiff = std::abs(int32(a->GetLevel()) - int32(commander->GetLevel()));
+        int32 bLevelDiff = std::abs(int32(b->GetLevel()) - int32(commander->GetLevel()));
+        if (aLevelDiff != bLevelDiff)
+            return aLevelDiff < bLevelDiff;
+        return std::abs(a->GetAverageItemLevel() - commanderIlvl) < std::abs(b->GetAverageItemLevel() - commanderIlvl);
+    };
+
+    auto pickForRole = [&](BotRole role, uint32 count) -> std::vector<Player*>
+    {
+        std::vector<Player*> matches;
+        for (Player* bot : pool)
+            if (BotAI::GetRole(bot->GetGUID()) == role)
+                matches.push_back(bot);
+        std::sort(matches.begin(), matches.end(), betterCandidate);
+        if (matches.size() > count)
+            matches.resize(count);
+        return matches;
+    };
+
+    std::vector<Player*> selected;
+    auto takeUpTo = [&](BotRole role, uint32& need)
+    {
+        if (!need || !slotsLeft)
+            return;
+        uint32 want = std::min(need, slotsLeft);
+        std::vector<Player*> picked = pickForRole(role, want);
+        for (Player* bot : picked)
+        {
+            selected.push_back(bot);
+            // Remove from pool so a later role bucket can't also claim this bot.
+            pool.erase(std::remove(pool.begin(), pool.end(), bot), pool.end());
+        }
+        need -= uint32(picked.size());
+        slotsLeft -= uint32(picked.size());
+    };
+
+    takeUpTo(BotRole::Tank, needTanks);
+    takeUpTo(BotRole::Healer, needHealers);
+    takeUpTo(BotRole::Dps, needDps);
+
+    for (Player* bot : selected)
+    {
+        WorldPacket packet;
+        packet << bot->GetName();
+        packet << uint32(0);
+        commander->GetSession()->HandleGroupInviteOpcode(packet);
+        LOG_INFO("module.coa-playerbots", "BotMgr::QuickFillGroup: '{}' invited bot '{}' (role {}).",
+            commander->GetName(), bot->GetName(), RoleToString(BotAI::GetRole(bot->GetGUID())));
+    }
+
+    if (handler)
+    {
+        if (selected.empty())
+            handler->PSendSysMessage("BotMgr: quick-fill found no eligible bots for the roles still needed.");
+        else
+            handler->PSendSysMessage("BotMgr: quick-fill invited {} bot(s).", uint32(selected.size()));
+    }
+}
+
 void BotMgr::DoRollGreed(WorldSession* session, Roll* roll)
 {
     // HandleLootRoll reads itemGUID/itemSlot/rollType then calls Group::CountRollVote,

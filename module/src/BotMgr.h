@@ -147,6 +147,18 @@ public:
     // class -> SpecId -> role mappings.
     void LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId, ChatHandler* handler);
 
+    // One-button dungeon group fill: brings `commander`'s group up to 5 (tank + healer + 3
+    // dps), inviting online bots to cover whichever of those roles it's currently missing.
+    // Guildmates of `commander` are preferred over other bots; among equally-eligible
+    // candidates, closest character level then closest average item level wins. Invites are
+    // issued through `commander`'s own real WorldSession::HandleGroupInviteOpcode (same packet
+    // shape as BotMgr::Invite, just fired from the real player's session instead of a bot's) --
+    // no new accept-side code needed, since a bot's pending GetGroupInvite() is already
+    // auto-accepted every tick by the existing BotMgr::Update() loop (DoAcceptInvite), which
+    // also handles the teleport-to-leader. `commander` must be a real (non-bot) player; see
+    // docs/addon-protocol.md's QUICKFILL verb.
+    void QuickFillGroup(Player* commander, ChatHandler* handler);
+
     // Public counterpart to the private FindBotSession, for callers (BotAddonChat.cpp) that
     // need to confirm a guid is really one of our tracked bots and get its Player* -- e.g. to
     // reject an addon-message command referencing a guid that isn't actually a bot session.
