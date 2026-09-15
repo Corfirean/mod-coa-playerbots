@@ -114,13 +114,22 @@ namespace BotAI
     // this, and see which predicate lights up.
     void ReportSpellbookRoleSignals(Player* bot, ChatHandler* handler);
 
-    // Per-bot fixed follow angle (derived from the bot's own guid, so it's stable across
-    // ticks/calls) spread evenly around the leader instead of every bot using the engine's
-    // default Unit::GetFollowAngle() (a single fixed angle shared by everyone), which made
-    // multiple followers stack on top of each other and walk into one another. Shared here so
-    // every MoveFollow call site (BotAI.cpp's own resume-following, and BotMgr.cpp's
-    // post-teleport re-follow) spreads bots into the same slots.
+    // Per-bot follow angle derived from this bot's position within its own group (stable across
+    // ticks, and collision-free for any group up to 8 real members) spread evenly around the
+    // leader instead of every bot using the engine's default Unit::GetFollowAngle() (a single
+    // fixed angle shared by everyone), which made multiple followers stack on top of each
+    // other and walk into one another. Shared here so every MoveFollow call site (BotAI.cpp's
+    // own resume-following, and BotMgr.cpp's post-teleport re-follow) spreads bots into the
+    // same slots.
     float ComputeFollowAngle(Player* bot);
+
+    // Deliberately wider than the engine's own PET_FOLLOW_DIST (2.0yd, PetDefines.h) -- that
+    // constant is tuned for a single pet standing next to its owner, not several bots spread
+    // around a leader in a circle. At 2yd, adjacent 45-degree follow slots (see
+    // ComputeFollowAngle above) sit under 1.5yd apart center-to-center -- easily close enough
+    // for normal-to-large character models to visually overlap even once each bot has its own,
+    // genuinely distinct slot. Confirmed live as still looking "clustered" at 2yd.
+    constexpr float BOT_FOLLOW_DIST = 3.5f;
 }
 
 #endif // COA_PLAYERBOTS_BOT_AI_H

@@ -44,14 +44,17 @@
 #include "BotSpawnRandom.h"
 #include "Config.h"
 #include "DBCStores.h"
+#include "Group.h"
 #include "LFGMgr.h"
 #include "Log.h"
 #include "Player.h"
 #include "PlayerScript.h"
+#include "WorldPacket.h"
 #include "WorldScript.h"
 #include <algorithm>
 #include <array>
 #include <random>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -241,6 +244,54 @@ void ProcessQueuedBots()
     }
 }
 
+// Bots have no client to click a role-check popup with -- confirmed live: a real player
+// grouped with bots who then queues for a *specific* dungeon (LFGMgr::JoinLfg's already-grouped
+// branch, distinct from the solo-join path the rest of this file handles -- explicitly out of
+// v1 scope per this file's header comment) triggers a group role check that just hangs forever,
+// since nothing ever answers CMSG_LFG_SET_ROLES on the bots' behalf ("Test has chosen: Damage"
+// repeating with the group never actually queuing). Tracks which bots have already answered the
+// *current* role check so a bot's answer doesn't get resubmitted -- and re-broadcast to the
+// real player's chat/UI -- every tick for however long the check stays open; cleared the moment
+// that bot is no longer in LFG_STATE_ROLECHECK, so it's ready to answer the next one.
+std::unordered_set<ObjectGuid::LowType> roleCheckAnswered;
+
+uint8 RoleBitFor(Player* bot)
+{
+    switch (BotAI::GetRole(bot->GetGUID()))
+    {
+        case BotRole::Tank:   return lfg::PLAYER_ROLE_TANK;
+        case BotRole::Healer: return lfg::PLAYER_ROLE_HEALER;
+        default:              return lfg::PLAYER_ROLE_DAMAGE; // Dps and Support both queue as Damage, same as BotMatchesRole above
+    }
+}
+
+void ProcessGroupRoleChecks()
+{
+    for (Player* bot : sBotMgr->GetOnlineBots())
+    {
+        if (!bot->GetGroup())
+            continue;
+
+        ObjectGuid::LowType lowGuid = bot->GetGUID().GetCounter();
+        if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_ROLECHECK)
+        {
+            roleCheckAnswered.erase(lowGuid);
+            continue;
+        }
+        if (roleCheckAnswered.count(lowGuid))
+            continue;
+
+        uint8 roleBit = RoleBitFor(bot);
+        WorldPacket packet;
+        packet << roleBit;
+        bot->GetSession()->HandleLfgSetRolesOpcode(packet);
+        roleCheckAnswered.insert(lowGuid);
+
+        LOG_INFO("module.coa-playerbots", "BotLfgFill: bot '{}' answered a group LFG role check as role {}.",
+            bot->GetName(), roleBit);
+    }
+}
+
 class coa_lfg_fill_playerscript : public PlayerScript
 {
 public:
@@ -284,6 +335,7 @@ public:
     {
         ProcessPendingLogins(diff);
         ProcessQueuedBots();
+        ProcessGroupRoleChecks();
     }
 };
 }

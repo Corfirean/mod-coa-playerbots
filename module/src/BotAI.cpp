@@ -40,6 +40,7 @@
 #include "ClassSpecRoles.h"
 #include "Bag.h"
 #include "CellImpl.h"
+#include "CharacterCache.h"
 #include "Chat.h"
 #include "Corpse.h"
 #include "Creature.h"
@@ -67,6 +68,7 @@
 #include "Spell.h"
 #include "SpellMgr.h"
 #include "Unit.h"
+#include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include <cmath>
@@ -339,6 +341,17 @@ void TryMatchLeaderMountState(Player* bot)
     if (bot->IsMounted())
         return;
 
+    // Mounting while in combat, or while moving, fails the same way for a real player -- not a
+    // bug to work around, just an early-out so this doesn't burn a cast attempt every single
+    // tick. Confirmed live (the result-logging below caught it): every attempt was failing with
+    // SPELL_FAILED_MOVING, visible in-game as a repeated cast-then-cancel flicker, since a bot
+    // actively chasing its follow slot is "moving" from the engine's perspective at the exact
+    // moment this used to fire every tick. Skipping outright while moving (rather than trying
+    // and discarding the failure) removes that visible jitter entirely; the bot naturally gets
+    // a real attempt in once it settles into its slot and stops.
+    if (bot->IsInCombat() || bot->isMoving())
+        return;
+
     bool leaderFlying = false;
     for (AuraEffect const* aura : leader->GetAuraEffectsByType(SPELL_AURA_MOUNTED))
     {
@@ -352,8 +365,16 @@ void TryMatchLeaderMountState(Player* bot)
     uint32 spellId = leaderFlying ? SelectKnownMountSpell(bot, true) : 0;
     if (!spellId)
         spellId = SelectKnownMountSpell(bot, false);
-    if (spellId)
-        bot->CastSpell(bot, spellId, false);
+    if (!spellId)
+        return;
+
+    // Confirmed live: bots visibly failing to mount with no trace anywhere -- this used to
+    // discard CastSpell's result entirely, so a real failure (no-mount area, GM-flagged zone,
+    // a bad spell pick) was indistinguishable from "nothing to report." Only log on an actual
+    // failure -- success is already implied by IsMounted() being true on the next tick.
+    if (SpellCastResult result = bot->CastSpell(bot, spellId, false); result != SPELL_CAST_OK)
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' failed to mount (spell {}, result {}).",
+            bot->GetName(), spellId, uint32(result));
 }
 
 // Periodic, throttled bag scan for a gear upgrade -- same shape as TryMaintainBuff. Reuses the
@@ -575,13 +596,62 @@ void TryAutoSignLeaderPetition(Player* bot)
         if (signatures->signatureMap.count(bot->GetGUID()))
             return; // already signed
 
+    // Confirmed live, twice now: bots kept re-attempting this every progression-check tick
+    // forever, with `petition_sign` staying completely empty in the DB the whole time.
+    // HandlePetitionSignOpcode is a void function that silently no-ops on several guards with
+    // zero server-side trace, so the "signed" log line here used to report success it never
+    // verified. The first round's fix (clearing a stale GetGuildIdInvited()) did NOT resolve
+    // it -- confirmed by the failure log still firing every time after that fix shipped -- so
+    // every other guard in that function's GUILD_CHARTER_TYPE branch is dumped here in full
+    // before the call, since guessing again without evidence isn't productive. Team mismatch,
+    // guild membership, and a stale invite have all already been ruled out via direct DB/RA
+    // checks; this will catch whatever's actually left (trial-restriction misfire, a team-cache
+    // miss, an already-at-max signature count, or the same-account "already signed" rule if two
+    // bots share a bot-hosting account).
+    if (bot->GetGuildIdInvited())
+        bot->SetGuildIdInvited(0);
+    if (uint32 guildId = bot->GetGuildId())
+    {
+        LOG_ERROR("module.coa-playerbots", "BotAI: bot '{}' can't sign '{}'s guild charter -- already in guild {}.",
+            bot->GetName(), leader->GetName(), guildId);
+        return;
+    }
+
     WorldPacket signPacket;
     signPacket << petition->petitionGuid;
     signPacket << uint8(0);
     bot->GetSession()->HandlePetitionSignOpcode(signPacket);
 
-    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' signed '{}'s guild charter for '{}'.",
-        bot->GetName(), leader->GetName(), petition->petitionName);
+    // Verify it actually landed instead of trusting the void call.
+    bool actuallySigned = false;
+    uint32 signCount = 0;
+    bool alreadySignedByAccount = false;
+    if (Signatures const* signedNow = sPetitionMgr->GetSignature(petition->petitionGuid))
+    {
+        actuallySigned = signedNow->signatureMap.count(bot->GetGUID()) != 0;
+        signCount = uint32(signedNow->signatureMap.size());
+        for (auto const& [signerGuid, accountId] : signedNow->signatureMap)
+            if (accountId == bot->GetSession()->GetAccountId())
+                alreadySignedByAccount = true;
+    }
+
+    if (actuallySigned)
+    {
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' signed '{}'s guild charter for '{}'.",
+            bot->GetName(), leader->GetName(), petition->petitionName);
+        return;
+    }
+
+    LOG_ERROR("module.coa-playerbots",
+        "BotAI: bot '{}' FAILED to sign '{}'s guild charter for '{}' -- diagnostic dump: "
+        "botTeam={} ownerTeamViaCache={} allowTwoSideGuild={} trialRestrictionGuild={} isTrialAccount={} "
+        "guildId={} guildIdInvited={} signCount={} maxSigns={} alreadySignedByThisAccount={} accountId={}.",
+        bot->GetName(), leader->GetName(), petition->petitionName,
+        uint32(bot->GetTeamId()), sCharacterCache->GetCharacterTeamByGuid(petition->ownerGuid),
+        sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GUILD),
+        sWorld->getBoolConfig(CONFIG_TRIAL_RESTRICTION_GUILD), bot->GetSession()->IsTrialAccount(),
+        bot->GetGuildId(), bot->GetGuildIdInvited(), signCount, uint32(petition->petitionType),
+        alreadySignedByAccount, bot->GetSession()->GetAccountId());
 }
 
 // Called every tick from BotAI::Update, unconditional on role/combat/group state (gearing up
@@ -1012,24 +1082,33 @@ public:
             return false;
         if (u->GetLevel() > _maxLevel)
             return false;
-        // Training dummies (every "*Training Dummy" creature_template row, all 13 CoA/CoA-Repack
-        // variants confirmed via direct DB query) pass every other check here just fine --
-        // they're real, right-click-attackable (friendly faction 7/35, but still a valid attack
-        // target per Unit::IsValidAttackTarget's own special-case for this creature shape),
-        // hostile-flagged-for-combat-purposes units. Without this a solo/idle bot standing
-        // anywhere near a town's dummy would happily "grind" it forever (confirmed live: bots
-        // stood in town whacking training dummies instead of actually questing/leveling).
-        // NOTE: an earlier version of this check used `ct->type == CREATURE_TYPE_TOTEM` (11) --
-        // wrong, and confirmed live to not actually filter anything: every dummy variant's real
-        // `type` column is 9 (CREATURE_TYPE_MECHANICAL, not TOTEM -- a dummy is inanimate
-        // machinery, not a shaman totem). Matching on the type column at all would also exclude
-        // *every other* real mechanical creature in the game from ever being a legitimate solo
-        // grind target (mechanical dragonkin, gnomish constructs, etc.), which is far more
-        // collateral than intended -- a name match is the precise, verified-correct signal for
-        // "this specific NPC shape," not a type-category proxy for it.
+        // Training/practice dummies -- every creature using the `npc_training_dummy` AI script
+        // (confirmed via direct DB query: 16 rows, not just the 13 "*Training Dummy"-named ones
+        // -- also catches "Highlord's Nemesis Trainer", "Love Fool", "Theramore Combat Dummy",
+        // none of which have "Training Dummy" literally in their name) -- pass every other check
+        // here just fine: they're real, right-click-attackable (friendly faction 7/35, but still
+        // a valid attack target per Unit::IsValidAttackTarget's own special-case for this
+        // creature shape), hostile-flagged-for-combat-purposes units. Without this a solo/idle
+        // bot standing anywhere near a town's dummy would happily "grind" it forever (confirmed
+        // live: bots stood in town whacking dummies instead of actually questing/leveling).
+        //
+        // History of getting this check right, kept because both wrong attempts looked
+        // plausible and passed a compile with no warning:
+        // 1. `ct->type == CREATURE_TYPE_TOTEM` (11) -- wrong, confirmed live to filter nothing:
+        //    every dummy variant's real `type` column is 9 (CREATURE_TYPE_MECHANICAL, not
+        //    TOTEM -- a dummy is inanimate machinery, not a shaman totem). Matching on `type` at
+        //    all would also have excluded every other real mechanical creature in the game from
+        //    ever being a legitimate grind target (mechanical dragonkin, gnomish constructs).
+        // 2. `ct->Name.find("Training Dummy")` -- an improvement (confirmed live: stopped the 13
+        //    literally-named variants), but still wrong: missed "Highlord's Nemesis Trainer" and
+        //    others that use the identical dummy AI/script but don't share that name substring
+        //    (confirmed live again: bots kept "successfully" -- SPELL_CAST_OK, not a failure --
+        //    endlessly casting at one). The AI script, not the display name, is what actually
+        //    defines "this is a stationary practice target," so it's the only signal that
+        //    generalizes to every current and future dummy-shaped NPC regardless of name.
         if (Creature const* creature = u->ToCreature())
         {
-            if (CreatureTemplate const* ct = creature->GetCreatureTemplate(); ct && ct->Name.find("Training Dummy") != std::string::npos)
+            if (creature->GetScriptName() == "npc_training_dummy")
                 return false;
         }
         _range = _me->GetDistance(u); // shrink the search radius to the closest hit so far
@@ -1836,7 +1915,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState const& state)
     }
 
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
-        bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, BotAI::ComputeFollowAngle(bot));
+        bot->GetMotionMaster()->MoveFollow(leader, BotAI::BOT_FOLLOW_DIST, BotAI::ComputeFollowAngle(bot));
 }
 
 // Lowest-health-percent group member (bot included), below a "worth healing" threshold --
@@ -2526,7 +2605,29 @@ float ComputeFollowAngle(Player* bot)
 {
     constexpr uint32 SLOT_COUNT = 8;
     constexpr float SLOT_SIZE = static_cast<float>(2 * M_PI) / SLOT_COUNT;
-    uint32 slot = bot->GetGUID().GetCounter() % SLOT_COUNT;
-    return slot * SLOT_SIZE;
+
+    // An earlier version of this hashed `bot->GetGUID().GetCounter() % SLOT_COUNT` directly --
+    // looked fine, but confirmed live to completely fail for exactly the case it exists to fix:
+    // three bots with guids 376/384/408 (all exact multiples of 8) all hashed to slot 0 and
+    // stood on literally the same point, not just visually close. Guids assigned to bots
+    // created together in a batch collide on a raw modulo far more often than random chance
+    // would suggest. Indexing by this bot's actual position within its own group instead
+    // guarantees every real follower gets a distinct slot, for any group up to SLOT_COUNT
+    // members, regardless of what its guid happens to be.
+    Group const* group = bot->GetGroup();
+    if (!group)
+        return 0.0f;
+
+    uint32 slot = 0;
+    for (GroupReference const* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player const* member = itr->GetSource();
+        if (!member || member->GetGUID() == group->GetLeaderGUID())
+            continue; // the leader doesn't occupy a follow slot
+        if (member == bot)
+            break;
+        ++slot;
+    }
+    return (slot % SLOT_COUNT) * SLOT_SIZE;
 }
 }

@@ -391,7 +391,7 @@ void BotMgr::FinishPendingTeleport(WorldSession* session)
         if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
         {
             if (leader != bot)
-                bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, BotAI::ComputeFollowAngle(bot));
+                bot->GetMotionMaster()->MoveFollow(leader, BotAI::BOT_FOLLOW_DIST, BotAI::ComputeFollowAngle(bot));
         }
     }
 }
@@ -1614,6 +1614,23 @@ void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
         return matches;
     };
 
+    // Fallback for Tank/Healer specifically: a random population's specs mostly land on Dps
+    // (real players mostly play Dps -- see AGENTS.md's Quick Fill entry), so "zero bots
+    // currently *are* a tank/healer" is the common case, not a reason to leave the slot empty
+    // when a class capable of the role is sitting right there. Matches on class capability
+    // (BotAI::FindSpecForRole) rather than current spec.
+    auto pickCapableForRole = [&](BotRole role, uint32 count) -> std::vector<Player*>
+    {
+        std::vector<Player*> matches;
+        for (Player* bot : pool)
+            if (BotAI::FindSpecForRole(bot->getClass(), role) != 0)
+                matches.push_back(bot);
+        std::sort(matches.begin(), matches.end(), betterCandidate);
+        if (matches.size() > count)
+            matches.resize(count);
+        return matches;
+    };
+
     std::vector<Player*> selected;
     auto takeUpTo = [&](BotRole role, uint32& need)
     {
@@ -1629,6 +1646,26 @@ void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
         }
         need -= uint32(picked.size());
         slotsLeft -= uint32(picked.size());
+
+        if (!need || !slotsLeft || role == BotRole::Dps)
+            return; // every class is Dps-capable -- a Dps shortfall means the pool is just empty
+
+        want = std::min(need, slotsLeft);
+        std::vector<Player*> converted = pickCapableForRole(role, want);
+        for (Player* bot : converted)
+        {
+            uint32 currentSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+            uint32 targetSpec = BotAI::FindSpecForRole(bot->getClass(), role, currentSpec);
+            if (targetSpec != currentSpec)
+                LearnSpecialization(bot->GetGUID().GetCounter(), targetSpec, nullptr);
+            BotAI::SetRole(bot->GetGUID(), role);
+            LOG_INFO("module.coa-playerbots", "BotMgr::QuickFillGroup: switched '{}' to {} (spec {}) to fill an empty slot.",
+                bot->GetName(), RoleToString(role), targetSpec);
+            selected.push_back(bot);
+            pool.erase(std::remove(pool.begin(), pool.end(), bot), pool.end());
+        }
+        need -= uint32(converted.size());
+        slotsLeft -= uint32(converted.size());
     };
 
     takeUpTo(BotRole::Tank, needTanks);
