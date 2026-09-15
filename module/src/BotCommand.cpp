@@ -1,10 +1,13 @@
 #include "BotAI.h"
 #include "BotBattlegroundFill.h"
+#include "BotLfgFill.h"
 #include "BotMgr.h"
 #include "BotSpawnRandom.h"
 #include "Chat.h"
 #include "CommandScript.h"
+#include "LFGMgr.h"
 #include "ObjectGuid.h"
+#include "Player.h"
 #include "RBAC.h"
 #include "ScriptMgr.h"
 #include <sstream>
@@ -24,8 +27,10 @@ public:
         {
             { "spawnbot",     HandleBotSpawnCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "spawnrandom",  HandleBotSpawnRandomCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
-            { "acceptinvite", HandleBotAcceptInviteCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
-            { "invite",       HandleBotInviteCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "acceptinvite",      HandleBotAcceptInviteCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "acceptguildinvite", HandleBotAcceptGuildInviteCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "invite",            HandleBotInviteCommand,            rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "guildinvite",       HandleBotGuildInviteCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "despawn",      HandleBotDespawnCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "listauras",    HandleBotListAurasCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "runchat",      HandleBotRunChatCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -40,7 +45,8 @@ public:
             { "kill",         HandleBotKillCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "suspend",      HandleBotSuspendCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "resume",       HandleBotResumeCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
-            { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
+            { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
         static ChatCommandTable commandTable =
@@ -84,15 +90,52 @@ public:
         return true;
     }
 
+    // Debug/testing entry point: makes an online bot solo-join the real Dungeon Finder queue
+    // (LFGMgr::JoinLfg -- the exact same call HandleLfgJoinOpcode itself makes for a real
+    // client), which naturally triggers BotLfgFill's auto-fill hook (PLAYERHOOK_CAN_JOIN_LFG
+    // fires from inside JoinLfg itself) the same way a real player's own queue click would.
+    // roleBit: 2=Tank, 4=Healer, 8=Damage (lfg::PLAYER_ROLE_*).
+    static bool HandleBotJoinLfgCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid,
+        uint32 dungeonId, uint8 roleBit)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        lfg::LfgDungeonSet dungeons;
+        dungeons.insert(dungeonId);
+        sLFGMgr->JoinLfg(bot, roleBit, dungeons, "");
+        BotLfgFill::WatchForProposal(bot);
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' asked to join LFG for dungeon {} as role {}.",
+                bot->GetName(), dungeonId, roleBit);
+        return true;
+    }
+
     static bool HandleBotAcceptInviteCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
         sBotMgr->AcceptInvite(charLowGuid, handler);
         return true;
     }
 
+    static bool HandleBotAcceptGuildInviteCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        sBotMgr->AcceptGuildInvite(charLowGuid, handler);
+        return true;
+    }
+
     static bool HandleBotInviteCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, std::string targetName)
     {
         sBotMgr->Invite(charLowGuid, targetName, handler);
+        return true;
+    }
+
+    static bool HandleBotGuildInviteCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, std::string targetName)
+    {
+        sBotMgr->GuildInvite(charLowGuid, targetName, handler);
         return true;
     }
 

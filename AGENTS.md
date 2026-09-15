@@ -2096,6 +2096,67 @@ correctly-split 10 Alliance / 10 Horde, all 20 successfully invited and ported i
 battleground instance, zero errors. Before the fix, the same test reproducibly stalled at
 exactly half-filled (5v5 ported, 5v5 permanently stuck in queue).
 
+## Dungeon Finder bot auto-fill (2026-09-15)
+
+`BotLfgFill.h/.cpp` -- the moment a *solo* player (real or bot) queues for a *dungeon* (not
+raid) via the Dungeon Finder, bots fill whichever of Tank/Healer/3x Damage their own role
+selection doesn't already cover, so a full 5-man is ready immediately. Group joins and raids
+are explicitly out of scope for this pass (see the file's own header comment for why).
+
+**Real engine calls only**: `WorldSession::HandleLfgJoinOpcode` is just
+`sLFGMgr->JoinLfg(player, roles, dungeons, comment)` -- no packet assembly needed to replicate
+it for a bot. A *solo* join skips the group-only role-check phase entirely and goes straight to
+`LFG_STATE_QUEUED` (confirmed by reading `LFGMgr::JoinLfg` directly), so filling a role is just
+that one call. `PLAYERHOOK_CAN_JOIN_LFG` (a permission-gate hook, always returns true here) is
+the trigger, used purely for its "someone just queued" signal and the `roles`/`dungeons` it
+hands over. Once every member of a proposal accepts (`LFGMgr::UpdateProposal`, again a direct
+call -- `HandleLfgProposalResultOpcode` does nothing else), `LFGMgr::MakeNewGroup` creates the
+real group *and teleports everyone itself* -- unlike Battlegrounds, no port step to replicate.
+
+**One small, necessary core patch**: added `LFGMgr::GetProposalIdForPlayer(guid)`
+(`LFGMgr.h`/`.cpp`, a straightforward scan of the already-existing private `ProposalsStore`) --
+a real client learns its own proposal id from the `SMSG_LFG_PROPOSAL_UPDATE` packet it
+received, which a bot's null-socket session never gets, and there was no existing public way to
+look it up server-side.
+
+**Bot sourcing** mirrors `BotBattlegroundFill.cpp`: prefers an online, idle, same-faction bot
+with the matching `BotAI::GetRole()` (this module's own existing spec-derived role detection)
+over creating a new one. Tank and Healer are deliberately *not* auto-created on demand -- a
+freshly cloned random-class bot has no guarantee of being tank/healer-capable, so those slots
+just stay open (logged) if no suitable bot is already online; only Damage falls back to
+creating a new bot, since any class defaults to a Dps-shaped `BotRole`.
+
+**Two real bugs found and fixed via live testing, not just code review**:
+1. `JoinLfg` silently returns without changing any state at all when its own eligibility
+   checks reject the join (`LFG_JOIN_NOT_MEET_REQS` for a dungeon-specific lockout,
+   `LFG_JOIN_DISCONNECTED` for a candidate still stuck in a leftover group from an unrelated
+   earlier test) -- there's no exception, no return value to inspect, just silence. Without
+   checking `LFGMgr::GetState()` immediately after the call, a rejected join looked identical
+   to a successful one, and the rejected candidate could get redundantly re-selected on a later
+   same-pass role slot instead of this file trying someone else. Fixed by verifying the state
+   actually became `LFG_STATE_QUEUED`, tracking every attempted candidate (successful or not)
+   for the rest of that pass, and retrying a different one on rejection instead of giving up
+   the slot.
+2. The player who *triggers* a fill pass hadn't had their own LFG state set yet at the point
+   `PLAYERHOOK_CAN_JOIN_LFG` fires (that happens later in `JoinLfg`) -- a bot-initiated test
+   join whose class happens to default to a tank-shaped `BotRole` got redundantly re-selected
+   by its own Tank-fill pass, silently overwriting its own original Damage-role queue entry
+   (`JoinLfg`'s own re-join handling replaces, not adds to, a still-queued entry). Fixed by
+   excluding the triggering player's own guid from every `FillRole` scan.
+
+**Confirmed live end-to-end**, using the `.botcmd joinlfg <guid> <dungeonId> <roleBit>` debug
+entry point added alongside this (there's no other way to drive a bot through the real solo-join
+path without a client working the Dungeon Finder UI): a Damage-role bot's join auto-filled
+Tank, Healer, and two more Damage bots, all five accepted the same real proposal, and at least
+one member was confirmed to have actually been teleported into the real Utgarde Keep instance
+(map 574) by the engine's own `MakeNewGroup`/`TeleportPlayer` -- the other members' teleport
+wasn't independently re-confirmed in the same pass (despawned for cleanup a few seconds after
+accepting, likely too soon to observe their own transfer complete), but the mechanism proven
+for one member is the same call for all of them. Also found along the way: the debug test
+command itself needed its own `BotLfgFill::WatchForProposal()` call to get its own proposal
+accepted -- a real human player doesn't need this (their own client accepts the popup itself),
+but a bot-initiated test join does, since nothing else was watching it.
+
 ## TODO backlog
 
 - **Autonomous zone-to-zone travel**: an idle-solo bot (`TryStartQuesting`/`TryGrindWhenSolo`,
@@ -2106,5 +2167,10 @@ exactly half-filled (5v5 ported, 5v5 permanently stuck in queue).
   user asked for: quest a zone out, then go quest somewhere else on its own, the way a real
   leveling player would). A real mount is already guaranteed per bot
   (`EnsureBotHasMount`/`TryMaintainProgression`) specifically as a prerequisite for this, but
-  actually riding it for travel isn't wired to anything yet. Explicitly deferred by the user
-  (2026-09-15) in favor of Battleground/LFG bot auto-fill -- pick this up next once those land.
+  actually riding it for travel isn't wired to anything yet. Assigned to the parallel Gemini
+  session (2026-09-15) alongside guild bank orders (deposit/withdraw on command, per the
+  user's own idea) -- not started as of this note.
+- **Guild bank orders for bots**: deposit gathered resources/gold/recipes, withdraw
+  consumables before a run, auto-grant bank tab permissions on guild join, optional
+  auto-create-guild debug command. Assigned to the parallel Gemini session (2026-09-15),
+  building on her just-finished guild-invite-accept work. Not started as of this note.
