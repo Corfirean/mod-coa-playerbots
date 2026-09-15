@@ -61,6 +61,7 @@
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "SpellInfo.h"
+#include "Spell.h"
 #include "SpellMgr.h"
 #include "Unit.h"
 #include "WorldPacket.h"
@@ -78,6 +79,8 @@ namespace
 // any specific class's real (and possibly haste-modified) GCD.
 constexpr uint32 APPROXIMATE_GCD_MS = 1500;
 constexpr float MELEE_ENGAGE_RANGE = 4.0f;
+constexpr float RANGED_ENGAGE_DISTANCE = 22.0f;
+constexpr uint32 BURST_SPELL_MIN_COOLDOWN_MS = 45000;
 
 // How close a Healer bot tries to stay to whoever it's healing -- well within the range of
 // most real heal spells (checked properly per-spell in SelectHealSpell anyway; this just
@@ -580,7 +583,187 @@ bool IsUsableBuffSpell(SpellInfo const* spellInfo)
         spellInfo->HasEffect(SPELL_EFFECT_APPLY_AREA_AURA_FRIEND);
 }
 
-// Shared shape for all three "pick a ready, affordable, in-range known spell matching this
+bool IsUsableInterruptSpell(SpellInfo const* spellInfo)
+{
+    if (!spellInfo || spellInfo->IsPassive() || spellInfo->IsPositive())
+        return false;
+    if (!spellInfo->CanBeUsedInCombat())
+        return false;
+
+    return spellInfo->HasEffect(SPELL_EFFECT_INTERRUPT_CAST) ||
+        spellInfo->HasAura(SPELL_AURA_MOD_SILENCE);
+}
+
+bool IsTargetCastingInterruptibleSpell(Unit const* target)
+{
+    if (!target || !target->IsAlive())
+        return false;
+
+    for (uint32 i = CURRENT_FIRST_NON_MELEE_SPELL; i < CURRENT_AUTOREPEAT_SPELL; ++i)
+    {
+        if (Spell* spell = target->GetCurrentSpell(CurrentSpellTypes(i)))
+        {
+            SpellInfo const* curSpellInfo = spell->m_spellInfo;
+            if (!curSpellInfo)
+                continue;
+            if ((spell->getState() == SPELL_STATE_CASTING || (spell->getState() == SPELL_STATE_PREPARING && spell->GetCastTime() > 0.0f))
+                    && spell->IsInterruptable()
+                    && ((i == CURRENT_GENERIC_SPELL && (curSpellInfo->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT))
+                        || (i == CURRENT_CHANNELED_SPELL && (curSpellInfo->ChannelInterruptFlags & CHANNEL_INTERRUPT_FLAG_INTERRUPT))))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool IsUsableAoeSpell(SpellInfo const* spellInfo)
+{
+    if (!IsUsableOffensiveSpell(spellInfo))
+        return false;
+
+    if (spellInfo->IsAffectingArea() || spellInfo->IsTargetingArea())
+        return true;
+
+    if (spellInfo->MaxAffectedTargets > 1)
+        return true;
+
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (spellInfo->Effects[i].IsEffect() && spellInfo->Effects[i].ChainTarget > 1)
+            return true;
+    }
+
+    return false;
+}
+
+bool IsUsableSingleTargetOffensiveSpell(SpellInfo const* spellInfo)
+{
+    return IsUsableOffensiveSpell(spellInfo) && !IsUsableAoeSpell(spellInfo);
+}
+
+bool IsBossOrEliteTarget(Unit const* target)
+{
+    if (!target)
+        return false;
+
+    if (Creature const* creature = target->ToCreature())
+        return creature->isElite() || creature->isWorldBoss() || creature->IsDungeonBoss();
+
+    return false;
+}
+
+bool IsUsableBurstSpell(SpellInfo const* spellInfo)
+{
+    if (!IsUsableOffensiveSpell(spellInfo))
+        return false;
+
+    uint32 cd = spellInfo->RecoveryTime > spellInfo->CategoryRecoveryTime ? spellInfo->RecoveryTime : spellInfo->CategoryRecoveryTime;
+    return cd >= BURST_SPELL_MIN_COOLDOWN_MS;
+}
+
+uint32 FindKnownAutoRepeatRangedSpell(Player const* bot)
+{
+    if (!bot)
+        return 0;
+
+    for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+    {
+        if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+            continue;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (spellInfo && spellInfo->IsAutoRepeatRangedSpell() && bot->HasItemFitToSpellRequirements(spellInfo))
+            return spellId;
+    }
+    return 0;
+}
+
+float GetBotPreferredEngageDistance(Player* bot, BotRole role)
+{
+    if (!bot)
+        return MELEE_ENGAGE_RANGE;
+
+    if (role == BotRole::Tank)
+        return MELEE_ENGAGE_RANGE;
+
+    if (role == BotRole::Healer)
+        return RANGED_ENGAGE_DISTANCE;
+
+    uint32 rangedCount = 0;
+    uint32 meleeCount = 0;
+
+    for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+    {
+        if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+            continue;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo || spellInfo->IsPassive() || spellInfo->IsPositive() || !spellInfo->CanBeUsedInCombat())
+            continue;
+
+        if (spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE)
+        {
+            ++meleeCount;
+            continue;
+        }
+
+        if (!IsUsableOffensiveSpell(spellInfo))
+            continue;
+
+        float maxRange = spellInfo->GetMaxRange(false, bot);
+        if (maxRange >= 15.0f || spellInfo->DmgClass == SPELL_DAMAGE_CLASS_RANGED)
+            ++rangedCount;
+        else if (maxRange <= 5.0f)
+            ++meleeCount;
+    }
+
+    if (FindKnownAutoRepeatRangedSpell(bot))
+        ++rangedCount;
+
+    if (rangedCount > meleeCount)
+        return RANGED_ENGAGE_DISTANCE;
+
+    return MELEE_ENGAGE_RANGE;
+}
+
+class HostileEnemyCheck
+{
+public:
+    HostileEnemyCheck(Player const* bot, Unit const* center, float range)
+        : _bot(bot), _center(center), _range(range) { }
+
+    bool operator()(Unit* u) const
+    {
+        if (!u || !u->IsAlive() || u == _bot)
+            return false;
+        if (!_center->IsWithinDistInMap(u, _range))
+            return false;
+        if (!_bot->IsValidAttackTarget(u))
+            return false;
+        return true;
+    }
+
+private:
+    Player const* _bot;
+    Unit const* _center;
+    float _range;
+};
+
+uint32 CountNearbyEnemies(Player const* bot, Unit const* center, float range = 10.0f)
+{
+    if (!bot || !center)
+        return 0;
+
+    std::vector<Unit*> enemies;
+    HostileEnemyCheck check(bot, center, range);
+    Acore::UnitListSearcher<HostileEnemyCheck> searcher(center, enemies, check);
+    Cell::VisitObjects(center, searcher, range);
+    return static_cast<uint32>(enemies.size());
+}
+
+// Shared shape for all "pick a ready, affordable, in-range known spell matching this
 // predicate" scans below -- only the predicate and the range-table selection (hostile vs.
 // beneficial spells keep separate min/max range entries) differ.
 uint32 SelectKnownSpell(Player* bot, Unit* target, bool positiveRange, bool (*predicate)(SpellInfo const*))
@@ -615,8 +798,26 @@ uint32 SelectKnownSpell(Player* bot, Unit* target, bool positiveRange, bool (*pr
         // SPELL_FAILED_TOO_CLOSE on cast. Check both.
         float dist = bot->GetDistance(target);
         float maxRange = spellInfo->GetMaxRange(positiveRange, bot);
-        if (maxRange > 0.0f && dist > maxRange)
-            continue;
+        if (maxRange > 0.0f)
+        {
+            if (dist > maxRange)
+                continue;
+        }
+        else if (spellInfo->IsAffectingArea())
+        {
+            float maxRadius = 0.0f;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                if (spellInfo->Effects[i].IsEffect())
+                {
+                    float r = spellInfo->Effects[i].CalcRadius(bot);
+                    if (r > maxRadius)
+                        maxRadius = r;
+                }
+            }
+            if (maxRadius > 0.0f && dist > maxRadius)
+                continue;
+        }
         float minRange = spellInfo->GetMinRange(positiveRange);
         if (minRange > 0.0f && bot->IsWithinRange(target, minRange + bot->GetMeleeRange(target)))
             continue;
@@ -650,6 +851,10 @@ uint32 SelectHealSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot,
 // Self-targeted (the party/raid-area effect propagates from there) -- distance is always 0,
 // so the range check in SelectKnownSpell trivially passes regardless of maxRange.
 uint32 SelectBuffSpell(Player* bot) { return SelectKnownSpell(bot, bot, true, IsUsableBuffSpell); }
+uint32 SelectInterruptSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableInterruptSpell); }
+uint32 SelectAoeSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableAoeSpell); }
+uint32 SelectSingleTargetSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableSingleTargetOffensiveSpell); }
+uint32 SelectBurstSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableBurstSpell); }
 
 // Reads this bot's own quest log (Player::GetQuestSlotQuestId/GetQuestSlotCounter -- the same
 // real quest-log data a client's own quest log window reads, not a synthetic re-derivation) to
@@ -1689,9 +1894,46 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // table check isn't available without the SpellHistory-era threat API this fork
     // predates -- "is the target currently swinging on me" is the cheap, good-enough proxy),
     // try a taunt before falling through to the normal offensive pick.
+    float preferredDist = GetBotPreferredEngageDistance(bot, role);
+    float distance = bot->GetDistance(target);
+
     uint32 spellId = 0;
+    char const* castVerb = "cast";
+
+    // 1. Tank priority: taunt if not holding aggro
     if (role == BotRole::Tank && target->GetVictim() != bot)
+    {
         spellId = SelectTauntSpell(bot, target);
+        if (spellId)
+            castVerb = "cast taunt";
+    }
+
+    // 2. Interrupt priority: target is actively casting an interruptible spell
+    if (!spellId && IsTargetCastingInterruptibleSpell(target))
+    {
+        spellId = SelectInterruptSpell(bot, target);
+        if (spellId)
+            castVerb = "cast interrupt";
+    }
+
+    // 3. AoE priority: 3+ hostile enemies around target
+    uint32 nearbyEnemies = CountNearbyEnemies(bot, target, 10.0f);
+    if (!spellId && nearbyEnemies >= 3)
+    {
+        spellId = SelectAoeSpell(bot, target);
+        if (spellId)
+            castVerb = "cast aoe";
+    }
+
+    // 4. Boss / Elite Burst: target is boss or elite
+    if (!spellId && IsBossOrEliteTarget(target))
+    {
+        spellId = SelectBurstSpell(bot, target);
+        if (spellId)
+            castVerb = "cast burst";
+    }
+
+    // 5. Normal class rotation
     if (!spellId)
     {
         uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
@@ -1715,6 +1957,12 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         spellId = BotAI::SelectChronomancerRotationSpell(bot, target);
     if (!spellId)
         spellId = BotAI::SelectNecromancerRotationSpell(bot, target);
+
+    // 6. Single-target offensive spell (when not in AoE condition, focus single-target without wasting AoE)
+    if (!spellId && nearbyEnemies < 3)
+        spellId = SelectSingleTargetSpell(bot, target);
+
+    // 7. General offensive spell fallback
     if (!spellId)
         spellId = SelectSpell(bot, target);
 
@@ -1733,11 +1981,11 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         // relying on this branch alone let a melee bot get stuck permanently re-casting a
         // self-buff filler in place after a knockback/teleport put its real target out of
         // melee range -- it would never fall through to the chase-fallback below since
-        // spellId was never 0. Keep closing distance in parallel with the self-cast instead.
-        if (castTarget == bot && bot->GetDistance(target) > MELEE_ENGAGE_RANGE)
+        // spellId was never 0. Keep closing distance toward preferredDist in parallel with the self-cast.
+        if (castTarget == bot && bot->GetDistance(target) > preferredDist)
         {
             if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-                bot->GetMotionMaster()->MoveChase(target);
+                bot->GetMotionMaster()->MoveChase(target, preferredDist);
         }
         else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
         {
@@ -1745,7 +1993,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
             bot->StopMoving();
         }
 
-        SpellCastResult result = LogCastAttempt(bot, spellId, castTarget, "cast");
+        SpellCastResult result = LogCastAttempt(bot, spellId, castTarget, castVerb);
         if (result != SPELL_CAST_OK)
             BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
         state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? APPROXIMATE_GCD_MS : NO_CANDIDATE_RETRY_MS;
@@ -1753,22 +2001,56 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     }
 
     // Nothing usable right now (everything on cooldown/unaffordable/out of range, or a
-    // pure-melee kit with no spell-based attacks at all) -- fall back to closing to melee
-    // range for a basic attack, same as the original behavior for melee bots.
-    float distance = bot->GetDistance(target);
-    if (distance > MELEE_ENGAGE_RANGE)
+    // pure-melee kit with no spell-based attacks at all).
+    if (preferredDist > MELEE_ENGAGE_RANGE)
     {
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-            bot->GetMotionMaster()->MoveChase(target);
-        state.nextCastAllowedMs = NO_CANDIDATE_RETRY_MS;
-        return;
+        // Ranged / caster bot: maintain distance around preferredDist (e.g. 22yd).
+        // If too far away, chase to preferredDist.
+        if (distance > preferredDist)
+        {
+            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+                bot->GetMotionMaster()->MoveChase(target, preferredDist);
+            state.nextCastAllowedMs = NO_CANDIDATE_RETRY_MS;
+            return;
+        }
+
+        // Within preferred distance: halt chase movement
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+        {
+            bot->GetMotionMaster()->Clear();
+            bot->StopMoving();
+        }
+
+        bot->SetInFront(target);
+        bot->SetFacingToObject(target);
+
+        // Try auto-repeat ranged weapon attack (Auto Shot / Shoot Wand) if known and equipped
+        if (uint32 autoRepeatSpell = FindKnownAutoRepeatRangedSpell(bot))
+        {
+            if (!bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+                bot->CastSpell(target, autoRepeatSpell, false);
+        }
+
+        if (bot->GetVictim() != target)
+            bot->Attack(target, false);
     }
+    else
+    {
+        // Melee bot: close to melee range for basic attack
+        if (distance > MELEE_ENGAGE_RANGE)
+        {
+            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+                bot->GetMotionMaster()->MoveChase(target);
+            state.nextCastAllowedMs = NO_CANDIDATE_RETRY_MS;
+            return;
+        }
 
-    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-        bot->GetMotionMaster()->Clear();
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+            bot->GetMotionMaster()->Clear();
 
-    if (bot->GetVictim() != target)
-        bot->Attack(target, true);
+        if (bot->GetVictim() != target)
+            bot->Attack(target, true);
+    }
 
     state.nextCastAllowedMs = NO_CANDIDATE_RETRY_MS;
 
@@ -2056,6 +2338,8 @@ void ReportSpellbookRoleSignals(Player* bot, ChatHandler* handler)
 
     uint32 offensive = 0, taunt = 0, heal = 0, buff = 0;
     uint32 exampleOffensive = 0, exampleTaunt = 0, exampleHeal = 0, exampleBuff = 0;
+    uint32 interrupt = 0, aoe = 0, burst = 0;
+    uint32 exampleInterrupt = 0, exampleAoe = 0, exampleBurst = 0;
 
     for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
     {
@@ -2087,14 +2371,35 @@ void ReportSpellbookRoleSignals(Player* bot, ChatHandler* handler)
             if (!exampleBuff)
                 exampleBuff = spellId;
         }
+        if (IsUsableInterruptSpell(spellInfo))
+        {
+            ++interrupt;
+            if (!exampleInterrupt)
+                exampleInterrupt = spellId;
+        }
+        if (IsUsableAoeSpell(spellInfo))
+        {
+            ++aoe;
+            if (!exampleAoe)
+                exampleAoe = spellId;
+        }
+        if (IsUsableBurstSpell(spellInfo))
+        {
+            ++burst;
+            if (!exampleBurst)
+                exampleBurst = spellId;
+        }
     }
+
+    float preferredDist = GetBotPreferredEngageDistance(bot, GetRole(bot->GetGUID()));
 
     if (handler)
         handler->PSendSysMessage(
-            "BotAI: '{}' spellbook role signals -- offensive={} (e.g. {}), taunt={} (e.g. {}), heal={} (e.g. {}), buff={} (e.g. {}).",
-            bot->GetName(), offensive, exampleOffensive, taunt, exampleTaunt, heal, exampleHeal, buff, exampleBuff);
+            "BotAI: '{}' role signals -- off={} (e.g. {}), taunt={} (e.g. {}), heal={} (e.g. {}), buff={} (e.g. {}), int={} (e.g. {}), aoe={} (e.g. {}), burst={} (e.g. {}), dist={:.1f}yd.",
+            bot->GetName(), offensive, exampleOffensive, taunt, exampleTaunt, heal, exampleHeal, buff, exampleBuff,
+            interrupt, exampleInterrupt, aoe, exampleAoe, burst, exampleBurst, preferredDist);
     LOG_INFO("module.coa-playerbots",
-        "BotAI: '{}' (class {}) spellbook role signals -- offensive={} taunt={} heal={} buff={}.",
-        bot->GetName(), uint32(bot->getClass()), offensive, taunt, heal, buff);
+        "BotAI: '{}' (class {}) spellbook role signals -- off={} taunt={} heal={} buff={} int={} aoe={} burst={} dist={:.1f}yd.",
+        bot->GetName(), uint32(bot->getClass()), offensive, taunt, heal, buff, interrupt, aoe, burst, preferredDist);
 }
 }

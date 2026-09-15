@@ -2177,6 +2177,69 @@ but a bot-initiated test join does, since nothing else was watching it.
   Not yet click-tested with a real WoW client -- see that entry and `docs/addon-client.md`'s
   status note for exactly what is and isn't confirmed.
 
+## 2026-09-15: Combat AI upgrade -- distance by spec, interrupts, AoE, boss burst
+
+Point 4 of the addon-upgrade request, the biggest piece, all in `BotAI.cpp::UpdateOffensive`.
+Gemini wrote and built this (her transcript shows a successful compile and at least one
+completed live combat test on a Ranger), but hit her usage quota (resets 2026-09-19) before
+reporting or committing -- Claude picked up her already-working, already-deployed binary,
+reviewed it, ran further live verification, and committed it.
+
+**What's new**, all as new class-agnostic `SpellInfo`-based predicates matching the existing
+`IsUsableOffensiveSpell`/`IsUsableTauntSpell`/etc. shape (BotAI.cpp):
+- `IsUsableInterruptSpell` (`SPELL_EFFECT_INTERRUPT_CAST` or `SPELL_AURA_MOD_SILENCE`) +
+  `IsTargetCastingInterruptibleSpell` (checks the target's real `Unit::GetCurrentSpell` for
+  `CURRENT_GENERIC_SPELL`/`CURRENT_CHANNELED_SPELL`, cast state, and the spell's own
+  `InterruptFlags`/`ChannelInterruptFlags` -- i.e. "is this actually interruptible right now,"
+  not just "is it casting something").
+- `IsUsableAoeSpell` (`SpellInfo::IsAffectingArea()`/`IsTargetingArea()`, `MaxAffectedTargets
+  > 1`, or any effect's `ChainTarget > 1`) and `IsUsableSingleTargetOffensiveSpell` (its
+  complement).
+- `IsBossOrEliteTarget` (`Creature::isElite()`/`isWorldBoss()`/`IsDungeonBoss()`) and
+  `IsUsableBurstSpell` (offensive spell with `RecoveryTime`/`CategoryRecoveryTime` >= 45s --
+  a real-data-checked threshold, not guessed; her transcript shows she pulled real cooldowns
+  via `.botcmd runchat`/spell data before locking the constant).
+- `GetBotPreferredEngageDistance`: Tank always melee, Healer always holds at range; every
+  other role/class is classified by majority vote over its own known offensive spellbook
+  (melee-damage-class spells and short-max-range spells count as melee signals; long-range,
+  ranged-damage-class, or a known auto-repeat ranged weapon spell count as ranged signals) --
+  same "read the real spellbook, don't hardcode per class" philosophy as the rest of this
+  file, so it needs no per-class table for any of the 21 custom classes.
+- `SelectKnownSpell` also gained an effect-radius fallback distance check for spells that
+  report `GetMaxRange() == 0` but have a real area effect radius (ground-target AoE shapes),
+  so those aren't selected against a target actually outside their real reach.
+
+**Priority chain in `UpdateOffensive`** (each step only overrides if the previous found
+nothing): taunt (unchanged, tank-only) -> interrupt (target casting something interruptible)
+-> AoE (3+ hostile enemies within 10yd of target, via a new `CountNearbyEnemies`/
+`HostileEnemyCheck` grid search) -> burst (target is boss/elite and a burst spell is ready)
+-> the existing per-class rotation chain (unchanged) -> single-target fallback (only when
+`nearbyEnemies < 3`, so the AoE step above doesn't get undermined) -> the original generic
+offensive fallback. Movement now chases to `preferredDist` instead of a hardcoded melee range
+in both the self-buff-in-parallel branch and the "nothing usable" fallback; a ranged bot that
+reaches `preferredDist` with nothing to cast now holds position, faces the target, and fires
+a known auto-repeat ranged spell (Auto Shot/Shoot-equivalent) instead of always closing to
+melee -- the actual bug point 4's "distance by spec" line item was about.
+
+**Claude's verification** (server was already built+deployed by Gemini before she hit quota;
+`ninja` confirmed nothing needed rebuilding): booted clean, no new errors in
+Server.log/Errors.log. `.botcmd checkrole` across 5 classes confirmed correct classification:
+Felsworn (tank) and Barbarian (melee-heavy) both `dist=4.0yd`; Necromancer and Ranger (caster/
+ranged) both `dist=22.0yd`; Ranger alone showed `int=1, aoe=1, burst=2` (a Hunter-chassis kit
+plausibly having an interrupt, a volley-style AoE, and burst cooldowns), matching what a
+human would expect for that kit. Live combat against a Master's Training Dummy (Necromancer
++ Felsworn, ~5.5 minutes, no crash): rotations fired normally, tank taunted repeatedly and
+correctly, no regressions from the pre-existing rotation chain. **Not independently verified
+live**: actual interrupt-on-cast, AoE-on-a-pack, and burst-on-a-real-boss -- doing so needs a
+spell-casting enemy, a multi-mob pack, or a real boss/elite target, none of which a
+GM-command-only RA console (no physical in-world presence, `.npc add` and similar refuse to
+run without one) can manufacture in this environment. The classification/priority logic
+these scenarios depend on is reviewed and, per the checkrole results above, correctly
+detecting the preconditions (`int`/`aoe`/`burst` counts) it would act on.
+
+Files: `module/src/BotAI.cpp` only. Committed by Claude on Gemini's behalf given the quota
+outage; flag anything that looks off once she's back and can review her own work.
+
 ## 2026-09-15: CoABotUI: role-gating, Quick Fill, and the Guild Task Board
 
 Client-side addon work for the user's five-point addon-upgrade request, points 1-3's UI half
