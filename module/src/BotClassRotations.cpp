@@ -958,10 +958,20 @@ uint32 SelectWitchHunterRotationSpell(Player* bot, Unit* target, uint32 /*active
     }
 
     // 4. Target Brand (Apply if target doesn't have an active Witch Hunter Brand):
+    // Checked by each brand family's own highest-LEARNED rank, not a hardcoded rank-1 id --
+    // a bot that actually knows and casts a higher rank applies an aura with a different
+    // spell id than the root, so a plain HasAura(rootId) check would miss it and keep trying
+    // to reapply/overwrite an already-active higher-rank brand from a sibling family.
     uint32 brandDamned = GetHighestLearnedRank(bot, 807682);
+    uint32 brandCondemned = GetHighestLearnedRank(bot, 562573);
+    uint32 brandProfane = GetHighestLearnedRank(bot, 562390);
+    uint32 brandUnworthy = GetHighestLearnedRank(bot, 501380);
+    uint32 brandForsaken = GetHighestLearnedRank(bot, 680517); // no known "apply" spell in this rotation yet -- detection only
     bool hasBrand = (brandDamned && target->HasAura(brandDamned)) ||
-                    target->HasAura(501380) || target->HasAura(562390) ||
-                    target->HasAura(562573) || target->HasAura(680517);
+                    (brandCondemned && target->HasAura(brandCondemned)) ||
+                    (brandProfane && target->HasAura(brandProfane)) ||
+                    (brandUnworthy && target->HasAura(brandUnworthy)) ||
+                    (brandForsaken && target->HasAura(brandForsaken));
     if (!hasBrand)
     {
         // Brand of the Damned (root 807682)

@@ -1566,18 +1566,29 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
 
     if (spellId)
     {
-        // A castable spell was found in its own valid range -- no need to close distance.
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-        {
-            bot->GetMotionMaster()->Clear();
-            bot->StopMoving();
-        }
-
         Unit* castTarget = target;
         if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId))
         {
             if (spellInfo->IsPositive() || !spellInfo->NeedsExplicitUnitTarget())
                 castTarget = bot;
+        }
+
+        // A castable spell was found in its own valid range -- but that only means "no need
+        // to close distance" when the spell was actually aimed at the enemy target. A
+        // self-target buff/heal being castable says nothing about proximity to the enemy, so
+        // relying on this branch alone let a melee bot get stuck permanently re-casting a
+        // self-buff filler in place after a knockback/teleport put its real target out of
+        // melee range -- it would never fall through to the chase-fallback below since
+        // spellId was never 0. Keep closing distance in parallel with the self-cast instead.
+        if (castTarget == bot && bot->GetDistance(target) > MELEE_ENGAGE_RANGE)
+        {
+            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+                bot->GetMotionMaster()->MoveChase(target);
+        }
+        else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+        {
+            bot->GetMotionMaster()->Clear();
+            bot->StopMoving();
         }
 
         SpellCastResult result = LogCastAttempt(bot, spellId, castTarget, "cast");

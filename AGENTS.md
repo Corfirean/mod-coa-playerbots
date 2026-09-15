@@ -1941,3 +1941,36 @@ All 21 classes now have a rotation attempt with live-verified pet/summon logic f
 remaining pet-heavy classes -- the only explicitly out-of-scope item left from this session's
 combat AI work is full pet command/control (which minion to send where, focus-fire targeting
 for summoned pets, etc.), deliberately not attempted per the scope given for this pass.
+
+## Follow-up fixes: Witch Hunter brand detection, melee gap-closer (2026-09-15)
+
+Two items picked off a review-suggestion list (the rest deferred or handed to the parallel
+Gemini session -- see her own follow-up on group-heal support for Sun Cleric/Witch Doctor).
+
+**Witch Hunter (15) brand detection** (`BotClassRotations.cpp`): the "does the target already
+have one of my Brand debuffs" check compared against each brand family's rank-1 spell id
+directly (e.g. `target->HasAura(562573)`) instead of the actual highest-rank id the bot can
+cast (which was already correctly done for one of the four families, Brand of the Damned, but
+not the other three). A bot that knows and casts a higher rank applies an aura with a
+different spell id than the root, so the old check would say "no brand active" even when one
+already was, and redundantly try to reapply/overwrite it with a different brand family.
+Fixed by resolving all four (plus a fifth, detection-only, family with no known apply spell in
+this rotation) through `GetHighestLearnedRank` before the `HasAura` check. **Confirmed live**:
+watched the full brand cycle across a target switch -- exactly one brand application per new
+target, then correctly recognized as active and skipped for the rest of that target's fight.
+
+**Melee gap-closer stall** (`BotAI.cpp`, `UpdateOffensive`): a real bug affecting every melee
+class, not just the three originally flagged (Guardian/Templar/Barbarian). Finding *any*
+castable spell unconditionally cleared/stopped chase movement, on the reasoning "it's castable
+in its own valid range, so we're close enough" -- true for a spell aimed at the enemy target,
+but meaningless for a self-target buff/heal, whose own range check has nothing to do with
+proximity to the actual target. A bot with an always-available self-buff filler (e.g. Witch
+Hunter's tonics) could get permanently stuck re-casting it in place after a knockback or
+teleport put the real target out of range, since `spellId` was never 0 and the chase-fallback
+further down the function was never reached. Fixed by checking whether the resolved cast
+target is the bot itself (self-cast) and, if so, still issuing `MoveChase` toward the real
+target whenever it's beyond `MELEE_ENGAGE_RANGE`, instead of clearing movement unconditionally.
+**Confirmed live**: repositioned a bot ~60 yards from a stationary target before engaging (self
+buffs off cooldown and available) -- despawn-triggered position save showed it had closed
+~50 of those yards under its own chase movement rather than standing still, all while its
+self-buffs kept firing.
