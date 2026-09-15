@@ -1759,3 +1759,21 @@ real kit (Ripple/Talents, ~480 lines) is almost entirely utility/defensive (tele
 absorb shields, a "Ripple" channel) with only 3 of ~340 talent-granted spells showing a real
 damage effect in native SpellInfo data, the same low-visibility problem Reaper had, needing the
 same kind of deep per-file archaeology rather than a quick DBC scan.
+
+## Combat AI, fifth pass: Knight of Xoroth (2026-09-15)
+
+`BotClassRotationsXoroth.h/.cpp` -- 7 of ~170 talent-granted spells had a real native
+damage/DoT effect, all Rage-cost. Two real preconditions, both defended the same way as
+previous classes: Hellmaw/Implosion require `CasterAuraSpell` 500906 (checked via `HasAura`);
+Seeking Flame requires a specific stance (checked via `SpellInfo::CheckShapeshift`, same
+pattern as Runemaster's Fracture). **Confirmed live**: both real long-cooldown DoTs (Chains of
+Malice, Curse of Xoroth) and the filler (Chainwhip) cast cleanly. Also noticed, not fixed: the
+generic fallback occasionally selects spell 3018 (the base melee "Attack" spell every
+character knows, normally auto-triggered by the swing timer, never meant to be explicitly cast)
+and fails it with `SPELL_FAILED_TOO_CLOSE` -- a previously-undocumented quirk in the *generic*
+engine's `IsUsableOffensiveSpell` predicate matching 3018's weapon-damage-shaped effect
+signature, same "pre-existing generic-engine gap, not this class's problem" category as the
+other documented cases above.
+
+Remaining without a dedicated rotation (7 of 21): Witch Doctor, Witch Hunter, Sun Cleric
+(currently assigned to the parallel Gemini session), Chronomancer, Necromancer.

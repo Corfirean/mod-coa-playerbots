@@ -33,6 +33,7 @@
 #include "BotClassRotationsReaper.h"
 #include "BotClassRotationsRunemaster.h"
 #include "BotClassRotationsStormbringer.h"
+#include "BotClassRotationsXoroth.h"
 #include "ClassSpecRoles.h"
 #include "Bag.h"
 #include "CellImpl.h"
@@ -1552,6 +1553,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         spellId = BotAI::SelectPrimalistRotationSpell(bot, target);
     if (!spellId)
         spellId = BotAI::SelectRunemasterRotationSpell(bot, target);
+    if (!spellId)
+        spellId = BotAI::SelectXorothRotationSpell(bot, target);
     if (!spellId)
         spellId = SelectSpell(bot, target);
 
