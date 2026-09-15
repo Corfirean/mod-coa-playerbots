@@ -2170,6 +2170,24 @@ but a bot-initiated test join does, since nothing else was watching it.
   actually riding it for travel isn't wired to anything yet. Assigned to the parallel Gemini
   session (2026-09-15) alongside guild bank orders -- still in progress as of this note (guild
   bank orders shipped first, see below).
+- **Guild task board + crafting order system** (user request, 2026-09-15): addon UI listing
+  each guild bot's professions/skill levels/current active task with control buttons, plus a
+  crafting order board -- player requests an item, a bot with the right profession+recipe
+  gathers reagents (reuse `guildgather`'s order lifecycle) and crafts it, then mails the result
+  to the orderer or deposits it in the guild bank. Needs: a `GUILDROSTER`-shaped query verb
+  (profession/skill/current-task per bot, addon-protocol.md), a craft-order lifecycle in
+  `BotMgr` parallel to `_guildGatherOrders`, and recipe/reagent lookup (`SkillLineAbility`/
+  `item_template`'s `spell_X` recipe fields) to go from "item X" to "which spell, which
+  profession, which reagents". Assigned to Claude, not started as of this note -- next up
+  after the quick-fill group feature below.
+- **Quick-fill group for dungeons** (user request, 2026-09-15): one addon button that fills
+  the player's group up to 5 (tank + healer + 3 dps) with bots matching the player's
+  level/ilvl, guildmates prioritized over any other bot. Different from the existing LFG
+  auto-fill (`BotLfgFill.cpp`, which fills the Dungeon Finder queue) -- this is a direct group
+  invite, no queue involved. Needs a new wire verb (no botGuidLow -- applies to the
+  commander's own group) and matching/invite logic reusing `BotMgr::GetOnlineBots()` +
+  `ClassSpecRoles` role data, guild membership as the priority signal. Assigned to Claude, not
+  started as of this note.
 
 ## 2026-09-15: Guild bank orders for bots
 
@@ -2193,6 +2211,50 @@ the target regardless of whether `Guild::SwapItemsWithInventory` (a `void` call)
 succeeded, so a deposit that silently fails (e.g. bank tab full) would still report success.
 Matches how the rest of the codebase treats this same void API elsewhere; not worth guarding
 until it's actually seen in practice.
+
+## 2026-09-15: Role/spec gating, auto-repair, bag cleanup, GETROLES query
+
+User asked for five addon/bot-AI upgrades in one request; this entry covers the two shipped
+immediately (self-contained, no addon changes needed beyond one new query verb) -- see the
+TODO backlog above for the other three (autonomous travel and guild crafting/quick-fill are
+in progress/assigned elsewhere).
+
+**Role gated by spec availability** (`BotMgr::SetRole`, `ClassSpecRoles::FindSpecForRole`):
+picking Tank or Healer for a bot whose class has no spec at all for that role (most classes
+don't -- see `ClassSpecRoles.cpp`'s table) is now refused outright, role and spec both left
+untouched. Picking a role the class *can* hold auto-switches the bot's active spec to match
+(via the existing `LearnSpecialization`) unless its current spec already maps to that role, so
+choosing "Tank" no longer silently leaves a DPS-spec bot flagged as a tank with no tank
+talents. Added `GETROLES`/`ROLES` to the addon protocol (`docs/addon-protocol.md`) -- the
+first server->client reply on this channel (`BotAddonChat.cpp::SendCoaBotReply`, same
+self-whisper-as-addon-channel trick as `mod-ascension-compat`'s `CoABugReport.cpp`, just
+reversed) -- so the addon can grey out role buttons a bot's class can never hold instead of
+the pick silently no-oping. Addon-side wiring (send `GETROLES` per bot row, cache the reply,
+disable buttons) not yet built -- handed to the parallel Gemini session as a follow-up once
+she's done with the combat AI task below.
+
+Live-verified: `.botcmd setrole 6 tank` on a Necromancer (no tank spec) refused with role
+staying `dps`; `.botcmd setrole 11 tank` on a Felsworn (has the Tyrant tank spec) accepted and
+auto-switched spec 0 -> 9, confirmed via `.botcmd checkrole` showing "spec 9 'Tyrant'" and a
+newly-learned taunt spell in its spellbook signals.
+
+**Auto-repair and bag cleanup** (`BotAI::TryMaintainEquipment`, folded into the existing
+`TryMaintainProgression` 10s throttle): repairs any equipped item under 25% durability, and
+once free bag space drops to 2 slots or fewer, clears out `ITEM_QUALITY_POOR` clutter --
+sold for its `SellPrice` if a vendor happens to be within `VENDOR_SEARCH_RADIUS` (20yd),
+destroyed outright as a last resort once bags are completely full and no vendor is nearby.
+Both are purely opportunistic and NPC-flag-gated (`Unit::IsArmorer()`/`IsVendor()`) -- no
+pathing to a vendor is attempted, same "simplest that actually works" spirit as this file's
+other janitorial checks (`TryUpgradeGearOnce`). Real engine calls throughout
+(`Player::DurabilityRepairAll`, `Player::ModifyMoney`, `Player::DestroyItem`,
+`sScriptMgr->OnPlayerCanSellItem`), same pattern the rest of the module uses.
+
+Live-verified: forced a bot's bags to exactly 0 free slots (`.additem` a poor-quality item
+past capacity) with no vendor nearby -- confirmed via Server.log: "bot 'Necrotest' destroyed
+10 junk item stack(s) (bags full, no vendor nearby)." Repair path reviewed but not
+independently live-triggered (would need a bot standing at a repair vendor with genuinely
+damaged gear to observe end-to-end; the underlying `DurabilityRepairAll` call is
+well-established engine API, low risk).
 
 ## 2026-09-15: Synced core checkout with the upstream devs' repo
 
