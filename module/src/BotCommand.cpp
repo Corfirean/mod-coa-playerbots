@@ -55,7 +55,8 @@ public:
             { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "quickfill",    HandleBotQuickFillCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
-            { "craftorder",   HandleBotCraftOrderCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
+            { "craftorder",   HandleBotCraftOrderCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "guildroster",  HandleBotGuildRosterCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
         static ChatCommandTable commandTable =
@@ -152,6 +153,28 @@ public:
         uint32 itemEntry, Optional<uint32> count)
     {
         sBotMgr->CraftOrder(charLowGuid, itemEntry, count.value_or(1), handler);
+        return true;
+    }
+
+    // Debug/testing entry point for BotMgr::GetGuildRosterInfo -- prints what the addon's
+    // GUILDROSTER query would receive, without needing a real client round-trip.
+    static bool HandleBotGuildRosterCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* commander = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(charLowGuid));
+        if (!commander)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online player with guid {} found.", charLowGuid);
+            return true;
+        }
+        std::vector<std::string> lines = sBotMgr->GetGuildRosterInfo(commander);
+        if (handler)
+        {
+            if (lines.empty())
+                handler->PSendSysMessage("BotMgr: no online guild-mate bots found for '{}'.", commander->GetName());
+            for (std::string const& line : lines)
+                handler->PSendSysMessage("BotMgr: {}", line);
+        }
         return true;
     }
 

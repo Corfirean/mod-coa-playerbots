@@ -108,6 +108,18 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         return;
     }
 
+    // GUILDROSTER: task-board query, also acts on the sender's whole guild rather than one
+    // bot -- send as GUILDROSTER:0 (same "0" placeholder convention as QUICKFILL, see its
+    // comment above). Replies with one ROSTER:... message per guild bot (many small replies
+    // rather than one giant one, since a big guild's roster could exceed the chat length cap).
+    if (verb == "GUILDROSTER")
+    {
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GUILDROSTER.", commander->GetName());
+        for (std::string const& line : sBotMgr->GetGuildRosterInfo(commander))
+            SendCoaBotReply(commander, line);
+        return;
+    }
+
     ObjectGuid::LowType botGuidLow = std::strtoul(parts[1].c_str(), nullptr, 10);
     if (!botGuidLow)
     {

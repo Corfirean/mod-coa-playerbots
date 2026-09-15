@@ -127,6 +127,23 @@ void MailCraftedItem(Player* sender, ObjectGuid::LowType receiverCharLowGuid, It
     sender->SaveInventoryAndGoldToDB(trans);
     CharacterDatabase.CommitTransaction(trans);
 }
+
+struct ProfessionSkillEntry
+{
+    uint32 skillId;
+    char const* name;
+};
+
+// The 11 standard WotLK profession skill lines (8 primary crafting/gathering + First
+// Aid/Cooking/Fishing) -- stable, well-known skill line ids, not custom to this server.
+constexpr ProfessionSkillEntry PROFESSION_SKILLS[] =
+{
+    { 164, "Blacksmithing" }, { 165, "Leatherworking" }, { 171, "Alchemy" },
+    { 182, "Herbalism" },     { 186, "Mining" },         { 197, "Tailoring" },
+    { 202, "Engineering" },   { 333, "Enchanting" },     { 393, "Skinning" },
+    { 755, "Jewelcrafting" }, { 773, "Inscription" },
+    { 129, "First Aid" },     { 185, "Cooking" },        { 356, "Fishing" },
+};
 }
 
 BotMgr* BotMgr::instance()
@@ -973,6 +990,40 @@ void BotMgr::CraftOrder(ObjectGuid::LowType requesterCharLowGuid, uint32 itemEnt
             crafter->GetName(), count, itemEntry, requester->GetName(), chosenSpell);
     LOG_INFO("module.coa-playerbots", "BotMgr: craft order placed -- bot '{}' crafting {}x item {} for '{}' (spell {}).",
         crafter->GetName(), count, itemEntry, requester->GetName(), chosenSpell);
+}
+
+std::vector<std::string> BotMgr::GetGuildRosterInfo(Player* commander) const
+{
+    std::vector<std::string> lines;
+    uint32 guildId = commander ? commander->GetGuildId() : 0;
+    if (!guildId)
+        return lines;
+
+    for (Player* bot : GetOnlineBots())
+    {
+        if (bot->GetGuildId() != guildId)
+            continue;
+
+        std::string professions;
+        for (ProfessionSkillEntry const& entry : PROFESSION_SKILLS)
+        {
+            if (!bot->HasSkill(entry.skillId))
+                continue;
+            if (!professions.empty())
+                professions += ",";
+            professions += std::string(entry.name) + "=" + std::to_string(bot->GetSkillValue(entry.skillId));
+        }
+
+        std::string task = "idle";
+        if (auto craftItr = _craftOrders.find(bot->GetGUID()); craftItr != _craftOrders.end())
+            task = "crafting " + std::to_string(craftItr->second.remainingCount) + "x item " + std::to_string(craftItr->second.itemEntry);
+        else if (auto gatherItr = _guildGatherOrders.find(bot->GetGUID()); gatherItr != _guildGatherOrders.end())
+            task = "gathering " + std::to_string(gatherItr->second.remainingCount) + "x item " + std::to_string(gatherItr->second.itemEntry);
+
+        lines.push_back("ROSTER:" + std::to_string(bot->GetGUID().GetCounter()) + ":" + bot->GetName() + ":" +
+            std::to_string(uint32(bot->getClass())) + ":" + std::to_string(bot->GetLevel()) + ":" + task + ":" + professions);
+    }
+    return lines;
 }
 
 // Called from Update() every tick, same cadence as the guildgather order drain. Casts are

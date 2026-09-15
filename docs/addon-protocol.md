@@ -43,6 +43,7 @@ so both sides can be developed independently against the same interface.
 | `GETROLES` | botGuidLow | server replies (see below), no bot state change | Added 2026-09-15. Query verb: ask which roles this bot's class can actually hold, so the addon can grey out impossible role buttons before the player ever clicks one (`SETROLE` refuses silently -- see its note above). |
 | `QUICKFILL` | `0` (placeholder, ignored -- see note) | `BotMgr::QuickFillGroup(commander, nullptr)` | Added 2026-09-15. Acts on the **sender's own group as a whole**, not one specific bot -- send as `QUICKFILL:0` (the `0` only exists to satisfy the wire format's "at least 2 colon-parts" minimum; no per-bot authorization check applies, since there's no bot guid to check). Brings the sender's group up to 5 (tank + healer + 3 dps), inviting online bots for whichever roles are still short -- guildmates of the sender preferred, then closest level/average-ilvl. Issues a real `HandleGroupInviteOpcode` per invited bot from the *sender's own session*; the existing per-tick auto-accept (`BotMgr::Update`) picks up each resulting pending invite and teleports the bot in, same as any other bot-to-bot invite already in this module -- no new accept-side code. |
 | `CRAFTORDER` | itemEntry (reuses the botGuidLow slot), count (optional, default 1) | `BotMgr::CraftOrder(sender, itemEntry, count, nullptr)` | Added 2026-09-15. Also doesn't target one specific bot -- the requester is always the sender; `BotMgr::CraftOrder` itself finds the guild-mate bot to craft it (any online bot in the sender's guild that knows a recipe spell producing `itemEntry`, preferring one that already has the reagents). Crafts immediately if possible; otherwise waits (retried every tick) for the crafter to acquire the missing reagents by whatever means (its own gathering AI, a manual grant, etc.). Finished items are mailed to the sender via a real `MailDraft`, regardless of online status. |
+| `GUILDROSTER` | `0` (placeholder, same convention as `QUICKFILL`) | server replies (see below), no state change | Added 2026-09-15. Task-board query: send `GUILDROSTER:0` to get one `ROSTER:...` reply per online bot in the sender's guild. |
 
 Inventory/equipment management (the other half of the user's ask) is deliberately **out of
 v1 scope** -- needs its own item-guid wire format and is lower-value than movement/role
@@ -63,10 +64,12 @@ addon's existing `CHAT_MSG_ADDON` event handler covers both without a second cod
 | Reply verb | Args | Sent when |
 |---|---|---|
 | `ROLES` | botGuidLow, comma-separated role list (e.g. `dps,tank`) | In response to `GETROLES`. Built from `ClassSpecRoles::GetAvailableRolesMask(bot->getClass())` -- always includes `dps` (every class has at least a default/shared spec), plus whichever of `tank`/`healer`/`support` that class has a real spec for. |
+| `ROSTER` | botGuidLow, name, classId, level, task, comma-separated `profession=skill` pairs | One per online guild-mate bot, in response to `GUILDROSTER`. `task` is a free-text string (`idle`, `crafting Nx item M`, or `gathering Nx item M`) reflecting an active `CraftOrder`/`GuildGather` order on that bot right now -- not meant to be machine-parsed further, just displayed. The professions field can be empty (no known profession skills). |
 
 Addon-side TODO (not yet implemented client-side as of 2026-09-15): send `GETROLES` once per
 bot when populating its row, cache the `ROLES` reply, and grey out/disable any role button not
-in that list.
+in that list. Also not yet built: the task-board UI itself (`GUILDROSTER`/`ROSTER` consumer),
+the crafting-order submission form (`CRAFTORDER`), and the `QUICKFILL` button.
 
 ## Server-side authorization (non-negotiable, implement before wiring any verb)
 

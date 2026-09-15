@@ -80,6 +80,13 @@ public:
     // docs/addon-protocol.md's CRAFTORDER verb for why that's a deliberate v1 simplification.
     void CraftOrder(ObjectGuid::LowType requesterCharLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler);
 
+    // One pre-formatted "ROSTER:botGuidLow:name:class:level:task:prof1=skill1,prof2=skill2"
+    // body per online bot in `commander`'s guild -- the addon task-board query (see
+    // docs/addon-protocol.md's GUILDROSTER verb). One string per bot rather than one combined
+    // message, same reasoning as everything else on this wire channel: WoW chat messages have
+    // a real length cap, and a big guild's full roster could exceed it in a single body.
+    std::vector<std::string> GetGuildRosterInfo(Player* commander) const;
+
     // Manual/debug entry point: has a bot invite another online player (bot or real client,
     // matched by name) to its group, by calling the real WorldSession::HandleGroupInviteOpcode
     // handler directly with a minimal packet -- same "call the real thing" pattern as
