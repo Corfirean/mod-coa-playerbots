@@ -63,7 +63,7 @@ addon's existing `CHAT_MSG_ADDON` event handler covers both without a second cod
 
 | Reply verb | Args | Sent when |
 |---|---|---|
-| `ROLES` | botGuidLow, comma-separated role list (e.g. `dps,tank`) | In response to `GETROLES`. Built from `ClassSpecRoles::GetAvailableRolesMask(bot->getClass())` -- always includes `dps` (every class has at least a default/shared spec), plus whichever of `tank`/`healer`/`support` that class has a real spec for. |
+| `ROLES` | botGuidLow, comma-separated role list (e.g. `dps,tank`), current effective role (e.g. `healer`) | In response to `GETROLES`. The role list is built from `ClassSpecRoles::GetAvailableRolesMask(bot->getClass())` -- always includes `dps` (every class has at least a default/shared spec), plus whichever of `tank`/`healer`/`support` that class has a real spec for. The 4th field (added 2026-09-15) is `BotAI::GetRole(bot)`'s actual current effective role (manual override if set, else auto-detected from active spec) -- lets the addon show what a bot left on "Auto" is really playing as right now, instead of just the bare label "Auto". |
 | `ROSTER` | botGuidLow, name, classId, level, task, comma-separated `profession=skill` pairs | One per online guild-mate bot, in response to `GUILDROSTER`. `task` is a free-text string (`idle`, `crafting Nx item M`, or `gathering Nx item M`) reflecting an active `CraftOrder`/`GuildGather` order on that bot right now -- not meant to be machine-parsed further, just displayed. The professions field can be empty (no known profession skills). |
 
 **Client-side status as of 2026-09-15: all built.** `GETROLES` is requested once per bot row
@@ -71,6 +71,8 @@ addon's existing `CHAT_MSG_ADDON` event handler covers both without a second cod
 the bot's class can't hold; `QUICKFILL` and the Guild Task Board (`GUILDROSTER`/`ROSTER`
 consumer + `CRAFTORDER` submission form) are both live in `CoABotUI.lua` -- see
 `docs/addon-client.md`. Not yet click-tested with a real client (see that doc's status note).
+The 4th (`currentRole`) field is cached client-side (`currentRoleCache`) and refreshes the
+role-button label whenever a fresh `ROLES` reply comes in.
 
 ## Server-side authorization (non-negotiable, implement before wiring any verb)
 

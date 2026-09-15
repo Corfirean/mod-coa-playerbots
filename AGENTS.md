@@ -2478,3 +2478,136 @@ redeployed, confirmed a clean boot (0 errors, RA responsive) before handing back
 touches `Player.cpp`, where the autonomous-travel work above may still land core-adjacent
 changes, and it's simply a much bigger diff to vet in one sitting. Revisit once the travel
 task is done and reported.
+
+## 2026-09-15: Gemini hit her usage quota (resets 2026-09-19) mid-combat-AI task; Claude took over the rest of a 10-item live-testing feedback pass, and root-caused a real worldserver crash along the way
+
+User spawned a 100-bot stress-test crowd (`.botcmd spawnrandom 100`) to live-test everything
+built so far, reported "Quick Fill only gave me 2 people," then (after that was fixed and
+testing continued) a single message with 10 concrete issues found live, then their computer
+froze and they rebooted mid-session -- all of this session's work below happened solo
+(Gemini unavailable) and was never previously reported back to the user in chat.
+
+**Quick Fill only filling 2 of a party (root-caused, fixed, confirmed live)**: traced to
+`BotSpawnRandom::CloneCharacter`'s DB clone never copying `character_settings` (a separate
+table, keyed `(guid, source)`, holding `core.ascension_active_spec` -- see
+`ClassSpecRoles`/`BotAI::GetRole` above) alongside the `characters` row it did clone. Every
+randomly-spawned bot silently defaulted to spec 0 -> `BotRole::Dps`, so a quick-fill group
+request that needs a tank/healer had almost nothing eligible to pick from. **Fix**: added a
+second `INSERT INTO character_settings ... SELECT ... FROM character_settings WHERE guid =
+templateGuid` alongside the existing character clone. Confirmed live after proper redeploy: a
+fresh `spawnrandom 20` batch showed real spec variety in `character_settings` (e.g. one bot ->
+spec 100, another -> spec 51), where before the table was empty for every random spawn.
+Committed as `baf3234`. Separately found, not root-caused: group invites to Knight-of-Xoroth
+(class 17) bots never complete -- reproduced on 3 independent bots/inviters/factions, deferred
+(needs a restart with debug logging in core `HandleGroupInviteOpcode` to chase properly).
+
+**The 10-item live-testing feedback list, addressed one by one:**
+
+1. *Addon role display unclear ("Auto" shows nothing about what a bot is actually playing)* --
+   `BotAddonChat.cpp`'s `GETROLES` reply now carries a 4th field, the bot's live effective role
+   (`BotAI::GetRole`), not just which roles its class *could* hold. `CoABotUI.lua` caches it
+   (`currentRoleCache`) and a bot left on "Auto" now shows e.g. "Auto (Healer)" instead of a
+   bare "Auto". Re-requests roles immediately (no `C_Timer` -- doesn't exist in the 3.3.5a
+   client Lua API) when the picker is set back to "auto".
+2. *Bots stack/walk into each other* -- `Unit::GetFollowAngle()` defaults to the same fixed
+   angle for every follower. Added `BotAI::ComputeFollowAngle(Player*)` (guid-hashed into one
+   of 8 fixed slots around the leader, stable per bot) and wired it into both `MoveFollow` call
+   sites (`BotAI.cpp`'s own resume-following, and `BotMgr.cpp`'s post-teleport re-follow --
+   initially only fixed the first site, since the helper started life anonymous-namespace-local
+   to `BotAI.cpp`; moved it into the public `BotAI` namespace, declared in `BotAI.h`, so both
+   files share one slot assignment).
+3. *Bots don't mount when the leader mounts* -- new `TryMatchLeaderMountState` (`BotAI.cpp`),
+   checked every tick in `BotAI::Update`: compares the bot's own mount state against its
+   leader's, mounts/dismounts to match, and prefers a flying mount specifically when the leader
+   is flying (checked via the two real engine auras that mean "this mount flies" --
+   `SPELL_AURA_FLY` / `SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED`, confirmed from
+   `Player::SendInitialPacketsAfterAddToMap`'s own resend list, not guessed) via new
+   `IsFlyingMountSpell`/`SelectKnownMountSpell(bot, wantFlying)`.
+4. *Bots aggro training dummies and stand in town whacking them* -- confirmed via direct DB
+   query that every training-dummy variant (13 rows, "Training Dummy" through "Hellfire
+   Training Dummy") shares `creature_template.type = CREATURE_TYPE_TOTEM` (9) -- a reliable,
+   locale-independent identifier. `GrindHostileUnitCheck::operator()` now excludes any
+   creature of that type from autonomous grind-target selection.
+5. *Bots walk through walls when far from the leader with no clear path* -- investigated, not
+   fixed: this looks like an mmaps/navmesh data gap rather than a `BotAI`/`MotionMaster` logic
+   bug. Deliberately not patched speculatively; revisit only if further evidence points at
+   actual code rather than missing nav data.
+6. *In combat, ranged bots don't kite and melee bots don't close in -- everyone just follows
+   the leader while trying to fight* -- the most substantial fix of the ten. `UpdateOffensive`'s
+   positioning was previously only adjusted from inside the "spell found"/"nothing usable"
+   branches, gated behind manual `distance > preferredDist` checks that never let a bot
+   actually retreat. Rewrote it to run **unconditionally**, once, before any cast logic: for a
+   ranged role (`preferredDist > MELEE_ENGAGE_RANGE`), `MoveChase(target, ChaseRange(preferredDist
+   * 0.7f, preferredDist))` -- the engine's own two-float `ChaseRange` constructor, which
+   produces a real hold-and-kite band (approach if too far, retreat if too close); melee just
+   `MoveChase(target)` (the default single-target chase-to-melee-range). Both branches below
+   this got simplified to pure cast/attack logic with no movement code of their own, since
+   positioning is already handled and the engine's own range checks on `CastSpell`/`Attack`
+   already no-op harmlessly when still out of range.
+7. *Resurrection/corpse-run* -- user explicitly confirmed this already works correctly; no
+   action taken.
+8. *Can't test dungeons without tanks/healers* -- direct consequence of the Quick-Fill spec-
+   clone bug above; resolved by that fix, no separate work needed.
+9. *Bots don't auto-sign a guild charter, blocking solo guild creation/testing* -- new
+   `TryAutoSignLeaderPetition` (`BotAI.cpp`, checked in `TryMaintainProgression`): looks up the
+   group leader's active guild-charter petition via the existing `sPetitionMgr
+   ->GetPetitionByOwnerWithType(leaderGuid, GUILD_CHARTER_TYPE)` (a read-only singleton API --
+   needed no core patch), and if the bot hasn't signed yet, synthesizes a
+   `WorldSession::HandlePetitionSignOpcode` call, same "call the real opcode handler with a
+   minimal packet" pattern the rest of the module already uses for grouping/teleport-ack.
+10. *Bots that die stop teleport-following the leader across zones afterward, permanently,
+    while a bot that never died keeps working* -- root-caused: `Player::RepopAtGraveyard()`
+    (called from the real client release-spirit flow, `HandleRepopRequestOpcode`) calls
+    `TeleportTo()` internally same as the module's own explicit teleports (`DoAcceptInvite`,
+    `TryFollowLeaderAcrossMaps`, `TryReturnGhostToCorpseMap`), all three of which already queue
+    a synthesized teleport-ack for the next tick (`_pendingTeleportAck` /
+    `BotMgr::FinishPendingTeleport` -- doing the ack in the *same* tick as `TeleportTo()`
+    crashes, per that code's own existing comment referencing a real crash dump) -- but nothing
+    queued the ack for *this* internal `TeleportTo()` call, so a bot that died left
+    `IsBeingTeleportedNear()`/`Far()` stuck permanently `true`, wedging every future cross-map
+    follow attempt. **Fix**: added a new public `BotMgr::QueueTeleportAck(WorldSession*)`
+    (previously all queueing was private/internal to `BotMgr.cpp` itself) called right after
+    `UpdateDeathHandling`'s `HandleRepopRequestOpcode` call, whenever the bot ends up mid-
+    teleport as a result.
+
+**A new worldserver crash surfaced during this same stress test, root-caused and hardened
+against (not just patched around)**: `CombatManager::PutReference`'s `ASSERT(!inMap, "Duplicate
+combat state ... memory leak!")` (`CombatManager.cpp:396`) brought the whole process down
+(`Exception code C0000420`) under ~100 simultaneously-fighting bots, call stack rooted in the
+rewritten `UpdateOffensive` (item 6 above) -> `LogCastAttempt` -> `Unit::CastSpell` ->
+`Spell::HandleLaunchPhase` -> `CombatManager::SetInCombatWith`. This is stock, unmodified
+AzerothCore combat-state-tracking code (not a bug introduced by this session's own changes),
+whose `SetInCombatWith` only pre-checks *its own* (`_owner`'s) `_pveRefs`/`_pvpRefs` maps before
+inserting a brand-new reference symmetrically into both sides -- if the *other* unit's map
+already (asymmetrically) held a stale reference for this guid pair, that pre-check can't see
+it, and the second `PutReference` call hits the assert. This session's much higher
+cast-attempt frequency (item 6's unconditional positioning + casting, running for ~100 bots at
+once) was what actually exposed a pre-existing, rare invariant edge case, not a new defect in
+the bot module itself -- the exact asymmetric-state trigger wasn't pinned down further (would
+need reproducing under a debugger, impractical in an RA-console-only environment), so rather
+than leave the whole server one bad race away from a hard crash, **`PutReference` was changed
+from an ASSERT-crash to a self-healing recovery**: on finding an already-occupied slot, it now
+force-ends the stale reference first (`stale->EndCombat()` -- the same symmetric, engine-
+provided teardown path already used everywhere else combat state is normally cleared: clears
+threat both ways, purges both sides' maps, notifies AI, deletes itself) via a `LOG_ERROR`
+instead of a crash, then inserts the new reference into the now-clean slot. This is a core
+change (`azerothcore-wotlk-coa/src/server/game/Combat/CombatManager.cpp`), acceptable here per
+this project's established precedent of small, targeted core patches when the module needs
+them (`friend class BotMgr` on `Guild`, the `AddQueryHolderCallback` addition, etc.) -- not
+something to upstream without more certainty about the actual root cause, but a reasonable
+trade for a private test server where "never crash the whole world over one bot's stale combat
+ref" matters more than diagnosing an intermittent, rare, hard-to-repro race with full rigor.
+Rebuilt clean, redeployed, server confirmed booting after being down since the crash (the
+user's mid-session computer reboot had already killed all processes anyway, so no live-player
+disruption from this restart). **Not yet re-stress-tested under the same ~100-bot combat load
+that originally triggered it** -- next session (or this one, if the user is present) should
+re-run a comparable `spawnrandom` stress test and confirm both no crash and no `LOG_ERROR`
+spam (a `LOG_ERROR` firing at all would mean the underlying asymmetric-state race is real and
+frequent, worth investigating further even though it no longer crashes the server).
+
+**Also still open from this session, not yet done**: re-verify items 2-4, 6, 9, 10 above live
+under the same kind of multi-bot combat load now that the crash is fixed; commit this
+session's uncommitted working-tree changes (`BotAI.cpp/.h`, `BotMgr.cpp/.h`,
+`BotAddonChat.cpp`, `CoABotUI.lua`, plus the core `CombatManager.cpp` change) to git; report
+the full status of all 10 items back to the user (nothing here had been communicated back to
+them yet as of this entry).

@@ -391,7 +391,7 @@ void BotMgr::FinishPendingTeleport(WorldSession* session)
         if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
         {
             if (leader != bot)
-                bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, bot->GetFollowAngle());
+                bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, BotAI::ComputeFollowAngle(bot));
         }
     }
 }
@@ -418,6 +418,11 @@ void BotMgr::TryReturnGhostToCorpseMap(WorldSession* session)
         bot->GetName(), bot->GetMapId(), corpse->GetMapId());
 
     bot->TeleportTo(corpse->GetMapId(), corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), bot->GetOrientation());
+    _pendingTeleportAck.push_back(session);
+}
+
+void BotMgr::QueueTeleportAck(WorldSession* session)
+{
     _pendingTeleportAck.push_back(session);
 }
 

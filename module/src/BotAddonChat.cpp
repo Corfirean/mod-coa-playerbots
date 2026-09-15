@@ -177,7 +177,12 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
                 roles += ROLE_NAMES[i];
             }
         }
-        SendCoaBotReply(commander, "ROLES:" + std::to_string(botGuidLow) + ":" + roles);
+        // Also tell the addon the bot's *current* effective role (not just which ones its
+        // class could hold) -- otherwise a bot left on "auto" always just shows the literal
+        // label "Auto" with no indication of what it's actually playing as right now.
+        BotRole currentRole = BotAI::GetRole(bot->GetGUID());
+        char const* currentRoleStr = ROLE_NAMES[currentRole == BotRole::Tank ? 1 : currentRole == BotRole::Healer ? 2 : currentRole == BotRole::Support ? 3 : 0];
+        SendCoaBotReply(commander, "ROLES:" + std::to_string(botGuidLow) + ":" + roles + ":" + currentRoleStr);
     }
 }
 

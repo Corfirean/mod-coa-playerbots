@@ -27,6 +27,7 @@
 
 #include "BotAI.h"
 #include "BotClassRotations.h"
+#include "BotMgr.h"
 #include "BotClassRotationsBloodmage.h"
 #include "BotClassRotationsChronomancer.h"
 #include "BotClassRotationsFelsworn.h"
@@ -56,10 +57,12 @@
 #include "ObjectDefines.h"
 #include "ObjectMgr.h"
 #include "PetDefines.h"
+#include "PetitionMgr.h"
 #include "Player.h"
 #include "QuestDef.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
+#include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "Spell.h"
 #include "SpellMgr.h"
@@ -273,16 +276,28 @@ bool IsMountSpell(SpellInfo const* spellInfo)
     return spellInfo && !spellInfo->IsPassive() && spellInfo->HasAura(SPELL_AURA_MOUNTED);
 }
 
+// Same two auras the engine itself treats as "this mount can fly" (see
+// Player::SendInitialPacketsAfterAddToMap's own resend list for SPELL_AURA_FLY /
+// SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED) -- not a guess.
+bool IsFlyingMountSpell(SpellInfo const* spellInfo)
+{
+    return IsMountSpell(spellInfo) &&
+        (spellInfo->HasAura(SPELL_AURA_FLY) || spellInfo->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED));
+}
+
 // Same "first known match wins" shape as SelectKnownSpell, but for whatever mount(s) this bot
-// already knows -- doesn't rank multiple known mounts by speed (no CanFly-aware "best mount"
-// logic yet), just "something to ride beats walking."
-uint32 SelectKnownMountSpell(Player* bot)
+// already knows -- doesn't rank multiple known mounts by speed, just "something to ride beats
+// walking." wantFlying restricts the search to flying mounts (for matching a flying leader --
+// see TryMatchLeaderMountState); a bot with no flying mount known simply won't find one, same
+// as any other "doesn't know it" case elsewhere in this file.
+uint32 SelectKnownMountSpell(Player* bot, bool wantFlying = false)
 {
     for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
     {
         if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
             continue;
-        if (IsMountSpell(sSpellMgr->GetSpellInfo(spellId)))
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (wantFlying ? IsFlyingMountSpell(spellInfo) : IsMountSpell(spellInfo))
             return spellId;
     }
     return 0;
@@ -295,6 +310,50 @@ void EnsureBotHasMount(Player* bot)
         return;
     if (uint32 spellId = RacialGroundMountSpellFor(bot->getRace()))
         bot->learnSpell(spellId);
+}
+
+// Mirrors the group leader's mounted state -- confirmed live bug report: bots never reacted
+// to the player mounting up at all, ground or flying. Checked every tick (cheap: a couple of
+// aura/state lookups, no scans) rather than folded into TryMaintainProgression's 10s throttle,
+// since mounting is something the player expects to see happen right away, not with up to a
+// 10-second lag. Doesn't try to match the exact mount, just the *capability* (fly vs ground) --
+// a bot with no known flying mount falls back to its ground one rather than staying grounded
+// for no visible reason once the leader takes off; still better than not mounting at all.
+void TryMatchLeaderMountState(Player* bot)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return;
+
+    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    if (!leader || leader == bot || !leader->IsInWorld() || leader->GetMap() != bot->GetMap())
+        return;
+
+    if (!leader->IsMounted())
+    {
+        if (bot->IsMounted())
+            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        return;
+    }
+
+    if (bot->IsMounted())
+        return;
+
+    bool leaderFlying = false;
+    for (AuraEffect const* aura : leader->GetAuraEffectsByType(SPELL_AURA_MOUNTED))
+    {
+        if (IsFlyingMountSpell(aura->GetSpellInfo()))
+        {
+            leaderFlying = true;
+            break;
+        }
+    }
+
+    uint32 spellId = leaderFlying ? SelectKnownMountSpell(bot, true) : 0;
+    if (!spellId)
+        spellId = SelectKnownMountSpell(bot, false);
+    if (spellId)
+        bot->CastSpell(bot, spellId, false);
 }
 
 // Periodic, throttled bag scan for a gear upgrade -- same shape as TryMaintainBuff. Reuses the
@@ -489,6 +548,42 @@ void TryMaintainEquipment(Player* bot)
     }
 }
 
+// Lets a solo player -- whose only "friends" available to sign a guild charter are their own
+// bots -- actually found a guild through the normal charter/petition flow instead of being
+// stuck with zero real players to ask. No new opcode or core hook needed: PetitionMgr already
+// exposes everything read-only (GetPetitionByOwnerWithType, GetSignature), and signing is the
+// same "build a minimal real packet, call the real handler" trick as everything else in this
+// module (WorldSession::HandlePetitionSignOpcode does the actual DB insert + PetitionMgr
+// bookkeeping). Every bot in the leader's group signs independently and automatically the
+// first time it notices an active charter -- no need for the owner to "Request Signature" on
+// each one individually first, unlike a real second player would have to be asked.
+void TryAutoSignLeaderPetition(Player* bot)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return;
+
+    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    if (!leader || leader == bot)
+        return;
+
+    Petition const* petition = sPetitionMgr->GetPetitionByOwnerWithType(leader->GetGUID(), GUILD_CHARTER_TYPE);
+    if (!petition)
+        return;
+
+    if (Signatures const* signatures = sPetitionMgr->GetSignature(petition->petitionGuid))
+        if (signatures->signatureMap.count(bot->GetGUID()))
+            return; // already signed
+
+    WorldPacket signPacket;
+    signPacket << petition->petitionGuid;
+    signPacket << uint8(0);
+    bot->GetSession()->HandlePetitionSignOpcode(signPacket);
+
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' signed '{}'s guild charter for '{}'.",
+        bot->GetName(), leader->GetName(), petition->petitionName);
+}
+
 // Called every tick from BotAI::Update, unconditional on role/combat/group state (gearing up
 // and owning a mount matter regardless of what else the bot is doing right now, same reasoning
 // as TryMaintainBuff running independent of combat state) -- throttled internally so the actual
@@ -505,6 +600,7 @@ void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
     EnsureBotHasMount(bot);
     TryUpgradeGearOnce(bot);
     TryMaintainEquipment(bot);
+    TryAutoSignLeaderPetition(bot);
 }
 
 // Filters a learned spell down to "looks like something a player would press on an enemy
@@ -916,6 +1012,26 @@ public:
             return false;
         if (u->GetLevel() > _maxLevel)
             return false;
+        // Training dummies (every "*Training Dummy" creature_template row, all 13 CoA/CoA-Repack
+        // variants confirmed via direct DB query) pass every other check here just fine --
+        // they're real, right-click-attackable (friendly faction 7/35, but still a valid attack
+        // target per Unit::IsValidAttackTarget's own special-case for this creature shape),
+        // hostile-flagged-for-combat-purposes units. Without this a solo/idle bot standing
+        // anywhere near a town's dummy would happily "grind" it forever (confirmed live: bots
+        // stood in town whacking training dummies instead of actually questing/leveling).
+        // NOTE: an earlier version of this check used `ct->type == CREATURE_TYPE_TOTEM` (11) --
+        // wrong, and confirmed live to not actually filter anything: every dummy variant's real
+        // `type` column is 9 (CREATURE_TYPE_MECHANICAL, not TOTEM -- a dummy is inanimate
+        // machinery, not a shaman totem). Matching on the type column at all would also exclude
+        // *every other* real mechanical creature in the game from ever being a legitimate solo
+        // grind target (mechanical dragonkin, gnomish constructs, etc.), which is far more
+        // collateral than intended -- a name match is the precise, verified-correct signal for
+        // "this specific NPC shape," not a type-category proxy for it.
+        if (Creature const* creature = u->ToCreature())
+        {
+            if (CreatureTemplate const* ct = creature->GetCreatureTemplate(); ct && ct->Name.find("Training Dummy") != std::string::npos)
+                return false;
+        }
         _range = _me->GetDistance(u); // shrink the search radius to the closest hit so far
         return true;
     }
@@ -1720,7 +1836,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState const& state)
     }
 
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
-        bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, bot->GetFollowAngle());
+        bot->GetMotionMaster()->MoveFollow(leader, PET_FOLLOW_DIST, BotAI::ComputeFollowAngle(bot));
 }
 
 // Lowest-health-percent group member (bot included), below a "worth healing" threshold --
@@ -1897,6 +2013,29 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     float preferredDist = GetBotPreferredEngageDistance(bot, role);
     float distance = bot->GetDistance(target);
 
+    // Positioning is handled once, up front, independent of whatever ends up castable this
+    // tick -- a real engine chase range band (MotionMaster::ChaseRange) so ranged/caster bots
+    // actually retreat if the target closes in on them (kiting), not just approach when too
+    // far. Previously this only ran from inside the "found a spell to cast" branch, and only
+    // ever chased *closer*: (a) any bot whose chosen spell happened to target the enemy
+    // directly (not itself) skipped the movement adjustment entirely -- confirmed live: a
+    // melee bot with even one longer-range utility spell in its kit would cast that from afar
+    // and never close in for its actual melee attacks, because only the self-cast branch
+    // touched movement; and (b) nothing ever moved a ranged bot *away* once its target closed
+    // the gap, so ranged bots never kited, they just stood there eating melee hits. Letting a
+    // persistent ChaseMovementGenerator run does both jobs on its own from here on: it's a
+    // no-op whenever already inside its band, and the engine itself decides whether to
+    // approach or retreat as the target moves.
+    if (preferredDist > MELEE_ENGAGE_RANGE)
+    {
+        // A comfortable band, not a razor-thin one -- retreats once the enemy closes past
+        // ~70% of preferredDist, holds anywhere between that and preferredDist itself.
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+            bot->GetMotionMaster()->MoveChase(target, ChaseRange(preferredDist * 0.7f, preferredDist));
+    }
+    else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+        bot->GetMotionMaster()->MoveChase(target);
+
     uint32 spellId = 0;
     char const* castVerb = "cast";
 
@@ -1975,24 +2114,10 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
                 castTarget = bot;
         }
 
-        // A castable spell was found in its own valid range -- but that only means "no need
-        // to close distance" when the spell was actually aimed at the enemy target. A
-        // self-target buff/heal being castable says nothing about proximity to the enemy, so
-        // relying on this branch alone let a melee bot get stuck permanently re-casting a
-        // self-buff filler in place after a knockback/teleport put its real target out of
-        // melee range -- it would never fall through to the chase-fallback below since
-        // spellId was never 0. Keep closing distance toward preferredDist in parallel with the self-cast.
-        if (castTarget == bot && bot->GetDistance(target) > preferredDist)
-        {
-            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-                bot->GetMotionMaster()->MoveChase(target, preferredDist);
-        }
-        else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-        {
-            bot->GetMotionMaster()->Clear();
-            bot->StopMoving();
-        }
-
+        // Positioning was already handled unconditionally above (a persistent
+        // ChaseMovementGenerator, not tied to which branch of spellId this is) -- casting
+        // doesn't need to touch movement at all anymore, regardless of whether this spell
+        // targets the enemy or the bot itself.
         SpellCastResult result = LogCastAttempt(bot, spellId, castTarget, castVerb);
         if (result != SPELL_CAST_OK)
             BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
@@ -2001,30 +2126,15 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     }
 
     // Nothing usable right now (everything on cooldown/unaffordable/out of range, or a
-    // pure-melee kit with no spell-based attacks at all).
+    // pure-melee kit with no spell-based attacks at all). Positioning is already handled
+    // above; just keep swinging/auto-shooting -- the engine's own range check on
+    // Attack()/CastSpell silently no-ops these while still out of real range, same as it
+    // would for a real player, so there's no need to gate this on distance here too.
+    bot->SetInFront(target);
+    bot->SetFacingToObject(target);
+
     if (preferredDist > MELEE_ENGAGE_RANGE)
     {
-        // Ranged / caster bot: maintain distance around preferredDist (e.g. 22yd).
-        // If too far away, chase to preferredDist.
-        if (distance > preferredDist)
-        {
-            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-                bot->GetMotionMaster()->MoveChase(target, preferredDist);
-            state.nextCastAllowedMs = NO_CANDIDATE_RETRY_MS;
-            return;
-        }
-
-        // Within preferred distance: halt chase movement
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-        {
-            bot->GetMotionMaster()->Clear();
-            bot->StopMoving();
-        }
-
-        bot->SetInFront(target);
-        bot->SetFacingToObject(target);
-
-        // Try auto-repeat ranged weapon attack (Auto Shot / Shoot Wand) if known and equipped
         if (uint32 autoRepeatSpell = FindKnownAutoRepeatRangedSpell(bot))
         {
             if (!bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
@@ -2034,23 +2144,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         if (bot->GetVictim() != target)
             bot->Attack(target, false);
     }
-    else
-    {
-        // Melee bot: close to melee range for basic attack
-        if (distance > MELEE_ENGAGE_RANGE)
-        {
-            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-                bot->GetMotionMaster()->MoveChase(target);
-            state.nextCastAllowedMs = NO_CANDIDATE_RETRY_MS;
-            return;
-        }
-
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-            bot->GetMotionMaster()->Clear();
-
-        if (bot->GetVictim() != target)
-            bot->Attack(target, true);
-    }
+    else if (bot->GetVictim() != target)
+        bot->Attack(target, true);
 
     state.nextCastAllowedMs = NO_CANDIDATE_RETRY_MS;
 
@@ -2209,6 +2304,16 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
     WorldPacket repopPacket;
     repopPacket << uint8(0);
     bot->GetSession()->HandleRepopRequestOpcode(repopPacket);
+
+    // HandleRepopRequestOpcode -> Player::RepopAtGraveyard() calls TeleportTo() internally to
+    // move the released ghost to its graveyard -- exactly like the module's own explicit
+    // teleports elsewhere (DoAcceptInvite, TryFollowLeaderAcrossMaps, TryReturnGhostToCorpseMap),
+    // this needs its ack synthesized next tick or the bot is stuck with IsBeingTeleportedNear/
+    // Far() == true forever (nothing else ever clears it for a null-socket session). Confirmed
+    // live: bots that died stopped cross-map-following their leader afterward, permanently,
+    // while a bot that never died kept working -- this was the missing piece.
+    if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
+        sBotMgr->QueueTeleportAck(bot->GetSession());
 }
 }
 
@@ -2233,6 +2338,12 @@ void Update(Player* bot, uint32 diff)
     // Mount ownership and gear upgrades matter regardless of role/combat/group state -- same
     // reasoning as TryMaintainBuff running independent of combat state.
     TryMaintainProgression(bot, diff, state);
+
+    // Checked every tick, not throttled -- mounting is something the player expects to see
+    // react immediately, and this is cheap (a couple of aura/state lookups, no scans). Safe to
+    // call unconditionally: CastSpell's own real checks (in combat, indoors, etc.) already
+    // silently no-op a mount attempt exactly like a real player's would fail client-side.
+    TryMatchLeaderMountState(bot);
 
     // Pull is one-shot: force the engage now, then fall through to normal role logic for the
     // resulting fight (UpdateOffensive/UpdateHealer/UpdateSupport all start from
@@ -2401,5 +2512,21 @@ void ReportSpellbookRoleSignals(Player* bot, ChatHandler* handler)
     LOG_INFO("module.coa-playerbots",
         "BotAI: '{}' (class {}) spellbook role signals -- off={} taunt={} heal={} buff={} int={} aoe={} burst={} dist={:.1f}yd.",
         bot->GetName(), uint32(bot->getClass()), offensive, taunt, heal, buff, interrupt, aoe, burst, preferredDist);
+}
+
+// Spreads followers around the leader instead of every bot converging on the exact same spot
+// -- Unit::GetFollowAngle() defaults to a single fixed angle (M_PI/2) for everyone, so a
+// leader with multiple bots got them all trying to stand in the same relative position at
+// once, confirmed live as bots visibly walking into/through each other. Stable per bot (keyed
+// off guid, not bot count or join order), so a given bot always claims the same slot instead
+// of the whole group's angles reshuffling whenever someone else joins or leaves. Exported (not
+// anonymous-namespace-local) so both BotAI.cpp's own resume-following and BotMgr.cpp's
+// post-teleport re-follow use the same slot assignment.
+float ComputeFollowAngle(Player* bot)
+{
+    constexpr uint32 SLOT_COUNT = 8;
+    constexpr float SLOT_SIZE = static_cast<float>(2 * M_PI) / SLOT_COUNT;
+    uint32 slot = bot->GetGUID().GetCounter() % SLOT_COUNT;
+    return slot * SLOT_SIZE;
 }
 }

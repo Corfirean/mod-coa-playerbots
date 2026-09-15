@@ -113,6 +113,14 @@ namespace BotAI
     // CoATalentEntry::SpecId actually uses) -- set a candidate spec id, relog the bot, run
     // this, and see which predicate lights up.
     void ReportSpellbookRoleSignals(Player* bot, ChatHandler* handler);
+
+    // Per-bot fixed follow angle (derived from the bot's own guid, so it's stable across
+    // ticks/calls) spread evenly around the leader instead of every bot using the engine's
+    // default Unit::GetFollowAngle() (a single fixed angle shared by everyone), which made
+    // multiple followers stack on top of each other and walk into one another. Shared here so
+    // every MoveFollow call site (BotAI.cpp's own resume-following, and BotMgr.cpp's
+    // post-teleport re-follow) spreads bots into the same slots.
+    float ComputeFollowAngle(Player* bot);
 }
 
 #endif // COA_PLAYERBOTS_BOT_AI_H

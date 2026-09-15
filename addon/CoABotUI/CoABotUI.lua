@@ -44,6 +44,7 @@ local popupMenu
 local ApplyRoleAvailability
 local ShowGuildTaskBoard
 local RefreshTaskBoard
+local UpdateRoleButtonText
 
 -- Register prefix for client engines that support it
 if RegisterAddonMessagePrefix then
@@ -97,6 +98,10 @@ end
 
 -- [botGuidLow] = { dps = true, tank = true, ... }
 local rolesCache = {}
+-- [botGuidLow] = "dps"/"tank"/"healer"/"support" -- the bot's *current* effective role,
+-- separate from rolesCache (which roles its class *could* hold) and from the player's saved
+-- preference in CoABotUIDB.roles (which might just be "auto").
+local currentRoleCache = {}
 -- [botGuidLow] = { name=, classId=, level=, task=, professions="Tailoring=225,..." }
 local guildRosterCache = {}
 -- [botGuidLow] = true once a GETROLES request has been sent, so a bot row only ever asks once
@@ -107,6 +112,23 @@ local function RequestRoles(botGuidLow)
     if not botGuidLow or rolesRequested[botGuidLow] then return end
     rolesRequested[botGuidLow] = true
     SendBotCommand("GETROLES", botGuidLow)
+end
+
+-- Shows the player's saved preference, plus -- when that preference is "auto" -- the bot's
+-- actual current role in parentheses, e.g. "Auto (Healer)". Previously a bot left on Auto just
+-- showed the bare word "Auto" with no indication of what it was actually playing as; confirmed
+-- live feedback this was confusing. Falls back to just the preference alone until a ROLES
+-- reply has arrived for this bot (see RequestRoles/currentRoleCache).
+function UpdateRoleButtonText(row, botGuidLow, defaultRole)
+    local savedRole = CoABotUIDB.roles[botGuidLow] or defaultRole or "auto"
+    local roleInfo = ROLE_BY_ID[savedRole] or ROLE_BY_ID["auto"]
+
+    if savedRole == "auto" and currentRoleCache[botGuidLow] then
+        local currentInfo = ROLE_BY_ID[currentRoleCache[botGuidLow]] or roleInfo
+        row.roleBtn:SetText(roleInfo.color .. "Auto|r " .. currentInfo.color .. "(" .. currentInfo.name .. ")|r")
+    else
+        row.roleBtn:SetText(roleInfo.color .. roleInfo.name .. "|r")
+    end
 end
 
 local function RequestGuildRoster()
@@ -139,6 +161,7 @@ local function HandleIncomingMessage(body)
     if verb == "ROLES" then
         local botGuidLow = tonumber(parts[2])
         local rolesCsv = parts[3] or ""
+        local currentRole = parts[4]
         if not botGuidLow then return end
 
         local set = {}
@@ -146,11 +169,23 @@ local function HandleIncomingMessage(body)
             set[roleId] = true
         end
         rolesCache[botGuidLow] = set
+        if currentRole and currentRole ~= "" then
+            currentRoleCache[botGuidLow] = currentRole
+        end
 
         -- If the role picker happens to be open for exactly this bot right now, re-apply
         -- greying immediately instead of waiting for the next OpenRoleMenu call.
         if popupMenu and popupMenu:IsShown() and popupMenu.activeBotGuid == botGuidLow then
             ApplyRoleAvailability(botGuidLow)
+        end
+
+        -- Refresh this bot's row text too, if it's currently visible -- otherwise "Auto"
+        -- would sit there unlabeled until the next full RefreshUI (roster change/reopen).
+        for _, row in ipairs(rows) do
+            if row.botGuidLow == botGuidLow and row:IsShown() then
+                UpdateRoleButtonText(row, botGuidLow)
+                break
+            end
         end
 
     elseif verb == "ROSTER" then
@@ -310,6 +345,16 @@ local function CreateRolePopupMenu()
 
                 -- Send wire command
                 SendBotCommand("SETROLE", botGuid, chosenRole)
+
+                -- Re-request GETROLES right after so an "Auto" pick picks up its resolved
+                -- current role (see UpdateRoleButtonText) instead of showing a bare "Auto"
+                -- forever (this session only ever asks once per bot otherwise -- see
+                -- rolesRequested). No C_Timer in 3.3.5a -- SendAddonMessage delivery/processing
+                -- order between these two whispers is enough without an artificial delay.
+                if chosenRole == "auto" then
+                    rolesRequested[botGuid] = nil
+                    RequestRoles(botGuid)
+                end
             end
             menu:Hide()
         end)
@@ -499,9 +544,7 @@ local function RefreshUI()
             row.nameText:SetText(colorCode .. member.name .. "|r" .. badge)
 
             -- Active role
-            local savedRole = CoABotUIDB.roles[member.lowGuid] or member.defaultRole or "auto"
-            local roleInfo = ROLE_BY_ID[savedRole] or ROLE_BY_ID["auto"]
-            row.roleBtn:SetText(roleInfo.color .. roleInfo.name .. "|r")
+            UpdateRoleButtonText(row, member.lowGuid, member.defaultRole)
 
             row:Show()
         else

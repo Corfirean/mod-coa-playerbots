@@ -197,6 +197,20 @@ public:
     // bots are still alive without polling in-game.
     void Update(uint32 diff);
 
+    // Public hook for any OTHER real-engine call that can itself trigger a TeleportTo() this
+    // module didn't initiate directly -- Player::RepopAtGraveyard() (called from the real
+    // WorldSession::HandleRepopRequestOpcode, itself called from BotAI::UpdateDeathHandling's
+    // "call the real thing" release-spirit flow) is the confirmed case: releasing at a
+    // graveyard teleports the ghost there internally, same as the module's own explicit
+    // teleports elsewhere (DoAcceptInvite, TryFollowLeaderAcrossMaps,
+    // TryReturnGhostToCorpseMap), but nothing was queuing *that* one for its ack. Left
+    // unacked, a bot gets permanently stuck with IsBeingTeleportedNear()/Far() == true forever
+    // (nothing else ever clears it for a null-socket session) -- confirmed live: bots that
+    // died stopped cross-map-following their leader afterward, while one that never died kept
+    // working. Callers outside BotMgr.cpp (BotAI.cpp's death handling) use this instead of
+    // reaching into _pendingTeleportAck directly.
+    void QueueTeleportAck(WorldSession* session);
+
 private:
     BotMgr() = default;
 
