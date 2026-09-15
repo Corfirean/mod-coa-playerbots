@@ -69,6 +69,17 @@ public:
     // Orders bot to gather itemEntry up to targetCount and deposit into guild bank.
     void GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 targetCount, ChatHandler* handler);
 
+    // Finds an online guild-mate bot of `requesterCharLowGuid` that knows a recipe spell
+    // producing itemEntry (any learned spell with a SPELL_EFFECT_CREATE_ITEM effect targeting
+    // it -- see CraftingRecipeIndex in BotMgr.cpp), and orders it to craft `count` of them. If
+    // the crafter already holds enough reagents, crafts immediately; otherwise queues a
+    // background order (_craftOrders) that retries every tick once reagents show up (e.g. via
+    // the crafter's own autonomous gathering AI) -- same "wait for it" shape as
+    // _guildGatherOrders. Finished items are mailed to the requester via the real MailDraft
+    // path (works whether they're online or not), never deposited to the guild bank -- see
+    // docs/addon-protocol.md's CRAFTORDER verb for why that's a deliberate v1 simplification.
+    void CraftOrder(ObjectGuid::LowType requesterCharLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler);
+
     // Manual/debug entry point: has a bot invite another online player (bot or real client,
     // matched by name) to its group, by calling the real WorldSession::HandleGroupInviteOpcode
     // handler directly with a minimal packet -- same "call the real thing" pattern as
@@ -262,6 +273,25 @@ private:
         uint32 remainingCount = 0;
     };
     std::unordered_map<ObjectGuid, GuildGatherOrder> _guildGatherOrders;
+
+    // See CraftOrder's header comment. A crafter (bot guid) may have at most one active order
+    // at a time -- a second CraftOrder call for a crafter already crafting replaces it rather
+    // than queuing, matching this feature's "simplest that works" scope.
+    struct CraftOrderState
+    {
+        ObjectGuid requesterGuid;
+        uint32 spellId = 0;
+        uint32 itemEntry = 0;
+        uint32 remainingCount = 0;
+        // Set once a cast has been fired, so the next tick(s) wait for it to actually finish
+        // (Unit::IsNonMeleeSpellCast) instead of re-casting over it -- some tradeskill recipes
+        // have a real cast time, not just instant ones, and firing a new cast mid-cast would
+        // interrupt and restart it every tick, never letting it finish.
+        bool awaitingCastResult = false;
+        uint32 itemCountBeforeCast = 0;
+    };
+    std::unordered_map<ObjectGuid, CraftOrderState> _craftOrders;
+    void ProcessCraftOrders();
 
     std::vector<WorldSession*> _botSessions;
     std::vector<WorldSession*> _pendingTeleportAck;

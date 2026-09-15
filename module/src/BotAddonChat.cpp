@@ -96,6 +96,18 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         return;
     }
 
+    // CRAFTORDER also doesn't target one specific bot -- the requester is always the sender
+    // (commander), and BotMgr::CraftOrder itself finds the guild-mate bot to craft it. Reuses
+    // the second colon-part for itemEntry instead of a bot guid.
+    if (verb == "CRAFTORDER" && parts.size() >= 2)
+    {
+        uint32 itemEntry = std::strtoul(parts[1].c_str(), nullptr, 10);
+        uint32 count = parts.size() >= 3 ? std::strtoul(parts[2].c_str(), nullptr, 10) : 1;
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> CRAFTORDER item {} x{}.", commander->GetName(), itemEntry, count);
+        sBotMgr->CraftOrder(commander->GetGUID().GetCounter(), itemEntry, count ? count : 1, nullptr);
+        return;
+    }
+
     ObjectGuid::LowType botGuidLow = std::strtoul(parts[1].c_str(), nullptr, 10);
     if (!botGuidLow)
     {

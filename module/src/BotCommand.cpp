@@ -54,7 +54,8 @@ public:
             { "resume",       HandleBotResumeCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
-            { "quickfill",    HandleBotQuickFillCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
+            { "quickfill",    HandleBotQuickFillCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "craftorder",   HandleBotCraftOrderCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
         static ChatCommandTable commandTable =
@@ -142,6 +143,15 @@ public:
             return true;
         }
         sBotMgr->QuickFillGroup(commander, handler);
+        return true;
+    }
+
+    // Debug/testing entry point for BotMgr::CraftOrder -- charLowGuid is the requester (any
+    // online player, bot or real), same resolution style as quickfill above.
+    static bool HandleBotCraftOrderCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid,
+        uint32 itemEntry, Optional<uint32> count)
+    {
+        sBotMgr->CraftOrder(charLowGuid, itemEntry, count.value_or(1), handler);
         return true;
     }
 

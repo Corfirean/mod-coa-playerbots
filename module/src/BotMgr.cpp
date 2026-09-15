@@ -16,6 +16,7 @@
 #include "GridNotifiersImpl.h"
 #include "Log.h"
 #include "LootMgr.h"
+#include "Mail.h"
 #include "ObjectAccessor.h"
 #include "PetDefines.h"
 #include "Player.h"
@@ -63,6 +64,68 @@ char const* RoleToString(BotRole role)
         case BotRole::Support: return "support";
         case BotRole::Dps: default: return "dps";
     }
+}
+
+// itemEntry -> every learned-spell id with a SPELL_EFFECT_CREATE_ITEM effect producing it.
+// Built once (first CraftOrder call) by scanning the full spell store -- crafting orders are
+// rare, one-off events, not a per-tick operation, so a one-time O(spell count) scan is cheap
+// relative to how infrequently this runs, and far simpler than trying to reach the same data
+// through SkillLineAbility/profession bookkeeping this module doesn't otherwise track. A bot
+// merely *knowing* the resulting spell (Player::HasSpell) already proves it leveled the right
+// profession to the right skill -- no separate skill-level check needed.
+std::unordered_map<uint32, std::vector<uint32>> const& CraftingRecipeIndex()
+{
+    static std::unordered_map<uint32, std::vector<uint32>> index = []
+    {
+        std::unordered_map<uint32, std::vector<uint32>> map;
+        for (uint32 id = 0; id < sSpellMgr->GetSpellInfoStoreSize(); ++id)
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+            if (!info)
+                continue;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.Effect == SPELL_EFFECT_CREATE_ITEM && effect.ItemType)
+                    map[effect.ItemType].push_back(id);
+        }
+        return map;
+    }();
+    return index;
+}
+
+bool CrafterHasReagentsFor(Player* crafter, SpellInfo const* spellInfo)
+{
+    for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+    {
+        if (spellInfo->Reagent[i] <= 0 || !spellInfo->ReagentCount[i])
+            continue;
+        if (crafter->GetItemCount(uint32(spellInfo->Reagent[i]), false) < spellInfo->ReagentCount[i])
+            return false;
+    }
+    return true;
+}
+
+// Mails a single already-in-inventory item stack from `sender` to `receiver`, real MailDraft
+// path -- same sequence WorldSession::HandleSendMail uses (item removed from the sender's
+// inventory/DB, ownership transferred, then attached to the draft), just without the gold
+// cost or a client-authored subject/body. Works whether `receiverCharLowGuid` is online or
+// not (MailReceiver's lowguid-only constructor doesn't require a live Player).
+void MailCraftedItem(Player* sender, ObjectGuid::LowType receiverCharLowGuid, Item* item, std::string const& subject)
+{
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+
+    sender->MoveItemFromInventory(item->GetBagSlot(), item->GetSlot(), true);
+    item->DeleteFromInventoryDB(trans);
+    if (item->GetState() == ITEM_UNCHANGED)
+        item->FSetState(ITEM_CHANGED);
+    item->SetOwnerGUID(ObjectGuid::Create<HighGuid::Player>(receiverCharLowGuid));
+    item->SaveToDB(trans);
+
+    MailDraft(subject, "")
+        .AddItem(item)
+        .SendMailTo(trans, MailReceiver(receiverCharLowGuid), MailSender(sender), MAIL_CHECK_MASK_COPIED);
+
+    sender->SaveInventoryAndGoldToDB(trans);
+    CharacterDatabase.CommitTransaction(trans);
 }
 }
 
@@ -841,6 +904,177 @@ void BotMgr::GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint
         bot->GetName(), itemEntry, remaining, deposited);
 }
 
+void BotMgr::CraftOrder(ObjectGuid::LowType requesterCharLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler)
+{
+    Player* requester = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(requesterCharLowGuid));
+    if (!requester)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no online player with guid {} found.", requesterCharLowGuid);
+        return;
+    }
+
+    uint32 guildId = requester->GetGuildId();
+    if (!guildId)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: '{}' is not in a guild -- crafting orders only look at guild-mate bots.", requester->GetName());
+        return;
+    }
+
+    auto const& index = CraftingRecipeIndex();
+    auto recipeItr = index.find(itemEntry);
+    if (recipeItr == index.end())
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no known recipe produces item {}.", itemEntry);
+        return;
+    }
+
+    // Prefer a guild-mate bot that already has enough reagents to start right away; fall back
+    // to the first one found that at least knows the recipe (it'll wait on reagents instead).
+    Player* crafter = nullptr;
+    uint32 chosenSpell = 0;
+    for (Player* bot : GetOnlineBots())
+    {
+        if (bot->GetGuildId() != guildId)
+            continue;
+        for (uint32 spellId : recipeItr->second)
+        {
+            if (!bot->HasSpell(spellId))
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info)
+                continue;
+            bool ready = CrafterHasReagentsFor(bot, info);
+            if (!crafter || ready)
+            {
+                crafter = bot;
+                chosenSpell = spellId;
+            }
+            if (ready)
+                break;
+        }
+        if (crafter && CrafterHasReagentsFor(crafter, sSpellMgr->GetSpellInfo(chosenSpell)))
+            break;
+    }
+
+    if (!crafter)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no online guild-mate bot knows a recipe for item {}.", itemEntry);
+        return;
+    }
+
+    _craftOrders[crafter->GetGUID()] = { requester->GetGUID(), chosenSpell, itemEntry, count };
+
+    if (handler)
+        handler->PSendSysMessage("BotMgr: craft order placed -- bot '{}' will craft {}x item {} for '{}' (spell {}).",
+            crafter->GetName(), count, itemEntry, requester->GetName(), chosenSpell);
+    LOG_INFO("module.coa-playerbots", "BotMgr: craft order placed -- bot '{}' crafting {}x item {} for '{}' (spell {}).",
+        crafter->GetName(), count, itemEntry, requester->GetName(), chosenSpell);
+}
+
+// Called from Update() every tick, same cadence as the guildgather order drain. Casts are
+// naturally throttled to "at most one per bot per tick" just by this loop's own shape -- no
+// separate cooldown tracking needed since tradeskill casts aren't on the GCD.
+void BotMgr::ProcessCraftOrders()
+{
+    if (_craftOrders.empty())
+        return;
+
+    for (auto itr = _craftOrders.begin(); itr != _craftOrders.end(); )
+    {
+        Player* crafter = FindBotPlayer(itr->first.GetCounter());
+        SpellInfo const* info = crafter ? sSpellMgr->GetSpellInfo(itr->second.spellId) : nullptr;
+        if (!crafter || !crafter->IsInWorld() || !info)
+        {
+            itr = _craftOrders.erase(itr);
+            continue;
+        }
+
+        uint32 itemEntry = itr->second.itemEntry;
+
+        // A cast was already fired on an earlier tick -- don't start another one on top of it
+        // (some tradeskill recipes have a real cast time, not just instant ones; recasting
+        // mid-cast would interrupt and restart it forever, never letting it finish). Wait for
+        // it to actually finish, then check whether it produced anything.
+        if (itr->second.awaitingCastResult)
+        {
+            if (crafter->IsNonMeleeSpellCast(false))
+            {
+                ++itr; // still casting -- check again next tick
+                continue;
+            }
+
+            itr->second.awaitingCastResult = false;
+            uint32 producedThisCast = crafter->GetItemCount(itemEntry, false) - itr->second.itemCountBeforeCast;
+            if (!producedThisCast)
+            {
+                LOG_INFO("module.coa-playerbots", "BotMgr: craft order cast for bot '{}' (spell {}) finished but produced nothing -- will retry.",
+                    crafter->GetName(), itr->second.spellId);
+                ++itr;
+                continue;
+            }
+
+            itr->second.remainingCount = (producedThisCast >= itr->second.remainingCount) ? 0 : itr->second.remainingCount - producedThisCast;
+            if (itr->second.remainingCount > 0)
+            {
+                ++itr;
+                continue;
+            }
+            // falls through to the mail-and-complete block below
+        }
+        else
+        {
+            if (!CrafterHasReagentsFor(crafter, info))
+            {
+                ++itr; // still waiting on reagents -- retry next tick
+                continue;
+            }
+
+            itr->second.itemCountBeforeCast = crafter->GetItemCount(itemEntry, false);
+            SpellCastResult result = crafter->CastSpell(crafter, itr->second.spellId, false);
+            if (result != SPELL_CAST_OK)
+            {
+                LOG_INFO("module.coa-playerbots", "BotMgr: craft order cast failed for bot '{}' (spell {}, result {}) -- will retry.",
+                    crafter->GetName(), itr->second.spellId, uint32(result));
+                ++itr;
+                continue;
+            }
+
+            itr->second.awaitingCastResult = true;
+            ++itr; // check back once the cast (instant or not) has actually resolved
+            continue;
+        }
+
+        // remainingCount == 0 here -- order complete: mail every matching stack currently in
+        // the crafter's bags (the items this order itself just produced -- nothing else grants
+        // this same itemEntry to a bot mid-order) to the requester.
+        ObjectGuid::LowType requesterLowGuid = itr->second.requesterGuid.GetCounter();
+        uint32 mailed = 0;
+
+        auto mailIfMatch = [&](Item* item)
+        {
+            if (item && item->GetEntry() == itemEntry)
+            {
+                mailed += item->GetCount();
+                MailCraftedItem(crafter, requesterLowGuid, item, "Crafting order complete");
+            }
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            mailIfMatch(crafter->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            if (Bag* pBag = crafter->GetBagByPos(bag))
+                for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+                    mailIfMatch(pBag->GetItemByPos(j));
+
+        LOG_INFO("module.coa-playerbots", "BotMgr: craft order complete -- bot '{}' mailed {}x item {} to guid {}.",
+            crafter->GetName(), mailed, itemEntry, requesterLowGuid);
+        itr = _craftOrders.erase(itr);
+    }
+}
+
 void BotMgr::Invite(ObjectGuid::LowType charLowGuid, std::string const& targetName, ChatHandler* handler)
 {
     WorldSession* session = FindBotSession(charLowGuid);
@@ -1495,6 +1729,8 @@ void BotMgr::Update(uint32 diff)
             ++itr;
         }
     }
+
+    ProcessCraftOrders();
 
     _heartbeatTimer += diff;
     if (_heartbeatTimer < 10000)
