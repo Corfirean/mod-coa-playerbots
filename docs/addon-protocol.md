@@ -66,10 +66,11 @@ addon's existing `CHAT_MSG_ADDON` event handler covers both without a second cod
 | `ROLES` | botGuidLow, comma-separated role list (e.g. `dps,tank`) | In response to `GETROLES`. Built from `ClassSpecRoles::GetAvailableRolesMask(bot->getClass())` -- always includes `dps` (every class has at least a default/shared spec), plus whichever of `tank`/`healer`/`support` that class has a real spec for. |
 | `ROSTER` | botGuidLow, name, classId, level, task, comma-separated `profession=skill` pairs | One per online guild-mate bot, in response to `GUILDROSTER`. `task` is a free-text string (`idle`, `crafting Nx item M`, or `gathering Nx item M`) reflecting an active `CraftOrder`/`GuildGather` order on that bot right now -- not meant to be machine-parsed further, just displayed. The professions field can be empty (no known profession skills). |
 
-Addon-side TODO (not yet implemented client-side as of 2026-09-15): send `GETROLES` once per
-bot when populating its row, cache the `ROLES` reply, and grey out/disable any role button not
-in that list. Also not yet built: the task-board UI itself (`GUILDROSTER`/`ROSTER` consumer),
-the crafting-order submission form (`CRAFTORDER`), and the `QUICKFILL` button.
+**Client-side status as of 2026-09-15: all built.** `GETROLES` is requested once per bot row
+(cached, never re-requested this session) and its `ROLES` reply greys out role-menu buttons
+the bot's class can't hold; `QUICKFILL` and the Guild Task Board (`GUILDROSTER`/`ROSTER`
+consumer + `CRAFTORDER` submission form) are both live in `CoABotUI.lua` -- see
+`docs/addon-client.md`. Not yet click-tested with a real client (see that doc's status note).
 
 ## Server-side authorization (non-negotiable, implement before wiring any verb)
 

@@ -2170,20 +2170,55 @@ but a bot-initiated test join does, since nothing else was watching it.
   actually riding it for travel isn't wired to anything yet. Assigned to the parallel Gemini
   session (2026-09-15) alongside guild bank orders -- still in progress as of this note (guild
   bank orders shipped first, see below).
-- **Guild task board + crafting order system -- addon UI half only** (user request,
-  2026-09-15): all server-side work is done (see the 2026-09-15 "Group quick-fill, crafting
-  orders, and the guild task-board query" entry below) -- `CRAFTORDER`, `GUILDROSTER`/`ROSTER`
-  are live on the wire. What's left is purely client-side: the task-board list itself, a
-  crafting-order submission form, and per-bot control buttons. Assigned to the parallel Gemini
-  session (2026-09-15), alongside the `GETROLES` button-greying and `QUICKFILL` button below --
-  not started as of this note.
-- **Addon UI for role-gating, quick-fill, and the task board** (2026-09-15): three small,
-  independent addon-side additions once combat AI is done -- (1) send `GETROLES` per bot row,
-  cache the `ROLES` reply, grey out role buttons the bot's class can't hold (`SETROLE` already
-  refuses these silently server-side, see its addon-protocol.md note); (2) a `QUICKFILL` button
-  that fires `QUICKFILL:0`; (3) the task-board/crafting-order UI above. All three wire verbs
-  exist and are live-tested server-side; only the client half is missing. Assigned to the
-  parallel Gemini session (2026-09-15), not started as of this note.
+- **Addon client-side work for points 1-3** (user request, 2026-09-15): **done** -- see the
+  2026-09-15 "CoABotUI: role-gating, Quick Fill, and the Guild Task Board" entry below. The
+  user asked Claude to build this directly once it became clear Gemini's combat-AI task
+  (point 4, still the largest piece of this whole addon-upgrade request) would take a while.
+  Not yet click-tested with a real WoW client -- see that entry and `docs/addon-client.md`'s
+  status note for exactly what is and isn't confirmed.
+
+## 2026-09-15: CoABotUI: role-gating, Quick Fill, and the Guild Task Board
+
+Client-side addon work for the user's five-point addon-upgrade request, points 1-3's UI half
+(server side for all of this shipped earlier the same day -- see the entries below). Assigned
+to Gemini originally, but she was still deep in the point-4 combat-AI task, so the user asked
+Claude to build the client directly rather than wait. All in `addon/CoABotUI/CoABotUI.lua`.
+
+**Role-gating UI**: each bot row requests `GETROLES` once per session (`rolesRequested` guard)
+and caches the `ROLES` reply (`rolesCache[botGuidLow] = {tank=true, ...}`). Opening a bot's
+role popup now greys out (text turns grey, "(n/a)" suffix, click no-ops) any role its class
+can't hold, re-syncing live if a reply arrives while the popup happens to be open for that
+exact bot. Fails open (every option stays clickable) until a reply lands, rather than making
+the player wait on a round-trip before the menu is usable at all.
+
+**Quick Fill / Guild Tasks utility bar**: a second button row under "All Bots" -- `[Quick Fill
+Group]` sends `QUICKFILL:0`; `[Guild Tasks]` opens the new task-board window. Deliberately
+shown regardless of current group size (Quick Fill's whole point is to work from empty/partial
+groups), unlike the roster rows below it which do depend on having bots already in-group.
+
+**Guild Task Board** (`CoABotUITaskBoard`, a separate draggable window): sends `GUILDROSTER:0`
+on open and on `[Refresh]`, renders one row per `ROSTER` reply (class-colored name, level,
+current task colored idle-grey/active-green, known professions with skill levels via a small
+`prof=skill,prof=skill` CSV parser). Below the list, a **Craft Order form**: an item-id EditBox
+that accepts either a typed/pasted numeric id or a shift-clicked item link (hooks the global
+`ChatEdit_InsertLink` while focused -- the standard 3.3.5 pattern for teaching a non-chat
+EditBox to receive shift-clicked links, since the client only ever consults that global, never
+an arbitrary custom box) plus a count box, `[Order]` sends `CRAFTORDER:<id>:<count>`. Rows are
+fixed-position/recycled (same pattern as the main panel's bot rows), not a scroll frame -- a
+known v1 limit, will visually overlap the form below with more than ~5-6 guild bots online at
+once; revisit with `UIPanelScrollFrameTemplate` if that turns out to matter.
+
+**Verification, given no WoW client automation exists in this environment**: full Lua syntax
+validated via `luaparse` (Lua 5.1 grammar) after every edit. The new wire-parsing logic
+specifically (`SplitColonKeepEmpty`, `FormatProfessions`, the item-link/id extraction) was
+pulled out and unit-tested standalone against real server-generated strings in an actual Lua
+VM (`fengari`, run from Node) -- 19 cases including the sharp edge a naive `gmatch("[^:]+")`
+split would get wrong (a `ROSTER` reply's professions field is legitimately empty for a bot
+with no known professions, and must still count as a real trailing field, not be silently
+dropped). **Not click-tested with a real client** -- the UI's on-screen behavior (layout,
+button greying, the task board, the craft-order form) is reviewed and reasoned through, not
+visually confirmed. Every server-side verb this UI depends on is independently live-tested
+already (see the entries below and "Role/spec gating, auto-repair..." above).
 
 ## 2026-09-15: Group quick-fill, crafting orders, and the guild task-board query
 

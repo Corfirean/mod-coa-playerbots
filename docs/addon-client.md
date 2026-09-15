@@ -99,6 +99,31 @@ Once the server-side listener is active, an optional query/response can be added
 6. **Empty State & Test Mode**:
    - When not in a group, displays a friendly notice with an `[Enable Test Mode]` button.
    - Test mode injects mock bots (`Startest`, `WdoctorBot`, `WhunterBot`, `XorothBot`, `Shaniel`) allowing full UI verification while solo.
+7. **Role-Gating (added 2026-09-15)**: each bot row's role selector requests `GETROLES` once
+   per session and caches the `ROLES` reply. Any role the bot's class can't actually hold
+   (`SETROLE` would otherwise refuse it silently server-side) is greyed out in the popup with
+   an "(n/a)" suffix and does nothing on click, instead of implying an action that would
+   silently no-op. Until the reply arrives, every option stays clickable (fails open) rather
+   than blocking the player on a round-trip.
+8. **Utility Bar -- Quick Fill / Guild Tasks (added 2026-09-15)**: a second row below "All
+   Bots" with two buttons that don't target a specific bot:
+   - `[Quick Fill Group]`: sends `QUICKFILL`, asking the server to top the player's group up
+     to 5 (tank + healer + 3 dps) from online bots, guildmates preferred.
+   - `[Guild Tasks]`: opens the Guild Task Board window (below).
+9. **Guild Task Board (`CoABotUITaskBoard`, added 2026-09-15)**: a separate, draggable window --
+   - Lists every online bot in the player's guild (via `GUILDROSTER`/one `ROSTER` reply per
+     bot): class-colored name, level, current task (idle/gathering/crafting, colored), and
+     known professions with skill levels.
+   - `[Refresh]` re-sends `GUILDROSTER`.
+   - **Craft Order form**: an item-id box (accepts a shift-clicked item link -- hooks the
+     global `ChatEdit_InsertLink` while focused, the standard 3.3.5 trick for a custom
+     item-link input -- or a typed/pasted numeric id) and a count box; `[Order]` sends
+     `CRAFTORDER:<itemId>:<count>`. The server finds whichever guild-mate bot knows the recipe;
+     the addon doesn't need to know or show which bot that'll be ahead of time.
+   - Rows are fixed-position (recycled, same pattern as the main panel's bot rows) rather than
+     a scroll frame -- fine for a handful of guild bots, but rows will visually overlap the
+     craft-order form below if a guild has more than ~5-6 online bots at once. Revisit with a
+     real `UIPanelScrollFrameTemplate` if that turns out to matter in practice.
 
 ---
 
@@ -117,5 +142,18 @@ Once the server-side listener is active, an optional query/response can be added
 
 ## Status & Next Steps
 
-- **Client AddOn Status**: Fully built, syntax validated, and deployed to client directories.
-- **Server Integration Status**: Outgoing message generation is verified. Live end-to-end execution of `FOLLOW`, `STAY`, `PULL`, `STOPATTACK`, and `SETROLE` is pending completion of the server-side listener in `mod-coa-playerbots`.
+- **Client AddOn Status**: Fully built (movement/role commands, role-gating, Quick Fill, and
+  the Guild Task Board/crafting orders), syntax-validated (`luaparse`, Lua 5.1 grammar) and
+  the new wire-parsing logic (`SplitColonKeepEmpty`, `FormatProfessions`, item-link
+  extraction) unit-tested against realistic server-generated strings in isolation (a real Lua
+  VM via `fengari`, not the WoW client), and deployed to client directories. **Not yet
+  click-tested with a real WoW client** -- no automation exists in this environment for
+  driving an actual game client, so the UI's on-screen behavior (layout, greying, the task
+  board, the craft-order form) has been reviewed and reasoned through but not visually
+  confirmed. All server-side verbs it depends on (`FOLLOW`/`STAY`/`PULL`/`STOPATTACK`/
+  `SETROLE`/`LEARNSPEC`/`GETROLES`/`QUICKFILL`/`CRAFTORDER`/`GUILDROSTER`) are independently
+  live-tested server-side (RA console + a real database check each time) -- see `AGENTS.md`'s
+  dated entries.
+- **Server Integration Status**: full listener live in `mod-coa-playerbots` (`BotAddonChat.cpp`),
+  every verb server-tested. The one missing link is a real client session to confirm the
+  add-on's half of the round trip end to end.
