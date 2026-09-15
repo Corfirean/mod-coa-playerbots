@@ -254,6 +254,20 @@ ObjectGuid::LowType CloneCharacter(uint32 templateGuid, uint32 accountId, std::s
         "SELECT {}, mapId, zoneId, posX, posY, posZ FROM character_homebind WHERE guid = {}",
         newGuid, templateGuid);
 
+    // core.ascension_active_spec (mod-ascension-compat's PlayerSetting, read by
+    // ClassSpecRoles/BotAI::GetRole to pick a bot's tank/healer/dps role) lives here, not on
+    // the `characters` row above -- without this copy every cloned bot silently reverts to
+    // specId 0 ("unknown"), which GetRoleForClassSpec always treats as Dps. Confirmed live:
+    // a 100-bot spawnrandom batch had zero tanks/healers among them, breaking QuickFillGroup
+    // for any of them (found while investigating a "quick fill only got 2 people" report --
+    // the bots it *did* find were all it could find, all Dps by this same cause). Copies every
+    // setting, not just the spec one, on the same "don't hand-pick which columns matter"
+    // reasoning as the full-row `characters` clone above.
+    CharacterDatabase.DirectExecute(
+        "INSERT INTO character_settings (guid, source, data) "
+        "SELECT {}, source, data FROM character_settings WHERE guid = {}",
+        newGuid, templateGuid);
+
     return newGuid;
 }
 }

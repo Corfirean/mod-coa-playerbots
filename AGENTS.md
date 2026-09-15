@@ -2177,6 +2177,52 @@ but a bot-initiated test join does, since nothing else was watching it.
   Not yet click-tested with a real WoW client -- see that entry and `docs/addon-client.md`'s
   status note for exactly what is and isn't confirmed.
 
+## 2026-09-15: Fixed random-spawned bots always defaulting to Dps (spec never cloned)
+
+User reported "Quick Fill only gave me 2 people" while live-testing against a 100-bot
+`spawnrandom` batch. Traced it: `.botcmd checkrole` on several of those bots showed every one
+at "spec 0 'unknown'" -- `BotSpawnRandom::CloneCharacter` only clones the `characters` row (+
+`character_homebind`), but `core.ascension_active_spec` (the PlayerSetting `ClassSpecRoles`/
+`BotAI::GetRole` actually read to pick Tank/Healer/Dps) lives in the separate
+`character_settings` table (confirmed via SQL: `character_settings` is keyed `(guid, source)`,
+completely untouched by the clone). Every random bot silently inherited none of its template's
+spec, and specId 0 always maps to Dps (`ClassSpecRoles::GetRoleForClassSpec`) -- so a 100-bot
+batch had **zero** tanks or healers, and `QuickFillGroup` was correctly reporting "no eligible
+bots for the roles still needed" once it exhausted the Dps pool. Not a `QuickFillGroup` bug --
+it was working exactly as designed against a candidate pool that genuinely had no tank/healer
+bots in it.
+
+Fix: `CloneCharacter` now also copies every `character_settings` row from the template guid to
+the new bot guid (not just the spec one -- same "don't hand-pick which columns matter"
+reasoning as the existing full-row `characters`/`character_homebind` clones). Built and
+verified compiling clean, **but deliberately not deployed/restarted yet** -- the user was
+mid-session with a real client logged in plus the just-spawned 100-bot crowd, and asked to
+keep testing now and clean up later rather than take the restart hit immediately. Deploy this
+on the next safe restart (copy `build/bin/worldserver.exe` to `CoA-Repack/Core/`, confirm 0
+players first) and re-verify a fresh `spawnrandom` batch actually gets a believable tank/healer
+spread via `.botcmd checkrole`.
+
+**Also found, still unexplained**: group invites to Knight of Xoroth (class 17) bots never
+actually complete -- confirmed independently on 3 different Xoroth bots (Troseirinaek,
+Vrounotham, Stogarurinei; different races, different inviters, both factions represented),
+each genuinely never ending up in `group_member` in the database even minutes later (ruled out
+a query-timing artifact from the auto-accept loop's own tick cadence, which was a real
+confound early in this investigation -- Drerinoudory/Styaxyal/Vrutheis all looked "failed" on
+an immediate `.botcmd acceptinvite` check too, then turned out to have auto-accepted normally
+moments later; Xoroth bots never do even after several minutes). Every other class tested
+(Templar, Runemaster, Chronomancer, Sun Cleric, Knight of Xoroth's own "invite the *inviter*"
+direction wasn't tested) joins normally. Root cause not found -- `HandleGroupInviteOpcode`
+(core, `GroupHandler.cpp`) has several early-return checks (`IsSpectator`, `IsGameMaster`,
+`IsTrialAccount`, `IsAcceptGroupInvites`, faction, instance, ignore list, level requirement)
+and nothing Xoroth-specific was found in `mod-ascension-compat`'s Xoroth files that would set
+any of those flags -- but the pattern (100% reproducible across 3 independent Xoroth bots, 0%
+failure rate on every other class tried) is real, not coincidental. Needs actual debug logging
+inside `HandleGroupInviteOpcode` (a core file) to see which check fires, which needs a server
+restart to deploy -- deferred alongside the fix above. Not a blocker for anything shipped so
+far (QuickFillGroup, guild invites, etc. all still work correctly for the other 20 classes);
+just means a Xoroth bot should be excluded/expected-to-fail if it comes up as a candidate for
+any future group-forming feature until this is root-caused.
+
 ## 2026-09-15: Combat AI upgrade -- distance by spec, interrupts, AoE, boss burst
 
 Point 4 of the addon-upgrade request, the biggest piece, all in `BotAI.cpp::UpdateOffensive`.
