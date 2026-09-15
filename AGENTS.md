@@ -2168,9 +2168,55 @@ but a bot-initiated test join does, since nothing else was watching it.
   leveling player would). A real mount is already guaranteed per bot
   (`EnsureBotHasMount`/`TryMaintainProgression`) specifically as a prerequisite for this, but
   actually riding it for travel isn't wired to anything yet. Assigned to the parallel Gemini
-  session (2026-09-15) alongside guild bank orders (deposit/withdraw on command, per the
-  user's own idea) -- not started as of this note.
-- **Guild bank orders for bots**: deposit gathered resources/gold/recipes, withdraw
-  consumables before a run, auto-grant bank tab permissions on guild join, optional
-  auto-create-guild debug command. Assigned to the parallel Gemini session (2026-09-15),
-  building on her just-finished guild-invite-accept work. Not started as of this note.
+  session (2026-09-15) alongside guild bank orders -- still in progress as of this note (guild
+  bank orders shipped first, see below).
+
+## 2026-09-15: Guild bank orders for bots
+
+Gemini implemented and live-tested: `BotMgr::GuildCreate/GuildDepositItem/GuildWithdrawItem/
+GuildDepositMoney/GuildWithdrawMoney/GuildGather`, all via real `Guild::` methods
+(`Guild::Create`, `Guild::SwapItemsWithInventory`, `Guild::HandleMemberDepositMoney/
+WithdrawMoney`) -- same "call the real thing" pattern as everything else in this module.
+`EnsureBotBankRights` auto-grants a bank tab and deposit/view rights on guild-invite accept
+and before any bank op, since a freshly-invited bot otherwise has no rights to use the bank at
+all. `guildgather` reuses the bot's existing autonomous gathering AI: if the requested item
+isn't in inventory yet, it places an order (`_guildGatherOrders`) that `BotMgr::Update` drains
+as the bot's own gathering loop picks items up. A heartbeat pass also auto-deposits gold above
+500g for any guilded bot. New commands: `.botcmd guildcreate/guildgather/guilddeposit/
+guildwithdraw/guilddepositgold/guildwithdrawgold`. Required one core change to
+`azerothcore-wotlk-coa`: `friend class BotMgr;` on `Guild` (`Guild.h`) to reach the
+otherwise-private bank tab/rank accessors -- same precedent as the earlier `mod-ascension-
+compat` core-fork pattern. Reviewed, built, and committed as `6bcf4e4`.
+
+Minor non-blocking note from review: `GuildDepositItem`'s loop counts `actualMoved` against
+the target regardless of whether `Guild::SwapItemsWithInventory` (a `void` call) actually
+succeeded, so a deposit that silently fails (e.g. bank tab full) would still report success.
+Matches how the rest of the codebase treats this same void API elsewhere; not worth guarding
+until it's actually seen in practice.
+
+## 2026-09-15: Synced core checkout with the upstream devs' repo
+
+User noticed we were behind `jealous-sound/azerothcore-wotlk-coa` again (same prompt as the
+2026-09-14 sync). `git fetch` showed our local `main` 10 commits behind `origin/main`, plus two
+unmerged-upstream branches: `codex/fix-issues-crashes-first` (fixes for the just-closed
+crash bugs #172 Dusk Blade, #155 Shadow Effigy disconnect, #154 Shadowblast, #104 Ornate Bank
+Voucher) and `codex/fix-issues-remaining` (a much bigger, 74-file pack of secondary-ability
+fixes across nearly every custom class).
+
+Merged locally (not pushed -- this is the upstream devs' shared repo, not ours to push to):
+`origin/main` + `origin/codex/fix-issues-crashes-first`. Both merged clean, no conflicts with
+our own uncommitted core patches (`LFGMgr::GetProposalIdForPlayer`, the `AllowRemoteClients`
+spell-modifier-layout fix, the `friend class BotMgr` Guild.h change from the guild-bank work
+above) -- stashed them before merging, merged, popped clean. Needed a `cmake` reconfigure
+(not just `ninja worldserver`) since the merge added new `mod-ascension-compat` source files
+the stale `build.ninja` didn't know about yet. One pending DB migration
+(`pending_db_characters/rev_1789398032159515300.sql`, the new `player_anticheat_alert` table
+from the anti-cheat commit) had to be applied manually with a direct `mysql` invocation since
+`Updates.EnableDatabases = 0` in this deployment's `worldserver.conf` -- auto-update is off,
+so any future core merge with a DB migration will need the same manual step. Rebuilt,
+redeployed, confirmed a clean boot (0 errors, RA responsive) before handing back.
+
+**Deliberately NOT merged yet**: `codex/fix-issues-remaining` (the 74-file ability pack) --
+touches `Player.cpp`, where the autonomous-travel work above may still land core-adjacent
+changes, and it's simply a much bigger diff to vet in one sitting. Revisit once the travel
+task is done and reported.
