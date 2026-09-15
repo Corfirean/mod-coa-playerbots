@@ -23,6 +23,9 @@ namespace BotAI
     // Records a cast failure so this spell is temporarily blacklisted for this bot to avoid infinite retry loops.
     void RecordSpellCastFailure(ObjectGuid botGuid, uint32 spellId);
 
+    // Checks if a spell is currently on failure backoff cooldown for this bot.
+    bool IsSpellInFailureCooldown(ObjectGuid botGuid, uint32 spellId);
+
     // Cleans up any rotation state when a bot despawns.
     void ForgetRotationState(ObjectGuid botGuid);
 }

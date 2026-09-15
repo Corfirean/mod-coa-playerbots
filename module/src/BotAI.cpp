@@ -27,6 +27,7 @@
 
 #include "BotAI.h"
 #include "BotClassRotations.h"
+#include "BotClassRotationsFelsworn.h"
 #include "BotClassRotationsReaper.h"
 #include "ClassSpecRoles.h"
 #include "Bag.h"
@@ -435,6 +436,13 @@ uint32 SelectKnownSpell(Player* bot, Unit* target, bool positiveRange, bool (*pr
             continue;
         if (!bot->HasItemFitToSpellRequirements(spellInfo))
             continue;
+        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
+            continue;
+        if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
+            continue;
+
+        if (BotAI::IsSpellInFailureCooldown(bot->GetGUID(), spellId))
+            continue;
 
         // Both bounds matter for a ranged spell: SelectKnownSpell used to only check
         // maxRange, so a bot standing inside a spell's real minRange (e.g. a hunter-style
@@ -445,7 +453,7 @@ uint32 SelectKnownSpell(Player* bot, Unit* target, bool positiveRange, bool (*pr
         if (maxRange > 0.0f && dist > maxRange)
             continue;
         float minRange = spellInfo->GetMinRange(positiveRange);
-        if (minRange > 0.0f && dist < minRange)
+        if (minRange > 0.0f && bot->IsWithinRange(target, minRange + bot->GetMeleeRange(target)))
             continue;
 
         int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
@@ -1518,6 +1526,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     if (!spellId)
         spellId = BotAI::SelectReaperRotationSpell(bot, target);
     if (!spellId)
+        spellId = BotAI::SelectFelswornRotationSpell(bot, target);
+    if (!spellId)
         spellId = SelectSpell(bot, target);
 
     if (spellId)
@@ -1526,6 +1536,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
             bot->GetMotionMaster()->Clear();
         SpellCastResult result = LogCastAttempt(bot, spellId, target, "cast");
+        if (result != SPELL_CAST_OK)
+            BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
         state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? APPROXIMATE_GCD_MS : NO_CANDIDATE_RETRY_MS;
         return;
     }

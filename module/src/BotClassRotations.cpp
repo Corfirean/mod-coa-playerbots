@@ -24,6 +24,7 @@ namespace
 // Prevents an ability that failed to cast (e.g. invalid target, LOS, etc.) from being retried every tick.
 std::unordered_map<ObjectGuid, std::unordered_map<uint32, uint32>> failureCooldowns;
 constexpr uint32 FAILURE_COOLDOWN_MS = 2000;
+} // anonymous namespace
 
 bool IsSpellInFailureCooldown(ObjectGuid botGuid, uint32 spellId)
 {
@@ -42,6 +43,9 @@ bool IsSpellInFailureCooldown(ObjectGuid botGuid, uint32 spellId)
     botItr->second.erase(spellItr);
     return false;
 }
+
+namespace
+{
 
 // Finds the highest rank of the spell that this bot currently knows.
 // Traverses backwards from the last spell in the chain.
@@ -101,6 +105,12 @@ bool CanCastSpell(Player* bot, Unit* target, uint32 spellId, bool positiveRange 
     if (!bot->HasItemFitToSpellRequirements(spellInfo))
         return false;
 
+    // Aura state checks
+    if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
+        return false;
+    if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
+        return false;
+
     // Power cost check
     if (spellInfo->PowerType != POWER_HEALTH)
     {
@@ -117,7 +127,7 @@ bool CanCastSpell(Player* bot, Unit* target, uint32 spellId, bool positiveRange 
         if (maxRange > 0.0f && dist > maxRange)
             return false;
         float minRange = spellInfo->GetMinRange(positiveRange);
-        if (minRange > 0.0f && dist < minRange)
+        if (minRange > 0.0f && bot->IsWithinRange(target, minRange + bot->GetMeleeRange(target)))
             return false;
     }
 
@@ -317,6 +327,168 @@ uint32 SelectPyromancerRotationSpell(Player* bot, Unit* target, uint32 /*activeS
     return 0;
 }
 
+// -------------------------------------------------------------------------
+// Class 21: Ranger
+// -------------------------------------------------------------------------
+uint32 SelectRangerRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
+{
+    float dist = bot->GetDistance(target);
+
+    // 1. Instant proc / burst shot: Falconstrike (root 806345)
+    if (uint32 spell = TrySpell(bot, target, 806345))
+        return spell;
+
+    // 2. Melee range (<= 6.0f):
+    if (dist <= 6.0f)
+    {
+        // Maintain Rusty Shiv debuff if learned (561315)
+        if (!target->HasAura(561315, bot->GetGUID()))
+        {
+            if (uint32 spell = TrySpell(bot, target, 561315))
+                return spell;
+        }
+
+        // Flank (root 804940) - high damage positional strike
+        if (uint32 spell = TrySpell(bot, target, 804940))
+            return spell;
+
+        // Assault (root 803108) - main dagger weapon attack
+        if (uint32 spell = TrySpell(bot, target, 803108))
+            return spell;
+
+        // Wild Strike (root 800083) - primary melee builder/spender
+        if (uint32 spell = TrySpell(bot, target, 800083))
+            return spell;
+
+        // Talent strike (root 804027)
+        if (uint32 spell = TrySpell(bot, target, 804027))
+            return spell;
+    }
+
+    // 3. Ranged priority (checked by CanCastSpell for min/max range and ranged weapon fit):
+    // Skullpiercer Shot (root 802036) - heavy sniper shot
+    if (uint32 spell = TrySpell(bot, target, 802036))
+        return spell;
+
+    // Falcon's Focus (root 800266) - heavy ranged focus shot
+    if (uint32 spell = TrySpell(bot, target, 800266))
+        return spell;
+
+    // Burst shot (root 807237)
+    if (uint32 spell = TrySpell(bot, target, 807237))
+        return spell;
+
+    // Quick Shot (root 500074) - primary ranged builder / filler
+    if (uint32 spell = TrySpell(bot, target, 500074))
+        return spell;
+
+    // Close-range fallback if ranged shot was inside minRange
+    if (dist <= 6.0f)
+    {
+        if (uint32 spell = TrySpell(bot, target, 800083))
+            return spell;
+    }
+
+    return 0;
+}
+
+// -------------------------------------------------------------------------
+// Class 25: Cultist
+// -------------------------------------------------------------------------
+uint32 SelectCultistRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
+{
+    // 1. Maintain Herald buff on self if known and missing:
+    if (!bot->HasAura(520326) && !bot->HasAura(805119) && !bot->HasAura(805120) && !bot->HasAura(805121))
+    {
+        if (uint32 spell = TrySpell(bot, bot, 805121, true))
+            return spell;
+        if (uint32 spell = TrySpell(bot, bot, 805120, true))
+            return spell;
+        if (uint32 spell = TrySpell(bot, bot, 805119, true))
+            return spell;
+    }
+
+    // 2. High-priority spenders / burst:
+    // Gaze of C'Thun (root 500110) - heavy channel/DoT
+    if (uint32 spell = TrySpell(bot, target, 500110))
+        return spell;
+
+    // Blade of the Empire (root 500720) - 3 charges, weapon strike
+    if (uint32 spell = TrySpell(bot, target, 500720))
+        return spell;
+
+    // Insanity Spender (root 805116) - requires 40 Insanity or Madness
+    if (uint32 spell = TrySpell(bot, target, 805116))
+        return spell;
+
+    // Eldritch Strike (root 801964)
+    if (uint32 spell = TrySpell(bot, target, 801964))
+        return spell;
+
+    // Heavy spells: root 500715, 500711
+    if (uint32 spell = TrySpell(bot, target, 500715))
+        return spell;
+    if (uint32 spell = TrySpell(bot, target, 500711))
+        return spell;
+
+    // 3. Primary fillers:
+    if (uint32 spell = TrySpell(bot, target, 500720))
+        return spell;
+
+    // At range / Caster: Horrorbolt (root 800416)
+    if (uint32 spell = TrySpell(bot, target, 800416))
+        return spell;
+
+    return 0;
+}
+
+// -------------------------------------------------------------------------
+// Class 28: Tinker
+// -------------------------------------------------------------------------
+uint32 SelectTinkerRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
+{
+    float dist = bot->GetDistance(target);
+
+    // 1. Maintain Reload/ammo if known and missing: Reload (500237)
+    if (!bot->HasAura(500237))
+    {
+        if (uint32 spell = TrySpell(bot, bot, 500237, true))
+            return spell;
+    }
+
+    // 2. High-impact bombs and burst abilities:
+    // Sticky Bomb (root 500232) - heavy explosive bomb
+    if (uint32 spell = TrySpell(bot, target, 500232))
+        return spell;
+
+    // Gunsling (root 805351) - instant shot
+    if (uint32 spell = TrySpell(bot, target, 805351))
+        return spell;
+
+    // Scrap Shot (root 500549) - only outside min range
+    if (dist >= 8.0f)
+    {
+        if (uint32 spell = TrySpell(bot, target, 500549))
+            return spell;
+    }
+
+    // 3. Close range blast: Shotgun (root 801647) if within 10yd
+    if (dist <= 10.0f)
+    {
+        if (uint32 spell = TrySpell(bot, target, 801647))
+            return spell;
+    }
+
+    // 4. Primary ranged filler: Scrap Shot (root 500549) if at range
+    if (dist >= 8.0f)
+    {
+        if (uint32 spell = TrySpell(bot, target, 500549))
+            return spell;
+    }
+
+    return 0;
+}
+
 } // anonymous namespace
 
 uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32 activeSpec)
@@ -329,8 +501,17 @@ uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32
         case 12: // Barbarian
             return SelectBarbarianRotationSpell(bot, target, activeSpec);
 
+        case 21: // Ranger
+            return SelectRangerRotationSpell(bot, target, activeSpec);
+
         case 24: // Pyromancer
             return SelectPyromancerRotationSpell(bot, target, activeSpec);
+
+        case 25: // Cultist
+            return SelectCultistRotationSpell(bot, target, activeSpec);
+
+        case 28: // Tinker
+            return SelectTinkerRotationSpell(bot, target, activeSpec);
 
         case 29: // Venomancer
             return SelectVenomancerRotationSpell(bot, target, activeSpec);

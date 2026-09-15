@@ -1600,17 +1600,79 @@ to its own melee-chase logic or the generic fallback instead of spamming a faili
 **Not yet decided / left for next time:**
 - With both fixed, an unaffordable Soul Strike correctly falls through to generic
   `SelectSpell` — which, on the one live run tested this far, itself picked a spell that failed
-  `SPELL_FAILED_CASTER_AURASTATE` (a precondition `IsUsableOffensiveSpell` doesn't check). This
-  is a separate, pre-existing gap in the *generic* engine, same category as the
-  already-documented facing/weapon-class bugs, not a Reaper-rotation problem — but it means
-  Reaper combat isn't fully reliable end-to-end yet until either that generic gap closes or a
-  real, affordable-from-empty resource generator is identified and added here as a third
-  priority tier ahead of Soul Strike. Not found this session — Reaperbot's own spellbook has
+  `SPELL_FAILED_CASTER_AURASTATE` (a precondition `IsUsableOffensiveSpell` didn't check at the
+  time). **Update, same day**: this generic-engine gap is now closed — `SelectKnownSpell`
+  itself checks `spellInfo->CasterAuraState`/`TargetAuraState` against
+  `Unit::HasAuraState` before ever returning a candidate (see the class-rotation combat AI
+  section below for the fuller fix, which also wired `IsSpellInFailureCooldown` into the same
+  fallback). Reaper combat should be more reliable end-to-end now, though a real
+  affordable-from-empty resource generator still hasn't been identified as a third priority
+  tier ahead of Soul Strike -- Reaperbot's own spellbook has
   thousands of entries (many unrelated vanity/collection spells from however these test
   characters were originally set up) and the one obvious-looking candidate ("Soul Generator,"
   520056) turned out to be a passive percent-modifier talent, not a cast.
 - Verified DBC field indices for future reference (cross-checked against this repo's own
   `DBCStructure.h` comments, not guessed): `PowerType`=41, `ManaCost`=42, `Effect[0..2]`=71-73,
-  `EffectApplyAuraName[0..2]`=95-97, `SpellFamilyName`=208, `SpellName[0]` (enUS)=136.
+  `EffectApplyAuraName[0..2]`=95-97, `SpellFamilyName`=208, `SpellName[0]` (enUS)=136,
+  `CasterAuraState`=20, `TargetAuraState`=21, `CasterAuraSpell`=24. **Simpler alternative found
+  later the same session**: `SpellInfo` already exposes `CasterAuraState`/`TargetAuraState`/
+  `PowerType` etc. as plain C++ members (`spellInfo->CasterAuraState`) — no DBC byte-parsing
+  needed at all for these fields from C++ code; the manual Python parser above is only useful
+  for bulk/offline research (scanning hundreds of spells before writing any C++), not for a
+  single spell's own real fields once you already have a `SpellInfo*` in hand. There's also a
+  `spell_dbc` table in `acore_world` mirroring much of Spell.dbc as real SQL columns — quicker
+  than either DBC-parsing approach for one-off lookups, though it didn't have every custom
+  Ascension spell ID checked this session (some very high ids returned zero rows).
 - Actually *riding* a mount for travel (see "Mounts and gear upgrades" above) is still open —
   the bot owns one now, nothing casts it yet.
+
+## Combat AI, second pass: Ranger, Cultist, Tinker, Felsworn (2026-09-15)
+
+Six of the 21 custom classes now have real priority rotations (up from three): Barbarian,
+Venomancer, Pyromancer (first pass, above) plus **Ranger (21)**, **Cultist (25)**, and
+**Tinker (28)** in the same `BotClassRotations.h/.cpp`, and **Felsworn (14)** in its own
+`BotClassRotationsFelsworn.h/.cpp` (kept separate from `BotClassRotations.cpp` purely to avoid
+two people editing the same rotation-dispatch file at once while both were being written
+concurrently — same reasoning as `BotClassRotationsReaper.cpp`, no architectural meaning to the
+split). `BotAI.cpp`'s `UpdateOffensive` tries each class-specific dispatcher in turn, then the
+generic fallback.
+
+**Ranger/Cultist/Tinker** (`BotClassRotations.cpp`): distance-aware priority chains (melee
+abilities in melee range, ranged fillers otherwise), each grounded in the class's own dedicated
+mod-ascension-compat source (`AscensionRangerTalents.cpp`, `AscensionCultistContracts.cpp`,
+`AscensionTinkerContracts.cpp`/`AscensionTinkerOverload.cpp`) rather than
+`AscensionCoATalentData.h` alone. The shared `CanCastSpell` helper this file already had for
+Barbarian/Venomancer/Pyromancer gained two real checks while building these: `SpellInfo`'s own
+`CasterAuraState`/`TargetAuraState` fields (checked via `Unit::HasAuraState`) and a
+min-range adjustment folding in `Player::GetMeleeRange`. Both were also carried into
+`BotAI.cpp`'s own generic `SelectKnownSpell`, closing the "generic engine doesn't check
+aura-state preconditions" gap noted in the Reaper section above — along with wiring
+`BotAI::IsSpellInFailureCooldown` into that same fallback so a failed generic pick also gets a
+short retry-penalty instead of being tried again next tick. **Confirmed live** against
+stationary training dummies: 100% `SPELL_CAST_OK` casts for all three classes, no facing/
+weapon/aura-state/cooldown-spam errors.
+
+**Felsworn** (`BotClassRotationsFelsworn.cpp`): covers all three of its very different roles
+(Infernal=Caster DPS, Slayer=Melee DPS, Tyrant=Tank) by just offering whichever real attacks
+the bot's own spec happens to know, in priority order, rather than hand-picking per-spec —
+`AscensionCoATalentData.h`'s own hit rate for real damage effects was better here than Reaper's
+(11 of ~340 combined Chronomancer+Felsworn entries had real SpellInfo damage effects, versus
+Reaper's 4-of-140), enough to work from directly plus cross-checking against
+`AscensionFelswornAbilities.cpp`/`AscensionFelswornContracts.cpp`. Two more real per-spell
+preconditions caught live (beyond the range/cost checks already learned from Reaper): Tyrant's
+Gaze is a genuine execute gated on `AURA_STATE_HEALTHLESS_35_PERCENT` (target must be below
+35% health — a correct precondition, not a bug to route around), and Ruin/Felwrath/Sargeron
+Smite are "Felfury" resource spenders gated on `CasterAuraSpell` 803468 ("At Least 2 Felfury")
+rather than a plain power cost. Also found live: the generic fallback was already landing two
+spells this rotation's own talent-data scan had missed (Sargeron Smite, Fel Fireball) with
+occasional `SPELL_FAILED_NO_POWER`, since (before this pass) it never checked affordability —
+folded both into this rotation with the same real cost/aura checks, closing that gap.
+**Confirmed live**: 100% `SPELL_CAST_OK` across 24+ consecutive casts against a stationary
+training dummy after both precondition fixes landed.
+
+Remaining classes without a dedicated rotation yet (14 of 21): Witch Doctor, Witch Hunter,
+Stormbringer, Knight of Xoroth, Guardian, Templar, Bloodmage, Chronomancer, Starcaller, Sun
+Cleric, Necromancer, Primalist, Runemaster. Necromancer was scoped out this pass —
+its real kit spans 7 dedicated source files (~2500 lines, heavy pet/summon architecture) versus
+Felsworn's ~800 lines across 2, a different and larger problem shape ("which pet to summon,"
+not "which spell to cast") not attempted yet.
