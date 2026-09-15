@@ -31,6 +31,12 @@ public:
             { "acceptguildinvite", HandleBotAcceptGuildInviteCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "invite",            HandleBotInviteCommand,            rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "guildinvite",       HandleBotGuildInviteCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "guildcreate",       HandleBotGuildCreateCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "guildgather",       HandleBotGuildGatherCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "guilddeposit",      HandleBotGuildDepositCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "guildwithdraw",     HandleBotGuildWithdrawCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "guilddepositgold",  HandleBotGuildDepositGoldCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "guildwithdrawgold", HandleBotGuildWithdrawGoldCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "despawn",      HandleBotDespawnCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "listauras",    HandleBotListAurasCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "runchat",      HandleBotRunChatCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -136,6 +142,42 @@ public:
     static bool HandleBotGuildInviteCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, std::string targetName)
     {
         sBotMgr->GuildInvite(charLowGuid, targetName, handler);
+        return true;
+    }
+
+    static bool HandleBotGuildCreateCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, std::string guildName)
+    {
+        sBotMgr->GuildCreate(charLowGuid, guildName, handler);
+        return true;
+    }
+
+    static bool HandleBotGuildGatherCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, uint32 itemEntry, Optional<uint32> count)
+    {
+        sBotMgr->GuildGather(charLowGuid, itemEntry, count.value_or(1), handler);
+        return true;
+    }
+
+    static bool HandleBotGuildDepositCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, uint32 itemEntry, Optional<uint32> count)
+    {
+        sBotMgr->GuildDepositItem(charLowGuid, itemEntry, count.value_or(0), handler);
+        return true;
+    }
+
+    static bool HandleBotGuildWithdrawCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, uint32 itemEntry, Optional<uint32> count)
+    {
+        sBotMgr->GuildWithdrawItem(charLowGuid, itemEntry, count.value_or(1), handler);
+        return true;
+    }
+
+    static bool HandleBotGuildDepositGoldCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, uint32 copper)
+    {
+        sBotMgr->GuildDepositMoney(charLowGuid, copper, handler);
+        return true;
+    }
+
+    static bool HandleBotGuildWithdrawGoldCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, uint32 copper)
+    {
+        sBotMgr->GuildWithdrawMoney(charLowGuid, copper, handler);
         return true;
     }
 

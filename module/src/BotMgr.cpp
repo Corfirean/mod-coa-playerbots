@@ -187,6 +187,57 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
     }
 }
 
+void BotMgr::EnsureBotBankRights(Player* bot, Guild* guild)
+{
+    if (!guild || !bot)
+        return;
+
+    // If guild has no tabs yet, and bot is the Guild Master, create initial tab 0
+    if (guild->_GetPurchasedTabsSize() == 0)
+    {
+        if (guild->GetLeaderGUID() == bot->GetGUID())
+            guild->_CreateNewBankTab();
+        else
+            return;
+    }
+
+    uint8 rankId = bot->GetRank();
+    Guild::RankInfo* rankInfo = guild->GetRankInfo(rankId);
+    if (!rankInfo)
+        return;
+
+    for (uint8 tabId = 0; tabId < guild->_GetPurchasedTabsSize(); ++tabId)
+    {
+        int8 currentRights = rankInfo->GetBankTabRights(tabId);
+        int32 currentSlots = rankInfo->GetBankTabSlotsPerDay(tabId);
+
+        bool needsUpdate = false;
+        uint8 newRights = currentRights;
+        uint32 newSlots = currentSlots > 0 ? uint32(currentSlots) : 50;
+
+        if ((currentRights & GUILD_BANK_RIGHT_DEPOSIT_ITEM) != GUILD_BANK_RIGHT_DEPOSIT_ITEM)
+        {
+            newRights |= GUILD_BANK_RIGHT_DEPOSIT_ITEM | GUILD_BANK_RIGHT_VIEW_TAB;
+            needsUpdate = true;
+        }
+
+        if (currentSlots == 0)
+        {
+            newSlots = 50;
+            needsUpdate = true;
+        }
+
+        if (needsUpdate)
+        {
+            GuildBankRightsAndSlots rightsAndSlots(tabId, newRights, newSlots);
+            rankInfo->SetBankTabSlotsAndRights(rightsAndSlots, true);
+        }
+    }
+
+    if (rankInfo->GetBankMoneyPerDay() == 0)
+        rankInfo->SetBankMoneyPerDay(50 * GOLD);
+}
+
 void BotMgr::DoAcceptGuildInvite(WorldSession* session)
 {
     Player* bot = session->GetPlayer();
@@ -219,6 +270,8 @@ void BotMgr::DoAcceptGuildInvite(WorldSession* session)
     {
         LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' successfully joined guild '{}' (id {}).",
             bot->GetName(), bot->GetGuildName(), bot->GetGuildId());
+        if (Guild* guild = bot->GetGuild())
+            EnsureBotBankRights(bot, guild);
     }
 }
 
@@ -440,6 +493,352 @@ void BotMgr::GuildInvite(ObjectGuid::LowType charLowGuid, std::string const& tar
     if (handler)
         handler->PSendSysMessage("BotMgr: guild invite for '{}' issued by '{}' (guild '{}').",
             targetName, bot->GetName(), guild->GetName());
+}
+
+void BotMgr::GuildCreate(ObjectGuid::LowType charLowGuid, std::string const& guildName, ChatHandler* handler)
+{
+    WorldSession* session = FindBotSession(charLowGuid);
+    if (!session)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no active bot session for guid {} (spawn it first).", charLowGuid);
+        return;
+    }
+
+    Player* bot = session->GetPlayer();
+    if (!bot)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot session for guid {} has no Player yet.", charLowGuid);
+        return;
+    }
+
+    if (bot->GetGuildId())
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' is already in guild '{}' (id {}).",
+                bot->GetName(), bot->GetGuildName(), bot->GetGuildId());
+        return;
+    }
+
+    if (guildName.empty())
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: guild name cannot be empty.");
+        return;
+    }
+
+    if (sGuildMgr->GetGuildByName(guildName))
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: guild with name '{}' already exists.", guildName);
+        return;
+    }
+
+    Guild* guild = new Guild;
+    if (!guild->Create(bot, guildName))
+    {
+        delete guild;
+        if (handler)
+            handler->PSendSysMessage("BotMgr: failed to create guild '{}' for bot '{}'.", guildName, bot->GetName());
+        return;
+    }
+
+    sGuildMgr->AddGuild(guild);
+    EnsureBotBankRights(bot, guild);
+
+    if (handler)
+        handler->PSendSysMessage("BotMgr: bot '{}' created guild '{}' (id {}).",
+            bot->GetName(), guild->GetName(), guild->GetId());
+    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' created guild '{}' (id {}).",
+        bot->GetName(), guild->GetName(), guild->GetId());
+}
+
+uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler)
+{
+    WorldSession* session = FindBotSession(charLowGuid);
+    if (!session)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no active bot session for guid {}.", charLowGuid);
+        return 0;
+    }
+
+    Player* bot = session->GetPlayer();
+    if (!bot)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot session for guid {} has no Player yet.", charLowGuid);
+        return 0;
+    }
+
+    Guild* guild = bot->GetGuild();
+    if (!guild)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' is not in a guild.", bot->GetName());
+        return 0;
+    }
+
+    EnsureBotBankRights(bot, guild);
+
+    if (guild->_GetPurchasedTabsSize() == 0)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: guild '{}' has no bank tabs.", guild->GetName());
+        return 0;
+    }
+
+    uint32 totalDeposited = 0;
+    uint32 targetToDeposit = (count == 0) ? 0xFFFFFFFF : count;
+
+    while (totalDeposited < targetToDeposit)
+    {
+        Item* matchingItem = nullptr;
+        uint8 foundBag = NULL_BAG;
+        uint8 foundSlot = NULL_SLOT;
+
+        // Search backpack
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        {
+            if (Item* it = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            {
+                if (it->GetEntry() == itemEntry)
+                {
+                    matchingItem = it;
+                    foundBag = INVENTORY_SLOT_BAG_0;
+                    foundSlot = slot;
+                    break;
+                }
+            }
+        }
+
+        // Search bags
+        if (!matchingItem)
+        {
+            for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+            {
+                if (Bag* bag = bot->GetBagByPos(bagSlot))
+                {
+                    for (uint8 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    {
+                        if (Item* it = bag->GetItemByPos(slot))
+                        {
+                            if (it->GetEntry() == itemEntry)
+                            {
+                                matchingItem = it;
+                                foundBag = bagSlot;
+                                foundSlot = slot;
+                                break;
+                            }
+                        }
+                    }
+                    if (matchingItem)
+                        break;
+                }
+            }
+        }
+
+        if (!matchingItem)
+            break;
+
+        uint32 inStack = matchingItem->GetCount();
+        uint32 remainingNeeded = targetToDeposit - totalDeposited;
+        uint32 moveAmount = (remainingNeeded < inStack) ? remainingNeeded : 0; // 0 = entire stack
+        uint32 actualMoved = (moveAmount > 0) ? moveAmount : inStack;
+
+        // Deposit into tab 0
+        guild->SwapItemsWithInventory(bot, false, 0, NULL_SLOT, foundBag, foundSlot, moveAmount);
+        totalDeposited += actualMoved;
+    }
+
+    if (handler)
+    {
+        if (totalDeposited > 0)
+            handler->PSendSysMessage("BotMgr: bot '{}' deposited {}x item {} into guild bank.",
+                bot->GetName(), totalDeposited, itemEntry);
+        else
+            handler->PSendSysMessage("BotMgr: bot '{}' has no item {} in inventory to deposit.",
+                bot->GetName(), itemEntry);
+    }
+    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' deposited {}x item {} into guild bank (guild '{}').",
+        bot->GetName(), totalDeposited, itemEntry, guild->GetName());
+
+    return totalDeposited;
+}
+
+uint32 BotMgr::GuildWithdrawItem(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler)
+{
+    WorldSession* session = FindBotSession(charLowGuid);
+    if (!session)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no active bot session for guid {}.", charLowGuid);
+        return 0;
+    }
+
+    Player* bot = session->GetPlayer();
+    if (!bot)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot session for guid {} has no Player yet.", charLowGuid);
+        return 0;
+    }
+
+    Guild* guild = bot->GetGuild();
+    if (!guild)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' is not in a guild.", bot->GetName());
+        return 0;
+    }
+
+    EnsureBotBankRights(bot, guild);
+
+    uint32 totalWithdrawn = 0;
+    uint32 targetToWithdraw = (count == 0) ? 1 : count;
+
+    for (uint8 tabId = 0; tabId < guild->_GetPurchasedTabsSize() && totalWithdrawn < targetToWithdraw; ++tabId)
+    {
+        Guild::BankTab const* tab = guild->GetBankTab(tabId);
+        if (!tab)
+            continue;
+
+        for (uint8 slotId = 0; slotId < GUILD_BANK_MAX_SLOTS && totalWithdrawn < targetToWithdraw; ++slotId)
+        {
+            Item const* bankItem = tab->GetItem(slotId);
+            if (!bankItem || bankItem->GetEntry() != itemEntry)
+                continue;
+
+            uint32 inBank = bankItem->GetCount();
+            uint32 remainingNeeded = targetToWithdraw - totalWithdrawn;
+            uint32 moveAmount = (remainingNeeded < inBank) ? remainingNeeded : 0; // 0 = entire stack
+            uint32 actualMoved = (moveAmount > 0) ? moveAmount : inBank;
+
+            guild->SwapItemsWithInventory(bot, true, tabId, slotId, NULL_BAG, NULL_SLOT, moveAmount);
+            totalWithdrawn += actualMoved;
+        }
+    }
+
+    if (handler)
+    {
+        if (totalWithdrawn > 0)
+            handler->PSendSysMessage("BotMgr: bot '{}' withdrew {}x item {} from guild bank.",
+                bot->GetName(), totalWithdrawn, itemEntry);
+        else
+            handler->PSendSysMessage("BotMgr: item {} not found in guild bank (or no withdraw rights).", itemEntry);
+    }
+    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' withdrew {}x item {} from guild bank (guild '{}').",
+        bot->GetName(), totalWithdrawn, itemEntry, guild->GetName());
+
+    return totalWithdrawn;
+}
+
+void BotMgr::GuildDepositMoney(ObjectGuid::LowType charLowGuid, uint32 copper, ChatHandler* handler)
+{
+    WorldSession* session = FindBotSession(charLowGuid);
+    if (!session)
+        return;
+    Player* bot = session->GetPlayer();
+    if (!bot)
+        return;
+    Guild* guild = bot->GetGuild();
+    if (!guild)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' is not in a guild.", bot->GetName());
+        return;
+    }
+
+    if (bot->GetMoney() < copper)
+        copper = bot->GetMoney();
+
+    if (copper == 0)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' has no money to deposit.", bot->GetName());
+        return;
+    }
+
+    guild->HandleMemberDepositMoney(session, copper);
+    if (handler)
+        handler->PSendSysMessage("BotMgr: bot '{}' deposited {} copper into guild bank.", bot->GetName(), copper);
+}
+
+void BotMgr::GuildWithdrawMoney(ObjectGuid::LowType charLowGuid, uint32 copper, ChatHandler* handler)
+{
+    WorldSession* session = FindBotSession(charLowGuid);
+    if (!session)
+        return;
+    Player* bot = session->GetPlayer();
+    if (!bot)
+        return;
+    Guild* guild = bot->GetGuild();
+    if (!guild)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' is not in a guild.", bot->GetName());
+        return;
+    }
+
+    EnsureBotBankRights(bot, guild);
+
+    bool ok = guild->HandleMemberWithdrawMoney(session, copper);
+    if (handler)
+    {
+        if (ok)
+            handler->PSendSysMessage("BotMgr: bot '{}' withdrew {} copper from guild bank.", bot->GetName(), copper);
+        else
+            handler->PSendSysMessage("BotMgr: failed to withdraw {} copper (not enough funds or limit reached).", copper);
+    }
+}
+
+void BotMgr::GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 targetCount, ChatHandler* handler)
+{
+    WorldSession* session = FindBotSession(charLowGuid);
+    if (!session)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no active bot session for guid {}.", charLowGuid);
+        return;
+    }
+    Player* bot = session->GetPlayer();
+    if (!bot)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot session for guid {} has no Player yet.", charLowGuid);
+        return;
+    }
+    Guild* guild = bot->GetGuild();
+    if (!guild)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' is not in a guild.", bot->GetName());
+        return;
+    }
+
+    EnsureBotBankRights(bot, guild);
+
+    // 1. Immediately deposit any matching items already held in inventory
+    uint32 deposited = GuildDepositItem(charLowGuid, itemEntry, targetCount, nullptr);
+
+    if (deposited >= targetCount)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: guildgather complete -- bot '{}' deposited all {}x item {} immediately from inventory.",
+                bot->GetName(), deposited, itemEntry);
+        _guildGatherOrders.erase(bot->GetGUID());
+        return;
+    }
+
+    uint32 remaining = targetCount - deposited;
+    _guildGatherOrders[bot->GetGUID()] = { itemEntry, remaining };
+
+    if (handler)
+        handler->PSendSysMessage("BotMgr: guildgather order placed for bot '{}': need {}x item {} (already deposited {}x).",
+            bot->GetName(), remaining, itemEntry, deposited);
+    LOG_INFO("module.coa-playerbots", "BotMgr: guildgather order for bot '{}': item {} need {} (already deposited {}).",
+        bot->GetName(), itemEntry, remaining, deposited);
 }
 
 void BotMgr::Invite(ObjectGuid::LowType charLowGuid, std::string const& targetName, ChatHandler* handler)
@@ -906,10 +1305,66 @@ void BotMgr::Update(uint32 diff)
         if (Player* bot = session->GetPlayer())
             BotAI::Update(bot, diff);
 
+    // Active guild gather orders: check if bot collected the requested item, deposit into guild bank
+    if (!_guildGatherOrders.empty())
+    {
+        for (auto itr = _guildGatherOrders.begin(); itr != _guildGatherOrders.end(); )
+        {
+            Player* bot = FindBotPlayer(itr->first.GetCounter());
+            if (!bot || !bot->IsInWorld() || !bot->GetGuild())
+            {
+                itr = _guildGatherOrders.erase(itr);
+                continue;
+            }
+
+            uint32 itemEntry = itr->second.itemEntry;
+            uint32 remaining = itr->second.remainingCount;
+            uint32 held = bot->GetItemCount(itemEntry, false);
+            if (held > 0)
+            {
+                uint32 toDeposit = std::min(held, remaining);
+                uint32 deposited = GuildDepositItem(bot->GetGUID().GetCounter(), itemEntry, toDeposit, nullptr);
+                if (deposited > 0)
+                {
+                    if (deposited >= remaining)
+                    {
+                        LOG_INFO("module.coa-playerbots", "BotMgr: guildgather order completed for bot '{}' (item {}).",
+                            bot->GetName(), itemEntry);
+                        itr = _guildGatherOrders.erase(itr);
+                        continue;
+                    }
+                    else
+                    {
+                        itr->second.remainingCount -= deposited;
+                    }
+                }
+            }
+            ++itr;
+        }
+    }
+
     _heartbeatTimer += diff;
     if (_heartbeatTimer < 10000)
         return;
     _heartbeatTimer = 0;
+
+    // Auto-deposit excess gold (> 500g) into guild bank for active bots
+    for (WorldSession* session : _botSessions)
+    {
+        Player* bot = session->GetPlayer();
+        if (!bot || !bot->IsInWorld() || !bot->GetGuild())
+            continue;
+
+        uint32 currentMoney = bot->GetMoney();
+        constexpr uint32 goldLimit = 500 * GOLD;
+        if (currentMoney > goldLimit)
+        {
+            uint32 excess = currentMoney - goldLimit;
+            LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' auto-depositing excess gold ({} copper) to guild bank.",
+                bot->GetName(), excess);
+            GuildDepositMoney(bot->GetGUID().GetCounter(), excess, nullptr);
+        }
+    }
 
     for (WorldSession* session : _botSessions)
     {

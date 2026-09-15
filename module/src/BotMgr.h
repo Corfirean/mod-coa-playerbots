@@ -16,9 +16,11 @@
 
 #include "ObjectGuid.h"
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class ChatHandler;
+class Guild;
 class Player;
 class Roll;
 class WorldSession;
@@ -47,6 +49,25 @@ public:
     // Manual/debug entry point: has a bot in a guild invite another online player
     // (bot or real client, matched by name) to its guild.
     void GuildInvite(ObjectGuid::LowType charLowGuid, std::string const& targetName, ChatHandler* handler);
+
+    // Creates a new guild with this bot as Guild Master.
+    void GuildCreate(ObjectGuid::LowType charLowGuid, std::string const& guildName, ChatHandler* handler);
+
+    // Deposits items of itemEntry from bot's inventory into guild bank.
+    // count == 0 means deposit all matching items. Returns deposited count.
+    uint32 GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler);
+
+    // Withdraws items of itemEntry from guild bank into bot's inventory. Returns withdrawn count.
+    uint32 GuildWithdrawItem(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler);
+
+    // Deposits money (in copper) from bot into guild bank.
+    void GuildDepositMoney(ObjectGuid::LowType charLowGuid, uint32 copper, ChatHandler* handler);
+
+    // Withdraws money (in copper) from guild bank to bot.
+    void GuildWithdrawMoney(ObjectGuid::LowType charLowGuid, uint32 copper, ChatHandler* handler);
+
+    // Orders bot to gather itemEntry up to targetCount and deposit into guild bank.
+    void GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 targetCount, ChatHandler* handler);
 
     // Manual/debug entry point: has a bot invite another online player (bot or real client,
     // matched by name) to its group, by calling the real WorldSession::HandleGroupInviteOpcode
@@ -220,6 +241,15 @@ private:
     // minimum) before this can safely go further than a notice.
     void CheckAllBotsMaxLevel();
     bool _allBotsMaxLevelNotified = false;
+
+    void EnsureBotBankRights(Player* bot, Guild* guild);
+
+    struct GuildGatherOrder
+    {
+        uint32 itemEntry = 0;
+        uint32 remainingCount = 0;
+    };
+    std::unordered_map<ObjectGuid, GuildGatherOrder> _guildGatherOrders;
 
     std::vector<WorldSession*> _botSessions;
     std::vector<WorldSession*> _pendingTeleportAck;
