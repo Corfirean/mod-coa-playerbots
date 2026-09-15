@@ -9,6 +9,9 @@
 #include "Corpse.h"
 #include "DatabaseEnv.h"
 #include "Group.h"
+#include "Guild.h"
+#include "GuildMgr.h"
+#include "GuildPackets.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Log.h"
@@ -184,6 +187,41 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
     }
 }
 
+void BotMgr::DoAcceptGuildInvite(WorldSession* session)
+{
+    Player* bot = session->GetPlayer();
+    if (!bot)
+    {
+        LOG_ERROR("module.coa-playerbots", "BotMgr: DoAcceptGuildInvite: session has no Player.");
+        return;
+    }
+
+    uint32 invitedGuildId = bot->GetGuildIdInvited();
+    if (!invitedGuildId)
+    {
+        LOG_WARN("module.coa-playerbots", "BotMgr: DoAcceptGuildInvite: bot '{}' has no pending guild invite.", bot->GetName());
+        return;
+    }
+
+    WorldPacket packet(CMSG_GUILD_ACCEPT, 0);
+    WorldPackets::Guild::AcceptGuildInvite acceptPacket(std::move(packet));
+    session->HandleGuildAcceptOpcode(acceptPacket);
+
+    // If accept failed (e.g. guild disbanded, cross-faction disallowed), clear the invite
+    // so the auto-accept loop doesn't spin forever.
+    if (bot->GetGuildIdInvited() == invitedGuildId && !bot->GetGuildId())
+    {
+        LOG_WARN("module.coa-playerbots", "BotMgr: DoAcceptGuildInvite: failed to join guild {} for bot '{}', clearing invite.",
+            invitedGuildId, bot->GetName());
+        bot->SetGuildIdInvited(0);
+    }
+    else
+    {
+        LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' successfully joined guild '{}' (id {}).",
+            bot->GetName(), bot->GetGuildName(), bot->GetGuildId());
+    }
+}
+
 void BotMgr::FinishPendingTeleport(WorldSession* session)
 {
     Player* bot = session->GetPlayer();
@@ -324,6 +362,84 @@ void BotMgr::AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
 
     if (handler)
         handler->PSendSysMessage("BotMgr: accept-invite issued for bot '{}', check .group list to confirm.", bot->GetName());
+}
+
+void BotMgr::AcceptGuildInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
+{
+    WorldSession* session = FindBotSession(charLowGuid);
+    if (!session)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no active bot session for guid {} (spawn it first).", charLowGuid);
+        return;
+    }
+
+    Player* bot = session->GetPlayer();
+    if (!bot)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot session for guid {} has no Player yet (login still pending?).", charLowGuid);
+        return;
+    }
+
+    if (bot->GetGuildId() != 0)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' is already in a guild (id {}, '{}').",
+                bot->GetName(), bot->GetGuildId(), bot->GetGuildName());
+        return;
+    }
+
+    if (!bot->GetGuildIdInvited())
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' has no pending guild invite — invite it first.", bot->GetName());
+        return;
+    }
+
+    DoAcceptGuildInvite(session);
+
+    if (handler)
+    {
+        if (bot->GetGuildId() != 0)
+            handler->PSendSysMessage("BotMgr: accept-guild-invite succeeded for bot '{}', joined guild '{}' (id {}).",
+                bot->GetName(), bot->GetGuildName(), bot->GetGuildId());
+        else
+            handler->PSendSysMessage("BotMgr: accept-guild-invite failed for bot '{}'.", bot->GetName());
+    }
+}
+
+void BotMgr::GuildInvite(ObjectGuid::LowType charLowGuid, std::string const& targetName, ChatHandler* handler)
+{
+    WorldSession* session = FindBotSession(charLowGuid);
+    if (!session)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no active bot session for guid {} (spawn it first).", charLowGuid);
+        return;
+    }
+
+    Player* bot = session->GetPlayer();
+    if (!bot)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot session for guid {} has no Player yet (login still pending?).", charLowGuid);
+        return;
+    }
+
+    Guild* guild = bot->GetGuild();
+    if (!guild)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' is not in a guild.", bot->GetName());
+        return;
+    }
+
+    guild->HandleInviteMember(session, targetName);
+
+    if (handler)
+        handler->PSendSysMessage("BotMgr: guild invite for '{}' issued by '{}' (guild '{}').",
+            targetName, bot->GetName(), guild->GetName());
 }
 
 void BotMgr::Invite(ObjectGuid::LowType charLowGuid, std::string const& targetName, ChatHandler* handler)
@@ -727,14 +843,24 @@ void BotMgr::Update(uint32 diff)
     }
 
     // Auto-accept: checked every tick, not throttled. A bot with a real Player
-    // and a pending invite accepts it immediately, same as a human would.
+    // and a pending group or guild invite accepts it immediately, same as a human would.
     for (WorldSession* session : _botSessions)
     {
         Player* bot = session->GetPlayer();
-        if (bot && bot->GetGroupInvite())
+        if (!bot)
+            continue;
+
+        if (bot->GetGroupInvite())
         {
             LOG_INFO("module.coa-playerbots", "BotMgr: auto-accepting pending group invite for bot '{}'.", bot->GetName());
             DoAcceptInvite(session);
+        }
+
+        if (bot->GetGuildIdInvited() && !bot->GetGuildId())
+        {
+            LOG_INFO("module.coa-playerbots", "BotMgr: auto-accepting pending guild invite for bot '{}' (guild id {}).",
+                bot->GetName(), bot->GetGuildIdInvited());
+            DoAcceptGuildInvite(session);
         }
     }
 

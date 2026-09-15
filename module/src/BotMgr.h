@@ -40,6 +40,14 @@ public:
     // as an explicit override for testing/debugging.
     void AcceptInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
 
+    // Manual/debug entry point: accepts a pending guild invite on a bot's behalf
+    // right now, reporting success/failure to handler.
+    void AcceptGuildInvite(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
+
+    // Manual/debug entry point: has a bot in a guild invite another online player
+    // (bot or real client, matched by name) to its guild.
+    void GuildInvite(ObjectGuid::LowType charLowGuid, std::string const& targetName, ChatHandler* handler);
+
     // Manual/debug entry point: has a bot invite another online player (bot or real client,
     // matched by name) to its group, by calling the real WorldSession::HandleGroupInviteOpcode
     // handler directly with a minimal packet -- same "call the real thing" pattern as
@@ -152,6 +160,11 @@ private:
     // teleport-ack (see FinishPendingTeleport below) and MoveFollow happen
     // later, once the teleport has actually landed.
     void DoAcceptInvite(WorldSession* session);
+
+    // Calls WorldSession::HandleGuildAcceptOpcode with a synthetic CMSG_GUILD_ACCEPT
+    // packet, mirroring DoAcceptInvite for groups. Caller should ensure bot has a pending
+    // guild invite (bot->GetGuildIdInvited() != 0).
+    void DoAcceptGuildInvite(WorldSession* session);
 
     // A Player-type TeleportTo() (near or far) only *requests* the move --
     // the real position/grid update happens inside the ack handler
