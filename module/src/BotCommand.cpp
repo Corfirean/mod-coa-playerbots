@@ -1,5 +1,6 @@
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "BotSpawnRandom.h"
 #include "Chat.h"
 #include "CommandScript.h"
 #include "ObjectGuid.h"
@@ -21,6 +22,7 @@ public:
         static ChatCommandTable botcmdCommandTable =
         {
             { "spawnbot",     HandleBotSpawnCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "spawnrandom",  HandleBotSpawnRandomCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "acceptinvite", HandleBotAcceptInviteCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "invite",       HandleBotInviteCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "despawn",      HandleBotDespawnCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -50,6 +52,16 @@ public:
     static bool HandleBotSpawnCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
         sBotMgr->SpawnBot(charLowGuid, handler);
+        return true;
+    }
+
+    // Creates brand new bot characters on the fly (see BotSpawnRandom.cpp), instead of only
+    // being able to spawn existing hand-made test characters. Omit count to use the
+    // configured CoaBots.RandomSpawn.DefaultCount; always clamped to
+    // CoaBots.RandomSpawn.MaxCount regardless of what's asked for.
+    static bool HandleBotSpawnRandomCommand(ChatHandler* handler, Optional<uint32> count)
+    {
+        BotSpawn::SpawnRandomBots(count.value_or(0), handler);
         return true;
     }
 

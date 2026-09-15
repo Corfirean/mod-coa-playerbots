@@ -1,0 +1,25 @@
+#
+# mod-coa-playerbots
+#
+
+[worldserver]
+
+# Number of bots '.botcmd spawnrandom' creates when no count is given on the command line.
+CoaBots.RandomSpawn.DefaultCount = 10
+
+# Safety cap: a single '.botcmd spawnrandom <count>' invocation never creates more than this
+# many bots at once, regardless of what's requested. Each bot is a synchronous DB clone of an
+# existing level-80 test character, so a very large batch will cause a visible tick hitch --
+# raise this only on a dev/test realm with nobody else online.
+CoaBots.RandomSpawn.MaxCount = 1000
+
+# If enabled, each newly created bot is immediately logged in (queued through the same
+# null-socket login path '.botcmd spawnbot' uses) instead of only existing in the database
+# until spawned by guid later.
+CoaBots.RandomSpawn.AutoLogin = 1
+
+# Username prefix for the accounts random bots are spread across (auto-created as needed, one
+# new account whenever the current one hits CharactersPerAccount). Never account 1 (the human
+# player's own account) or account 2 if it's the hand-made test-character account -- new
+# accounts are always created fresh under this prefix.
+CoaBots.RandomSpawn.AccountPrefix = "CoaBotHost"

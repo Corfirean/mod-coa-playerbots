@@ -1830,9 +1830,57 @@ process immediately restored RA. Not a `worldserver` bug -- a tooling-hygiene le
 client script that doesn't cleanly close its socket can wedge the console for everyone,
 independent of server health.
 
-Remaining without a dedicated rotation (3 of 21): Witch Doctor, Witch Hunter, Sun Cleric --
-all three in progress on the parallel Gemini session (Witch Doctor/Witch Hunter/Sun Cleric
-rotations added to the shared `BotClassRotations.cpp`, live-tested against the training dummy
-per her own session, still undergoing iteration as of this pass). All 21 classes now have at
-least a rotation attempt; full pet-summon AI for Necromancer (and any pet-heavy portion of
-Witch Doctor) remains explicitly out of scope, undocumented future work.
+All 21 classes now have at least a rotation attempt: Gemini's Witch Doctor/Witch Hunter/Sun
+Cleric additions to `BotClassRotations.cpp` finished and live-verified (all casts
+`SPELL_CAST_OK`) shortly after this pass, committed together in `e926377`. Full pet-summon AI
+for Necromancer and Witch Doctor (situational summon choice +, for Necromancer, stance
+switching -- not full pet micromanagement, pets fight on their own once summoned) is now
+assigned to the parallel Gemini session as a follow-up.
+
+## Bulk random bot spawner (2026-09-15)
+
+New `.botcmd spawnrandom [count]` (`BotSpawnRandom.h/.cpp`, wired into `BotCommand.cpp`)
+creates brand new bot characters on the fly, in any quantity, instead of only being able to
+spawn hand-made test characters that already exist. Config in the new
+`module/conf/mod_coa_playerbots.conf.dist` (`CoaBots.RandomSpawn.DefaultCount`,
+`.MaxCount`, `.AutoLogin`, `.AccountPrefix`) -- this module had no config file at all before
+this pass.
+
+**Why cloning an existing character row instead of simulating the real CMSG_CHAR_CREATE
+packet flow** (`Player::Create` + `CharacterCreateInfo`, what a real client's character screen
+drives): every one of the 21 custom classes already has at least one hand-verified,
+fully-progressed level-80 test character sitting on a non-LOCAL account (this session's own
+combat-rotation testing work) -- cloning one and swapping only guid/account/name/race/gender
+gets a new bot everything a fresh `Player::Create()` character would still need
+`mod-ascension-compat`'s `OnPlayerLogin` repair hook to backfill anyway
+(`RepairStarterKit`/`SynchronizeProgression`/`SynchronizeProficiencies`), for a fraction of the
+engine surface this module would otherwise have to drive by hand. **Confirmed live**: the
+`characters` row clone, `character_homebind` clone, `CharacterCache::AddCharacterCacheEntry`
+registration (needed so the new character is spawnable without a server restart -- a
+straight-to-DB insert is otherwise invisible to anything keyed off the cache until the next
+boot), and the auto-login through the existing `BotMgr::SpawnBot` path all work end-to-end: a
+freshly created random bot ("Thusioth", random race, cloned from the Runemaster template) came
+up with its class-appropriate spells/gear self-repaired, logged in, picked its own target, and
+cast a real class spell cleanly (`result 255`) with zero manual intervention beyond the one
+`.botcmd spawnrandom` call.
+
+Two real things found and fixed while building this:
+1. `AccountMgr::CreateAccount` queues its INSERT on the login DB's async worker pool rather
+   than writing it synchronously -- `AccountMgr::GetId()` called immediately afterward can
+   still see nothing. Fixed with a short bounded retry (up to 20 x 25ms) rather than assuming
+   creation failed. Account auto-creation (one new "CoaBotHostN" account per batch of
+   `CharactersPerAccount`, currently 50) is what makes "any quantity" real -- account 2's own
+   pool was already down to 11 free slots before this feature existed.
+2. The `characters` table has ~80 columns and `guid` is a real (non-auto-increment) primary
+   key -- a plain `INSERT ... SELECT *` from an existing row always collides on it. The column
+   list is read live via `SHOW COLUMNS` (cached after first use) rather than hand-maintained,
+   so a future schema change can't silently desync it.
+
+Deliberately synchronous (blocks the calling/world thread per statement) -- fine for an admin
+spinning up a batch on a dev realm with nobody else online, but a batch in the hundreds will
+cause a visible tick hitch; not something to run casually with real players connected. Making
+it properly async (a queued worker + per-bot callback, the way `BotMgr::SpawnBot` already
+handles login) is future work if that becomes a real requirement. Only tested at count=3 so
+far -- the account-rotation logic (creating a second/third "CoaBotHostN" account once the
+first fills up) is code-reviewed but not yet exercised live at a scale that would actually
+trigger it.
