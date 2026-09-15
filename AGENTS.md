@@ -2050,3 +2050,61 @@ in successfully (`Characters in world: 100`), zero errors in `Errors.log`, and n
 impact (`Update time diff` stayed in the same 2-20ms range as idle). All 100 test characters
 and the three `CoaBotHost*` accounts were deleted afterward to leave the environment clean --
 this was purely a scale test, not meant to leave a permanent bot roster.
+
+## Battleground bot auto-fill (2026-09-15)
+
+`BotBattlegroundFill.h/.cpp` -- the moment anyone (real player or bot) joins a normal
+(non-arena, non-rated) Battleground queue, both factions' queues for that exact bracket are
+automatically topped off with bots up to the battleground's own real max-players-per-team
+(configurable via `CoaBots.BGFill.TargetPlayersPerTeam`, 0 = use the real max), so a match is
+always full on both sides and pops immediately instead of waiting on real population. Arenas
+and rated matches are explicitly out of scope for this pass -- team balance/MMR there is a
+different, more delicate problem than "always fill a normal BG."
+
+**How it hooks in, real engine calls only, no synthetic packets**: `PLAYERHOOK_ON_PLAYER_JOIN_BG`
+(a real `PlayerScript` hook, fires right after `HandleBattlemasterJoinOpcode`'s solo-join
+branch) is the trigger. Topping off a side means finding an online, idle bot of that faction
+(`BotMgr::GetOnlineBots()`, a new small public accessor) and replicating the exact same
+`BattlegroundQueue::AddGroup` + `Player::AddBattlegroundQueueId` sequence the real handler
+uses; if no idle bot of that faction is online, one is created on the fly
+(`BotSpawn::CreateOneRandomBot`, a new race-constrained sibling to `SpawnRandomBots` reusing
+the same cloning mechanism) and its queue-join deferred until its async login
+(`BotMgr::SpawnBot`) actually completes (polled per tick via the already-public
+`BotMgr::FindBotPlayer`). Once invited (`Player::IsInvitedForBattlegroundQueueType`, polled per
+tick), a bot is ported in by replicating `HandleBattleFieldPortOpcode`'s accept sequence almost
+line-for-line -- `SetEntryPoint`/resurrect-if-dead/`RemovePlayer` from the queue/
+`RemovePlayerAtLeave` from any current bg/`LeaveAllLfgQueues`/`SetBattlegroundId`/
+`BattlegroundMgr::SendToBattleground`, including the same rollback-on-teleport-failure the real
+handler does. A debug/testing entry point, `.botcmd joinbg <guid> <bgTypeId>`, drives a bot
+through the exact same real solo-join sequence (there's no other way to exercise this without a
+real client working a battlemaster NPC's gossip menu) -- it's what made this feature testable
+without a second human account.
+
+**Real engine quirk found and worked around**: `BattlegroundQueue::CheckNormalMatch` (read
+directly, not guessed) greedily stops selecting queued groups the instant each side reaches
+the bracket's real *minimum*, not maximum -- confirmed live the hard way: creating enough bots
+up front for a full 10v10 WSG match still only popped a 5v5 first, stranding the other 10
+bots in the queue indefinitely, since normal (non-arena) BG queues have no periodic
+self-re-check of their own, only whatever explicit `ScheduleQueueUpdate` calls a real join
+already makes. Fixed with a small periodic nudge (`NudgeStalledQueues`, every 3s for as long as
+anything is still queued-but-uninvited) that re-calls `ScheduleQueueUpdate` for every distinct
+(queue type, bg type, bracket) still being watched -- this doesn't reimplement any matching
+logic itself, just keeps giving the engine's own `BattlegroundQueueUpdate` another chance to
+form a follow-up match from the stragglers. **Confirmed live after the fix**: one bot manually
+joining a WSG queue (`.botcmd joinbg`) auto-created and topped off both sides to a full,
+correctly-split 10 Alliance / 10 Horde, all 20 successfully invited and ported into the same
+battleground instance, zero errors. Before the fix, the same test reproducibly stalled at
+exactly half-filled (5v5 ported, 5v5 permanently stuck in queue).
+
+## TODO backlog
+
+- **Autonomous zone-to-zone travel**: an idle-solo bot (`TryStartQuesting`/`TryGrindWhenSolo`,
+  `BotAI.cpp`) only ever looks 20-40 yards from its current position (`QUEST_SEARCH_RADIUS`,
+  `GRIND_SEARCH_RADIUS`, `GRIND_LEASH_RADIUS`) and never leaves once anchored there -- when a
+  zone's nearby quests/mobs run dry, the bot just keeps grinding the same spot forever instead
+  of moving to a new leveling zone appropriate for its level/faction ("живое поведение" the
+  user asked for: quest a zone out, then go quest somewhere else on its own, the way a real
+  leveling player would). A real mount is already guaranteed per bot
+  (`EnsureBotHasMount`/`TryMaintainProgression`) specifically as a prerequisite for this, but
+  actually riding it for travel isn't wired to anything yet. Explicitly deferred by the user
+  (2026-09-15) in favor of Battleground/LFG bot auto-fill -- pick this up next once those land.

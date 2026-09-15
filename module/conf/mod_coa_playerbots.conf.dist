@@ -23,3 +23,12 @@ CoaBots.RandomSpawn.AutoLogin = 1
 # player's own account) or account 2 if it's the hand-made test-character account -- new
 # accounts are always created fresh under this prefix.
 CoaBots.RandomSpawn.AccountPrefix = "CoaBotHost"
+
+# When enabled, the moment anyone (real player or bot) joins a normal (non-arena, non-rated)
+# Battleground queue, both factions' queues for that bracket are automatically topped off with
+# bots so the match is always full and pops immediately.
+CoaBots.BGFill.Enable = 1
+
+# How many bots per team to top a queue off to. 0 = use the battleground's own real
+# max-players-per-team (a genuinely full match); lower it to test with a smaller population.
+CoaBots.BGFill.TargetPlayersPerTeam = 0

@@ -1,4 +1,5 @@
 #include "BotAI.h"
+#include "BotBattlegroundFill.h"
 #include "BotMgr.h"
 #include "BotSpawnRandom.h"
 #include "Chat.h"
@@ -38,7 +39,8 @@ public:
             { "stopattack",   HandleBotStopAttackCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "kill",         HandleBotKillCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "suspend",      HandleBotSuspendCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
-            { "resume",       HandleBotResumeCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
+            { "resume",       HandleBotResumeCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
         static ChatCommandTable commandTable =
@@ -62,6 +64,23 @@ public:
     static bool HandleBotSpawnRandomCommand(ChatHandler* handler, Optional<uint32> count)
     {
         BotSpawn::SpawnRandomBots(count.value_or(0), handler);
+        return true;
+    }
+
+    // Debug/testing entry point: makes an online bot solo-join a real Battleground queue
+    // (see BotBattlegroundFill.h) -- there's no other way to exercise that path or the
+    // BotBattlegroundFill auto-fill hook it triggers without a real client driving a
+    // battlemaster NPC's gossip menu.
+    static bool HandleBotJoinBGCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, uint32 bgTypeId)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        BotBGFill::JoinBotToBattlegroundQueue(bot, bgTypeId, handler);
         return true;
     }
 

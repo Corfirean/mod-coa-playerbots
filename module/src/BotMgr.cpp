@@ -256,6 +256,16 @@ Player* BotMgr::FindBotPlayer(ObjectGuid::LowType charLowGuid) const
     return session ? session->GetPlayer() : nullptr;
 }
 
+std::vector<Player*> BotMgr::GetOnlineBots() const
+{
+    std::vector<Player*> bots;
+    bots.reserve(_botSessions.size());
+    for (WorldSession* session : _botSessions)
+        if (Player* bot = session->GetPlayer())
+            bots.push_back(bot);
+    return bots;
+}
+
 void BotMgr::TryFollowLeaderAcrossMaps(WorldSession* session)
 {
     Player* bot = session->GetPlayer();

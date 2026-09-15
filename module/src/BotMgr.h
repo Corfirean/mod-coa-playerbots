@@ -124,6 +124,12 @@ public:
     // Returns nullptr for anything not currently in _botSessions with a live Player.
     Player* FindBotPlayer(ObjectGuid::LowType charLowGuid) const;
 
+    // All currently-online bots with a live Player (skips a session mid-login with no Player
+    // yet). For callers that need to pick one out of the whole roster rather than look up one
+    // specific guid -- e.g. BotBattlegroundFill.cpp finding an idle bot of a given faction to
+    // queue, without needing BotMgr to track a separate faction-indexed roster of its own.
+    std::vector<Player*> GetOnlineBots() const;
+
     // Called every world tick via a WorldScript hook. Auto-accepts any
     // pending group invite and auto-rolls Greed on any pending loot roll for
     // every active bot (both checked every tick, not throttled — a human

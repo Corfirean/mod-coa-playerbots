@@ -350,4 +350,47 @@ void SpawnRandomBots(uint32 requestedCount, ChatHandler* handler)
               "(see Server.log for the guids just created).",
             created, count);
 }
+
+ObjectGuid::LowType CreateOneRandomBot(uint8 race, ChatHandler* handler)
+{
+    std::unordered_map<uint8, uint32> templateRoster = BuildClassTemplateRoster();
+    if (templateRoster.empty())
+    {
+        if (handler)
+            handler->PSendSysMessage(
+                "BotMgr: no usable template characters found (need at least one level 80+ character "
+                "per class, not on account 1).");
+        return 0;
+    }
+    if (CharacterColumns().empty())
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: could not read the characters table schema, aborting.");
+        return 0;
+    }
+
+    std::vector<uint8> availableClasses;
+    availableClasses.reserve(templateRoster.size());
+    for (auto const& [classId, guid] : templateRoster)
+        availableClasses.push_back(classId);
+
+    std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+    uint32 charactersPerAccount = sWorld->getIntConfig(CONFIG_CHARACTERS_PER_ACCOUNT);
+    uint32 accountId = FindOrCreateBotAccount(accountPrefix, charactersPerAccount, handler);
+    if (!accountId)
+        return 0;
+
+    uint8 classId = availableClasses[RandomInt(0, availableClasses.size() - 1)];
+    uint32 templateGuid = templateRoster[classId];
+    uint8 gender = uint8(RandomInt(0, 1));
+    std::string name = GenerateUniqueName();
+
+    ObjectGuid::LowType newGuid = CloneCharacter(templateGuid, accountId, name, race, gender);
+    sCharacterCache->AddCharacterCacheEntry(ObjectGuid::Create<HighGuid::Player>(newGuid), accountId,
+        name, gender, race, classId, 80);
+
+    LOG_INFO("module.coa-playerbots", "BotMgr: created random bot '{}' (guid {}, class {}, race {}, account {}).",
+        name, newGuid, classId, race, accountId);
+    return newGuid;
+}
 }
