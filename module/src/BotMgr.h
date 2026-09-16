@@ -17,6 +17,7 @@
 #include "ObjectGuid.h"
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class ChatHandler;
@@ -177,6 +178,18 @@ public:
     // docs/addon-protocol.md's QUICKFILL verb.
     void QuickFillGroup(Player* commander, ChatHandler* handler);
 
+    // Toggles autonomous dungeon/raid play for `leader`'s whole group: while enabled, a Tank
+    // bot idle inside an instance (no target, leader not already fighting) scans for the
+    // nearest hostile pack and pulls it on its own -- see BotAI.cpp's TryAutoPullInInstance
+    // for why this deliberately does not attempt to encode per-dungeon boss order or mechanics
+    // (relies on the instance's own real gating -- locked doors/gameobjects that only open
+    // after a prerequisite boss dies -- the same way a human group is naturally kept in the
+    // intended order without needing to be told it explicitly). Keyed by leader guid so it
+    // covers the group as a whole regardless of which bot is currently idle; persists across
+    // a wipe/regroup until explicitly turned off.
+    void SetAutoDungeonMode(ObjectGuid leaderGuid, bool enabled);
+    bool IsAutoDungeonModeEnabled(ObjectGuid leaderGuid) const;
+
     // Public counterpart to the private FindBotSession, for callers (BotAddonChat.cpp) that
     // need to confirm a guid is really one of our tracked bots and get its Player* -- e.g. to
     // reject an addon-message command referencing a guid that isn't actually a bot session.
@@ -317,6 +330,7 @@ private:
     std::vector<WorldSession*> _botSessions;
     std::vector<WorldSession*> _pendingTeleportAck;
     uint32 _heartbeatTimer = 0;
+    std::unordered_set<ObjectGuid> _autoDungeonLeaders;
 };
 
 #define sBotMgr BotMgr::instance()

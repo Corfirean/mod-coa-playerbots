@@ -34,6 +34,7 @@ local dbDefaults = {
     debug = true,
     testMode = false,
     roles = {}, -- [botGuidLow] = "tank"
+    autoDungeon = false,
 }
 
 -- Forward declarations
@@ -45,6 +46,7 @@ local ApplyRoleAvailability
 local ShowGuildTaskBoard
 local RefreshTaskBoard
 local UpdateRoleButtonText
+local autoDungeonSynced = false
 
 -- Register prefix for client engines that support it
 if RegisterAddonMessagePrefix then
@@ -716,6 +718,33 @@ local function CreateMainFrame()
         ShowGuildTaskBoard()
     end)
 
+    -- Auto Dungeon Mode: while on, a grouped Tank bot pulls the nearest pack on its own inside
+    -- a dungeon/raid instead of waiting for the player to engage first (see BotMgr::
+    -- SetAutoDungeonMode / the AUTODUNGEON verb in docs/addon-protocol.md). Persisted in
+    -- CoABotUIDB so it survives a relog, but the *server*-side state is what actually matters
+    -- (re-sent here on login -- see the ADDON_LOADED handler) since the server has no memory of
+    -- a client-only setting across a restart of its own.
+    local btnAutoDungeon = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
+    btnAutoDungeon:SetSize(130, 20)
+    btnAutoDungeon:SetPoint("LEFT", btnGuildTasks, "RIGHT", 6, 0)
+    local function RefreshAutoDungeonButton()
+        if CoABotUIDB.autoDungeon then
+            btnAutoDungeon:SetText("|cFF44FF44Auto Dungeon: ON|r")
+        else
+            btnAutoDungeon:SetText("Auto Dungeon: OFF")
+        end
+    end
+    btnAutoDungeon:SetScript("OnClick", function()
+        CoABotUIDB.autoDungeon = not CoABotUIDB.autoDungeon
+        SendRawBody("AUTODUNGEON:" .. (CoABotUIDB.autoDungeon and "1" or "0"))
+        Log(CoABotUIDB.autoDungeon
+            and "Auto Dungeon Mode enabled -- your Tank bot will pull on its own inside instances."
+            or "Auto Dungeon Mode disabled.")
+        RefreshAutoDungeonButton()
+    end)
+    RefreshAutoDungeonButton()
+    frame.RefreshAutoDungeonButton = RefreshAutoDungeonButton
+
     frame.utilityBar = utilityBar
 
     -- Target Status Bar (Footer)
@@ -1031,6 +1060,16 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
     elseif event == "PARTY_MEMBERS_CHANGED" or event == "RAID_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
         if mainFrame and mainFrame:IsShown() and not CoABotUIDB.isCollapsed then
             RefreshUI()
+        end
+
+        -- The server has no memory of this client-only setting across its own restart --
+        -- re-sync once per login/reload (not every zone transition) so a saved "ON" from a
+        -- previous session actually takes effect server-side again instead of just looking on.
+        if event == "PLAYER_ENTERING_WORLD" and not autoDungeonSynced then
+            autoDungeonSynced = true
+            if CoABotUIDB.autoDungeon then
+                SendRawBody("AUTODUNGEON:1")
+            end
         end
 
     elseif event == "PLAYER_TARGET_CHANGED" then

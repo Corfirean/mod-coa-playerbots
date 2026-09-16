@@ -123,6 +123,11 @@ namespace BotAI
     // same slots.
     float ComputeFollowAngle(Player* bot);
 
+    // Companion to ComputeFollowAngle -- a small, stable per-bot distance jitter around
+    // BOT_FOLLOW_DIST so the whole formation doesn't read as a perfect circle either. Shared
+    // for the same reason ComputeFollowAngle is (both MoveFollow call sites should agree).
+    float ComputeFollowDistance(Player* bot);
+
     // Deliberately wider than the engine's own PET_FOLLOW_DIST (2.0yd, PetDefines.h) -- that
     // constant is tuned for a single pet standing next to its owner, not several bots spread
     // around a leader in a circle. At 2yd, adjacent 45-degree follow slots (see

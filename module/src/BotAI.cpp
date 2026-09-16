@@ -61,6 +61,7 @@
 #include "PetDefines.h"
 #include "PetitionMgr.h"
 #include "Player.h"
+#include "PlayerScript.h"
 #include "QuestDef.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
@@ -408,6 +409,11 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
     if (!leaderFlying)
     {
         uint32 racialSpellId = RacialGroundMountSpellFor(bot->getRace());
+        LOG_INFO("module.coa-playerbots",
+            "BotAI: bot '{}' (race {}) racial mount diagnostic: racialSpellId={} hasSpell={} blacklisted={}.",
+            bot->GetName(), uint32(bot->getRace()), racialSpellId,
+            racialSpellId ? bot->HasSpell(racialSpellId) : false,
+            racialSpellId ? state.knownBadMountSpells.count(racialSpellId) > 0 : false);
         if (racialSpellId && bot->HasSpell(racialSpellId) && !state.knownBadMountSpells.count(racialSpellId))
             spellId = racialSpellId;
     }
@@ -639,15 +645,37 @@ void TryMaintainEquipment(Player* bot)
     }
 }
 
+// Confirmed live -- explicit user pushback on the original design: auto-signing the moment a
+// bot is merely in the leader's group meant *every* bot that ever joins the party ends up
+// bound to the leader's guild, with no way to bring a bot along without also committing it to
+// membership. A real second player has to be individually asked ("Request Signature") before
+// their client even offers them the choice; a bot should need the exact same explicit ask, not
+// group membership alone. Requires one small core hook (PLAYERHOOK_ON_PETITION_OFFERED, fired
+// from WorldSession::HandleOfferPetitionOpcode -- the real "Request Signature" action) since
+// nothing else exposes "this specific player was just asked" as a signal a module can react to.
+std::unordered_map<ObjectGuid, std::unordered_set<ObjectGuid>> requestedPetitionSignatures;
+
+class coa_bot_petition_offer_script : public PlayerScript
+{
+public:
+    coa_bot_petition_offer_script() : PlayerScript("coa_bot_petition_offer_script", { PLAYERHOOK_ON_PETITION_OFFERED }) { }
+
+    void OnPetitionOffered(Player* player, ObjectGuid petitionGuid) override
+    {
+        if (sBotMgr->FindBotPlayer(player->GetGUID().GetCounter()))
+            requestedPetitionSignatures[petitionGuid].insert(player->GetGUID());
+    }
+};
+
 // Lets a solo player -- whose only "friends" available to sign a guild charter are their own
 // bots -- actually found a guild through the normal charter/petition flow instead of being
-// stuck with zero real players to ask. No new opcode or core hook needed: PetitionMgr already
-// exposes everything read-only (GetPetitionByOwnerWithType, GetSignature), and signing is the
-// same "build a minimal real packet, call the real handler" trick as everything else in this
-// module (WorldSession::HandlePetitionSignOpcode does the actual DB insert + PetitionMgr
-// bookkeeping). Every bot in the leader's group signs independently and automatically the
-// first time it notices an active charter -- no need for the owner to "Request Signature" on
-// each one individually first, unlike a real second player would have to be asked.
+// stuck with zero real players to ask. No new opcode needed for the sign itself: PetitionMgr
+// already exposes everything read-only (GetPetitionByOwnerWithType, GetSignature), and signing
+// is the same "build a minimal real packet, call the real handler" trick as everything else in
+// this module (WorldSession::HandlePetitionSignOpcode does the actual DB insert + PetitionMgr
+// bookkeeping). Only signs once the leader has actually clicked "Request Signature" on this
+// specific bot (see coa_bot_petition_offer_script above) -- not merely because the bot is in
+// the leader's group.
 void TryAutoSignLeaderPetition(Player* bot)
 {
     Group* group = bot->GetGroup();
@@ -661,6 +689,10 @@ void TryAutoSignLeaderPetition(Player* bot)
     Petition const* petition = sPetitionMgr->GetPetitionByOwnerWithType(leader->GetGUID(), GUILD_CHARTER_TYPE);
     if (!petition)
         return;
+
+    auto requestedItr = requestedPetitionSignatures.find(petition->petitionGuid);
+    if (requestedItr == requestedPetitionSignatures.end() || !requestedItr->second.count(bot->GetGUID()))
+        return; // leader hasn't asked this specific bot to sign yet
 
     if (Signatures const* signatures = sPetitionMgr->GetSignature(petition->petitionGuid))
         if (signatures->signatureMap.count(bot->GetGUID()))
@@ -1217,28 +1249,40 @@ private:
     std::unordered_set<uint32> const* _requiredEntries;
 };
 
-// Real "open, take everything, release" loot flow for a bot's own solo kill -- same
-// "synthesize the packet, call the real handler" pattern already used elsewhere in this module
-// (group-accept, corpse-reclaim, loot-roll). Without this, a solo bot's kills (from
-// TryGrindWhenSolo or anything else) would die and just sit there unlooted forever, since
-// nothing else in this module ever opens a loot window at all.
+// Real "open, take everything, release" loot flow for a bot's own kill -- same "synthesize the
+// packet, call the real handler" pattern already used elsewhere in this module (group-accept,
+// corpse-reclaim, loot-roll). Without this, a bot's kills (from TryGrindWhenSolo or otherwise)
+// would die and just sit there unlooted forever, since nothing else in this module ever opens a
+// loot window at all.
 //
-// Deliberately solo-only: a grouped kill's loot follows the group's loot method (round-robin,
-// master loot, need/greed) -- BotMgr::DoRollGreed already handles the one piece of that this
-// module deals with (rare-item rolls); normal group kill loot is a separate, unimplemented
-// question this doesn't attempt to answer.
+// Confirmed live -- user pushback on the original solo-only design: a grouped bot never looted
+// anything at all, which just meant loot sat there forever instead. Extended to grouped kills
+// too, checking the group-level recipient (GetLootRecipientGroup()) instead of requiring an
+// exact bot-guid match when grouped. This deliberately does NOT try to reimplement round-robin/
+// master-loot/need-greed fairness itself -- HandleAutostoreLootItemOpcode is the real handler a
+// client's own loot window uses, and it already enforces the group's actual loot method
+// (declining to store a slot that isn't this bot's turn/role, exactly like a real client would
+// see an empty or restricted loot window), so calling it for every slot is safe regardless of
+// method: a slot the bot isn't entitled to simply won't be granted. BotMgr::DoRollGreed already
+// separately handles the need/greed roll prompt itself for reserved-quality items.
 void TryAutoLootDeadTarget(Player* bot, BotAIState& state)
 {
     ObjectGuid targetGuid = state.lastCombatTargetGuid;
     state.lastCombatTargetGuid = ObjectGuid::Empty; // one-shot regardless of outcome below
 
-    if (targetGuid.IsEmpty() || bot->GetGroup())
+    if (targetGuid.IsEmpty())
         return;
 
     Creature* creature = ObjectAccessor::GetCreature(*bot, targetGuid);
     if (!creature || creature->IsAlive() || !creature->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
         return;
-    if (creature->loot.isLooted() || creature->GetLootRecipientGUID() != bot->GetGUID())
+    if (creature->loot.isLooted())
+        return;
+
+    bool isRecipient = creature->GetLootRecipientGUID() == bot->GetGUID();
+    if (!isRecipient && bot->GetGroup())
+        isRecipient = creature->GetLootRecipientGroup() == bot->GetGroup();
+    if (!isRecipient)
         return;
 
     WorldPacket openPacket;
@@ -1327,6 +1371,51 @@ void TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
         Acore::UnitLastSearcher<GrindHostileUnitCheck> searcher(bot, target, check);
         Cell::VisitObjects(bot, searcher, GRIND_SEARCH_RADIUS);
     }
+
+    if (target)
+        bot->Attack(target, true);
+}
+
+// Opt-in "Auto Dungeon Mode" (BotMgr::SetAutoDungeonMode, toggled via the addon's AUTODUNGEON
+// verb) lets a Tank bot run point through an instance on its own -- scans for the nearest
+// hostile pack when idle and pulls it, instead of waiting for the real player to engage first.
+//
+// Deliberately does NOT attempt to encode per-dungeon boss order, phase gating, or encounter
+// mechanics (interrupts, avoid-the-fire, positioning, hard enrage timers) -- that's a
+// fundamentally different, much bigger research project scoped per instance, not something to
+// bite off alongside a general-purpose combat AI. Instead this leans entirely on the real
+// gating already built into virtually every AzerothCore dungeon/raid script: a locked door or
+// gameobject that only opens once a prerequisite boss dies, a room that resets to full health
+// if pulled before an earlier trigger fires, a boss that simply isn't reachable until the path
+// there is cleared. That's the same mechanism that keeps a real, uncoordinated pug roughly on
+// the intended path without anyone reciting the "correct" order out loud -- a bot that just
+// walks toward and engages whatever's nearest and currently reachable will, in practice, hit
+// most content in playable order almost everywhere, because skipping ahead is usually
+// physically blocked by the instance itself, not by player judgment.
+void TryAutoPullInInstance(Player* bot)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return;
+
+    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    if (!leader || leader->IsInCombat())
+        return; // already fighting something -- let normal target-inheritance handle it
+
+    Map* map = bot->GetMap();
+    if (!map || (!map->IsDungeon() && !map->IsRaid()))
+        return;
+
+    if (!sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID()))
+        return;
+
+    // No level cap here (unlike GrindHostileUnitCheck's normal solo-grind use) -- a dungeon's
+    // own population is already the level range the group is meant to be fighting, not
+    // something this needs to second-guess.
+    Unit* target = nullptr;
+    GrindHostileUnitCheck check(bot, GRIND_SEARCH_RADIUS, 255);
+    Acore::UnitLastSearcher<GrindHostileUnitCheck> searcher(bot, target, check);
+    Cell::VisitObjects(bot, searcher, GRIND_SEARCH_RADIUS);
 
     if (target)
         bot->Attack(target, true);
@@ -2010,7 +2099,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState const& state)
     }
 
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
-        bot->GetMotionMaster()->MoveFollow(leader, BotAI::BOT_FOLLOW_DIST, BotAI::ComputeFollowAngle(bot));
+        bot->GetMotionMaster()->MoveFollow(leader, BotAI::ComputeFollowDistance(bot), BotAI::ComputeFollowAngle(bot));
 }
 
 // Lowest-health-percent group member (bot included), below a "worth healing" threshold --
@@ -2162,6 +2251,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
                 else if (!TryStartQuesting(bot, diff, state) && !TryStartGathering(bot, diff, state) && !TryStartFishing(bot, diff, state))
                     TryGrindWhenSolo(bot, diff, state);
             }
+            else if (role == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
+                TryAutoPullInInstance(bot);
         }
         return;
     }
@@ -2350,16 +2441,46 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
         return;
     }
 
-    float distance = bot->GetDistance(healTarget);
-    if (distance > HEAL_ENGAGE_RANGE)
+    // Confirmed live: this used to position purely relative to the ally being healed --
+    // approach until within HEAL_ENGAGE_RANGE, otherwise hold. That has no concept of "the
+    // enemy is dangerous," so a healer walking up to a tank standing in melee with a boss
+    // just walked itself into the boss's own melee range too, and stood there getting hit in
+    // the face for the rest of the fight. A real healer's first priority is staying out of
+    // danger; healing from max range is normal and expected, not a compromise. Reuses the
+    // exact same ChaseRange kiting band UpdateOffensive already uses for ranged DPS, just
+    // anchored on the group's current combat threat instead of the ally -- naturally keeps
+    // the healer at a safe standoff distance while still close enough to the fight (the
+    // threat and the allies fighting it are normally near each other) to heal most targets.
+    // Only falls back to chasing the ally directly when no hostile threat is identifiable at
+    // all (e.g. topping someone off between pulls, or healing a target that's run off alone).
+    Unit* threat = nullptr;
+    if (Group* group = bot->GetGroup())
+        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+            if (leader != bot && leader->IsInCombat())
+                threat = leader->GetVictim();
+    if (!threat && healTarget->IsInCombat())
+        threat = healTarget->GetVictim();
+
+    if (threat && threat->IsAlive() && bot->IsValidAttackTarget(threat))
+    {
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+            bot->GetMotionMaster()->MoveChase(threat, ChaseRange(RANGED_ENGAGE_DISTANCE * 0.7f, RANGED_ENGAGE_DISTANCE));
+    }
+    else if (bot->GetDistance(healTarget) > HEAL_ENGAGE_RANGE)
     {
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
             bot->GetMotionMaster()->MoveChase(healTarget, HEAL_ENGAGE_RANGE - 5.0f);
         return;
     }
-
-    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+    else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
         bot->GetMotionMaster()->Clear();
+
+    // The heal cast itself always targets the ally, regardless of which anchor positioning
+    // used above -- being out of heal range of healTarget after prioritizing safety from the
+    // threat is the correct, honest outcome of that tradeoff (matches a real healer choosing
+    // not to facetank a boss just to keep someone topped off), not a bug to paper over here.
+    if (bot->GetDistance(healTarget) > HEAL_ENGAGE_RANGE)
+        return;
 
     if (state.nextCastAllowedMs > diff)
     {
@@ -2489,6 +2610,11 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
     if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
         sBotMgr->QueueTeleportAck(bot->GetSession());
 }
+}
+
+void AddSC_coa_bot_petition_script()
+{
+    new coa_bot_petition_offer_script();
 }
 
 namespace BotAI
@@ -2723,6 +2849,23 @@ float ComputeFollowAngle(Player* bot)
             break;
         ++slot;
     }
-    return (slot % SLOT_COUNT) * SLOT_SIZE;
+
+    // Confirmed live -- explicit user feedback: even with distinct slots, followers spaced at
+    // perfectly even angles read as "moving in a grid" / robotic, not like real players. A
+    // small, stable per-bot angular offset (seeded off guid, not re-rolled every tick --
+    // matches Playerbots' own ChaosFormation idea of a persistent per-bot jitter rather than a
+    // one-off random pick that would fight with a fresh slot on every regroup) breaks the exact
+    // symmetry without bots visibly drifting or swapping places relative to each other.
+    float jitter = (float(bot->GetGUID().GetCounter() % 21) - 10.0f) * (static_cast<float>(M_PI) / 180.0f);
+    return (slot % SLOT_COUNT) * SLOT_SIZE + jitter;
+}
+
+// Companion to ComputeFollowAngle's angular jitter -- same reasoning, same "stable per bot, not
+// re-rolled" seeding, this time varying how far out each bot stands so the whole formation
+// doesn't read as a perfect circle either.
+float ComputeFollowDistance(Player* bot)
+{
+    float jitter = (float(bot->GetGUID().GetCounter() % 15) - 7.0f) * 0.15f; // +/- ~1yd
+    return BOT_FOLLOW_DIST + jitter;
 }
 }

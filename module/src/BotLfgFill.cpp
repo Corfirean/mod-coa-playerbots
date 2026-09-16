@@ -278,6 +278,18 @@ void ProcessGroupRoleChecks()
         if (!bot->GetGroup())
             continue;
 
+        // Confirmed live: "only 2 of 4 bots ported into the dungeon" despite every single one
+        // logging a successful UpdateProposal accept above -- LFGMgr::MakeNewGroup only actually
+        // teleports everyone once the *last* member accepts, which means it calls TeleportTo()
+        // on bots whose own UpdateProposal call already finished earlier, from *someone else's*
+        // call stack. Same "a bot's null-socket session never sends the ack a real client would"
+        // gap already fixed for DoAcceptInvite/TryFollowLeaderAcrossMaps/RepopAtGraveyard --
+        // just one more internal-engine TeleportTo() this module hadn't caught yet. Checking
+        // every online bot unconditionally here (not just the one whose accept call just ran)
+        // is what catches a bot that got swept into someone else's group-completing accept.
+        if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
+            sBotMgr->QueueTeleportAck(bot->GetSession());
+
         ObjectGuid::LowType lowGuid = bot->GetGUID().GetCounter();
         lfg::LfgState state = sLFGMgr->GetState(bot->GetGUID());
 

@@ -96,6 +96,17 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         return;
     }
 
+    // AUTODUNGEON also acts on the commander's whole group, not one bot -- the second colon-part
+    // carries the actual on/off value (1 or 0) instead of the usual "0" placeholder, since this
+    // verb needs it. See BotMgr::SetAutoDungeonMode for what this actually changes.
+    if (verb == "AUTODUNGEON" && parts.size() >= 2)
+    {
+        bool enabled = parts[1] == "1";
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> AUTODUNGEON {}.", commander->GetName(), enabled ? "on" : "off");
+        sBotMgr->SetAutoDungeonMode(commander->GetGUID(), enabled);
+        return;
+    }
+
     // CRAFTORDER also doesn't target one specific bot -- the requester is always the sender
     // (commander), and BotMgr::CraftOrder itself finds the guild-mate bot to craft it. Reuses
     // the second colon-part for itemEntry instead of a bot guid.

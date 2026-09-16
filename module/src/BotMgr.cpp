@@ -391,7 +391,7 @@ void BotMgr::FinishPendingTeleport(WorldSession* session)
         if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
         {
             if (leader != bot)
-                bot->GetMotionMaster()->MoveFollow(leader, BotAI::BOT_FOLLOW_DIST, BotAI::ComputeFollowAngle(bot));
+                bot->GetMotionMaster()->MoveFollow(leader, BotAI::ComputeFollowDistance(bot), BotAI::ComputeFollowAngle(bot));
         }
     }
 }
@@ -1689,6 +1689,19 @@ void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
         else
             handler->PSendSysMessage("BotMgr: quick-fill invited {} bot(s).", uint32(selected.size()));
     }
+}
+
+void BotMgr::SetAutoDungeonMode(ObjectGuid leaderGuid, bool enabled)
+{
+    if (enabled)
+        _autoDungeonLeaders.insert(leaderGuid);
+    else
+        _autoDungeonLeaders.erase(leaderGuid);
+}
+
+bool BotMgr::IsAutoDungeonModeEnabled(ObjectGuid leaderGuid) const
+{
+    return _autoDungeonLeaders.count(leaderGuid) != 0;
 }
 
 void BotMgr::DoRollGreed(WorldSession* session, Roll* roll)

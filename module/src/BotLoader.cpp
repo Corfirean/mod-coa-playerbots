@@ -7,6 +7,7 @@ void AddSC_coa_playerbots_worldscript();
 void AddSC_coa_bot_addon_chat_script();
 void AddSC_coa_bot_bg_fill_script();
 void AddSC_coa_bot_lfg_fill_script();
+void AddSC_coa_bot_petition_script();
 
 // cf. the naming convention https://github.com/azerothcore/azerothcore-wotlk/blob/master/doc/changelog/master.md#how-to-upgrade-4
 // module folder name is mod-coa-playerbots, '-' replaced with '_'
@@ -17,4 +18,5 @@ void Addmod_coa_playerbotsScripts()
     AddSC_coa_bot_addon_chat_script();
     AddSC_coa_bot_bg_fill_script();
     AddSC_coa_bot_lfg_fill_script();
+    AddSC_coa_bot_petition_script();
 }
