@@ -2611,3 +2611,70 @@ session's uncommitted working-tree changes (`BotAI.cpp/.h`, `BotMgr.cpp/.h`,
 `BotAddonChat.cpp`, `CoABotUI.lua`, plus the core `CombatManager.cpp` change) to git; report
 the full status of all 10 items back to the user (nothing here had been communicated back to
 them yet as of this entry).
+
+## 2026-09-16: Synced core checkout with the upstream devs' repo again, resolved real conflicts this time
+
+Same recurring prompt as the 2026-09-14 and 2026-09-15 syncs. `git fetch` showed our local
+`main` (already 10 commits ahead from the 09-15 sync) now 19 commits behind a moved
+`origin/main`, mostly ability/crash fixes across custom classes plus continued work on the
+`coa-gameplay-test` scenario framework.
+
+**One upstream commit directly superseded one of our own uncommitted local core patches**:
+`fix(Core): Honor AllowRemoteClients for spell mods (#261)` reimplements exactly the
+`AllowRemoteClients`-for-spell-modifiers fix this project already had sitting uncommitted in
+`Player.cpp`/`CharacterHandler.cpp`, but properly -- a single `WorldSession::IsAscensionCompatEnabled()`
+decided once in `WorldSocket.cpp` per connection, instead of a per-call config lookup repeated on
+every spell modifier update, and it also covers `HandleCharCreateOpcode`'s class-10 mapping check
+(which our version never touched). Discarded our local patch for those two files entirely rather
+than trying to merge two implementations of the same fix -- confirmed line-by-line first that our
+diff touched nothing else in either file before deciding this was safe.
+
+**Real, substantive merge conflicts this time** (unlike the clean 09-15 sync) -- 4 files, 11
+conflict blocks, all inside the `coa-gameplay-test` fixture framework
+(`apps/coa-gameplay-test/{README.md,run.py,test_runner.py}`,
+`modules/mod-ascension-compat/src/CoAGameplayTest.cpp`). Root cause: our local history's own
+09-15 merge had already pulled in an *earlier* snapshot of this same framework's ongoing
+upstream development, and origin kept extending it independently in the meantime (new metrics
+`charm_entry`/`charm_aura_stacks`/`controls_self`/`private_instance`/`dynamic_object`/
+`spell_crit_rating`/etc., a `destination` field for ground-targeted casts, `cast_charm` support
+casting as the player's charmed unit instead of the player, and an optional `spell`/`caster`
+filter on `owned_creature_count`). Every single conflict resolved by taking origin/main's side:
+in the Python validator/doc files this was a straightforward "both sides extended the same list,
+origin's is now a strict superset" call; in the one real C++ logic conflict (the `cast`/
+`cast_charm`/`use_item` action handler), origin's version was the only one that actually
+implements `destination` and per-caster charm-targeting, both of which the *already-merged*
+(non-conflicting) validator changes newly require -- keeping HEAD's simpler version there would
+have left a validated-but-silently-ignored scenario field. Confirmed clean afterward: both
+touched Python files still parse (`ast.parse`), and the full worldserver rebuild (below) compiled
+the merged C++ with zero errors.
+
+Same stash-before-merge, pop-after-merge routine as 09-15 for the three patches that DID
+survive: `CombatManager.cpp` (this session's own crash-recovery fix, above -- confirmed still
+applies cleanly, upstream hadn't touched this file), `LFGMgr::GetProposalIdForPlayer`,
+`friend class BotMgr` on `Guild.h`. All three popped with zero conflicts.
+
+**This merge added new source files** (`AscensionBankVoucher.cpp`, `AscensionResourceTalents.cpp`,
+`AscensionClassTester.cpp/.h`, `AscensionMechanicCorrections.cpp/.h`, plus a `height_query` tool)
+-- same as 09-15, needed a bare `cmake .` reconfigure inside `build/` (reusing every cached
+setting, including the `MYSQL_LIBRARY`/`/FORCE:MULTIPLE` overrides from this project's own build
+notes above) before `ninja worldserver` would even see them, not just a rebuild. Full clean
+build, 1123/1123 objects, zero errors.
+
+**Seven new pending `acore_world` DB migrations** landed with this merge (`Updates.EnableDatabases
+= 0` in this deployment, so nothing auto-applies -- same manual-step requirement as every
+previous sync): a Satchel/Cache quest-reward-container extension, a legacy class-quest-reward
+script suppression for custom classes, Venomancer venom-proc and Intoxicating Mycosis script
+rebinds, a Witch Doctor ward-buff-target flag, class-training-book NPC wiring, and a
+resource-talent script rebind. All confirmed idempotent (`DELETE`-then-`INSERT` on
+`spell_script_names`, or bitwise-OR flag updates) before applying directly via `mysql` --
+applied cleanly, no errors. Deliberately did **not** attempt to replay the much larger backlog of
+older pending-migration files already sitting in `pending_db_world` from way back (Aug 31
+onward) -- `Updates.EnableDatabases = 0` means the filesystem alone can't say which of those were
+already hand-applied in some earlier session vs. never needed, and blindly re-running the whole
+history risks errors on any non-idempotent one; only the migrations newly introduced *by this
+specific merge* were in scope.
+
+Rebuilt, redeployed (0 players connected at the time, confirmed via RA first), confirmed a clean
+boot (both `mod-ascension-compat` and `mod-coa-playerbots` load-confirmed in the log, zero new
+errors beyond the same pre-existing benign "did not match dbc effect data" boot-time noise every
+boot already has) and a live `.botcmd spawnbot`/`checkrole` round-trip before handing back.
