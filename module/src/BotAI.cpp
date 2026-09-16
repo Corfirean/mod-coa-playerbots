@@ -45,6 +45,7 @@
 #include "Corpse.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "DatabaseEnv.h"
 #include "DBCStructure.h"
 #include "GameObject.h"
 #include "GridNotifiers.h"
@@ -672,6 +673,31 @@ void TryAutoSignLeaderPetition(Player* bot)
     if (actuallySigned)
     {
         LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' signed '{}'s guild charter for '{}'.",
+            bot->GetName(), leader->GetName(), petition->petitionName);
+        return;
+    }
+
+    // Confirmed by design, not a bug: HandlePetitionSignOpcode's one-signature-per-account rule
+    // exists to stop a real player padding a charter with their own alts -- it doesn't reflect
+    // a meaningful ownership boundary for bots, which get pooled onto a handful of hosting
+    // accounts purely as infrastructure (see BotSpawnRandom.cpp's account-creation comments).
+    // A solo player relying entirely on bots must be able to have *every* bot sign, not just one
+    // per hosting account, or a full charter becomes impossible whenever two bots happen to
+    // share one. Sign directly in that one specific case -- same DB insert + PetitionMgr
+    // bookkeeping HandlePetitionSignOpcode itself performs, just without the account check that
+    // doesn't apply here -- rather than trying to work around it through the opcode.
+    if (alreadySignedByAccount)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_PETITION_SIGNATURE);
+        stmt->SetData(0, petition->ownerGuid.GetCounter());
+        stmt->SetData(1, petition->petitionId);
+        stmt->SetData(2, bot->GetGUID().GetCounter());
+        stmt->SetData(3, bot->GetSession()->GetAccountId());
+        CharacterDatabase.Execute(stmt);
+        sPetitionMgr->AddSignature(petition->petitionGuid, bot->GetSession()->GetAccountId(), bot->GetGUID());
+
+        LOG_INFO("module.coa-playerbots",
+            "BotAI: bot '{}' signed '{}'s guild charter for '{}' directly -- shares a hosting account with an already-signed bot.",
             bot->GetName(), leader->GetName(), petition->petitionName);
         return;
     }
