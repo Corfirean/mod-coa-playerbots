@@ -401,35 +401,30 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
     if (!spellId)
         return;
 
+    // Root-caused live: this server's mount "wardrobe" wraps every collected mount in
+    // mod-ascension-compat's spell_ascension_local_mount script, which resolves the wrapper to a
+    // real ground/flying spell internally -- and individual collected mounts can be broken for a
+    // bot's use in more than one way: one wrapper reported SPELL_CAST_OK but silently mounted
+    // nothing (no ground variant for the specific mount collected); a different one failed the
+    // cast outright with SPELL_FAILED_CASTER_AURASTATE (a precondition aura a bot's bulk
+    // "grant everything" collection sync apparently never set up, unlike normal client-driven
+    // acquisition). Both are permanent properties of that specific spellId for this bot, not
+    // transient conditions -- moving/combat are already screened out above, so *any* non-success
+    // result here (an outright failure, or a success that doesn't actually leave the bot mounted)
+    // means this spellId doesn't work and should be skipped in favor of a different known mount,
+    // not retried forever.
     SpellCastResult result = bot->CastSpell(bot, spellId, false);
-    if (result != SPELL_CAST_OK)
+    if (result == SPELL_CAST_OK && bot->IsMounted())
     {
-        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' failed to mount (spell {}, result {}).",
-            bot->GetName(), spellId, uint32(result));
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' successfully mounted (spell {}).", bot->GetName(), spellId);
         return;
     }
 
-    // Root-caused live: a spellId reporting SPELL_CAST_OK but leaving IsMounted() false in the
-    // very same tick isn't a duration or timing issue at all -- this server's mount "wardrobe"
-    // wraps every collected mount in mod-ascension-compat's spell_ascension_local_mount script,
-    // which resolves the wrapper to a real ground/flying spell internally and silently does
-    // nothing if the specific mount that was collected has no variant for what's being asked for
-    // (e.g. a flying-only mount picked while a ground mount is wanted, since the leader's own
-    // mount is grounded). SelectKnownMountSpell can only see the wrapper's own SpellInfo, not
-    // mod-ascension-compat's internal per-mount ground/flying table, so it has no way to predict
-    // this ahead of time -- remembering which spellIds actually turned out not to work and
-    // excluding them from future picks is the only way to route around a bad one without needing
-    // a cross-module dependency on that internal data.
-    if (!bot->IsMounted())
-    {
-        state.knownBadMountSpells.insert(spellId);
-        LOG_INFO("module.coa-playerbots",
-            "BotAI: bot '{}' cast mount spell {} (SPELL_CAST_OK) but it didn't actually mount -- "
-            "marking it bad and trying a different known mount next tick.", bot->GetName(), spellId);
-        return;
-    }
-
-    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' successfully mounted (spell {}).", bot->GetName(), spellId);
+    state.knownBadMountSpells.insert(spellId);
+    LOG_INFO("module.coa-playerbots",
+        "BotAI: bot '{}' mount spell {} didn't work (result {}, IsMounted()={} after) -- "
+        "marking it bad and trying a different known mount next tick.",
+        bot->GetName(), spellId, uint32(result), bot->IsMounted());
 }
 
 // Periodic, throttled bag scan for a gear upgrade -- same shape as TryMaintainBuff. Reuses the
