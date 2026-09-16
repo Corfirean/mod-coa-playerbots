@@ -394,10 +394,21 @@ void TryMatchLeaderMountState(Player* bot)
     // tell whether this is actually succeeding at an unexpected moment versus never attempting.
     SpellCastResult result = bot->CastSpell(bot, spellId, false);
     if (result != SPELL_CAST_OK)
+    {
         LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' failed to mount (spell {}, result {}).",
             bot->GetName(), spellId, uint32(result));
-    else
-        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' successfully cast mount spell {}.", bot->GetName(), spellId);
+        return;
+    }
+
+    // Confirmed live: the permanent-duration filter added last round didn't stop the loop -- the
+    // exact same spellIds got selected and "successfully" recast again, meaning GetMaxDuration()
+    // == -1 was already true for these and the short-novelty-mount theory was wrong. Checking
+    // IsMounted() immediately (same frame, before anything else can touch it) narrows this down:
+    // if it's already false right here, the aura never actually attached despite SPELL_CAST_OK
+    // (a script/immunity/custom-collection-system quirk); if it's true here but false again next
+    // tick, something else is actively stripping it afterward (equip-dismount, a proc, etc).
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' successfully cast mount spell {} (maxDuration={}, IsMounted()={} immediately after).",
+        bot->GetName(), spellId, sSpellMgr->GetSpellInfo(spellId)->GetMaxDuration(), bot->IsMounted());
 }
 
 // Periodic, throttled bag scan for a gear upgrade -- same shape as TryMaintainBuff. Reuses the

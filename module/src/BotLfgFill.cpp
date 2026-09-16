@@ -254,6 +254,12 @@ void ProcessQueuedBots()
 // real player's chat/UI -- every tick for however long the check stays open; cleared the moment
 // that bot is no longer in LFG_STATE_ROLECHECK, so it's ready to answer the next one.
 std::unordered_set<ObjectGuid::LowType> roleCheckAnswered;
+// Separate from roleCheckAnswered -- a grouped bot passes through LFG_STATE_ROLECHECK and then
+// LFG_STATE_PROPOSAL as two distinct phases of the same queue trip. Sharing one tracking set
+// between them would leave the role-check phase's "already answered" entry in place once the
+// bot moves on to the proposal phase, making the proposal-accept check below think it had
+// already run when it never had.
+std::unordered_set<ObjectGuid::LowType> proposalAccepted;
 
 uint8 RoleBitFor(Player* bot)
 {
@@ -273,7 +279,33 @@ void ProcessGroupRoleChecks()
             continue;
 
         ObjectGuid::LowType lowGuid = bot->GetGUID().GetCounter();
-        if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_ROLECHECK)
+        lfg::LfgState state = sLFGMgr->GetState(bot->GetGUID());
+
+        // Confirmed live: fixing the role-check phase alone wasn't enough -- "bots don't pass
+        // the ready check" turned out to be the *next* phase (LFG_STATE_PROPOSAL, the "instance
+        // found, confirm to enter" screen shown once matchmaking actually finds a group). A
+        // grouped bot never gets added to `queuedBots` (that list is only populated by this
+        // file's own solo-join path, JoinBotToQueue/JoinBotToLfg), so ProcessQueuedBots' existing
+        // auto-accept below never runs for it. Handling both phases here, keyed off the same
+        // per-bot "already handled this specific phase" tracking, covers a grouped bot's entire
+        // trip through the queue without needing a second tracked-list mechanism.
+        if (state == lfg::LFG_STATE_PROPOSAL)
+        {
+            if (proposalAccepted.count(lowGuid))
+                continue;
+            uint32 proposalId = sLFGMgr->GetProposalIdForPlayer(bot->GetGUID());
+            if (proposalId)
+            {
+                sLFGMgr->UpdateProposal(proposalId, bot->GetGUID(), true);
+                proposalAccepted.insert(lowGuid);
+                LOG_INFO("module.coa-playerbots", "BotLfgFill: bot '{}' (grouped) accepted LFG proposal {}.",
+                    bot->GetName(), proposalId);
+            }
+            continue;
+        }
+        proposalAccepted.erase(lowGuid);
+
+        if (state != lfg::LFG_STATE_ROLECHECK)
         {
             roleCheckAnswered.erase(lowGuid);
             continue;

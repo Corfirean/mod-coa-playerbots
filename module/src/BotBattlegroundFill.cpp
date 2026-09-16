@@ -183,6 +183,24 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
         return;
 
     BattlegroundQueue& bgQueue = sBattlegroundMgr->GetBattlegroundQueue(bgQueueTypeId);
+
+    // Confirmed live -- still crashing here even after gating OnPlayerJoinBG to a single call per
+    // join event (see that function's own comment): a bot that's a member of the *joining
+    // player's own group* gets registered into this exact queue's m_QueuedPlayers by the real
+    // engine's own AddGroup(player, group, ...) call for the whole group, but nothing on the
+    // bot's own Player object (InBattlegroundQueueForBattlegroundQueueType, checked above) ever
+    // reflects that -- AddBattlegroundQueueId is only ever called on the player that actually
+    // triggered the opcode, not on every member of their group. So this bot looked completely
+    // free to this file's own eligibility checks while the queue itself already considered it
+    // taken, and calling AddGroup on it a second time hit BattlegroundQueue::AddGroup's own
+    // `m_QueuedPlayers.count(leader->GetGUID()) == 0` assertion. GetPlayerGroupInfoData is the
+    // exact same lookup that assertion is protecting -- checking it first here catches this
+    // (and any other way a bot could already be group-queued) without needing to reason about
+    // every possible caller.
+    GroupQueueInfo existingInfo;
+    if (bgQueue.GetPlayerGroupInfoData(bot->GetGUID(), &existingInfo))
+        return;
+
     GroupQueueInfo* ginfo = bgQueue.AddGroup(bot, nullptr, bgTypeId, bracketEntry, 0, false, false, 0, 0);
     if (!ginfo)
         return;
