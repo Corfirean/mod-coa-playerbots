@@ -2678,3 +2678,95 @@ Rebuilt, redeployed (0 players connected at the time, confirmed via RA first), c
 boot (both `mod-ascension-compat` and `mod-coa-playerbots` load-confirmed in the log, zero new
 errors beyond the same pre-existing benign "did not match dbc effect data" boot-time noise every
 boot already has) and a live `.botcmd spawnbot`/`checkrole` round-trip before handing back.
+
+## 2026-09-16: Post-sync live testing -- a real GM-flag data-corruption bug, a genuine BG-queue crash, and the guild-charter mystery from the day before finally closed out
+
+First live-testing round after the sync above surfaced four more issues in one pass.
+
+**Quick Fill/invites silently failing for random bots -- root-caused, not a QuickFillGroup bug at
+all**: `.pinfo` on the specific bot the user's invite failed for ("Cannot find player X") showed
+"GM Mode active, Phase: -1". `WorldSession::HandleGroupInviteOpcode` (GroupHandler.cpp:105) refuses
+to invite a GM-flagged target unless the inviter is also a GM, sending back the exact same
+`ERR_BAD_PLAYER_NAME_S` the client shows for a genuinely nonexistent name -- no server-side trace
+either, so this looked identical to a name-resolution bug. Traced to `characters.extra_flags`
+(bit `PLAYER_EXTRA_GM_ON = 0x0001`) being **inherited through `BotSpawnRandom::CloneCharacter`'s
+column-copy clone** -- some earlier test session left a template character (or a bot later reused
+as a template) with `.gm on` toggled at its last logout, and the DB-level `INSERT ... SELECT`
+clone (which copies every `characters` column verbatim unless explicitly overridden, same as
+`at_login`/`online` already are) carried that bit forward into every bot cloned from it -- and, once
+one of *those* bots was itself later drawn on as a template, the taint spread further. A direct
+query (`WHERE extra_flags & 1 > 0`) found **58 affected characters** across nearly every
+bot-hosting account created this whole session, going back to the very first manually-cloned test
+characters (`Xorothbot`, `Cultistbot`, `Reaperbot`). Fixed at the source: `CloneCharacter` now
+zeroes `extra_flags` on every new clone, the same way it already zeroes `online`/`at_login`.
+Cleaned up the 58 existing rows too -- learned the hard way that a live bot session's own
+`LogoutPlayer(true)` (used by `.botcmd despawn`) **saves the in-memory state back to the DB**, so
+patching the DB row of a still-loaded bot gets silently overwritten the moment it's despawned; the
+correct order is despawn first (let the stale value save), *then* patch the DB, *then* respawn.
+
+**A genuine new worldserver crash**: queuing for a Battleground *as a group* (real player + 3
+bots) crashed with `BattlegroundQueue::AddGroup`'s own
+`m_QueuedPlayers.count(leader->GetGUID()) == 0` assertion. Root cause: `WorldSession::
+HandleBattlemasterJoinOpcode`'s group-join branch fires `PLAYERHOOK_ON_PLAYER_JOIN_BG` once per
+group member via `Group::DoForAllMembers` (real engine behavior, confirmed from the crash's own
+call stack) -- for a 4-person group that's 4 separate hook firings for what is logically one join
+event. `BotBattlegroundFill.cpp`'s `OnPlayerJoinBG` had no way to know it was being called
+redundantly, so each firing independently re-ran the whole top-off pass; a bot from the player's
+own just-queued group could get selected again as a "free" fill candidate before its own
+`AddBattlegroundQueueId` flag had caught up with the group's already-registered queue state, and
+`JoinBotToQueue` tried to solo-`AddGroup` a bot the queue already had -- exactly the "duplicate
+combat state" shape as the 09-15 `CombatManager` crash, just in a different subsystem. Fixed by
+gating the whole hook on "only run if `player` is the group's leader (or has no group)" --
+guarantees exactly one top-off pass per real join event regardless of how many members the group
+has or what order the engine fires the per-member hooks in.
+
+**The guild-charter mystery from 09-15 finally resolved, and it turned out to be two separate,
+already-understood things layered together**: after the previous session's fix (clearing a stale
+`GetGuildIdInvited()` before signing) actually shipped and got tested fresh, 2 of 3 bots signed
+successfully (confirmed via `petition_sign` gaining real rows) -- the diagnostic dump added
+alongside that fix had been *read wrong* the first time: it showed `guildIdInvited=0` and got
+interpreted as "this guard was never blocking," when it actually meant "the clear that runs two
+lines earlier just worked." The third bot (`Stouxiok`) stayed unsigned, live-diagnosed as a
+*different*, entirely legitimate mechanism: `Stouxiok` and the bot that had just signed
+(`Thaesomiriox`) sit on the **same bot-hosting account** (account 15, both created in the same
+`spawnrandom` batch), and `HandlePetitionSignOpcode`'s own "one signature per account" rule
+(`PetitionsHandler.cpp`'s `found` check, matching real WoW's anti-alt-signing behavior) correctly
+refuses a second character from an account that's already signed. Not a bug -- an inherent
+consequence of bot-hosting accounts pooling multiple characters, same as it would be for a real
+player's own alts. (Reported to the user as "un-signs and re-signs constantly," which is most
+likely just the visible cadence of `TryAutoSignLeaderPetition`'s 10s retry throttle hitting this
+same refusal every cycle, not an actual sign/unsign toggle -- no code path in either this module
+or the core calls `PetitionMgr::RemoveSignaturesByPlayer`/`RemoveSignaturesByPlayerAndType`
+anywhere, confirmed by grep, so nothing ever actually retracts a landed signature.)
+
+Added full entry/exit/every-bail-out diagnostic logging directly in core
+`WorldSession::HandlePetitionSignOpcode` while chasing this (temporary instrumentation, still in
+the tree) -- kept in place since it's cheap, `network.opcode`-scoped, and the next time any
+petition-signing weirdness shows up it'll immediately say which exact guard fired instead of
+requiring another multi-round diagnostic hunt like this one.
+
+**Mounts still not sticking, root-caused as a third, unrelated issue**: bots were "successfully"
+(`SPELL_CAST_OK` every time, confirmed via the result-logging from the previous round) recasting
+the same mount spell every single tick forever, never actually ending up mounted for more than a
+moment. This server unlocks a bot's entire ~1225-spell account-wide "wardrobe" of mounts/
+companions (confirmed via the login log's own "Queued 1225 owned mount/companion spells" line) --
+`SelectKnownMountSpell`'s "first mount-shaped spell found in the spellbook" heuristic had no way to
+distinguish a real, permanent travel mount from a short-duration novelty/toy mount also unlocked
+in that same collection, and kept landing on one of the latter, whose `SPELL_AURA_MOUNTED` aura
+expired within a tick or two of being applied -- immediately re-triggering another "attempt to
+mount" cycle. Confirmed the selected spell IDs (five- and six-digit custom Ascension ids, e.g.
+`916541`) don't even exist in `spell_dbc` at all (that table tops out at ~100102), meaning this
+whole "wardrobe" collection is synthesized by `mod-ascension-compat` itself outside the normal DBC
+pipeline -- not something this module can cross-reference for "is this really a travel mount"
+metadata directly. Fixed the general, robust way instead: `IsMountSpell` now also requires
+`spellInfo->GetMaxDuration() == -1` (WotLK's own "lasts until dismissed" convention, checked via
+`SpellDuration.dbc`'s third duration field, not the first -- `GetDuration()` alone returns 0 for
+the common "index 0" permanent-aura case, `GetMaxDuration()` is the field that actually reads -1
+for it), which excludes every timed novelty mount shape regardless of what collection or ID range
+it happens to live in.
+
+Rebuilt and redeployed for each fix as it landed (four total rebuild/restart cycles this round);
+confirmed clean boots throughout. **Not yet independently re-confirmed live** after this last
+mount-duration-filter build specifically (the round of testing that found it ended with the BG
+crash) -- next session should confirm a bot actually stays mounted for more than one tick before
+considering this one fully closed.

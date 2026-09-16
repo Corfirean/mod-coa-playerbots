@@ -40,6 +40,7 @@
 #include "Chat.h"
 #include "Config.h"
 #include "DBCStores.h"
+#include "Group.h"
 #include "LFGMgr.h"
 #include "Log.h"
 #include "Player.h"
@@ -323,6 +324,22 @@ public:
     {
         if (!sConfigMgr->GetOption<bool>("CoaBots.BGFill.Enable", true))
             return;
+
+        // Confirmed live crash: a *grouped* real-player join (WorldSession::HandleBattlemasterJoinOpcode's
+        // group branch) fires this hook once per group member via Group::DoForAllMembers -- for a
+        // player queuing with 3 bots, that's 4 separate calls for what is logically one join event.
+        // Each call independently re-ran the full top-off pass below, and a bot from the player's OWN
+        // just-queued group could get selected again as a "free" fill candidate by QueueBotForSide's
+        // online-bot scan before its own AddBattlegroundQueueId flag caught up with the group's already-
+        // registered queue state, so JoinBotToQueue tried to solo-AddGroup a bot the queue already had
+        // registered -- BattlegroundQueue::AddGroup's own `m_QueuedPlayers.count(leader->GetGUID()) == 0`
+        // assertion caught the duplicate and crashed the whole process. Running the top-off pass only
+        // once per join event (triggered by the group's leader specifically, or by the player themself
+        // when solo) removes the repeat calls entirely instead of trying to make each one individually
+        // safe against a race in the engine's own per-member bookkeeping.
+        if (Group* group = player->GetGroup())
+            if (group->GetLeaderGUID() != player->GetGUID())
+                return;
 
         for (uint32 i = 0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
         {

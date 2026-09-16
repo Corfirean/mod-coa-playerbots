@@ -273,9 +273,19 @@ uint32 RacialGroundMountSpellFor(uint8 race)
     }
 }
 
+// Confirmed live: a bot repeatedly "successfully" recast a mount spell every tick, forever,
+// despite CastSpell reporting SPELL_CAST_OK every single time -- the selected spell (from this
+// server's account-wide unlocked "wardrobe" of ~1225 mount/companion grants) was a short-duration
+// novelty toy, not a real permanent travel mount, so the SPELL_AURA_MOUNTED aura it applied kept
+// expiring within a tick or two, making the bot look unmounted again almost immediately and
+// triggering another attempt. A real, permanent travel mount's SPELL_AURA_MOUNTED aura has
+// GetMaxDuration() == -1 (WotLK's own convention for "lasts until dismissed"); requiring that
+// here excludes any timed novelty mount shape from ever being selected as the bot's "match the
+// leader" mount, regardless of how many transient ones happen to sort earlier in the spellbook.
 bool IsMountSpell(SpellInfo const* spellInfo)
 {
-    return spellInfo && !spellInfo->IsPassive() && spellInfo->HasAura(SPELL_AURA_MOUNTED);
+    return spellInfo && !spellInfo->IsPassive() && spellInfo->HasAura(SPELL_AURA_MOUNTED) &&
+        spellInfo->GetMaxDuration() == -1;
 }
 
 // Same two auras the engine itself treats as "this mount can fly" (see
@@ -334,7 +344,11 @@ void TryMatchLeaderMountState(Player* bot)
     if (!leader->IsMounted())
     {
         if (bot->IsMounted())
+        {
+            LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' dismounting (leader '{}' is no longer mounted).",
+                bot->GetName(), leader->GetName());
             bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        }
         return;
     }
 
@@ -351,6 +365,9 @@ void TryMatchLeaderMountState(Player* bot)
     // a real attempt in once it settles into its slot and stops.
     if (bot->IsInCombat() || bot->isMoving())
         return;
+
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' attempting to mount (leader '{}' is mounted, bot stationary and out of combat).",
+        bot->GetName(), leader->GetName());
 
     bool leaderFlying = false;
     for (AuraEffect const* aura : leader->GetAuraEffectsByType(SPELL_AURA_MOUNTED))
@@ -370,11 +387,17 @@ void TryMatchLeaderMountState(Player* bot)
 
     // Confirmed live: bots visibly failing to mount with no trace anywhere -- this used to
     // discard CastSpell's result entirely, so a real failure (no-mount area, GM-flagged zone,
-    // a bad spell pick) was indistinguishable from "nothing to report." Only log on an actual
-    // failure -- success is already implied by IsMounted() being true on the next tick.
-    if (SpellCastResult result = bot->CastSpell(bot, spellId, false); result != SPELL_CAST_OK)
+    // a bad spell pick) was indistinguishable from "nothing to report." Logging both outcomes
+    // now (not just failure) since the previous round's fix didn't visibly resolve the report
+    // ("still don't mount while I'm mounted, start mounting when I dismount") and zero failure
+    // lines showed up in that test -- need the full timeline, not just the negative case, to
+    // tell whether this is actually succeeding at an unexpected moment versus never attempting.
+    SpellCastResult result = bot->CastSpell(bot, spellId, false);
+    if (result != SPELL_CAST_OK)
         LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' failed to mount (spell {}, result {}).",
             bot->GetName(), spellId, uint32(result));
+    else
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' successfully cast mount spell {}.", bot->GetName(), spellId);
 }
 
 // Periodic, throttled bag scan for a gear upgrade -- same shape as TryMaintainBuff. Reuses the

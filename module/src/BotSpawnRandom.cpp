@@ -228,6 +228,17 @@ ObjectGuid::LowType CloneCharacter(uint32 templateGuid, uint32 accountId, std::s
             selectVals << "0,";
         else if (col == "at_login")
             selectVals << "0,";
+        // Confirmed live: a bot cloned from a template character that had been left with
+        // `.gm on` (extra_flags & PLAYER_EXTRA_GM_ON) toggled at its last logout inherited that
+        // bit forever, making the resulting bot silently un-invitable by anyone -- HandleGroupInviteOpcode
+        // refuses to invite a GM-flagged target unless the inviter is also a GM, sending back the
+        // exact same "Cannot find player" the client shows for a genuinely nonexistent name (no
+        // server-side error either), so this looked identical to a random-invite bug for a long
+        // time. A bot should never carry any of this column's runtime toggles (GM mode, GM
+        // invisibility, taxi-cheat, decline-group-invites, etc.) regardless of what its template
+        // happened to have set, so it's zeroed here the same way `online`/`at_login` already are.
+        else if (col == "extra_flags")
+            selectVals << "0,";
         else if (col == "creation_date")
             selectVals << "NOW(),";
         else if (col == "deleteInfos_Account" || col == "deleteInfos_Name" || col == "deleteDate")
