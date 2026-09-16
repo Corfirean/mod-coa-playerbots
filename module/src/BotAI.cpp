@@ -331,11 +331,17 @@ uint32 SelectKnownMountSpell(Player* bot, bool wantFlying = false, std::unordere
     return 0;
 }
 
-// A freshly-leveled or GM-created bot typically owns no mount at all.
+// Confirmed live: on a server where every bot's account-wide "wardrobe" already grants ~1225
+// mount/companion spells, this used to skip granting the racial mount entirely (the early-out
+// below) -- leaving TryMatchLeaderMountState's ground-mount search with nothing to fall back on
+// but that same huge wrapper collection, where individually-broken entries (see that function's
+// own comment) can exhaust the whole known-mount list via blacklisting and leave a bot
+// permanently unable to mount at all. The plain racial mount is a real, unwrapped WotLK spell
+// with no mod-ascension-compat script sitting in front of it, so it can't fail either of the
+// ways a wrapper can -- always granting it (learnSpell on an already-known spell is a no-op)
+// gives every bot at least one mount that's guaranteed to actually work.
 void EnsureBotHasMount(Player* bot)
 {
-    if (SelectKnownMountSpell(bot))
-        return;
     if (uint32 spellId = RacialGroundMountSpellFor(bot->getRace()))
         bot->learnSpell(spellId);
 }
@@ -382,9 +388,6 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
     if (bot->IsInCombat() || bot->isMoving())
         return;
 
-    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' attempting to mount (leader '{}' is mounted, bot stationary and out of combat).",
-        bot->GetName(), leader->GetName());
-
     bool leaderFlying = false;
     for (AuraEffect const* aura : leader->GetAuraEffectsByType(SPELL_AURA_MOUNTED))
     {
@@ -395,11 +398,28 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
         }
     }
 
-    uint32 spellId = leaderFlying ? SelectKnownMountSpell(bot, true, state.knownBadMountSpells) : 0;
+    // Prefer the bot's own racial ground mount over the wardrobe collection whenever a ground
+    // mount is what's wanted -- see EnsureBotHasMount's comment for why: it's a real, unwrapped
+    // spell that can't hit either of the wardrobe-wrapper failure modes, so it sidesteps the
+    // whole "which of ~1225 collected mounts actually work" problem entirely for the common
+    // case. Only falls through to the wardrobe scan for a flying mount (racial mounts don't fly)
+    // or if the racial spell itself somehow isn't known yet.
+    uint32 spellId = 0;
+    if (!leaderFlying)
+    {
+        uint32 racialSpellId = RacialGroundMountSpellFor(bot->getRace());
+        if (racialSpellId && bot->HasSpell(racialSpellId) && !state.knownBadMountSpells.count(racialSpellId))
+            spellId = racialSpellId;
+    }
+    if (!spellId)
+        spellId = leaderFlying ? SelectKnownMountSpell(bot, true, state.knownBadMountSpells) : 0;
     if (!spellId)
         spellId = SelectKnownMountSpell(bot, false, state.knownBadMountSpells);
     if (!spellId)
         return;
+
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' attempting to mount (leader '{}' is mounted, bot stationary and out of combat).",
+        bot->GetName(), leader->GetName());
 
     // Root-caused live: this server's mount "wardrobe" wraps every collected mount in
     // mod-ascension-compat's spell_ascension_local_mount script, which resolves the wrapper to a
