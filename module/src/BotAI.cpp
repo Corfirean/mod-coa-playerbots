@@ -107,6 +107,18 @@ struct BotAIState
     BotRole role = BotRole::Dps;
     bool manualRoleOverride = false;
 
+    // See TryMatchLeaderMountState -- a "mount" spell in this server's account-wide collection
+    // is actually a wrapper (mod-ascension-compat's spell_ascension_local_mount script) that
+    // resolves to a real ground/flying spell internally; a wrapper collected for a mount with no
+    // ground form (e.g. a drake with only Flying150/280/310 variants) reports SPELL_CAST_OK but
+    // silently applies nothing when a ground mount is what's actually wanted, with zero
+    // server-side trace either way. SelectKnownMountSpell has no way to know this ahead of time
+    // (it can only see the wrapper spell's own SpellInfo, not mod-ascension-compat's internal
+    // MountWrapper table), so this remembers which spellIds turned out not to actually work and
+    // skips them on future attempts, trying a different known mount instead of retrying the same
+    // dead end forever.
+    std::unordered_set<uint32> knownBadMountSpells;
+
     // Death handling (see UpdateDeathHandling): true once this death has already started its
     // grace-period wait for an incoming resurrect, so the wait isn't restarted every tick.
     bool awaitingRezGrace = false;
@@ -302,12 +314,15 @@ bool IsFlyingMountSpell(SpellInfo const* spellInfo)
 // already knows -- doesn't rank multiple known mounts by speed, just "something to ride beats
 // walking." wantFlying restricts the search to flying mounts (for matching a flying leader --
 // see TryMatchLeaderMountState); a bot with no flying mount known simply won't find one, same
-// as any other "doesn't know it" case elsewhere in this file.
-uint32 SelectKnownMountSpell(Player* bot, bool wantFlying = false)
+// as any other "doesn't know it" case elsewhere in this file. excluded skips spellIds already
+// confirmed not to actually work (see BotAIState::knownBadMountSpells).
+uint32 SelectKnownMountSpell(Player* bot, bool wantFlying = false, std::unordered_set<uint32> const& excluded = {})
 {
     for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
     {
         if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+            continue;
+        if (excluded.count(spellId))
             continue;
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
         if (wantFlying ? IsFlyingMountSpell(spellInfo) : IsMountSpell(spellInfo))
@@ -332,7 +347,7 @@ void EnsureBotHasMount(Player* bot)
 // 10-second lag. Doesn't try to match the exact mount, just the *capability* (fly vs ground) --
 // a bot with no known flying mount falls back to its ground one rather than staying grounded
 // for no visible reason once the leader takes off; still better than not mounting at all.
-void TryMatchLeaderMountState(Player* bot)
+void TryMatchLeaderMountState(Player* bot, BotAIState& state)
 {
     Group* group = bot->GetGroup();
     if (!group)
@@ -380,19 +395,12 @@ void TryMatchLeaderMountState(Player* bot)
         }
     }
 
-    uint32 spellId = leaderFlying ? SelectKnownMountSpell(bot, true) : 0;
+    uint32 spellId = leaderFlying ? SelectKnownMountSpell(bot, true, state.knownBadMountSpells) : 0;
     if (!spellId)
-        spellId = SelectKnownMountSpell(bot, false);
+        spellId = SelectKnownMountSpell(bot, false, state.knownBadMountSpells);
     if (!spellId)
         return;
 
-    // Confirmed live: bots visibly failing to mount with no trace anywhere -- this used to
-    // discard CastSpell's result entirely, so a real failure (no-mount area, GM-flagged zone,
-    // a bad spell pick) was indistinguishable from "nothing to report." Logging both outcomes
-    // now (not just failure) since the previous round's fix didn't visibly resolve the report
-    // ("still don't mount while I'm mounted, start mounting when I dismount") and zero failure
-    // lines showed up in that test -- need the full timeline, not just the negative case, to
-    // tell whether this is actually succeeding at an unexpected moment versus never attempting.
     SpellCastResult result = bot->CastSpell(bot, spellId, false);
     if (result != SPELL_CAST_OK)
     {
@@ -401,15 +409,27 @@ void TryMatchLeaderMountState(Player* bot)
         return;
     }
 
-    // Confirmed live: the permanent-duration filter added last round didn't stop the loop -- the
-    // exact same spellIds got selected and "successfully" recast again, meaning GetMaxDuration()
-    // == -1 was already true for these and the short-novelty-mount theory was wrong. Checking
-    // IsMounted() immediately (same frame, before anything else can touch it) narrows this down:
-    // if it's already false right here, the aura never actually attached despite SPELL_CAST_OK
-    // (a script/immunity/custom-collection-system quirk); if it's true here but false again next
-    // tick, something else is actively stripping it afterward (equip-dismount, a proc, etc).
-    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' successfully cast mount spell {} (maxDuration={}, IsMounted()={} immediately after).",
-        bot->GetName(), spellId, sSpellMgr->GetSpellInfo(spellId)->GetMaxDuration(), bot->IsMounted());
+    // Root-caused live: a spellId reporting SPELL_CAST_OK but leaving IsMounted() false in the
+    // very same tick isn't a duration or timing issue at all -- this server's mount "wardrobe"
+    // wraps every collected mount in mod-ascension-compat's spell_ascension_local_mount script,
+    // which resolves the wrapper to a real ground/flying spell internally and silently does
+    // nothing if the specific mount that was collected has no variant for what's being asked for
+    // (e.g. a flying-only mount picked while a ground mount is wanted, since the leader's own
+    // mount is grounded). SelectKnownMountSpell can only see the wrapper's own SpellInfo, not
+    // mod-ascension-compat's internal per-mount ground/flying table, so it has no way to predict
+    // this ahead of time -- remembering which spellIds actually turned out not to work and
+    // excluding them from future picks is the only way to route around a bad one without needing
+    // a cross-module dependency on that internal data.
+    if (!bot->IsMounted())
+    {
+        state.knownBadMountSpells.insert(spellId);
+        LOG_INFO("module.coa-playerbots",
+            "BotAI: bot '{}' cast mount spell {} (SPELL_CAST_OK) but it didn't actually mount -- "
+            "marking it bad and trying a different known mount next tick.", bot->GetName(), spellId);
+        return;
+    }
+
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' successfully mounted (spell {}).", bot->GetName(), spellId);
 }
 
 // Periodic, throttled bag scan for a gear upgrade -- same shape as TryMaintainBuff. Reuses the
@@ -2482,7 +2502,7 @@ void Update(Player* bot, uint32 diff)
     // react immediately, and this is cheap (a couple of aura/state lookups, no scans). Safe to
     // call unconditionally: CastSpell's own real checks (in combat, indoors, etc.) already
     // silently no-op a mount attempt exactly like a real player's would fail client-side.
-    TryMatchLeaderMountState(bot);
+    TryMatchLeaderMountState(bot, state);
 
     // Pull is one-shot: force the engage now, then fall through to normal role logic for the
     // resulting fight (UpdateOffensive/UpdateHealer/UpdateSupport all start from
