@@ -96,4 +96,4 @@ See [INSTALL.md](INSTALL.md) for full setup instructions, including precompiled 
 
 ## License / Attribution
 
-Builds on research into [mod-playerbots](https://github.com/mod-playerbots/mod-playerbots) (GPL-2.0, per AzerothCore conventions) and [azerothcore-wotlk-coa](https://github.com/jealous-sound/azerothcore-wotlk-coa). All custom class combat profiles and utility AI engines are original works developed specifically for Ascension: Conquest of Azeroth.
+Builds on research into [mod-playerbots](https://github.com/mod-playerbots/mod-playerbots) (GPL-2.0, per AzerothCore conventions) and [azerothcore-wotlk-coa](https://github.com/jealous-sound/azerothcore-wotlk-coa). All custom class combat profiles and utility AI engines are original works developed specifically for Conquest of AzerothCore project.
