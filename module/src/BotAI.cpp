@@ -63,6 +63,7 @@
 #include "Group.h"
 #include "Item.h"
 #include "BotAvoidance.h"
+#include "BotBattlegroundAI.h"
 #include "BotFormations.h"
 #include "BotQuestTracker.h"
 #include "BotZoneProgression.h"
@@ -2996,6 +2997,9 @@ Player* FindHealTarget(Player* bot)
     {
         if (!candidate || !candidate->IsAlive() || !candidate->IsInWorld() || candidate->GetMap() != bot->GetMap())
             return;
+        float dist = bot->GetDistance(candidate);
+        if (dist > 45.0f)
+            return;
         float pct = candidate->GetHealthPct();
         if (pct < bestPct)
         {
@@ -3166,6 +3170,9 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     if (!target && state.manualCommand != BotManualCommand::Stay)
         target = FindGroupCombatTarget(bot, bot->GetGroup());
 
+    if (!target && bot->InBattleground())
+        target = BotBattlegroundAI::FindHostilePvPTarget(bot, 40.0f);
+
     // Being attacked does not, by itself, make a Player "have a victim" -- Unit::GetVictim()
     // tracks who *this* unit is attacking, not who's attacking it (this matches how a real
     // client behaves too: nothing auto-retaliates without an explicit attack action). Without
@@ -3257,7 +3264,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
             if (TryRestIfNeeded(bot, diff, role, state))
                 return;
 
-            ResumeFollowingLeader(bot, state);
+            if (!bot->InBattleground())
+                ResumeFollowingLeader(bot, state);
 
             // Ungrouped means no leader to fight alongside or follow -- ResumeFollowingLeader
             // above already reduces to a no-op for that case (nothing to clear), so this is
@@ -3871,6 +3879,13 @@ void Update(Player* bot, uint32 diff)
         state.role = GetRoleForClassSpec(bot->getClass(), activeSpec);
     }
 
+    // Battleground AI: handles objectives, gates, mount travel, and proactive targeting
+    if (bot->InBattleground())
+    {
+        if (BotBattlegroundAI::Update(bot, diff))
+            return;
+    }
+
     if (state.role == BotRole::Healer)
         UpdateHealer(bot, diff, state);
     else if (state.role == BotRole::Support)
@@ -3885,6 +3900,7 @@ void Forget(ObjectGuid botGuid)
     BotAI::ForgetRotationState(botGuid);
     SpellResolver::Invalidate(botGuid);
     ActionEvaluator::ClearThrottles(botGuid);
+    BotBattlegroundAI::Forget(botGuid);
 }
 
 void ReportProfile(Player* bot, ChatHandler* handler)
