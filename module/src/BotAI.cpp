@@ -26,8 +26,10 @@
  */
 
 #include "BotAI.h"
+#include "AscensionCollectibleSpellData.h"
 #include "BotClassRotations.h"
 #include "BotMgr.h"
+#include "BotTalentBuilds.h"
 #include "BotClassRotationsBloodmage.h"
 #include "BotClassRotationsChronomancer.h"
 #include "BotClassRotationsFelsworn.h"
@@ -37,9 +39,17 @@
 #include "BotClassRotationsRunemaster.h"
 #include "BotClassRotationsStormbringer.h"
 #include "BotClassRotationsXoroth.h"
+#include "engine/HealerEngine.h"
+#include "engine/DpsEngine.h"
+#include "engine/TankEngine.h"
+#include "engine/SpellResolver.h"
+#include "engine/ActionEvaluator.h"
 #include "ClassSpecRoles.h"
+#include "CombatManager.h"
+#include "Config.h"
 #include "Bag.h"
 #include "CellImpl.h"
+#include <deque>
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "Corpse.h"
@@ -52,6 +62,10 @@
 #include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "Item.h"
+#include "BotAvoidance.h"
+#include "BotFormations.h"
+#include "BotQuestTracker.h"
+#include "BotZoneProgression.h"
 #include "Log.h"
 #include "LootMgr.h"
 #include "MotionMaster.h"
@@ -73,6 +87,8 @@
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
@@ -100,6 +116,17 @@ constexpr float HEAL_ENGAGE_RANGE = 25.0f;
 // without re-scanning the whole spellbook every single world tick while idle-in-combat.
 constexpr uint32 NO_CANDIDATE_RETRY_MS = 500;
 
+enum class BotArchetype : uint8 { Balanced, Quester, Gatherer, Angler, Grinder, Explorer };
+enum class SoloIntent : uint8 { None, Quest, Gather, Fish, Grind, Explore };
+
+struct BotPersonality
+{
+    BotArchetype archetype = BotArchetype::Balanced;
+    uint32 seed = 0;
+    uint8 questing = 50, gathering = 50, fishing = 25, grinding = 50, patience = 50, sociability = 50;
+    // Sociability currently makes questing (the most hub/group-adjacent solo activity) more attractive.
+};
+
 struct BotAIState
 {
     uint32 nextCastAllowedMs = 0;
@@ -107,6 +134,12 @@ struct BotAIState
     uint32 nextBuffCheckMs = 0;
     BotRole role = BotRole::Dps;
     bool manualRoleOverride = false;
+    uint8 lastLevel = 0;
+    BotPersonality personality;
+    bool hasPersonality = false;
+    SoloIntent soloIntent = SoloIntent::None;
+    uint32 soloIntentRemainingMs = 0;
+    uint32 soloIntentGeneration = 0;
 
     // See TryMatchLeaderMountState -- a "mount" spell in this server's account-wide collection
     // is actually a wrapper (mod-ascension-compat's spell_ascension_local_mount script) that
@@ -119,6 +152,21 @@ struct BotAIState
     // skips them on future attempts, trying a different known mount instead of retrying the same
     // dead end forever.
     std::unordered_set<uint32> knownBadMountSpells;
+
+    // Confirmed live (root cause of a near-total mount outage: one bot had blacklisted 816
+    // distinct mount spells and never mounted once): checking bot->IsMounted() synchronously in
+    // the same statement as the CastSpell() call that just requested the mount reads stale state
+    // -- SPELL_AURA_MOUNTED isn't guaranteed visible via IsMounted() until the tick after the
+    // cast resolves, even for a real SPELL_CAST_OK (255) result and an unwrapped racial mount
+    // with nothing scripted in front of it. Checking that early was blacklisting good, working
+    // mounts as fast as a bot could cycle through its known list, exhausting the entire
+    // collection within seconds and leaving it permanently grounded (no known mounts left to
+    // try). This defers the real "did it actually mount" check to the following tick instead of
+    // trusting an instantaneous read, while still catching the genuinely-broken wrapper mounts
+    // this blacklist was originally built for (see knownBadMountSpells' own comment) -- those
+    // still fail the check a full tick later, just without punishing spells that only needed one
+    // more tick to show up as mounted.
+    uint32 pendingMountSpellId = 0;
 
     // Death handling (see UpdateDeathHandling): true once this death has already started its
     // grace-period wait for an incoming resurrect, so the wait isn't restarted every tick.
@@ -175,6 +223,7 @@ struct BotAIState
     // IsNonMeleeSpellCast first reports the Fishing cast as finished -- confirmed live that the
     // two don't land the same tick.
     uint32 fishingBobberGraceMs = 0;
+    uint32 fishingReactionDelayMs = 0;
 
     // See TryStartQuesting/TryContinueQuestWalk. No separate "in progress" state is needed
     // beyond this -- unlike gathering/fishing, accepting or turning in a quest is instant (no
@@ -188,9 +237,26 @@ struct BotAIState
     // guid per distinct arrival action" shape as gatherWalkTargetGuid vs. the grind anchor.
     ObjectGuid questObjectiveWalkTargetGuid;
 
+    // Long-distance quest tracking walk across zone (BotQuestTracker)
+    bool isQuestTrackingWalk = false;
+    Position questTrackingTargetPos;
+
     // See TryMaintainProgression -- shared throttle for both the mount-ownership check and the
     // gear-upgrade bag scan.
     uint32 nextProgressionCheckMs = 0;
+
+    // Loot queue: corpses of creatures killed in combat or by party members
+    std::deque<ObjectGuid> pendingLootGuids;
+
+    // Out-of-combat rest state (eating/drinking between pulls)
+    bool isResting = false;
+
+    // Death failsafe: duration spent as a ghost (for stuck ghost fallback)
+    uint32 ghostDurationMs = 0;
+
+    // Natural follow latency
+    uint32 followReactionDelayMs = 0;
+    bool followWaitingReaction = false;
 };
 
 // How long a freshly-dead bot waits, body not yet released, before giving up on a real
@@ -207,10 +273,10 @@ constexpr uint32 BUFF_CHECK_INTERVAL_MS = 15000;
 // A grouped bot has a leader to fight alongside or follow; an ungrouped one has neither, and
 // without this would just stand exactly where it was spawned forever. These four constants
 // govern that solo behavior -- see TryGrindWhenSolo.
-constexpr float GRIND_SEARCH_RADIUS = 30.0f;         // matches BotMgr::AttackNearestHostile's default
+float GrindSearchRadius() { return sConfigMgr->GetOption<float>("CoaBots.Grind.SearchRadius", 30.0f); } // matches BotMgr::AttackNearestHostile's default
 constexpr float GRIND_LEASH_RADIUS = 40.0f;          // don't drift farther than this from the anchor
 constexpr uint32 GRIND_SCAN_INTERVAL_MS = 3000;      // idle behavior -- no need to grid-scan every tick
-constexpr uint32 GRIND_MAX_LEVEL_ABOVE = 3;          // skip mobs this far above the bot's own level
+uint32 GrindMaxLevelAbove() { return sConfigMgr->GetOption<uint32>("CoaBots.Grind.MaxLevelAbove", 3); } // skip mobs this far above the bot's own level
 
 // Herbalism/Mining nodes only, for this increment -- LOCKTYPE_PICKLOCK, LOCKTYPE_FISHING and
 // LOCKTYPE_INSCRIPTION (SkillByLockType's other three mappings) are separate features
@@ -261,6 +327,131 @@ constexpr uint32 BAG_CLEANUP_FREE_SLOT_THRESHOLD = 2;
 
 std::unordered_map<ObjectGuid, BotAIState> states;
 
+// Stored in the existing core character_settings table. This survives relogs/restarts without
+// a module-specific table or any per-tick database work.
+constexpr char const* BOT_PROFILE_SETTING = "coa.bot_profile";
+constexpr uint32 PROFILE_VERSION = 1;
+
+uint32 MixProfileSeed(uint32 value)
+{
+    value ^= value >> 16;
+    value *= 0x7feb352dU;
+    value ^= value >> 15;
+    value *= 0x846ca68bU;
+    return value ^ (value >> 16);
+}
+
+uint8 ProfileValue(uint32& seed, uint8 base)
+{
+    seed = MixProfileSeed(seed);
+    return uint8(std::max(5, std::min(95, int32(base) + int32(seed % 31) - 15)));
+}
+
+char const* ArchetypeName(BotArchetype archetype)
+{
+    switch (archetype)
+    {
+        case BotArchetype::Quester: return "Quester";
+        case BotArchetype::Gatherer: return "Gatherer";
+        case BotArchetype::Angler: return "Angler";
+        case BotArchetype::Grinder: return "Grinder";
+        case BotArchetype::Explorer: return "Explorer";
+        default: return "Balanced";
+    }
+}
+
+char const* IntentName(SoloIntent intent)
+{
+    switch (intent)
+    {
+        case SoloIntent::Quest: return "questing";
+        case SoloIntent::Gather: return "gathering";
+        case SoloIntent::Fish: return "fishing";
+        case SoloIntent::Grind: return "grinding";
+        case SoloIntent::Explore: return "exploring";
+        default: return "none";
+    }
+}
+
+void SavePersonality(Player* bot, BotPersonality const& profile)
+{
+    bot->UpdatePlayerSetting(BOT_PROFILE_SETTING, 0, PROFILE_VERSION);
+    bot->UpdatePlayerSetting(BOT_PROFILE_SETTING, 1, uint32(profile.archetype));
+    bot->UpdatePlayerSetting(BOT_PROFILE_SETTING, 2, profile.questing);
+    bot->UpdatePlayerSetting(BOT_PROFILE_SETTING, 3, profile.gathering);
+    bot->UpdatePlayerSetting(BOT_PROFILE_SETTING, 4, profile.fishing);
+    bot->UpdatePlayerSetting(BOT_PROFILE_SETTING, 5, profile.grinding);
+    bot->UpdatePlayerSetting(BOT_PROFILE_SETTING, 6, profile.patience);
+    bot->UpdatePlayerSetting(BOT_PROFILE_SETTING, 7, profile.sociability);
+    bot->UpdatePlayerSetting(BOT_PROFILE_SETTING, 8, profile.seed);
+}
+
+void EnsurePersonality(Player* bot, BotAIState& state)
+{
+    if (state.hasPersonality)
+        return;
+    if (bot->GetPlayerSetting(BOT_PROFILE_SETTING, 0).value == PROFILE_VERSION)
+    {
+        state.personality.archetype = BotArchetype(std::min<uint32>(5, bot->GetPlayerSetting(BOT_PROFILE_SETTING, 1).value));
+        state.personality.questing = uint8(bot->GetPlayerSetting(BOT_PROFILE_SETTING, 2).value);
+        state.personality.gathering = uint8(bot->GetPlayerSetting(BOT_PROFILE_SETTING, 3).value);
+        state.personality.fishing = uint8(bot->GetPlayerSetting(BOT_PROFILE_SETTING, 4).value);
+        state.personality.grinding = uint8(bot->GetPlayerSetting(BOT_PROFILE_SETTING, 5).value);
+        state.personality.patience = uint8(bot->GetPlayerSetting(BOT_PROFILE_SETTING, 6).value);
+        state.personality.sociability = uint8(bot->GetPlayerSetting(BOT_PROFILE_SETTING, 7).value);
+        state.personality.seed = bot->GetPlayerSetting(BOT_PROFILE_SETTING, 8).value;
+    }
+    else
+    {
+        BotPersonality profile;
+        uint32 seed = MixProfileSeed(bot->GetGUID().GetCounter() ^ (uint32(bot->getClass()) << 24));
+        profile.seed = seed;
+        profile.archetype = BotArchetype(seed % 6);
+        uint8 quest = 50, gather = 50, fish = 25, grind = 50;
+        switch (profile.archetype)
+        {
+            case BotArchetype::Quester: quest = 85; grind = 35; break;
+            case BotArchetype::Gatherer: gather = 88; quest = 55; grind = 35; break;
+            case BotArchetype::Angler: fish = 90; gather = 45; quest = 40; break;
+            case BotArchetype::Grinder: grind = 88; quest = 35; gather = 30; break;
+            case BotArchetype::Explorer: quest = 70; gather = 65; fish = 45; grind = 30; break;
+            default: break;
+        }
+        profile.questing = ProfileValue(seed, quest);
+        profile.gathering = ProfileValue(seed, gather);
+        profile.fishing = ProfileValue(seed, fish);
+        profile.grinding = ProfileValue(seed, grind);
+        profile.patience = ProfileValue(seed, 55);
+        profile.sociability = ProfileValue(seed, 45);
+        SavePersonality(bot, profile);
+        state.personality = profile;
+        LOG_INFO("module.coa-playerbots", "BotMgr: assigned {} profile to '{}' (guid {}, seed {}).", ArchetypeName(profile.archetype), bot->GetName(), bot->GetGUID().GetCounter(), profile.seed);
+    }
+    state.hasPersonality = true;
+}
+
+void UpdateSoloIntent(Player* bot, uint32 diff, BotAIState& state)
+{
+    EnsurePersonality(bot, state);
+    if (state.soloIntent != SoloIntent::None && state.soloIntentRemainingMs > diff)
+    {
+        state.soloIntentRemainingMs -= diff;
+        return;
+    }
+    BotPersonality const& p = state.personality;
+    uint32 seed = MixProfileSeed(p.seed ^ ++state.soloIntentGeneration ^ (bot->GetZoneId() * 2654435761U));
+    auto score = [&seed](uint8 preference) { seed = MixProfileSeed(seed); return int32(preference) * 10 + int32(seed % 161) - 80; };
+    uint8 socialQuesting = uint8(std::min(100U, uint32(p.questing) + p.sociability / 4));
+    std::array<std::pair<SoloIntent, int32>, 5> options = {{{ SoloIntent::Quest, score(socialQuesting) }, { SoloIntent::Gather, score(p.gathering) }, { SoloIntent::Fish, score(p.fishing) }, { SoloIntent::Grind, score(p.grinding) }, { SoloIntent::Explore, score(uint8(std::min(100U, (uint32(p.questing) + p.gathering) / 2 + 10))) }}};
+    auto chosen = std::max_element(options.begin(), options.end(), [](auto const& left, auto const& right) { return left.second < right.second; });
+    state.soloIntent = chosen->first;
+    uint32 minMs = sConfigMgr->GetOption<uint32>("CoaBots.Profile.IntentMinMs", 900000);
+    uint32 maxMs = std::max(minMs, sConfigMgr->GetOption<uint32>("CoaBots.Profile.IntentMaxMs", 2100000));
+    uint32 baseDuration = minMs + (MixProfileSeed(seed) % (maxMs - minMs + 1));
+    state.soloIntentRemainingMs = uint32((uint64(baseDuration) * (50 + p.patience)) / 100);
+    LOG_DEBUG("module.coa-playerbots", "BotMgr: '{}' chose solo intent {} for {}ms.", bot->GetName(), IntentName(state.soloIntent), state.soloIntentRemainingMs);
+}
+
 // Real, verified (checked by parsing this server's own Spell.dbc byte-for-byte -- SpellName and
 // EffectApplyAuraName fields, not recalled from memory) basic 60%-speed racial ground mount for
 // each WotLK race. Used only to guarantee every bot owns *something* thematic to ride -- a bot
@@ -287,36 +478,68 @@ uint32 RacialGroundMountSpellFor(uint8 race)
     }
 }
 
-// Confirmed live: a bot repeatedly "successfully" recast a mount spell every tick, forever,
-// despite CastSpell reporting SPELL_CAST_OK every single time -- the selected spell (from this
-// server's account-wide unlocked "wardrobe" of ~1225 mount/companion grants) was a short-duration
-// novelty toy, not a real permanent travel mount, so the SPELL_AURA_MOUNTED aura it applied kept
-// expiring within a tick or two, making the bot look unmounted again almost immediately and
-// triggering another attempt. A real, permanent travel mount's SPELL_AURA_MOUNTED aura has
-// GetMaxDuration() == -1 (WotLK's own convention for "lasts until dismissed"); requiring that
-// here excludes any timed novelty mount shape from ever being selected as the bot's "match the
-// leader" mount, regardless of how many transient ones happen to sort earlier in the spellbook.
+// Faction-specific default flying mounts: Golden Gryphon (Alliance) and Blue Wind Rider (Horde).
+// These are standard, unwrapped WotLK spells that guarantee a flyable mount anywhere flying is permitted.
+uint32 DefaultFlyingMountSpellFor(Player const* bot)
+{
+    return bot->GetTeamId() == TEAM_ALLIANCE ? 32235 : 32244;
+}
+
 bool IsMountSpell(SpellInfo const* spellInfo)
 {
     return spellInfo && !spellInfo->IsPassive() && spellInfo->HasAura(SPELL_AURA_MOUNTED) &&
         spellInfo->GetMaxDuration() == -1;
 }
 
-// Same two auras the engine itself treats as "this mount can fly" (see
-// Player::SendInitialPacketsAfterAddToMap's own resend list for SPELL_AURA_FLY /
-// SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED) -- not a guess.
+// Determines if a spell confers flying capability, checking engine flight auras as well as
+// Ascension mount wrapper definitions.
 bool IsFlyingMountSpell(SpellInfo const* spellInfo)
 {
-    return IsMountSpell(spellInfo) &&
-        (spellInfo->HasAura(SPELL_AURA_FLY) || spellInfo->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED));
+    if (!spellInfo || spellInfo->IsPassive() || spellInfo->GetMaxDuration() != -1)
+        return false;
+
+    if (spellInfo->HasAura(SPELL_AURA_FLY) ||
+        spellInfo->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED) ||
+        spellInfo->HasAura(SPELL_AURA_MOD_FLIGHT_SPEED_ALWAYS))
+        return true;
+
+    auto const& entries = AscensionCollectibles::MountWrappers;
+    auto itr = std::lower_bound(entries.begin(), entries.end(), spellInfo->Id,
+        [](AscensionCollectibles::MountWrapper const& entry, uint32 id) { return entry.SpellId < id; });
+    if (itr != entries.end() && itr->SpellId == spellInfo->Id)
+    {
+        return (itr->Flying150 != 0 || itr->Flying280 != 0 || itr->Flying310 != 0);
+    }
+
+    return false;
 }
 
-// Same "first known match wins" shape as SelectKnownSpell, but for whatever mount(s) this bot
-// already knows -- doesn't rank multiple known mounts by speed, just "something to ride beats
-// walking." wantFlying restricts the search to flying mounts (for matching a flying leader --
-// see TryMatchLeaderMountState); a bot with no flying mount known simply won't find one, same
-// as any other "doesn't know it" case elsewhere in this file. excluded skips spellIds already
-// confirmed not to actually work (see BotAIState::knownBadMountSpells).
+// Checks whether a Unit (leader or bot) is currently mounted on a flying mount
+bool IsUnitOnFlyingMount(Unit const* unit)
+{
+    if (!unit || !unit->IsMounted())
+        return false;
+
+    if (unit->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED) ||
+        unit->HasAuraType(SPELL_AURA_FLY) ||
+        unit->HasAuraType(SPELL_AURA_MOD_FLIGHT_SPEED_ALWAYS) ||
+        unit->IsFlying())
+        return true;
+
+    for (AuraEffect const* aura : unit->GetAuraEffectsByType(SPELL_AURA_MOUNTED))
+    {
+        SpellInfo const* spellInfo = aura->GetSpellInfo();
+        if (spellInfo && (spellInfo->HasAura(SPELL_AURA_FLY) ||
+            spellInfo->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED) ||
+            spellInfo->HasAura(SPELL_AURA_MOD_FLIGHT_SPEED_ALWAYS)))
+            return true;
+    }
+    return false;
+}
+
+// Searches bot's known spells for a matching mount.
+// If wantFlying == true, matches ONLY flying mounts.
+// If wantFlying == false, matches STRICTLY ground-only mounts (excludes any flying mounts or wrappers with flight forms).
 uint32 SelectKnownMountSpell(Player* bot, bool wantFlying = false, std::unordered_set<uint32> const& excluded = {})
 {
     for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
@@ -326,34 +549,165 @@ uint32 SelectKnownMountSpell(Player* bot, bool wantFlying = false, std::unordere
         if (excluded.count(spellId))
             continue;
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-        if (wantFlying ? IsFlyingMountSpell(spellInfo) : IsMountSpell(spellInfo))
-            return spellId;
+        if (!spellInfo || spellInfo->IsPassive() || spellInfo->GetMaxDuration() != -1)
+            continue;
+        if (!spellInfo->HasAura(SPELL_AURA_MOUNTED))
+            continue;
+
+        bool flying = IsFlyingMountSpell(spellInfo);
+        if (wantFlying)
+        {
+            if (flying)
+                return spellId;
+        }
+        else
+        {
+            // Ground only: strictly exclude flying mounts
+            if (!flying)
+                return spellId;
+        }
     }
     return 0;
 }
 
-// Confirmed live: on a server where every bot's account-wide "wardrobe" already grants ~1225
-// mount/companion spells, this used to skip granting the racial mount entirely (the early-out
-// below) -- leaving TryMatchLeaderMountState's ground-mount search with nothing to fall back on
-// but that same huge wrapper collection, where individually-broken entries (see that function's
-// own comment) can exhaust the whole known-mount list via blacklisting and leave a bot
-// permanently unable to mount at all. The plain racial mount is a real, unwrapped WotLK spell
-// with no mod-ascension-compat script sitting in front of it, so it can't fail either of the
-// ways a wrapper can -- always granting it (learnSpell on an already-known spell is a no-op)
-// gives every bot at least one mount that's guaranteed to actually work.
 void EnsureBotHasMount(Player* bot)
 {
-    if (uint32 spellId = RacialGroundMountSpellFor(bot->getRace()))
-        bot->learnSpell(spellId);
+    if (uint32 groundSpell = RacialGroundMountSpellFor(bot->getRace()))
+        if (!bot->HasSpell(groundSpell))
+            bot->learnSpell(groundSpell);
+
+    if (uint32 flySpell = DefaultFlyingMountSpellFor(bot))
+        if (!bot->HasSpell(flySpell))
+            bot->learnSpell(flySpell);
+
+    // Cold Weather Flying (54197) to enable Northrend flying
+    if (!bot->HasSpell(54197))
+        bot->learnSpell(54197);
 }
 
-// Mirrors the group leader's mounted state -- confirmed live bug report: bots never reacted
-// to the player mounting up at all, ground or flying. Checked every tick (cheap: a couple of
-// aura/state lookups, no scans) rather than folded into TryMaintainProgression's 10s throttle,
-// since mounting is something the player expects to see happen right away, not with up to a
-// 10-second lag. Doesn't try to match the exact mount, just the *capability* (fly vs ground) --
-// a bot with no known flying mount falls back to its ground one rather than staying grounded
-// for no visible reason once the leader takes off; still better than not mounting at all.
+void ClearActiveFollow(Player* bot);
+
+// Resolves in-progress mount cast for both grouped and solo bots
+void ResolvePendingMountCast(Player* bot, BotAIState& state)
+{
+    if (bot->IsMounted())
+    {
+        state.pendingMountSpellId = 0;
+        return;
+    }
+
+    if (!state.pendingMountSpellId)
+        return;
+
+    // Mount casts have a 1.5s (1500 ms) cast time. If the bot is still casting,
+    // wait for it to complete -- DO NOT interrupt, blacklist, or restart!
+    if (bot->IsNonMeleeSpellCast(false))
+        return;
+
+    uint32 justTried = state.pendingMountSpellId;
+    state.pendingMountSpellId = 0;
+
+    if (bot->IsMounted())
+    {
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' confirmed mounted (spell {}).", bot->GetName(), justTried);
+    }
+    else
+    {
+        // Cast completed or was interrupted without leaving the bot mounted.
+        // Only blacklist custom/wrapper spells if bot was stationary, out of combat, and not interrupted.
+        if (!bot->IsInCombat() && !bot->isMoving() &&
+            justTried != RacialGroundMountSpellFor(bot->getRace()) &&
+            justTried != DefaultFlyingMountSpellFor(bot))
+        {
+            state.knownBadMountSpells.insert(justTried);
+            LOG_INFO("module.coa-playerbots",
+                "BotAI: bot '{}' mount spell {} finished cast but bot is not mounted -- marking bad.",
+                bot->GetName(), justTried);
+        }
+    }
+}
+
+// Reusable mounting helper for both group-following and autonomous long-distance travel
+bool TryMount(Player* bot, BotAIState& state, bool wantFlying = false)
+{
+    if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+        return false;
+
+    if (bot->IsMounted())
+        return true;
+
+    if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(false) || !bot->IsOutdoors())
+        return false;
+
+    if (bot->GetLevel() < 20)
+        return false;
+
+    if (state.pendingMountSpellId)
+        return false;
+
+    if (wantFlying)
+    {
+        // Only allow flying mounts in Outland (map 530) or Northrend (map 571) with level >= 60
+        uint32 mapId = bot->GetMapId();
+        if ((mapId != 530 && mapId != 571) || bot->GetLevel() < 60)
+            wantFlying = false;
+    }
+
+    uint32 spellId = 0;
+    if (wantFlying)
+    {
+        uint32 defaultFly = DefaultFlyingMountSpellFor(bot);
+        if (defaultFly && bot->HasSpell(defaultFly) && !state.knownBadMountSpells.count(defaultFly))
+            spellId = defaultFly;
+
+        if (!spellId)
+            spellId = SelectKnownMountSpell(bot, true /*wantFlying*/, state.knownBadMountSpells);
+
+        if (!spellId)
+            spellId = RacialGroundMountSpellFor(bot->getRace());
+    }
+    else
+    {
+        uint32 racialSpellId = RacialGroundMountSpellFor(bot->getRace());
+        if (racialSpellId && bot->HasSpell(racialSpellId) && !state.knownBadMountSpells.count(racialSpellId))
+            spellId = racialSpellId;
+
+        if (!spellId)
+            spellId = SelectKnownMountSpell(bot, false /*wantFlying*/, state.knownBadMountSpells);
+    }
+
+    if (!spellId)
+        return false;
+
+    ClearActiveFollow(bot);
+    bot->StopMoving();
+
+    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' attempting to mount spell {} (wantFlying={}).",
+        bot->GetName(), spellId, wantFlying);
+
+    SpellCastResult result = bot->CastSpell(bot, spellId, false);
+    if (result == SPELL_CAST_OK)
+    {
+        state.pendingMountSpellId = spellId;
+        return true;
+    }
+
+    LOG_INFO("module.coa-playerbots",
+        "BotAI: bot '{}' mount spell {} failed to cast (result {}).",
+        bot->GetName(), spellId, uint32(result));
+
+    if (spellId != RacialGroundMountSpellFor(bot->getRace()) && spellId != DefaultFlyingMountSpellFor(bot))
+    {
+        if (result != SPELL_FAILED_ONLY_OUTDOORS && result != SPELL_FAILED_MOVING &&
+            result != SPELL_FAILED_SPELL_IN_PROGRESS && result != SPELL_FAILED_NOT_HERE)
+        {
+            state.knownBadMountSpells.insert(spellId);
+        }
+    }
+    return false;
+}
+
+// Synchronizes the bot's mounted state and mount type (ground vs flying) with the group leader.
 void TryMatchLeaderMountState(Player* bot, BotAIState& state)
 {
     Group* group = bot->GetGroup();
@@ -364,6 +718,7 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
     if (!leader || leader == bot || !leader->IsInWorld() || leader->GetMap() != bot->GetMap())
         return;
 
+    // 2. Leader is NOT mounted -> bot must dismount / cancel pending cast
     if (!leader->IsMounted())
     {
         if (bot->IsMounted())
@@ -372,99 +727,127 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
                 bot->GetName(), leader->GetName());
             bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
         }
+        if (state.pendingMountSpellId)
+        {
+            state.pendingMountSpellId = 0;
+            bot->InterruptNonMeleeSpells(false);
+        }
         return;
     }
 
+    // 3. Leader IS mounted: determine ground vs flying mount type
+    bool leaderFlying = IsUnitOnFlyingMount(leader);
+
     if (bot->IsMounted())
-        return;
-
-    // Mounting while in combat, or while moving, fails the same way for a real player -- not a
-    // bug to work around, just an early-out so this doesn't burn a cast attempt every single
-    // tick. Confirmed live (the result-logging below caught it): every attempt was failing with
-    // SPELL_FAILED_MOVING, visible in-game as a repeated cast-then-cancel flicker, since a bot
-    // actively chasing its follow slot is "moving" from the engine's perspective at the exact
-    // moment this used to fire every tick. Skipping outright while moving (rather than trying
-    // and discarding the failure) removes that visible jitter entirely; the bot naturally gets
-    // a real attempt in once it settles into its slot and stops.
-    if (bot->IsInCombat() || bot->isMoving())
-        return;
-
-    bool leaderFlying = false;
-    for (AuraEffect const* aura : leader->GetAuraEffectsByType(SPELL_AURA_MOUNTED))
     {
-        if (IsFlyingMountSpell(aura->GetSpellInfo()))
+        state.pendingMountSpellId = 0;
+        bool botFlying = IsUnitOnFlyingMount(bot);
+        if (leaderFlying != botFlying)
         {
-            leaderFlying = true;
-            break;
+            LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' switching mount type (botFlying={} vs leaderFlying={}).",
+                bot->GetName(), botFlying, leaderFlying);
+            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        }
+        else
+        {
+            return;
         }
     }
 
-    // Prefer the bot's own racial ground mount over the wardrobe collection whenever a ground
-    // mount is what's wanted -- see EnsureBotHasMount's comment for why: it's a real, unwrapped
-    // spell that can't hit either of the wardrobe-wrapper failure modes, so it sidesteps the
-    // whole "which of ~1225 collected mounts actually work" problem entirely for the common
-    // case. Only falls through to the wardrobe scan for a flying mount (racial mounts don't fly)
-    // or if the racial spell itself somehow isn't known yet.
-    uint32 spellId = 0;
-    if (!leaderFlying)
-    {
-        uint32 racialSpellId = RacialGroundMountSpellFor(bot->getRace());
-        LOG_INFO("module.coa-playerbots",
-            "BotAI: bot '{}' (race {}) racial mount diagnostic: racialSpellId={} hasSpell={} blacklisted={}.",
-            bot->GetName(), uint32(bot->getRace()), racialSpellId,
-            racialSpellId ? bot->HasSpell(racialSpellId) : false,
-            racialSpellId ? state.knownBadMountSpells.count(racialSpellId) > 0 : false);
-        if (racialSpellId && bot->HasSpell(racialSpellId) && !state.knownBadMountSpells.count(racialSpellId))
-            spellId = racialSpellId;
-    }
-    if (!spellId)
-        spellId = leaderFlying ? SelectKnownMountSpell(bot, true, state.knownBadMountSpells) : 0;
-    if (!spellId)
-        spellId = SelectKnownMountSpell(bot, false, state.knownBadMountSpells);
-    if (!spellId)
-        return;
-
-    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' attempting to mount (leader '{}' is mounted, bot stationary and out of combat).",
-        bot->GetName(), leader->GetName());
-
-    // Root-caused live: this server's mount "wardrobe" wraps every collected mount in
-    // mod-ascension-compat's spell_ascension_local_mount script, which resolves the wrapper to a
-    // real ground/flying spell internally -- and individual collected mounts can be broken for a
-    // bot's use in more than one way: one wrapper reported SPELL_CAST_OK but silently mounted
-    // nothing (no ground variant for the specific mount collected); a different one failed the
-    // cast outright with SPELL_FAILED_CASTER_AURASTATE (a precondition aura a bot's bulk
-    // "grant everything" collection sync apparently never set up, unlike normal client-driven
-    // acquisition). Both are permanent properties of that specific spellId for this bot, not
-    // transient conditions -- moving/combat are already screened out above, so *any* non-success
-    // result here (an outright failure, or a success that doesn't actually leave the bot mounted)
-    // means this spellId doesn't work and should be skipped in favor of a different known mount,
-    // not retried forever.
-    SpellCastResult result = bot->CastSpell(bot, spellId, false);
-    if (result == SPELL_CAST_OK && bot->IsMounted())
-    {
-        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' successfully mounted (spell {}).", bot->GetName(), spellId);
-        return;
-    }
-
-    state.knownBadMountSpells.insert(spellId);
-    LOG_INFO("module.coa-playerbots",
-        "BotAI: bot '{}' mount spell {} didn't work (result {}, IsMounted()={} after) -- "
-        "marking it bad and trying a different known mount next tick.",
-        bot->GetName(), spellId, uint32(result), bot->IsMounted());
+    TryMount(bot, state, leaderFlying);
 }
+
+// Rough per-role/class stat-fit weighting for ScoreItemForBot -- deliberately not a full
+// per-spec stat-priority system (that needs the same kind of dedicated per-class research as
+// BotClassRotations.cpp, which doesn't exist yet for most of the 21 custom classes), but enough
+// to stop a bot "upgrading" into an item just because its raw ItemLevel is higher while its
+// actual stat budget is wasted on stats that class/role never uses (e.g. a caster picking up a
+// Strength/Agility weapon, or a Tank picking up a pure-Intellect trinket). Confirmed live: the
+// ItemLevel-only version this replaces did exactly that. Base class (not the Ascension 12-32
+// classId) is enough here since it's what actually drives armor/weapon proficiency and the
+// underlying stock stat pools (Str/Agi/Int/Spirit/Stam) every one of the 21 custom classes still
+// inherits.
+} // anonymous namespace
+
+namespace BotAI
+{
+float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role)
+{
+    uint8 cls = bot->getClass();
+
+    bool isCasterDps = (cls == CLASS_MAGE || cls == CLASS_WARLOCK || cls == CLASS_PRIEST ||
+                        cls == 13 /* Witch Doctor */ || cls == 20 /* Bloodmage */ ||
+                        cls == 22 /* Chronomancer */ || cls == 23 /* Necromancer */ ||
+                        cls == 24 /* Pyromancer */ || cls == 25 /* Cultist */ ||
+                        cls == 26 /* Starcaller */);
+    bool isAgiDps = (cls == CLASS_HUNTER || cls == CLASS_ROGUE || cls == CLASS_DRUID || cls == CLASS_SHAMAN ||
+                     cls == 14 /* Felsworn */ || cls == 15 /* Witch Hunter */ ||
+                     cls == 16 /* Stormbringer */ || cls == 21 /* Ranger */ ||
+                     cls == 28 /* Tinker */ || cls == 29 /* Venomancer */ ||
+                     cls == 30 /* Primalist */);
+    bool isStrDps = (cls == CLASS_WARRIOR || cls == CLASS_PALADIN || cls == CLASS_DEATH_KNIGHT ||
+                     cls == 12 /* Barbarian */ || cls == 17 /* Xoroth */ ||
+                     cls == 18 /* Guardian */ || cls == 19 /* Templar */ ||
+                     cls == 31 /* Runemaster */ || cls == 32 /* Reaper */);
+
+    bool wantsInt = role == BotRole::Healer || role == BotRole::Support || (role == BotRole::Dps && isCasterDps);
+    bool wantsAgility = role == BotRole::Dps && isAgiDps;
+    bool wantsStrength = (role == BotRole::Tank) || (role == BotRole::Dps && isStrDps);
+    bool wantsSpirit = role == BotRole::Healer;
+    bool wantsTankStats = role == BotRole::Tank;
+    bool wantsDpsRatings = role == BotRole::Dps;
+    bool wantsHealPower = role == BotRole::Healer || role == BotRole::Support;
+
+    // Effective (quality-adjusted) item level as the base score -- still the floor, same as
+    // before, just no longer the *only* signal: a stat-appropriate rare can now outscore a
+    // stat-inappropriate epic of similar ilvl instead of always losing on raw ItemLevel alone.
+    float score = proto->GetItemLevelIncludingQuality(bot->GetLevel());
+    for (uint32 i = 0; i < MAX_ITEM_PROTO_STATS; ++i)
+    {
+        int32 value = proto->ItemStat[i].ItemStatValue;
+        if (!value)
+            continue;
+
+        float weight = 0.0f;
+        switch (proto->ItemStat[i].ItemStatType)
+        {
+            case ITEM_MOD_STAMINA:             weight = wantsTankStats ? 1.0f : 0.3f; break;
+            case ITEM_MOD_INTELLECT:           weight = wantsInt ? 1.0f : 0.0f; break;
+            case ITEM_MOD_SPIRIT:              weight = wantsSpirit ? 0.8f : 0.0f; break;
+            case ITEM_MOD_STRENGTH:            weight = wantsStrength ? 1.0f : 0.0f; break;
+            case ITEM_MOD_AGILITY:             weight = wantsAgility ? 1.0f : 0.0f; break;
+            case ITEM_MOD_DEFENSE_SKILL_RATING:
+            case ITEM_MOD_DODGE_RATING:
+            case ITEM_MOD_PARRY_RATING:
+            case ITEM_MOD_BLOCK_RATING:         weight = wantsTankStats ? 0.6f : 0.0f; break;
+            case ITEM_MOD_HIT_RATING:
+            case ITEM_MOD_CRIT_RATING:
+            case ITEM_MOD_HASTE_RATING:
+            case ITEM_MOD_ATTACK_POWER:         weight = wantsDpsRatings ? 0.4f : 0.0f; break;
+            case ITEM_MOD_SPELL_POWER:          weight = (wantsHealPower || wantsInt) ? 0.4f : 0.0f; break;
+            case ITEM_MOD_MANA_REGENERATION:    weight = wantsHealPower ? 0.4f : 0.0f; break;
+            default: break;
+        }
+        score += float(value) * weight;
+    }
+    return score;
+}
+} // namespace BotAI
+
+namespace
+{
+using BotAI::ScoreItemForBot;
+
 
 // Periodic, throttled bag scan for a gear upgrade -- same shape as TryMaintainBuff. Reuses the
 // real engine's own authoritative "can this class/race actually equip this" check
 // (Player::CanEquipItem, the same one WorldSession::HandleAutoEquipItemOpcode itself calls --
-// covers armor-type proficiency, weapon-type proficiency, level requirement, everything) and
-// Player::FindEquipSlot (the same real method that picks the correct slot for a two-hander, a
-// ring, a trinket, etc). Deliberately does NOT attempt a per-class/per-spec stat-priority system
-// -- that needs the same kind of dedicated per-class research as BotClassRotations.cpp, which
-// doesn't exist yet for most of the 21 custom classes. ItemTemplate::ItemLevel is used as the
-// single comparison metric instead: a real, always-present, designer-calibrated "how good is
-// this overall" scalar -- a floor, not a ceiling, exactly like the rest of this file's
-// class-agnostic heuristics.
-void TryUpgradeGearOnce(Player* bot)
+// covers armor-type proficiency, weapon-type proficiency, level requirement, everything -- so an
+// item the bot's class/spec genuinely can't wear, wrong armor or weapon type included, never
+// gets this far) and Player::FindEquipSlot (the same real method that picks the correct slot for
+// a two-hander, a ring, a trinket, an off-hand item, etc). ScoreItemForBot above decides whether
+// a legal candidate is actually worth swapping to.
+void TryUpgradeGearOnce(Player* bot, BotRole role)
 {
     auto considerItem = [&](Item* item) -> bool
     {
@@ -479,16 +862,23 @@ void TryUpgradeGearOnce(Player* bot)
             return false;
 
         Item* current = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, eslot);
-        if (current && current->GetTemplate()->ItemLevel >= proto->ItemLevel)
-            return false; // not an upgrade over what's already worn there
+        float newScore = ScoreItemForBot(bot, proto, role);
+        if (current)
+        {
+            // Small margin, not a strict ">" -- avoids swapping back and forth every scan
+            // between two items that score within noise of each other.
+            float currentScore = ScoreItemForBot(bot, current->GetTemplate(), role);
+            if (newScore <= currentScore * 1.05f)
+                return false;
+        }
 
         uint16 dest = uint16(eslot) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
         if (bot->CanEquipItem(NULL_SLOT, dest, item, true) != EQUIP_ERR_OK)
             return false; // class/race/level can't actually use this one
 
         bot->SwapItem(item->GetPos(), dest);
-        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' equipped '{}' (ilvl {}) over slot {} (was ilvl {}).",
-            bot->GetName(), proto->Name1, proto->ItemLevel, uint32(eslot), current ? current->GetTemplate()->ItemLevel : 0);
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' equipped '{}' (score {:.0f}) over slot {} (was score {:.0f}).",
+            bot->GetName(), proto->Name1, newScore, uint32(eslot), current ? ScoreItemForBot(bot, current->GetTemplate(), role) : 0.0f);
         return true;
     };
 
@@ -795,7 +1185,7 @@ void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
     state.nextProgressionCheckMs = PROGRESSION_CHECK_INTERVAL_MS;
 
     EnsureBotHasMount(bot);
-    TryUpgradeGearOnce(bot);
+    TryUpgradeGearOnce(bot, state.role);
     TryMaintainEquipment(bot);
     TryAutoSignLeaderPetition(bot);
 }
@@ -1235,7 +1625,24 @@ public:
         //    generalizes to every current and future dummy-shaped NPC regardless of name.
         if (Creature const* creature = u->ToCreature())
         {
-            if (creature->GetScriptName() == "npc_training_dummy")
+            // Confirmed live -- reported again after this realm's own custom test dummies
+            // ("CoA Test Attacking Dummy", "CoA Test Demon Dummy", etc.) turned out to use
+            // entirely different AI scripts (npc_coa_test_attacking_dummy, npc_coa_test_
+            // enemy_dummy, npc_coa_test_evasion_dummy, npc_coa_test_friendly_dummy -- confirmed
+            // via direct DB query) than the stock npc_training_dummy this check already
+            // excluded, so a solo/idle bot near the class-template spawn point (where every one
+            // of these lives) piled onto them exactly like the original town-dummy problem: an
+            // un-killable target these can never actually finish off, endlessly re-attempting
+            // every tick. Matched by prefix, not each name individually, so any future
+            // npc_coa_test_* variant is excluded automatically without needing another report.
+            // Also excludes critters (rabbits, squirrels, etc. -- CREATURE_TYPE_CRITTER): valid
+            // attack targets per Unit::IsValidAttackTarget, but not something a real player
+            // grinds for XP/loot, and killing them en masse across a large solo-bot population
+            // serves no purpose worth the extra unit updates.
+            std::string const& scriptName = creature->GetScriptName();
+            if (scriptName == "npc_training_dummy" || scriptName.rfind("npc_coa_test_", 0) == 0)
+                return false;
+            if (creature->GetCreatureTemplate() && creature->GetCreatureTemplate()->type == CREATURE_TYPE_CRITTER)
                 return false;
         }
         _range = _me->GetDistance(u); // shrink the search radius to the closest hit so far
@@ -1249,67 +1656,268 @@ private:
     std::unordered_set<uint32> const* _requiredEntries;
 };
 
-// Real "open, take everything, release" loot flow for a bot's own kill -- same "synthesize the
-// packet, call the real handler" pattern already used elsewhere in this module (group-accept,
-// corpse-reclaim, loot-roll). Without this, a bot's kills (from TryGrindWhenSolo or otherwise)
-// would die and just sit there unlooted forever, since nothing else in this module ever opens a
-// loot window at all.
-//
-// Confirmed live -- user pushback on the original solo-only design: a grouped bot never looted
-// anything at all, which just meant loot sat there forever instead. Extended to grouped kills
-// too, checking the group-level recipient (GetLootRecipientGroup()) instead of requiring an
-// exact bot-guid match when grouped. This deliberately does NOT try to reimplement round-robin/
-// master-loot/need-greed fairness itself -- HandleAutostoreLootItemOpcode is the real handler a
-// client's own loot window uses, and it already enforces the group's actual loot method
-// (declining to store a slot that isn't this bot's turn/role, exactly like a real client would
-// see an empty or restricted loot window), so calling it for every slot is safe regardless of
-// method: a slot the bot isn't entitled to simply won't be granted. BotMgr::DoRollGreed already
-// separately handles the need/greed roll prompt itself for reserved-quality items.
-void TryAutoLootDeadTarget(Player* bot, BotAIState& state)
+void MoveBotToPoint(Player* bot, float x, float y, float z)
 {
-    ObjectGuid targetGuid = state.lastCombatTargetGuid;
-    state.lastCombatTargetGuid = ObjectGuid::Empty; // one-shot regardless of outcome below
-
-    if (targetGuid.IsEmpty())
+    if (bot->IsNonMeleeSpellCast(false))
         return;
 
-    Creature* creature = ObjectAccessor::GetCreature(*bot, targetGuid);
-    if (!creature || creature->IsAlive() || !creature->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
-        return;
-    if (creature->loot.isLooted())
-        return;
+    float groundZ = z;
+    if (!bot->CanFly())
+        bot->UpdateAllowedPositionZ(x, y, groundZ);
+    if (groundZ <= INVALID_HEIGHT)
+        groundZ = z;
 
-    bool isRecipient = creature->GetLootRecipientGUID() == bot->GetGUID();
-    if (!isRecipient && bot->GetGroup())
-        isRecipient = creature->GetLootRecipientGroup() == bot->GetGroup();
-    if (!isRecipient)
-        return;
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+        bot->GetMotionMaster()->MovePoint(0, x, y, groundZ);
+}
 
-    WorldPacket openPacket;
-    openPacket << creature->GetGUID();
-    bot->GetSession()->HandleLootOpcode(openPacket);
-
-    if (bot->GetLootGUID() != creature->GetGUID())
-        return; // handler declined to open it (out of range/not the recipient/etc.)
-
-    Loot& loot = creature->loot;
-    for (uint8 slot = 0; slot < loot.items.size(); ++slot)
+// Real "open, take everything, release" loot flow draining the bot's pending loot queue.
+// Allows bots to systematically path to and loot all trash and boss kills in an encounter.
+bool TryProcessPendingLoot(Player* bot, uint32 /*diff*/, BotAIState& state)
+{
+    // If we have a single lastCombatTargetGuid from combat, push it into pendingLootGuids
+    if (!state.lastCombatTargetGuid.IsEmpty())
     {
-        WorldPacket storePacket;
-        storePacket << slot;
-        bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
+        bool alreadyInQueue = false;
+        for (auto const& g : state.pendingLootGuids)
+        {
+            if (g == state.lastCombatTargetGuid)
+            {
+                alreadyInQueue = true;
+                break;
+            }
+        }
+        if (!alreadyInQueue)
+        {
+            if (state.pendingLootGuids.size() >= 15)
+                state.pendingLootGuids.pop_front();
+            state.pendingLootGuids.push_back(state.lastCombatTargetGuid);
+        }
+        state.lastCombatTargetGuid = ObjectGuid::Empty;
     }
-    if (loot.gold)
+
+    if (state.pendingLootGuids.empty())
+        return false;
+
+    // If leader is far away or fighting, abort looting to stay with group
+    if (Group* group = bot->GetGroup())
     {
-        WorldPacket moneyPacket;
-        bot->GetSession()->HandleLootMoneyOpcode(moneyPacket);
+        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+        {
+            if (leader->IsInCombat() || bot->GetDistance(leader) > 40.0f)
+                return false;
+        }
     }
 
-    WorldPacket releasePacket;
-    releasePacket << creature->GetGUID();
-    bot->GetSession()->HandleLootReleaseOpcode(releasePacket);
+    while (!state.pendingLootGuids.empty())
+    {
+        ObjectGuid corpseGuid = state.pendingLootGuids.front();
+        Creature* creature = ObjectAccessor::GetCreature(*bot, corpseGuid);
+        if (!creature || creature->IsAlive() || creature->loot.isLooted() || creature->GetMap() != bot->GetMap())
+        {
+            state.pendingLootGuids.pop_front();
+            continue;
+        }
 
-    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' auto-looted '{}'.", bot->GetName(), creature->GetName());
+        float dist = bot->GetDistance(creature);
+        if (dist > 30.0f)
+        {
+            state.pendingLootGuids.pop_front();
+            continue;
+        }
+
+        if (dist > INTERACTION_DISTANCE)
+        {
+            MoveBotToPoint(bot, creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
+            return true;
+        }
+
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            bot->GetMotionMaster()->Clear();
+
+        bool isRecipient = creature->GetLootRecipientGUID() == bot->GetGUID();
+        if (!isRecipient && bot->GetGroup())
+            isRecipient = creature->GetLootRecipientGroup() == bot->GetGroup();
+
+        if (isRecipient)
+        {
+            WorldPacket openPacket;
+            openPacket << creature->GetGUID();
+            bot->GetSession()->HandleLootOpcode(openPacket);
+
+            if (bot->GetLootGUID() == creature->GetGUID())
+            {
+                Loot& loot = creature->loot;
+                for (uint8 slot = 0; slot < loot.items.size(); ++slot)
+                {
+                    WorldPacket storePacket;
+                    storePacket << slot;
+                    bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
+                }
+                if (loot.gold)
+                {
+                    WorldPacket moneyPacket;
+                    bot->GetSession()->HandleLootMoneyOpcode(moneyPacket);
+                }
+
+                WorldPacket releasePacket;
+                releasePacket << creature->GetGUID();
+                bot->GetSession()->HandleLootReleaseOpcode(releasePacket);
+
+                LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' auto-looted '{}'.", bot->GetName(), creature->GetName());
+            }
+        }
+
+        state.pendingLootGuids.pop_front();
+        return true;
+    }
+
+    return false;
+}
+
+// Out-of-combat rest behavior: sits and consumes food/drink when HP or mana are depleted between pulls
+bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& state)
+{
+    if (bot->IsInCombat())
+    {
+        if (state.isResting)
+        {
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+            state.isResting = false;
+        }
+        return false;
+    }
+
+    if (bot->IsMounted() || state.pendingMountSpellId)
+    {
+        if (state.isResting)
+        {
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+            state.isResting = false;
+        }
+        return false;
+    }
+
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            if (Player* member = itr->GetSource())
+            {
+                if (member->IsInCombat())
+                {
+                    if (state.isResting)
+                    {
+                        bot->SetStandState(UNIT_STAND_STATE_STAND);
+                        state.isResting = false;
+                    }
+                    return false;
+                }
+            }
+        }
+
+        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+        {
+            if (leader->IsMounted() || bot->GetDistance(leader) > 35.0f)
+            {
+                if (state.isResting)
+                {
+                    bot->SetStandState(UNIT_STAND_STATE_STAND);
+                    state.isResting = false;
+                }
+                return false;
+            }
+        }
+    }
+
+    float hpPct = bot->GetHealthPct();
+    bool usesMana = (bot->getPowerType() == POWER_MANA);
+    float manaPct = usesMana ? bot->GetPowerPct(POWER_MANA) : 100.0f;
+
+    float startHpPct = 45.0f;
+    float startManaPct = 25.0f;
+    float endHpPct = 75.0f;
+    float endManaPct = 70.0f;
+
+    if (role == BotRole::Healer)
+    {
+        startHpPct = 60.0f;
+        startManaPct = 50.0f;
+        endHpPct = 80.0f;
+        endManaPct = 85.0f;
+    }
+    else if (role == BotRole::Tank)
+    {
+        startHpPct = 60.0f;
+        startManaPct = 30.0f;
+        endHpPct = 85.0f;
+        endManaPct = 60.0f;
+    }
+
+    if (!state.isResting)
+    {
+        bool needsHp = (hpPct < startHpPct);
+        bool needsMana = (usesMana && manaPct < startManaPct);
+        if (!needsHp && !needsMana)
+            return false;
+
+        bot->StopMoving();
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+            bot->GetMotionMaster()->Clear();
+        bot->SetStandState(UNIT_STAND_STATE_SIT);
+        state.isResting = true;
+
+        if (needsHp && !bot->HasAura(433))
+            bot->CastSpell(bot, 433, true);
+        if (needsMana && !bot->HasAura(431))
+            bot->CastSpell(bot, 431, true);
+
+        return true;
+    }
+
+    bool doneHp = (hpPct >= endHpPct);
+    bool doneMana = (!usesMana || manaPct >= endManaPct);
+
+    if (doneHp && doneMana)
+    {
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+        bot->RemoveAurasDueToSpell(433);
+        bot->RemoveAurasDueToSpell(431);
+        state.isResting = false;
+        return false;
+    }
+
+    if (hpPct < endHpPct && !bot->HasAura(433))
+        bot->CastSpell(bot, 433, true);
+    if (usesMana && manaPct < endManaPct && !bot->HasAura(431))
+        bot->CastSpell(bot, 431, true);
+
+    return true;
+}
+
+bool IsCityOrSanctuary(Player const* bot)
+{
+    if (bot->IsInSanctuary())
+        return true;
+
+    uint32 zoneId = bot->GetZoneId();
+    switch (zoneId)
+    {
+        case 1519: // Stormwind
+        case 1537: // Ironforge
+        case 1657: // Darnassus
+        case 3557: // Exodar
+        case 1637: // Orgrimmar
+        case 1638: // Thunder Bluff
+        case 1497: // Undercity
+        case 3487: // Silvermoon
+        case 4395: // Dalaran
+        case 3703: // Shattrath
+            return true;
+        default:
+            break;
+    }
+    return false;
 }
 
 // Called from UpdateOffensive's idle branch, only for a bot with no group at all (a grouped
@@ -1318,6 +1926,13 @@ void TryAutoLootDeadTarget(Player* bot, BotAIState& state)
 // already excludes this at the call site, same as it excludes inheriting the leader's target.
 void TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
 {
+    if (IsCityOrSanctuary(bot))
+    {
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            bot->GetMotionMaster()->Clear();
+        return;
+    }
+
     if (!state.hasGrindAnchor || state.grindAnchorMapId != bot->GetMapId())
     {
         // First time this bot's been seen idle and ungrouped, or the old anchor was on a map
@@ -1336,8 +1951,7 @@ void TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
         // A grind-chase can drag a bot well past its anchor by the time the fight ends --
         // walk back before looking for another one, same idea as ResumeFollowingLeader walking
         // a grouped bot back to its leader.
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
-            bot->GetMotionMaster()->MovePoint(0, state.grindAnchorX, state.grindAnchorY, state.grindAnchorZ);
+        MoveBotToPoint(bot, state.grindAnchorX, state.grindAnchorY, state.grindAnchorZ);
         return;
     }
 
@@ -1360,38 +1974,36 @@ void TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
     CollectQuestObjectiveEntries(bot, wantedCreatures, wantedGameObjects);
     if (!wantedCreatures.empty())
     {
-        GrindHostileUnitCheck questCheck(bot, GRIND_SEARCH_RADIUS, bot->GetLevel() + GRIND_MAX_LEVEL_ABOVE, &wantedCreatures);
+        GrindHostileUnitCheck questCheck(bot, GrindSearchRadius(), bot->GetLevel() + GrindMaxLevelAbove(), &wantedCreatures);
         Acore::UnitLastSearcher<GrindHostileUnitCheck> questSearcher(bot, target, questCheck);
-        Cell::VisitObjects(bot, questSearcher, GRIND_SEARCH_RADIUS);
+        Cell::VisitObjects(bot, questSearcher, GrindSearchRadius());
     }
 
     if (!target)
     {
-        GrindHostileUnitCheck check(bot, GRIND_SEARCH_RADIUS, bot->GetLevel() + GRIND_MAX_LEVEL_ABOVE);
+        GrindHostileUnitCheck check(bot, GrindSearchRadius(), bot->GetLevel() + GrindMaxLevelAbove());
         Acore::UnitLastSearcher<GrindHostileUnitCheck> searcher(bot, target, check);
-        Cell::VisitObjects(bot, searcher, GRIND_SEARCH_RADIUS);
+        Cell::VisitObjects(bot, searcher, GrindSearchRadius());
     }
 
     if (target)
         bot->Attack(target, true);
+    else if (!wantedCreatures.empty())
+    {
+        Position objectivePos;
+        uint32 objEntry = 0;
+        bool isGoObj = false;
+        if (sBotQuestTracker->FindNearestQuestObjective(bot, objectivePos, objEntry, isGoObj) && !isGoObj)
+        {
+            MoveBotToPoint(bot, objectivePos.GetPositionX(), objectivePos.GetPositionY(), objectivePos.GetPositionZ());
+        }
+    }
 }
 
-// Opt-in "Auto Dungeon Mode" (BotMgr::SetAutoDungeonMode, toggled via the addon's AUTODUNGEON
-// verb) lets a Tank bot run point through an instance on its own -- scans for the nearest
-// hostile pack when idle and pulls it, instead of waiting for the real player to engage first.
-//
-// Deliberately does NOT attempt to encode per-dungeon boss order, phase gating, or encounter
-// mechanics (interrupts, avoid-the-fire, positioning, hard enrage timers) -- that's a
-// fundamentally different, much bigger research project scoped per instance, not something to
-// bite off alongside a general-purpose combat AI. Instead this leans entirely on the real
-// gating already built into virtually every AzerothCore dungeon/raid script: a locked door or
-// gameobject that only opens once a prerequisite boss dies, a room that resets to full health
-// if pulled before an earlier trigger fires, a boss that simply isn't reachable until the path
-// there is cleared. That's the same mechanism that keeps a real, uncoordinated pug roughly on
-// the intended path without anyone reciting the "correct" order out loud -- a bot that just
-// walks toward and engages whatever's nearest and currently reachable will, in practice, hit
-// most content in playable order almost everywhere, because skipping ahead is usually
-// physically blocked by the instance itself, not by player judgment.
+// Opt-in "Auto Dungeon Mode" (BotMgr::SetAutoDungeonMode, toggled via .botcmd autodungeon on/off
+// or the addon's AUTODUNGEON verb) lets a Tank bot run point through an instance on its own.
+// It engages nearby hostile packs and pathfinds sequentially to uncleared bosses using real
+// creature spawn data and CREATURE_FLAG_EXTRA_DUNGEON_BOSS flags.
 void TryAutoPullInInstance(Player* bot)
 {
     Group* group = bot->GetGroup();
@@ -1409,16 +2021,73 @@ void TryAutoPullInInstance(Player* bot)
     if (!sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID()))
         return;
 
-    // No level cap here (unlike GrindHostileUnitCheck's normal solo-grind use) -- a dungeon's
-    // own population is already the level range the group is meant to be fighting, not
-    // something this needs to second-guess.
+    // Point runner Tank check
+    bool isPointRunner = (BotAI::GetRole(bot->GetGUID()) == BotRole::Tank);
+    if (!isPointRunner)
+        return;
+
+    // 1. Pull nearby hostile creature
     Unit* target = nullptr;
-    GrindHostileUnitCheck check(bot, GRIND_SEARCH_RADIUS, 255);
+    GrindHostileUnitCheck check(bot, GrindSearchRadius(), 255);
     Acore::UnitLastSearcher<GrindHostileUnitCheck> searcher(bot, target, check);
-    Cell::VisitObjects(bot, searcher, GRIND_SEARCH_RADIUS);
+    Cell::VisitObjects(bot, searcher, GrindSearchRadius());
 
     if (target)
+    {
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            bot->GetMotionMaster()->Clear();
         bot->Attack(target, true);
+        return;
+    }
+
+    // 2. Head toward the nearest uncleared dungeon encounter boss
+    CreatureDataContainer const& allCreatures = sObjectMgr->GetAllCreatureData();
+    float bestDistSq = 99999999.0f;
+    Position bestBossPos;
+    bool foundBoss = false;
+
+    for (auto const& [spawnId, data] : allCreatures)
+    {
+        if (data.mapid != map->GetId())
+            continue;
+
+        if (sBotMgr->IsBossCleared(leader->GetGUID(), data.id))
+            continue;
+
+        CreatureTemplate const* cinfo = sObjectMgr->GetCreatureTemplate(data.id);
+        if (!cinfo)
+            continue;
+
+        bool isBoss = cinfo->HasFlagsExtra(CREATURE_FLAG_EXTRA_DUNGEON_BOSS) || (cinfo->rank == CREATURE_ELITE_WORLDBOSS);
+        if (!isBoss)
+            continue;
+
+        float dx = data.posX - bot->GetPositionX();
+        float dy = data.posY - bot->GetPositionY();
+        float dz = data.posZ - bot->GetPositionZ();
+        float distSq = dx * dx + dy * dy + dz * dz;
+
+        if (distSq < bestDistSq)
+        {
+            bestDistSq = distSq;
+            bestBossPos.Relocate(data.posX, data.posY, data.posZ);
+            foundBoss = true;
+        }
+    }
+
+    if (foundBoss)
+    {
+        float dist = std::sqrt(bestDistSq);
+        if (dist > 8.0f)
+        {
+            MoveBotToPoint(bot, bestBossPos.GetPositionX(), bestBossPos.GetPositionY(), bestBossPos.GetPositionZ());
+        }
+        else
+        {
+            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+                bot->GetMotionMaster()->Clear();
+        }
+    }
 }
 
 // Maps a gathering skill to the real spell that gathers it -- returns 0 for anything else
@@ -1537,12 +2206,19 @@ void TryContinueGatherWalk(Player* bot, BotAIState& state)
     }
 
     if (bot->GetDistance(node) > INTERACTION_DISTANCE)
+    {
+        if (bot->GetDistance(node) > 40.0f && !bot->IsMounted())
+            TryMount(bot, state, false);
         return; // still walking -- nothing to do until it arrives or the caller re-decides
+    }
 
     state.gatherWalkTargetGuid = ObjectGuid::Empty;
 
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
         bot->GetMotionMaster()->Clear();
+
+    if (bot->IsMounted())
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
 
     uint32 gatherSpellId = GatherSpellForNode(bot, node);
     if (!gatherSpellId)
@@ -1582,13 +2258,17 @@ bool TryStartGathering(Player* bot, uint32 diff, BotAIState& state)
     if (bot->GetDistance(node) > INTERACTION_DISTANCE)
     {
         state.gatherWalkTargetGuid = node->GetGUID();
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
-            bot->GetMotionMaster()->MovePoint(0, node->GetPositionX(), node->GetPositionY(), node->GetPositionZ());
+        if (bot->GetDistance(node) > 40.0f && !bot->IsMounted())
+            TryMount(bot, state, false);
+        MoveBotToPoint(bot, node->GetPositionX(), node->GetPositionY(), node->GetPositionZ());
         return true;
     }
 
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
         bot->GetMotionMaster()->Clear();
+
+    if (bot->IsMounted())
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
 
     SpellCastResult result = bot->CastSpell(node, gatherSpellId, false);
     LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' cast gathering spell {} on node {} (result {}).",
@@ -1641,6 +2321,20 @@ bool EnsureFishingPoleEquipped(Player* bot)
             }
         }
     }
+
+    // No fishing pole in bags -- auto-grant a standard Fishing Pole (item 6256)
+    if (bot->AddItem(6256, 1))
+    {
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        {
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot); IsFishingPole(item))
+            {
+                bot->SwapItem(item->GetPos(), mainHandDst);
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
@@ -1678,105 +2372,103 @@ bool FindNearbyWater(Player* bot, float& outX, float& outY, float& outZ)
     return false;
 }
 
-// Checked every idle-solo tick while state.fishingBobberGuid is set. The bobber (spawned by
-// Fishing's own summon-object effect once the cast in TryStartFishing actually finishes) reaches
-// GO_READY once something bites -- using it then is exactly what a real player's click on it
-// does, and loots via the same open/store/release shape as everything else in this file. Gives
-// up after FISHING_BITE_TIMEOUT_MS with nothing (a real player would eventually reel in and
-// recast too, rather than wait forever).
+// Checked every idle-solo tick while channeling Fishing or while fishingBobberGuid is active.
+// Fishing is a CHANNELED spell (SPELL_FISHING 7620) whose summoned bobber reaches GO_READY
+// while the channel is active. When a fish bites, we apply a realistic human-like reaction delay,
+// use the bobber to generate and autostore loot, and conclude the channel.
 void TryFinishFishing(Player* bot, uint32 diff, BotAIState& state)
 {
-    GameObject* bobber = ObjectAccessor::GetGameObject(*bot, state.fishingBobberGuid);
-    if (!bobber || bobber->GetOwnerGUID() != bot->GetGUID())
+    if (state.fishingBobberGuid.IsEmpty())
+    {
+        ObjectGuid chanGuid = bot->GetGuidValue(UNIT_FIELD_CHANNEL_OBJECT);
+        if (!chanGuid.IsEmpty())
+            state.fishingBobberGuid = chanGuid;
+    }
+
+    Spell* chanSpell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    if (!chanSpell || chanSpell->GetSpellInfo()->Id != SPELL_FISHING)
     {
         state.fishingBobberGuid = ObjectGuid::Empty;
+        state.fishingCastInProgress = false;
+        return;
+    }
+
+    GameObject* bobber = ObjectAccessor::GetGameObject(*bot, state.fishingBobberGuid);
+    if (!bobber)
+    {
+        std::list<GameObject*> nearby;
+        Acore::AllGameObjectsWithEntryInRange check(bot, FISHING_BOBBER_ENTRY, FISHING_MAX_DISTANCE + 5.0f);
+        Acore::GameObjectListSearcher<Acore::AllGameObjectsWithEntryInRange> searcher(bot, nearby, check);
+        Cell::VisitObjects(bot, searcher, FISHING_MAX_DISTANCE + 5.0f);
+        for (GameObject* go : nearby)
+        {
+            if (go->GetOwnerGUID() == bot->GetGUID())
+            {
+                bobber = go;
+                state.fishingBobberGuid = go->GetGUID();
+                break;
+            }
+        }
+    }
+
+    if (!bobber || bobber->GetOwnerGUID() != bot->GetGUID())
+    {
+        if (state.fishingTimeoutMs <= diff)
+        {
+            state.fishingBobberGuid = ObjectGuid::Empty;
+            bot->InterruptSpell(CURRENT_CHANNELED_SPELL);
+        }
+        else
+            state.fishingTimeoutMs -= diff;
         return;
     }
 
     if (bobber->getLootState() != GO_READY)
     {
         if (state.fishingTimeoutMs <= diff)
+        {
             state.fishingBobberGuid = ObjectGuid::Empty;
+            bot->InterruptSpell(CURRENT_CHANNELED_SPELL);
+        }
         else
             state.fishingTimeoutMs -= diff;
+        return;
+    }
+
+    if (state.fishingReactionDelayMs > diff)
+    {
+        state.fishingReactionDelayMs -= diff;
         return;
     }
 
     state.fishingBobberGuid = ObjectGuid::Empty;
     bobber->Use(bot);
 
-    if (bot->GetLootGUID() != bobber->GetGUID())
-        return;
-
-    Loot& loot = bobber->loot;
-    for (uint8 slot = 0; slot < loot.items.size(); ++slot)
+    if (bot->GetLootGUID() == bobber->GetGUID())
     {
-        WorldPacket storePacket;
-        storePacket << slot;
-        bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
+        Loot& loot = bobber->loot;
+        for (uint8 slot = 0; slot < loot.items.size(); ++slot)
+        {
+            WorldPacket storePacket;
+            storePacket << slot;
+            bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
+        }
+
+        WorldPacket releasePacket;
+        releasePacket << bobber->GetGUID();
+        bot->GetSession()->HandleLootReleaseOpcode(releasePacket);
+
+        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' caught something fishing.", bot->GetName());
     }
 
-    WorldPacket releasePacket;
-    releasePacket << bobber->GetGUID();
-    bot->GetSession()->HandleLootReleaseOpcode(releasePacket);
-
-    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' caught something fishing.", bot->GetName());
+    bot->InterruptSpell(CURRENT_CHANNELED_SPELL);
 }
 
-// Checked every idle-solo tick while state.fishingCastInProgress is set -- waits for the real,
-// skill-adjusted cast time from TryStartFishing's CastSpell to actually finish (the bobber
-// doesn't exist as a GameObject until the cast's own effect summons it, so there's nothing to
-// look for before then), then scans for it by entry+ownership rather than assuming any
-// particular guid.
 void TryWaitForFishingCast(Player* bot, uint32 diff, BotAIState& state)
 {
-    if (bot->IsNonMeleeSpellCast(false))
-        return; // still casting -- check again next tick
-
-    std::list<GameObject*> nearby;
-    Acore::AllGameObjectsWithEntryInRange check(bot, FISHING_BOBBER_ENTRY, FISHING_MAX_DISTANCE + 5.0f);
-    Acore::GameObjectListSearcher<Acore::AllGameObjectsWithEntryInRange> searcher(bot, nearby, check);
-    Cell::VisitObjects(bot, searcher, FISHING_MAX_DISTANCE + 5.0f);
-
-    LOG_INFO("module.coa-playerbots", "BotAI DEBUG: bot '{}' bobber search found {} candidate(s), botGuid={}.",
-        bot->GetName(), nearby.size(), bot->GetGUID().ToString());
-    for (GameObject* go : nearby)
-        LOG_INFO("module.coa-playerbots", "BotAI DEBUG:   candidate owner={} state={} spawned={}.",
-            go->GetOwnerGUID().ToString(), uint32(go->getLootState()), go->isSpawned());
-
-    for (GameObject* go : nearby)
-    {
-        if (go->GetOwnerGUID() == bot->GetGUID())
-        {
-            state.fishingCastInProgress = false;
-            state.fishingBobberGuid = go->GetGUID();
-            state.fishingTimeoutMs = FISHING_BITE_TIMEOUT_MS;
-            return;
-        }
-    }
-
-    // Not found yet -- IsNonMeleeSpellCast(false) going false and the summon-object effect that
-    // actually creates the bobber GameObject don't land on the same tick (confirmed live: every
-    // attempt failed here on the very first check). Keep checking for a couple of seconds before
-    // concluding the cast genuinely failed after CastSpell's own initial OK (interrupted, moved,
-    // whatever) rather than giving up on the first miss.
-    constexpr uint32 BOBBER_APPEAR_GRACE_MS = 2000;
-    if (state.fishingBobberGraceMs == 0)
-        state.fishingBobberGraceMs = BOBBER_APPEAR_GRACE_MS;
-    else if (state.fishingBobberGraceMs <= diff)
-    {
-        state.fishingCastInProgress = false;
-        state.fishingBobberGraceMs = 0;
-    }
-    else
-        state.fishingBobberGraceMs -= diff;
+    TryFinishFishing(bot, diff, state);
 }
 
-// Called from the idle-solo routine, only when nothing else (gathering, an in-progress fishing
-// cast or bite-wait) is already claiming this tick. Only ever fires for a bot already near open
-// water (see FindNearbyWater) with a fishing pole somewhere in its own bags -- faces the water
-// and casts the real spell exactly like a player's own cast would, then hands off to
-// TryWaitForFishingCast for the rest.
 bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
 {
     if (state.nextFishingScanMs > diff)
@@ -1786,12 +2478,18 @@ bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
     }
     state.nextFishingScanMs = FISHING_SCAN_INTERVAL_MS;
 
+    if (bot->IsMounted())
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+
     float waterX = 0.0f, waterY = 0.0f, waterZ = 0.0f;
     if (!FindNearbyWater(bot, waterX, waterY, waterZ))
         return false;
 
     if (!EnsureFishingPoleEquipped(bot))
         return false;
+
+    if (!bot->HasSpell(SPELL_FISHING))
+        bot->learnSpell(SPELL_FISHING);
 
     bot->SetOrientation(bot->GetAngle(waterX, waterY));
 
@@ -1800,7 +2498,14 @@ bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
     if (result != SPELL_CAST_OK)
         return false;
 
-    state.fishingCastInProgress = true;
+    state.fishingCastInProgress = false;
+    state.fishingTimeoutMs = FISHING_BITE_TIMEOUT_MS;
+    state.fishingReactionDelayMs = urand(400, 800);
+
+    ObjectGuid bobberGuid = bot->GetGuidValue(UNIT_FIELD_CHANNEL_OBJECT);
+    if (!bobberGuid.IsEmpty())
+        state.fishingBobberGuid = bobberGuid;
+
     return true;
 }
 
@@ -1950,15 +2655,64 @@ void TryContinueQuestWalk(Player* bot, BotAIState& state)
     }
 
     if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
+    {
+        if (bot->GetDistance(npc) > 40.0f && !bot->IsMounted())
+            TryMount(bot, state, false);
         return; // still walking
+    }
 
     state.questWalkTargetGuid = ObjectGuid::Empty;
 
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
         bot->GetMotionMaster()->Clear();
 
+    if (bot->IsMounted())
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+
     if (Creature* validated = bot->GetNPCIfCanInteractWith(npc->GetGUID(), UNIT_NPC_FLAG_QUESTGIVER))
         ProcessQuestGiver(bot, validated);
+}
+
+// Checked every idle-solo tick while state.isQuestTrackingWalk is set -- handles long-distance
+// walks to distant questgivers/turn-ins/objectives across the zone found by BotQuestTracker.
+// Arriving in range ends the walk and updates the grind anchor to prevent leashing back across the zone.
+void TryContinueQuestTrackingWalk(Player* bot, BotAIState& state)
+{
+    if (bot->GetDistance(state.questTrackingTargetPos) <= INTERACTION_DISTANCE)
+    {
+        state.isQuestTrackingWalk = false;
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            bot->GetMotionMaster()->Clear();
+
+        state.grindAnchorX = bot->GetPositionX();
+        state.grindAnchorY = bot->GetPositionY();
+        state.grindAnchorZ = bot->GetPositionZ();
+        state.grindAnchorMapId = bot->GetMapId();
+        return;
+    }
+
+    // Check if an objective or questgiver in local cell range has become reachable along the way
+    Creature* npc = nullptr;
+    QuestGiverCheck giverCheck(bot, QUEST_SEARCH_RADIUS);
+    Acore::CreatureLastSearcher<QuestGiverCheck> giverSearcher(bot, npc, giverCheck);
+    Cell::VisitObjects(bot, giverSearcher, QUEST_SEARCH_RADIUS);
+    if (npc)
+    {
+        state.isQuestTrackingWalk = false;
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            bot->GetMotionMaster()->Clear();
+
+        state.grindAnchorX = bot->GetPositionX();
+        state.grindAnchorY = bot->GetPositionY();
+        state.grindAnchorZ = bot->GetPositionZ();
+        state.grindAnchorMapId = bot->GetMapId();
+        return;
+    }
+
+    if (bot->GetDistance(state.questTrackingTargetPos) > 40.0f && !bot->IsMounted())
+        TryMount(bot, state, false);
+
+    MoveBotToPoint(bot, state.questTrackingTargetPos.GetPositionX(), state.questTrackingTargetPos.GetPositionY(), state.questTrackingTargetPos.GetPositionZ());
 }
 
 // Checked every idle-solo tick while state.questObjectiveWalkTargetGuid is set -- mirrors
@@ -1976,12 +2730,19 @@ void TryContinueQuestObjectiveWalk(Player* bot, BotAIState& state)
     }
 
     if (bot->GetDistance(go) > INTERACTION_DISTANCE)
+    {
+        if (bot->GetDistance(go) > 40.0f && !bot->IsMounted())
+            TryMount(bot, state, false);
         return; // still walking
+    }
 
     state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
 
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
         bot->GetMotionMaster()->Clear();
+
+    if (bot->IsMounted())
+        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
 
     go->Use(bot);
     LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' used quest object (entry {}).", bot->GetName(), go->GetEntry());
@@ -2003,22 +2764,27 @@ bool TryStartQuesting(Player* bot, uint32 diff, BotAIState& state)
     state.nextQuestScanMs = QUEST_SCAN_INTERVAL_MS;
 
     Creature* npc = nullptr;
-    QuestGiverCheck giverCheck(bot, QUEST_SEARCH_RADIUS);
-    Acore::CreatureLastSearcher<QuestGiverCheck> giverSearcher(bot, npc, giverCheck);
-    Cell::VisitObjects(bot, giverSearcher, QUEST_SEARCH_RADIUS);
+    QuestGiverCheck check(bot, QUEST_SEARCH_RADIUS);
+    Acore::CreatureLastSearcher<QuestGiverCheck> searcher(bot, npc, check);
+    Cell::VisitObjects(bot, searcher, QUEST_SEARCH_RADIUS);
 
     if (npc)
     {
         if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
         {
             state.questWalkTargetGuid = npc->GetGUID();
-            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
-                bot->GetMotionMaster()->MovePoint(0, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ());
+            state.isQuestTrackingWalk = false;
+            if (bot->GetDistance(npc) > 40.0f && !bot->IsMounted())
+                TryMount(bot, state, false);
+            MoveBotToPoint(bot, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ());
             return true;
         }
 
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
             bot->GetMotionMaster()->Clear();
+
+        if (bot->IsMounted())
+            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
 
         if (Creature* validated = bot->GetNPCIfCanInteractWith(npc->GetGUID(), UNIT_NPC_FLAG_QUESTGIVER))
             ProcessQuestGiver(bot, validated);
@@ -2029,31 +2795,81 @@ bool TryStartQuesting(Player* bot, uint32 diff, BotAIState& state)
     // in-world object used instead.
     std::unordered_set<uint32> wantedCreatures, wantedGameObjects;
     CollectQuestObjectiveEntries(bot, wantedCreatures, wantedGameObjects);
-    if (wantedGameObjects.empty())
-        return false;
-
-    GameObject* go = nullptr;
-    QuestObjectiveGoCheck objectiveCheck(bot, QUEST_SEARCH_RADIUS, wantedGameObjects);
-    Acore::GameObjectLastSearcher<QuestObjectiveGoCheck> objectiveSearcher(bot, go, objectiveCheck);
-    Cell::VisitObjects(bot, objectiveSearcher, QUEST_SEARCH_RADIUS);
-
-    if (!go)
-        return false;
-
-    if (bot->GetDistance(go) > INTERACTION_DISTANCE)
+    if (!wantedGameObjects.empty())
     {
-        state.questObjectiveWalkTargetGuid = go->GetGUID();
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
-            bot->GetMotionMaster()->MovePoint(0, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
+        GameObject* go = nullptr;
+        QuestObjectiveGoCheck objectiveCheck(bot, QUEST_SEARCH_RADIUS, wantedGameObjects);
+        Acore::GameObjectLastSearcher<QuestObjectiveGoCheck> objectiveSearcher(bot, go, objectiveCheck);
+        Cell::VisitObjects(bot, objectiveSearcher, QUEST_SEARCH_RADIUS);
+
+        if (go)
+        {
+            if (bot->GetDistance(go) > INTERACTION_DISTANCE)
+            {
+                state.questObjectiveWalkTargetGuid = go->GetGUID();
+                state.isQuestTrackingWalk = false;
+                if (bot->GetDistance(go) > 40.0f && !bot->IsMounted())
+                    TryMount(bot, state, false);
+                MoveBotToPoint(bot, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
+                return true;
+            }
+
+            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+                bot->GetMotionMaster()->Clear();
+
+            if (bot->IsMounted())
+                bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+
+            go->Use(bot);
+            LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' used quest object (entry {}).", bot->GetName(), go->GetEntry());
+            return true;
+        }
+    }
+
+    // Nothing within local cell range -- use global BotQuestTracker to pathfind across the zone
+    Position targetPos;
+    uint32 entry = 0;
+    // 1. Turn in completed quest
+    if (sBotQuestTracker->FindNearestQuestTurnIn(bot, targetPos, entry))
+    {
+        state.questWalkTargetGuid = ObjectGuid::Empty;
+        state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
+        state.isQuestTrackingWalk = true;
+        state.questTrackingTargetPos = targetPos;
+        if (bot->GetDistance(targetPos) > 40.0f && !bot->IsMounted())
+            TryMount(bot, state, false);
+        MoveBotToPoint(bot, targetPos.GetPositionX(), targetPos.GetPositionY(), targetPos.GetPositionZ());
         return true;
     }
 
-    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-        bot->GetMotionMaster()->Clear();
+    // 2. Head to nearest active quest objective
+    bool isGo = false;
+    if (sBotQuestTracker->FindNearestQuestObjective(bot, targetPos, entry, isGo))
+    {
+        state.questWalkTargetGuid = ObjectGuid::Empty;
+        state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
+        state.isQuestTrackingWalk = true;
+        state.questTrackingTargetPos = targetPos;
+        if (bot->GetDistance(targetPos) > 40.0f && !bot->IsMounted())
+            TryMount(bot, state, false);
+        MoveBotToPoint(bot, targetPos.GetPositionX(), targetPos.GetPositionY(), targetPos.GetPositionZ());
+        return true;
+    }
 
-    go->Use(bot);
-    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' used quest object (entry {}).", bot->GetName(), go->GetEntry());
-    return true;
+    // 3. Find next available questgiver
+    if (bot->GetQuestSlotQuestId(MAX_QUEST_LOG_SIZE - 1) == 0 && sBotQuestTracker->FindNearestQuestGiver(bot, targetPos, entry))
+    {
+        state.questWalkTargetGuid = ObjectGuid::Empty;
+        state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
+        state.isQuestTrackingWalk = true;
+        state.questTrackingTargetPos = targetPos;
+        if (bot->GetDistance(targetPos) > 40.0f && !bot->IsMounted())
+            TryMount(bot, state, false);
+        MoveBotToPoint(bot, targetPos.GetPositionX(), targetPos.GetPositionY(), targetPos.GetPositionZ());
+        return true;
+    }
+
+    return false;
 }
 
 // Stops whatever follow motion is already running -- needed because a FOLLOW_MOTION_TYPE
@@ -2066,8 +2882,18 @@ void ClearActiveFollow(Player* bot)
         bot->GetMotionMaster()->Clear();
 }
 
-void ResumeFollowingLeader(Player* bot, BotAIState const& state)
+void ResumeFollowingLeader(Player* bot, BotAIState& state)
 {
+    // If the bot is already mounted, its mount cast is definitely completed
+    if (bot->IsMounted())
+        state.pendingMountSpellId = 0;
+
+    // Suppress follow movement while a mount attempt is pending or the bot is actively casting
+    // a non-melee spell (such as a 1.5s mount cast). Issuing movement while casting immediately
+    // aborts the spell cast.
+    if (state.pendingMountSpellId || bot->IsNonMeleeSpellCast(false))
+        return;
+
     // Stay means exactly this: don't resume following just because there's nothing to fight
     // right now. Self-defense (the attacker-retaliation fallback in UpdateOffensive) still
     // applies regardless -- Stay only suppresses the idle-follow behavior, not combat. Confirmed
@@ -2098,8 +2924,62 @@ void ResumeFollowingLeader(Player* bot, BotAIState const& state)
         return;
     }
 
+    Map* map = bot->GetMap();
+    if (map && (map->IsDungeon() || map->IsRaid()) && sBotMgr->IsAutoDungeonModeEnabled(group->GetLeaderGUID()))
+    {
+        // In auto-dungeon mode, followers follow the Tank (the point runner) rather than the player leader,
+        // or if this bot IS the tank, it navigates toward the current boss/trash rather than following anyone.
+        // Toggling auto-dungeon off cleanly restores standard following.
+        Player* tank = nullptr;
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            if (Player* m = itr->GetSource())
+            {
+                if (BotAI::GetRole(m->GetGUID()) == BotRole::Tank)
+                {
+                    tank = m;
+                    break;
+                }
+            }
+        }
+
+        if (bot == tank)
+            return; // Tank runs point in TryAutoPullInInstance
+
+        Player* targetToFollow = tank ? tank : leader;
+        if (targetToFollow && targetToFollow != bot)
+        {
+            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+                bot->GetMotionMaster()->MoveFollow(targetToFollow, BotAI::ComputeFollowDistance(bot), BotAI::ComputeFollowAngle(bot));
+        }
+        return;
+    }
+
+    // Normal follow behavior with Deadzone Slack & Reaction Latency:
+    float dist = bot->GetDistance(leader);
+    float followDist = BotAI::ComputeFollowDistance(bot);
+
+    // Deadzone slack: if leader is stationary and bot is within acceptable range, stay idle
+    if (!leader->isMoving() && dist >= (followDist - 1.5f) && dist <= (followDist + 2.5f))
+    {
+        ClearActiveFollow(bot);
+        state.followWaitingReaction = false;
+        return;
+    }
+
+    // Reaction latency when leader moves:
+    if (leader->isMoving() && !state.followWaitingReaction && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+    {
+        state.followWaitingReaction = true;
+        state.followReactionDelayMs = 150 + (bot->GetGUID().GetCounter() % 250);
+        return;
+    }
+
+    if (state.followWaitingReaction)
+        return;
+
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
-        bot->GetMotionMaster()->MoveFollow(leader, BotAI::ComputeFollowDistance(bot), BotAI::ComputeFollowAngle(bot));
+        bot->GetMotionMaster()->MoveFollow(leader, followDist, BotAI::ComputeFollowAngle(bot));
 }
 
 // Lowest-health-percent group member (bot included), below a "worth healing" threshold --
@@ -2164,6 +3044,112 @@ void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
         LogCastAttempt(bot, spellId, bot, "cast buff");
 }
 
+// Finds whatever the bot's group is currently fighting -- prefers the designated group leader
+// (usual case, and keeps prior behavior when the leader IS the one fighting), but falls through
+// to ANY other online member already in combat. Confirmed live: DPS/healer bots that only ever
+// checked group->GetLeaderGUID() sat there doing nothing whenever the real player (who's
+// usually the group leader in this project's Quick-Fill-formed groups) stood back and let the
+// Tank bot pull -- the player's own Player::IsInCombat() stays false the whole fight unless
+// something personally targets/is attacked by them, so nothing ever inherited a target from the
+// Tank actually fighting a few yards away. A real party's DPS reacts to whoever pulled, not
+// specifically to the party leader.
+Unit* FindGroupCombatTarget(Player* bot, Group* group)
+{
+    if (!group)
+        return nullptr;
+
+    // A member's GetVictim() (who THEY'RE swinging on) is the strongest signal, but confirmed
+    // live it isn't always reliable for a real player who pulled with a ranged spell rather than
+    // melee -- bots stood completely still the moment the real player attacked something,
+    // because IsInCombat() went true but GetVictim() stayed null. GetSelectedUnit() (whatever
+    // they currently have targeted) and getAttackers() (who's hitting them back) both cover
+    // that gap without needing melee autoattack to have fired.
+    auto combatTargetOf = [](Player* member) -> Unit*
+    {
+        if (!member->IsInCombat())
+            return nullptr;
+        if (Unit* victim = member->GetVictim())
+            return victim;
+        if (Unit* selected = member->GetSelectedUnit())
+            if (selected->IsAlive() && member->IsValidAttackTarget(selected))
+                return selected;
+        for (Unit* attacker : member->getAttackers())
+            if (attacker && attacker->IsAlive() && member->IsValidAttackTarget(attacker))
+                return attacker;
+        for (auto const& pair : member->GetCombatManager().GetPvECombatRefs())
+        {
+            if (CombatReference* ref = pair.second)
+            {
+                if (!ref->IsSuppressedFor(member))
+                {
+                    if (Unit* enemy = ref->GetOther(member))
+                        if (enemy->IsAlive() && member->IsValidAttackTarget(enemy))
+                            return enemy;
+                }
+            }
+        }
+        for (auto const& pair : member->GetCombatManager().GetPvPCombatRefs())
+        {
+            if (CombatReference* ref = pair.second)
+            {
+                if (!ref->IsSuppressedFor(member))
+                {
+                    if (Unit* enemy = ref->GetOther(member))
+                        if (enemy->IsAlive() && member->IsValidAttackTarget(enemy))
+                            return enemy;
+                }
+            }
+        }
+        return nullptr;
+    };
+
+    if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+        if (leader != bot)
+            if (Unit* target = combatTargetOf(leader))
+                return target;
+
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || member == bot)
+            continue;
+        if (Unit* target = combatTargetOf(member))
+            return target;
+    }
+    return nullptr;
+}
+
+// Tank-only: scans nearby hostiles for one currently attacking a GROUPMATE other than this
+// tank. Confirmed live -- explicit user feedback: "tank doesn't watch aggro on teammates, never
+// reacts, even though it should throw taunt." The existing taunt-priority check below only ever
+// looked at `target->GetVictim()` -- the tank's own single currently-engaged enemy -- so a
+// SECOND enemy peeling off onto the healer or a DPS went completely unnoticed; nothing was ever
+// even looking at any other nearby hostile. A real tank picks up a loose add immediately, even
+// while already tanking something else fine, rather than let it free-hit the healer.
+Unit* FindAllyThreatenedTarget(Player* tank, float range = 30.0f)
+{
+    Group* group = tank->GetGroup();
+    if (!group)
+        return nullptr;
+
+    std::vector<Unit*> enemies;
+    HostileEnemyCheck check(tank, tank, range);
+    Acore::UnitListSearcher<HostileEnemyCheck> searcher(tank, enemies, check);
+    Cell::VisitObjects(tank, searcher, range);
+
+    for (Unit* enemy : enemies)
+    {
+        Unit* victim = enemy->GetVictim();
+        if (!victim || victim == tank || !victim->IsAlive())
+            continue;
+        Player* victimPlayer = victim->ToPlayer();
+        if (!victimPlayer || victimPlayer->GetGroup() != group)
+            continue; // ignore an enemy fighting some unrelated bystander
+        return enemy;
+    }
+    return nullptr;
+}
+
 // Dps and Tank share this whole loop -- Tank's only difference is a taunt-priority check
 // spliced in right before the normal offensive-spell pick (see the `role == BotRole::Tank`
 // branch below). Also used as a Healer's fallback when nobody currently needs healing (a
@@ -2178,21 +3164,13 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // below both still apply, since Stay is about not *initiating*, not about refusing to
     // fight at all.
     if (!target && state.manualCommand != BotManualCommand::Stay)
-    {
-        if (Group* group = bot->GetGroup())
-            if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
-                if (leader != bot && leader->IsInCombat())
-                    target = leader->GetVictim();
-    }
+        target = FindGroupCombatTarget(bot, bot->GetGroup());
 
     // Being attacked does not, by itself, make a Player "have a victim" -- Unit::GetVictim()
     // tracks who *this* unit is attacking, not who's attacking it (this matches how a real
     // client behaves too: nothing auto-retaliates without an explicit attack action). Without
     // this, a bot with no group/leader (or whose leader isn't fighting) would just stand there
-    // and take free hits from anything that aggroes it with no retaliation at all -- confirmed
-    // live: a solo bot died to a low-level Teldrassil critter without ever reaching the cast
-    // logic below, because `target` stayed null the entire fight. A real player would fight
-    // back against whatever's hitting them; so should this.
+    // and take free hits from anything that aggroes it with no retaliation at all.
     if (!target)
     {
         for (Unit* attacker : bot->getAttackers())
@@ -2205,11 +3183,66 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         }
     }
 
-    // Remembered every tick there's a real, live fight, so the tick right after it ends (target
-    // dead/gone, this whole condition below becomes true) still knows what was just being
-    // fought -- see TryAutoLootDeadTarget, which is the only reader of this.
-    if (target && target->IsAlive() && bot->IsValidAttackTarget(target))
+    // Comprehensive combat reference check: casters, channelers, and ranged enemies that do not
+    // register in melee getAttackers() are captured directly from the unit's active CombatReferences.
+    if (!target && bot->IsInCombat())
+    {
+        for (auto const& pair : bot->GetCombatManager().GetPvECombatRefs())
+        {
+            if (CombatReference* ref = pair.second)
+            {
+                if (!ref->IsSuppressedFor(bot))
+                {
+                    if (Unit* enemy = ref->GetOther(bot))
+                    {
+                        if (enemy->IsAlive() && bot->IsValidAttackTarget(enemy))
+                        {
+                            target = enemy;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (!target)
+        {
+            for (auto const& pair : bot->GetCombatManager().GetPvPCombatRefs())
+            {
+                if (CombatReference* ref = pair.second)
+                {
+                    if (!ref->IsSuppressedFor(bot))
+                    {
+                        if (Unit* enemy = ref->GetOther(bot))
+                        {
+                            if (enemy->IsAlive() && bot->IsValidAttackTarget(enemy))
+                            {
+                                target = enemy;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Tank-only, checked before positioning/casting settle on anything: a teammate being
+    // free-hit by a loose add outranks whatever this tank was already doing, including having
+    // no target at all. See FindAllyThreatenedTarget's comment.
+    if (role == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
+        if (Unit* allyThreat = FindAllyThreatenedTarget(bot))
+            target = allyThreat;
+
+    if (target && !target->IsAlive())
+    {
+        BotAI::EnqueuePendingLoot(bot, target->GetGUID());
+    }
+    else if (target && target->IsAlive() && bot->IsValidAttackTarget(target))
+    {
+        if (bot->IsMounted())
+            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
         state.lastCombatTargetGuid = target->GetGUID();
+    }
 
     if (!target || !target->IsAlive() || !bot->IsValidAttackTarget(target))
     {
@@ -2218,9 +3251,11 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
 
         if (!bot->IsInCombat())
         {
-            // Whatever this bot was just fighting (tracked above, every tick there was a live
-            // target) may have just died -- try to loot it exactly once before moving on.
-            TryAutoLootDeadTarget(bot, state);
+            if (TryProcessPendingLoot(bot, diff, state))
+                return;
+
+            if (TryRestIfNeeded(bot, diff, role, state))
+                return;
 
             ResumeFollowingLeader(bot, state);
 
@@ -2240,7 +3275,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
                     TryFinishGathering(bot, state);
                 else if (!state.gatherWalkTargetGuid.IsEmpty())
                     TryContinueGatherWalk(bot, state);
-                else if (!state.fishingBobberGuid.IsEmpty())
+                else if (!state.fishingBobberGuid.IsEmpty() || (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) && bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL)->GetSpellInfo()->Id == SPELL_FISHING))
                     TryFinishFishing(bot, diff, state);
                 else if (state.fishingCastInProgress)
                     TryWaitForFishingCast(bot, diff, state);
@@ -2248,8 +3283,59 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
                     TryContinueQuestWalk(bot, state);
                 else if (!state.questObjectiveWalkTargetGuid.IsEmpty())
                     TryContinueQuestObjectiveWalk(bot, state);
-                else if (!TryStartQuesting(bot, diff, state) && !TryStartGathering(bot, diff, state) && !TryStartFishing(bot, diff, state))
-                    TryGrindWhenSolo(bot, diff, state);
+                else if (state.isQuestTrackingWalk)
+                    TryContinueQuestTrackingWalk(bot, state);
+                else
+                {
+                    // Active guild gather order: travel to target area and gather the requested resource
+                    BotMgr::GuildGatherOrder const* gatherOrder = sBotMgr->GetGuildGatherOrder(bot->GetGUID());
+                    if (gatherOrder && gatherOrder->remainingCount > 0)
+                    {
+                        if (gatherOrder->hasTargetLocation)
+                        {
+                            if (bot->GetMapId() != gatherOrder->targetMapId)
+                            {
+                                bot->TeleportTo(gatherOrder->targetMapId, gatherOrder->targetX, gatherOrder->targetY, gatherOrder->targetZ, 0.0f);
+                                sBotMgr->QueueTeleportAck(bot->GetSession());
+                                return;
+                            }
+
+                            float dist = bot->GetExactDist2d(gatherOrder->targetX, gatherOrder->targetY);
+                            if (dist > 40.0f)
+                            {
+                                if (!bot->IsMounted())
+                                    TryMount(bot, state, false);
+                                MoveBotToPoint(bot, gatherOrder->targetX, gatherOrder->targetY, gatherOrder->targetZ);
+                                return;
+                            }
+                        }
+                        if (!TryStartGathering(bot, diff, state))
+                            TryGrindWhenSolo(bot, diff, state);
+                        return;
+                    }
+
+                    // A stable intent chooses the activity order. Fallbacks keep a bot useful
+                    // when its preferred resource, water, or quest is unavailable right now.
+                    UpdateSoloIntent(bot, diff, state);
+                    switch (state.soloIntent)
+                    {
+                        case SoloIntent::Gather:
+                            if (!TryStartGathering(bot, diff, state) && !TryStartQuesting(bot, diff, state)) TryGrindWhenSolo(bot, diff, state);
+                            break;
+                        case SoloIntent::Fish:
+                            if (!TryStartFishing(bot, diff, state) && !TryStartGathering(bot, diff, state) && !TryStartQuesting(bot, diff, state)) TryGrindWhenSolo(bot, diff, state);
+                            break;
+                        case SoloIntent::Grind:
+                            TryGrindWhenSolo(bot, diff, state);
+                            break;
+                        case SoloIntent::Explore:
+                            if (!TryStartQuesting(bot, diff, state) && !TryStartGathering(bot, diff, state) && !TryStartFishing(bot, diff, state)) TryGrindWhenSolo(bot, diff, state);
+                            break;
+                        default:
+                            if (!TryStartQuesting(bot, diff, state) && !TryStartGathering(bot, diff, state)) TryGrindWhenSolo(bot, diff, state);
+                            break;
+                    }
+                }
             }
             else if (role == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
                 TryAutoPullInInstance(bot);
@@ -2291,6 +3377,14 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // persistent ChaseMovementGenerator run does both jobs on its own from here on: it's a
     // no-op whenever already inside its band, and the engine itself decides whether to
     // approach or retreat as the target moves.
+    // Ground hazard avoidance (void zones, death and decay, rain of fire, poison clouds)
+    if (BotAvoidance::TryAvoidGroundHazards(bot))
+        return;
+
+    // Boss avoidance (frontal cleaves, point-blank AoE / whirlwind)
+    if (BotAvoidance::TryAvoidBossTelegraphedAttacks(bot, target))
+        return;
+
     if (preferredDist > MELEE_ENGAGE_RANGE)
     {
         // A comfortable band, not a razor-thin one -- retreats once the enemy closes past
@@ -2300,6 +3394,40 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     }
     else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
         bot->GetMotionMaster()->MoveChase(target);
+
+    // Auto-attack and facing run once a valid combat target is acquired, independent of
+    // ability/spell selection -- a real player starts auto-attacking immediately while casting
+    // abilities in parallel.
+    bot->SetInFront(target);
+    bot->SetFacingToObject(target);
+
+    if (preferredDist > MELEE_ENGAGE_RANGE)
+    {
+        if (uint32 autoRepeatSpell = FindKnownAutoRepeatRangedSpell(bot))
+        {
+            if (!bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+                bot->CastSpell(target, autoRepeatSpell, false);
+        }
+
+        if (bot->GetVictim() != target)
+            bot->Attack(target, false);
+    }
+    else if (bot->GetVictim() != target || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+    {
+        bot->Attack(target, true);
+    }
+
+    // Data-Driven Combat AI Framework
+    if (role == BotRole::Tank)
+    {
+        if (BotAI::TankEngine::Execute(bot, target, diff, state.nextCastAllowedMs))
+            return;
+    }
+    else
+    {
+        if (BotAI::DpsEngine::Execute(bot, target, diff, state.nextCastAllowedMs))
+            return;
+    }
 
     uint32 spellId = 0;
     char const* castVerb = "cast";
@@ -2391,27 +3519,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     }
 
     // Nothing usable right now (everything on cooldown/unaffordable/out of range, or a
-    // pure-melee kit with no spell-based attacks at all). Positioning is already handled
-    // above; just keep swinging/auto-shooting -- the engine's own range check on
-    // Attack()/CastSpell silently no-ops these while still out of real range, same as it
-    // would for a real player, so there's no need to gate this on distance here too.
-    bot->SetInFront(target);
-    bot->SetFacingToObject(target);
-
-    if (preferredDist > MELEE_ENGAGE_RANGE)
-    {
-        if (uint32 autoRepeatSpell = FindKnownAutoRepeatRangedSpell(bot))
-        {
-            if (!bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
-                bot->CastSpell(target, autoRepeatSpell, false);
-        }
-
-        if (bot->GetVictim() != target)
-            bot->Attack(target, false);
-    }
-    else if (bot->GetVictim() != target)
-        bot->Attack(target, true);
-
+    // pure-melee kit with no spell-based attacks at all). Auto-attack, auto-repeat, and
+    // positioning were already engaged up front.
     state.nextCastAllowedMs = NO_CANDIDATE_RETRY_MS;
 
     // Throttled, not per-attempt -- this branch is expected to hit constantly for a
@@ -2431,8 +3540,26 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
 
 void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 {
+    if (BotAvoidance::TryAvoidGroundHazards(bot))
+        return;
+
     Player* healTarget = FindHealTarget(bot);
-    if (!healTarget)
+    Unit* threat = FindGroupCombatTarget(bot, bot->GetGroup());
+    if (!threat && healTarget && healTarget->IsInCombat())
+        threat = healTarget->GetVictim();
+
+    // Confirmed live -- explicit user feedback: outside any real fight, chasing a groupmate who
+    // merely dipped under FindHealTarget's 95% "worth healing" threshold (incidental chip/fall
+    // damage, natural regen not caught up yet) used to override normal group movement entirely,
+    // since this function never called ResumeFollowingLeader as long as ANY healTarget existed.
+    // That left a healer stuck well behind the group at a dungeon doorway, walking toward
+    // wherever a groupmate happened to be standing instead of following through like everyone
+    // else. Still reacts immediately to a real fight (threat != null) or a genuinely dangerous
+    // dip (below CRITICAL_HEAL_PCT) regardless of combat state -- this is about not breaking
+    // formation for a routine top-off, not about ignoring real danger.
+    float criticalHealPct = sConfigMgr->GetOption<float>("CoaBots.Healer.CriticalHealPct", 50.0f);
+    bool worthBreakingFormationFor = threat || (healTarget && healTarget->GetHealthPct() < criticalHealPct);
+    if (!healTarget || !worthBreakingFormationFor)
     {
         // Nobody needs healing right now -- a real healer doesn't stand idle with a full
         // group, they contribute damage. Dps, not Tank: a Healer bot has no business trying
@@ -2453,13 +3580,6 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     // threat and the allies fighting it are normally near each other) to heal most targets.
     // Only falls back to chasing the ally directly when no hostile threat is identifiable at
     // all (e.g. topping someone off between pulls, or healing a target that's run off alone).
-    Unit* threat = nullptr;
-    if (Group* group = bot->GetGroup())
-        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
-            if (leader != bot && leader->IsInCombat())
-                threat = leader->GetVictim();
-    if (!threat && healTarget->IsInCombat())
-        threat = healTarget->GetVictim();
 
     if (threat && threat->IsAlive() && bot->IsValidAttackTarget(threat))
     {
@@ -2482,6 +3602,10 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     if (bot->GetDistance(healTarget) > HEAL_ENGAGE_RANGE)
         return;
 
+    // Data-Driven Combat AI Framework
+    if (BotAI::HealerEngine::Execute(bot, diff, state.nextCastAllowedMs))
+        return;
+
     if (state.nextCastAllowedMs > diff)
     {
         state.nextCastAllowedMs -= diff;
@@ -2489,9 +3613,17 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     }
     state.nextCastAllowedMs = 0;
 
-    if (uint32 spellId = SelectHealSpell(bot, healTarget))
+    uint32 spellId = 0;
+    uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+    spellId = BotAI::SelectClassHealRotationSpell(bot, healTarget, bot->getClass(), activeSpec);
+    if (!spellId)
+        spellId = SelectHealSpell(bot, healTarget);
+
+    if (spellId)
     {
         SpellCastResult result = LogCastAttempt(bot, spellId, healTarget, "cast heal");
+        if (result != SPELL_CAST_OK)
+            BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
         state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? APPROXIMATE_GCD_MS : NO_CANDIDATE_RETRY_MS;
         return;
     }
@@ -2536,9 +3668,24 @@ void UpdateSupport(Player* bot, uint32 diff, BotAIState& state)
 //     what's confirmed vs. still-to-verify here).
 void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
 {
+    state.isQuestTrackingWalk = false;
+    state.questWalkTargetGuid = ObjectGuid::Empty;
+    state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
+
     if (bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
     {
         state.awaitingRezGrace = false;
+        state.ghostDurationMs += diff;
+
+        // Failsafe: if a ghost has been unable to reach its corpse for > 3 minutes (e.g. unreachable terrain),
+        // accept spirit resurrection instead of being permanently stuck.
+        if (state.ghostDurationMs > 180000)
+        {
+            bot->ResurrectPlayer(0.5f, true);
+            bot->SpawnCorpseBones();
+            state.ghostDurationMs = 0;
+            return;
+        }
 
         if (bot->InBattleground())
             return;
@@ -2560,8 +3707,7 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
 
         if (bot->GetDistance(corpse) > CORPSE_RECLAIM_RADIUS)
         {
-            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
-                bot->GetMotionMaster()->MovePoint(0, corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ());
+            MoveBotToPoint(bot, corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ());
             return;
         }
 
@@ -2576,11 +3722,41 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
         return;
     }
 
+    // Confirmed live user report: bots accepted a pending resurrection the instant one landed,
+    // regardless of whether the fight that killed them was still going -- a dead bot could get
+    // battle-rezzed, immediately die to the same ongoing AoE/boss mechanic, get rezzed again, and
+    // so on, effectively giving the group infinite lives during a single pull (trivializing
+    // enrage timers and attrition mechanics a real, mortal group has to respect). A real player
+    // can technically accept an in-combat rez too, but doing so while the fight that just killed
+    // them is still raging is a judgment call a bot shouldn't make automatically -- hold the
+    // request (it isn't consumed or cleared, just not acted on yet) until no one left in the
+    // bot's own group is still in combat, then accept it exactly as before. If the request
+    // expires first, that's the same risk a real player who waits too long runs.
     if (bot->isResurrectRequested())
     {
-        bot->ResurectUsingRequestData();
-        state.awaitingRezGrace = false;
-        return;
+        bool groupInCombat = false;
+        if (Group* group = bot->GetGroup())
+        {
+            for (GroupReference const* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                Player* member = itr->GetSource();
+                if (member && member != bot && member->IsInCombat())
+                {
+                    groupInCombat = true;
+                    break;
+                }
+            }
+        }
+
+        if (!groupInCombat)
+        {
+            bot->ResurectUsingRequestData();
+            state.awaitingRezGrace = false;
+            return;
+        }
+        // Still fighting -- leave the ghost waiting exactly where the grace-period path below
+        // already parks it (released at the graveyard or standing over the corpse); re-checked
+        // every tick until either combat ends or the request expires on its own.
     }
 
     if (!state.awaitingRezGrace)
@@ -2629,10 +3805,41 @@ void Update(Player* bot, uint32 diff)
     if (state.suspended)
         return;
 
+    uint8 currentLevel = bot->GetLevel();
+    if (state.lastLevel == 0)
+    {
+        state.lastLevel = currentLevel;
+        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel))
+            BotZoneProgression::QueueRelocation(bot);
+    }
+    else if (currentLevel > state.lastLevel)
+    {
+        state.lastLevel = currentLevel;
+        BotTalentBuilds::ApplyBuildForLevel(bot, currentLevel);
+        SpellResolver::Invalidate(bot->GetGUID());
+        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel))
+            BotZoneProgression::QueueRelocation(bot);
+    }
+
     if (!bot->IsAlive())
     {
         UpdateDeathHandling(bot, diff, state);
         return;
+    }
+    state.ghostDurationMs = 0;
+
+    // Resolve any completed or interrupted mount cast
+    ResolvePendingMountCast(bot, state);
+
+    if (state.followWaitingReaction)
+    {
+        if (state.followReactionDelayMs > diff)
+            state.followReactionDelayMs -= diff;
+        else
+        {
+            state.followReactionDelayMs = 0;
+            state.followWaitingReaction = false;
+        }
     }
 
     // Mount ownership and gear upgrades matter regardless of role/combat/group state -- same
@@ -2676,6 +3883,20 @@ void Forget(ObjectGuid botGuid)
 {
     states.erase(botGuid);
     BotAI::ForgetRotationState(botGuid);
+    SpellResolver::Invalidate(botGuid);
+    ActionEvaluator::ClearThrottles(botGuid);
+}
+
+void ReportProfile(Player* bot, ChatHandler* handler)
+{
+    if (!bot || !handler)
+        return;
+    BotAIState& state = states[bot->GetGUID()];
+    EnsurePersonality(bot, state);
+    BotPersonality const& p = state.personality;
+    handler->PSendSysMessage("Bot profile for '%s': %s (seed %u).", bot->GetName().c_str(), ArchetypeName(p.archetype), p.seed);
+    handler->PSendSysMessage("  quest %u, gather %u, fish %u, grind %u, patience %u, social %u.", p.questing, p.gathering, p.fishing, p.grinding, p.patience, p.sociability);
+    handler->PSendSysMessage("  current solo intent: %s (%u sec remaining).", IntentName(state.soloIntent), state.soloIntentRemainingMs / IN_MILLISECONDS);
 }
 
 void SetRole(ObjectGuid botGuid, BotRole role)
@@ -2704,6 +3925,39 @@ void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid p
     BotAIState& state = states[botGuid];
     state.manualCommand = command;
     state.pullTargetGuid = (command == BotManualCommand::Pull) ? pullTarget : ObjectGuid::Empty;
+
+    if (command == BotManualCommand::Follow)
+    {
+        state.followWaitingReaction = false;
+        state.followReactionDelayMs = 0;
+
+        if (Player* bot = ObjectAccessor::FindPlayer(botGuid))
+        {
+            if (bot->IsMounted())
+                state.pendingMountSpellId = 0;
+
+            if (!bot->IsNonMeleeSpellCast(false))
+            {
+                if (Group* group = bot->GetGroup())
+                {
+                    if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+                    {
+                        if (leader != bot && leader->GetMap() == bot->GetMap())
+                        {
+                            float followDist = BotAI::ComputeFollowDistance(bot);
+                            float followAngle = BotAI::ComputeFollowAngle(bot);
+                            bot->GetMotionMaster()->MoveFollow(leader, followDist, followAngle);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    else if (command == BotManualCommand::Stay)
+    {
+        if (Player* bot = ObjectAccessor::FindPlayer(botGuid))
+            ClearActiveFollow(bot);
+    }
 }
 
 void StopAttack(ObjectGuid botGuid)
@@ -2824,48 +4078,201 @@ void ReportSpellbookRoleSignals(Player* bot, ChatHandler* handler)
 // post-teleport re-follow use the same slot assignment.
 float ComputeFollowAngle(Player* bot)
 {
-    constexpr uint32 SLOT_COUNT = 8;
-    constexpr float SLOT_SIZE = static_cast<float>(2 * M_PI) / SLOT_COUNT;
-
-    // An earlier version of this hashed `bot->GetGUID().GetCounter() % SLOT_COUNT` directly --
-    // looked fine, but confirmed live to completely fail for exactly the case it exists to fix:
-    // three bots with guids 376/384/408 (all exact multiples of 8) all hashed to slot 0 and
-    // stood on literally the same point, not just visually close. Guids assigned to bots
-    // created together in a batch collide on a raw modulo far more often than random chance
-    // would suggest. Indexing by this bot's actual position within its own group instead
-    // guarantees every real follower gets a distinct slot, for any group up to SLOT_COUNT
-    // members, regardless of what its guid happens to be.
     Group const* group = bot->GetGroup();
     if (!group)
         return 0.0f;
 
-    uint32 slot = 0;
+    BotGroupFormation formation = sBotMgr->GetGroupFormation(group->GetLeaderGUID());
+
+    uint32 memberIndex = 0;
+    uint32 totalFollowers = 0;
     for (GroupReference const* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         Player const* member = itr->GetSource();
         if (!member || member->GetGUID() == group->GetLeaderGUID())
-            continue; // the leader doesn't occupy a follow slot
+            continue;
         if (member == bot)
-            break;
-        ++slot;
+            memberIndex = totalFollowers;
+        ++totalFollowers;
     }
 
-    // Confirmed live -- explicit user feedback: even with distinct slots, followers spaced at
-    // perfectly even angles read as "moving in a grid" / robotic, not like real players. A
-    // small, stable per-bot angular offset (seeded off guid, not re-rolled every tick --
-    // matches Playerbots' own ChaosFormation idea of a persistent per-bot jitter rather than a
-    // one-off random pick that would fight with a fresh slot on every regroup) breaks the exact
-    // symmetry without bots visibly drifting or swapping places relative to each other.
+    float baseAngle = 0.0f;
+
+    switch (formation)
+    {
+        case BotGroupFormation::Shieldwall:
+        {
+            BotRole role = GetRole(bot->GetGUID());
+            if (role == BotRole::Tank)
+                baseAngle = 0.0f;
+            else if (role == BotRole::Healer)
+                baseAngle = static_cast<float>(M_PI);
+            else
+            {
+                bool left = (memberIndex % 2 == 0);
+                baseAngle = left ? (static_cast<float>(M_PI) * 0.35f) : (-static_cast<float>(M_PI) * 0.35f);
+            }
+            break;
+        }
+        case BotGroupFormation::Arrow:
+        {
+            bool left = (memberIndex % 2 == 0);
+            baseAngle = left ? (static_cast<float>(M_PI) * 0.75f) : (-static_cast<float>(M_PI) * 0.75f);
+            break;
+        }
+        case BotGroupFormation::Circle:
+        {
+            if (totalFollowers > 0)
+                baseAngle = (2.0f * static_cast<float>(M_PI) * memberIndex) / float(totalFollowers);
+            break;
+        }
+        case BotGroupFormation::Line:
+        {
+            bool left = (memberIndex % 2 == 0);
+            baseAngle = left ? (static_cast<float>(M_PI) * 0.5f) : (-static_cast<float>(M_PI) * 0.5f);
+            break;
+        }
+        case BotGroupFormation::Chaos:
+        {
+            baseAngle = (float(bot->GetGUID().GetCounter() % 360)) * (static_cast<float>(M_PI) / 180.0f);
+            break;
+        }
+        case BotGroupFormation::RoleBased:
+        default:
+        {
+            BotRole role = GetRole(bot->GetGUID());
+            uint32 sameRoleIndex = 0;
+            uint32 sameRoleSeen = 0;
+            for (GroupReference const* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                Player const* member = itr->GetSource();
+                if (!member || member->GetGUID() == group->GetLeaderGUID())
+                    continue;
+                BotRole memberRole = sBotMgr->FindBotPlayer(member->GetGUID().GetCounter()) ? GetRole(member->GetGUID()) : BotRole::Dps;
+                if (memberRole != role)
+                    continue;
+                if (member == bot)
+                    sameRoleIndex = sameRoleSeen;
+                ++sameRoleSeen;
+            }
+
+            constexpr float FRONT = 0.0f;
+            constexpr float BEHIND = static_cast<float>(M_PI);
+            constexpr float SIDE_START = static_cast<float>(M_PI) / 2.0f;
+            constexpr float SIDE_STEP = static_cast<float>(M_PI) / 3.0f;
+
+            switch (role)
+            {
+                case BotRole::Tank:
+                    baseAngle = FRONT;
+                    break;
+                case BotRole::Healer:
+                    baseAngle = BEHIND;
+                    break;
+                default:
+                    baseAngle = SIDE_START + float(sameRoleIndex) * SIDE_STEP;
+                    break;
+            }
+            break;
+        }
+    }
+
     float jitter = (float(bot->GetGUID().GetCounter() % 21) - 10.0f) * (static_cast<float>(M_PI) / 180.0f);
-    return (slot % SLOT_COUNT) * SLOT_SIZE + jitter;
+    return baseAngle + jitter;
 }
 
-// Companion to ComputeFollowAngle's angular jitter -- same reasoning, same "stable per bot, not
-// re-rolled" seeding, this time varying how far out each bot stands so the whole formation
-// doesn't read as a perfect circle either.
 float ComputeFollowDistance(Player* bot)
 {
-    float jitter = (float(bot->GetGUID().GetCounter() % 15) - 7.0f) * 0.15f; // +/- ~1yd
-    return BOT_FOLLOW_DIST + jitter;
+    Group const* group = bot->GetGroup();
+    if (!group)
+        return BOT_FOLLOW_DIST;
+
+    BotGroupFormation formation = sBotMgr->GetGroupFormation(group->GetLeaderGUID());
+    float baseDist = BOT_FOLLOW_DIST;
+
+    switch (formation)
+    {
+        case BotGroupFormation::Shieldwall:
+        {
+            BotRole role = GetRole(bot->GetGUID());
+            if (role == BotRole::Tank)
+                baseDist = 2.5f;
+            else if (role == BotRole::Healer)
+                baseDist = 6.0f;
+            else
+                baseDist = 4.0f;
+            break;
+        }
+        case BotGroupFormation::Arrow:
+        {
+            uint32 rank = 1;
+            for (GroupReference const* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                if (itr->GetSource() == bot)
+                    break;
+                if (itr->GetSource()->GetGUID() != group->GetLeaderGUID())
+                    ++rank;
+            }
+            baseDist = 2.0f + float((rank + 1) / 2) * 2.0f;
+            break;
+        }
+        case BotGroupFormation::Line:
+        {
+            uint32 rank = 1;
+            for (GroupReference const* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                if (itr->GetSource() == bot)
+                    break;
+                if (itr->GetSource()->GetGUID() != group->GetLeaderGUID())
+                    ++rank;
+            }
+            baseDist = float((rank + 1) / 2) * 2.5f;
+            break;
+        }
+        case BotGroupFormation::Chaos:
+            baseDist = 3.0f + float(bot->GetGUID().GetCounter() % 8);
+            break;
+        default:
+            baseDist = BOT_FOLLOW_DIST;
+            break;
+    }
+
+    float jitter = (float(bot->GetGUID().GetCounter() % 15) - 7.0f) * 0.15f;
+    return std::max(1.5f, baseDist + jitter);
+}
+
+void EnqueuePendingLoot(Player* player, ObjectGuid creatureGuid)
+{
+    if (!player || creatureGuid.IsEmpty())
+        return;
+
+    auto enqueueForBot = [](Player* b, ObjectGuid guid)
+    {
+        auto itr = states.find(b->GetGUID());
+        if (itr == states.end())
+            return;
+        BotAIState& st = itr->second;
+        for (auto const& g : st.pendingLootGuids)
+            if (g == guid)
+                return;
+        if (st.pendingLootGuids.size() >= 15)
+            st.pendingLootGuids.pop_front();
+        st.pendingLootGuids.push_back(guid);
+    };
+
+    if (sBotMgr->FindBotPlayer(player->GetGUID().GetCounter()))
+        enqueueForBot(player, creatureGuid);
+
+    if (Group* group = player->GetGroup())
+    {
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            if (Player* member = itr->GetSource())
+            {
+                if (member != player && sBotMgr->FindBotPlayer(member->GetGUID().GetCounter()))
+                    enqueueForBot(member, creatureGuid);
+            }
+        }
+    }
 }
 }

@@ -235,7 +235,14 @@ uint32 SelectBarbarianRotationSpell(Player* bot, Unit* target, uint32 /*activeSp
     float dist = bot->GetDistance(target);
     int32 rage = bot->GetPower(POWER_RAGE);
 
-    // 1. Gap closer / Ranged opener
+    // 1. Survival: A Grisly Meal (root 804765) if injured (< 60% HP)
+    if (bot->GetHealthPct() < 60.0f)
+    {
+        if (uint32 spell = TrySpell(bot, bot, 804765, true))
+            return spell;
+    }
+
+    // 2. Gap closer / Ranged opener
     // Whirling Advance (root 500919) has a range of ~8-25 yards
     if (dist > 8.0f && dist <= 25.0f)
     {
@@ -250,7 +257,7 @@ uint32 SelectBarbarianRotationSpell(Player* bot, Unit* target, uint32 /*activeSp
             return spell;
     }
 
-    // 2. Savage Rage (root 800193) - self-buff / rage generation
+    // 3. Savage Rage (root 800193) - self-buff / rage generation
     // Use if rage is low (< 60) and Savage Rage is ready
     if (rage < 60)
     {
@@ -258,10 +265,17 @@ uint32 SelectBarbarianRotationSpell(Player* bot, Unit* target, uint32 /*activeSp
             return spell;
     }
 
-    // 3. Melee strikes priority (only if in melee range <= 6 yards)
+    // 4. Melee strikes priority (only if in melee range <= 6 yards)
     if (dist <= 6.0f)
     {
-        // High damage abilities:
+        // Savagery (root 800943) - melee strike/buff
+        if (uint32 spell = TrySpell(bot, target, 800943))
+            return spell;
+
+        // Crushing Slam (root 500915)
+        if (uint32 spell = TrySpell(bot, target, 500915))
+            return spell;
+
         // Whirlwind (root 500002)
         if (uint32 spell = TrySpell(bot, target, 500002))
             return spell;
@@ -272,10 +286,6 @@ uint32 SelectBarbarianRotationSpell(Player* bot, Unit* target, uint32 /*activeSp
 
         // Maiming Spear (root 500918)
         if (uint32 spell = TrySpell(bot, target, 500918))
-            return spell;
-
-        // Crushing Slam (root 500915)
-        if (uint32 spell = TrySpell(bot, target, 500915))
             return spell;
 
         // Ancestral Strike (root 801576) - main strike builder/spender
@@ -365,46 +375,48 @@ uint32 SelectPyromancerRotationSpell(Player* bot, Unit* target, uint32 /*activeS
 {
     float dist = bot->GetDistance(target);
 
-    // 1. Maintain Ignite (root 800791) DoT on target
+    // 1. Maintain Phoenix Blessing (root 800196) self-buff if known
+    if (!bot->HasAura(800196))
+    {
+        if (uint32 spell = TrySpell(bot, bot, 800196, true))
+            return spell;
+    }
+
+    // 2. Maintain Ignite (root 800791) DoT on target
     if (!target->HasAura(800791, bot->GetGUID()))
     {
         if (uint32 spell = TrySpell(bot, target, 800791))
             return spell;
     }
 
-    // 2. Slagstone (root 803950) - heavy damage and stun
+    // 3. Overheat (root 800408) - burst fire damage
+    if (uint32 spell = TrySpell(bot, target, 800408))
+        return spell;
+
+    // 4. Slagstone (root 803950) - heavy damage and stun
     if (uint32 spell = TrySpell(bot, target, 803950))
         return spell;
 
-    // 3. Destroyer's Maw (root 802107) - core Pyromancer attack
+    // 5. Destroyer's Maw (root 802107) - core Pyromancer attack
     if (uint32 spell = TrySpell(bot, target, 802107))
         return spell;
 
-    // 4. Burst spenders / instant casts:
-    // Combustion (root 802791)
-    if (uint32 spell = TrySpell(bot, target, 802791))
-        return spell;
-
-    // Fire Blast (root 800792)
+    // 6. Fire Blast (root 800792) - instant burst
     if (uint32 spell = TrySpell(bot, target, 800792))
         return spell;
 
-    // Pyroblast (root 800818) - use if Hot Streak / proc is active or when off cooldown
-    if (uint32 spell = TrySpell(bot, target, 800818))
-        return spell;
-
-    // 4. Close/Mid range frontal cone: Dragon's Breath / Flame Wave (root 801915)
+    // 7. Close/Mid range frontal cone: Dragon's Breath / Flame Wave (root 801915)
     if (dist <= 12.0f)
     {
         if (uint32 spell = TrySpell(bot, target, 801915))
             return spell;
     }
 
-    // 5. Ignite spender (root 805500)
+    // 8. Ignite spender (root 805500)
     if (uint32 spell = TrySpell(bot, target, 805500))
         return spell;
 
-    // 6. Primary ranged filler: Scorching Ray (root 800790)
+    // 9. Primary ranged filler: Scorching Ray (root 800790)
     if (uint32 spell = TrySpell(bot, target, 800790))
         return spell;
 
@@ -581,9 +593,9 @@ uint32 SelectGuardianRotationSpell(Player* bot, Unit* target, uint32 activeSpec)
     float dist = bot->GetDistance(target);
 
     // 1. Maintain Stance / Formation
-    // Spec 19 is Vanguard (Tank) -> prefer Tower Formation (800317)
+    // Spec 21 is Vanguard (Tank) -> prefer Tower Formation (800317)
     // Other specs / default -> prefer Line Formation (803130) or Assault Formation (803417)
-    if (activeSpec == 19)
+    if (activeSpec == 21)
     {
         if (!bot->HasAura(800317))
             if (uint32 spell = TrySpell(bot, bot, 800317, true))
@@ -602,9 +614,20 @@ uint32 SelectGuardianRotationSpell(Player* bot, Unit* target, uint32 activeSpec)
         }
     }
 
-    // 2. Gap closers if target is at range (> 8.0f)
+    // 2. Defensive: Raise Shield (root 500168) if injured (< 75% HP)
+    if (bot->GetHealthPct() < 75.0f)
+    {
+        if (uint32 spell = TrySpell(bot, bot, 500168, true))
+            return spell;
+    }
+
+    // 3. Gap closers if target is at range (> 8.0f)
     if (dist > 8.0f)
     {
+        // Ram (root 802284) - shield charge / ram
+        if (uint32 spell = TrySpell(bot, target, 802284))
+            return spell;
+
         // Grand Entrance (root 802870)
         if (uint32 spell = TrySpell(bot, target, 802870))
             return spell;
@@ -614,50 +637,55 @@ uint32 SelectGuardianRotationSpell(Player* bot, Unit* target, uint32 activeSpec)
             return spell;
     }
 
-    // 3. Place Standard / Banner if in combat and off cooldown
+    // 4. Place Standard / Banner if in combat and off cooldown
     // Standard of Valiance (root 800319)
     if (uint32 spell = TrySpell(bot, bot, 800319, true))
         return spell;
 
-    // 4. Melee Priority Attacks:
-    // Pulverize (root 800311) - heavy shield strike (requires shield)
-    if (uint32 spell = TrySpell(bot, target, 800311))
-        return spell;
+    // 5. Melee Priority Attacks:
+    if (dist <= 6.0f)
+    {
+        // Pulverize (root 800311) - heavy shield strike (requires shield)
+        if (uint32 spell = TrySpell(bot, target, 800311))
+            return spell;
 
-    // Ram (root 802284) - shield ram (requires shield)
-    if (uint32 spell = TrySpell(bot, target, 802284))
-        return spell;
+        // Reprisal (root 800316) - counter-attack shield strike
+        if (uint32 spell = TrySpell(bot, target, 800316))
+            return spell;
 
-    // Heavy Blow (root 803129) - core melee builder
-    if (uint32 spell = TrySpell(bot, target, 803129))
-        return spell;
+        // Ram (root 802284) - shield ram
+        if (uint32 spell = TrySpell(bot, target, 802284))
+            return spell;
 
-    // Broad Sweep (root 805150) - sweeping melee strike
-    if (uint32 spell = TrySpell(bot, target, 805150))
-        return spell;
+        // Broad Sweep (root 805150) - sweeping melee strike
+        if (uint32 spell = TrySpell(bot, target, 805150))
+            return spell;
 
-    // Hammer of the Law (704418) - mace strike
-    if (uint32 spell = TrySpell(bot, target, 704418))
-        return spell;
+        // Heavy Blow (root 803129) - core melee builder
+        if (uint32 spell = TrySpell(bot, target, 803129))
+            return spell;
 
-    // Linebreaker (root 806220) - line formation strike
-    if (uint32 spell = TrySpell(bot, target, 806220))
-        return spell;
+        // Hammer of the Law (704418) - mace strike
+        if (uint32 spell = TrySpell(bot, target, 704418))
+            return spell;
 
-    // Hold the Line (root 803830)
-    if (uint32 spell = TrySpell(bot, target, 803830))
-        return spell;
+        // Linebreaker (root 806220) - line formation strike
+        if (uint32 spell = TrySpell(bot, target, 806220))
+            return spell;
 
-    // Press the Attack (root 801219)
-    if (uint32 spell = TrySpell(bot, target, 801219))
-        return spell;
+        // Hold the Line (root 803830)
+        if (uint32 spell = TrySpell(bot, target, 803830))
+            return spell;
 
-    // 5. Defensive in close combat if needed
-    if (bot->GetHealthPct() < 70.0f)
+        // Press the Attack (root 801219)
+        if (uint32 spell = TrySpell(bot, target, 801219))
+            return spell;
+    }
+
+    // 6. Secondary defensive in close combat if needed
+    if (bot->GetHealthPct() < 50.0f)
     {
         if (uint32 spell = TrySpell(bot, bot, 800313, true)) // Brace
-            return spell;
-        if (uint32 spell = TrySpell(bot, bot, 500168, true)) // Raise Shield
             return spell;
     }
 
@@ -839,6 +867,97 @@ uint32 SelectStarcallerRotationSpell(Player* bot, Unit* target, uint32 activeSpe
 // -------------------------------------------------------------------------
 // Class 13: Witch Doctor
 // -------------------------------------------------------------------------
+
+// Heal rotation for Witch Doctor specs roled as Healer (e.g. Brewing, spec 6).
+// Called from SelectClassHealRotationSpell; healTarget is the lowest-health group member.
+//
+// Spell roots confirmed in Thudoryalid's (GUID 2211) spellbook:
+//   801670 = Loa's Brew     (direct HEAL, has DBC cooldown — use TrySpell, not throttled)
+//   801696 = Spirit in a Bottle (direct HEAL, has DBC cooldown — use TrySpell)
+//   801796 = Reclaim Soul   (rez/soul-reclaim — confirmed known, unknown type — try as fill)
+//   500957 = Healing Ward   (totem/ward — no DBC CD, needs throttle to avoid constant re-cast)
+//   802703 = Chain Heal of Loa (AoE chain — try if known; skips silently if not)
+//
+// Priority:
+//   1. Emergency: < 40% HP — dump every available direct heal NOW
+//   2. Triage: < 70% HP — primary direct heal cycle (Brew → Bottle)
+//   3. AoE mode: ≥ 2 members below 80% — fire chain heal if available
+//   4. Maintenance: < 92% — sustain with Loa's Brew
+//   5. Ward filler: drop Healing Ward (throttled) if nobody critically injured
+uint32 SelectWitchDoctorHealRotationSpell(Player* bot, Player* healTarget, uint32 /*activeSpec*/)
+{
+    float targetHpPct = healTarget->GetHealthPct();
+
+    // 1. Emergency: target critically low — fire strongest heals regardless of throttle
+    if (targetHpPct < 40.0f)
+    {
+        // Loa's Brew (root 801670) — primary direct heal with DBC cooldown
+        if (uint32 spell = TrySpell(bot, healTarget, 801670, true))
+            return spell;
+
+        // Spirit in a Bottle (root 801696) — secondary direct heal with DBC cooldown
+        if (uint32 spell = TrySpell(bot, healTarget, 801696, true))
+            return spell;
+
+        // Reclaim Soul (root 801796) — confirmed in bot's spellbook; try as emergency fill
+        if (uint32 spell = TrySpell(bot, healTarget, 801796, true))
+            return spell;
+    }
+
+    // 2. Triage: below 70%, use the standard primary heal cycle
+    if (targetHpPct < 70.0f)
+    {
+        // Loa's Brew first (primary, higher throughput)
+        if (uint32 spell = TrySpell(bot, healTarget, 801670, true))
+            return spell;
+
+        // Spirit in a Bottle as second option
+        if (uint32 spell = TrySpell(bot, healTarget, 801696, true))
+            return spell;
+    }
+
+    // 3. AoE: if multiple members are hurt, fire a chain heal if known
+    {
+        uint32 lowMemberCount = 0;
+        if (Group const* group = bot->GetGroup())
+        {
+            for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                if (Player const* member = ref->GetSource())
+                    if (member->IsAlive() && member->GetHealthPct() < 80.0f)
+                        ++lowMemberCount;
+            }
+        }
+
+        if (lowMemberCount >= 2)
+        {
+            // Chain Heal of Loa (root 802703) — AoE chain heal; TrySpell returns 0 if not known
+            if (uint32 spell = TrySpell(bot, healTarget, 802703, true))
+                return spell;
+        }
+    }
+
+    // 4. Maintenance: top off anyone below 92%
+    if (targetHpPct < 92.0f)
+    {
+        if (uint32 spell = TrySpell(bot, healTarget, 801670, true))
+            return spell;
+
+        if (uint32 spell = TrySpell(bot, healTarget, 801696, true))
+            return spell;
+    }
+
+    // 5. Filler: Healing Ward totem (root 500957) — throttled to avoid instant re-drop
+    // after the totem naturally expires. The offensive path also places Serpent Ward (500960)
+    // using the same slot, but only when at >60% HP. Here we always prefer Healing Ward when
+    // acting as healer and the group doesn't urgently need anything else.
+    if (uint32 spell = TryThrottledSpell(bot, bot, 500957, 20000, true))
+        return spell;
+
+    return 0;
+}
+
+
 uint32 SelectWitchDoctorRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
 {
     // 1. Group Heal Priority: if any group member (or the bot itself) needs healing,
@@ -1108,89 +1227,28 @@ uint32 SelectSunClericRotationSpell(Player* bot, Unit* target, uint32 /*activeSp
 {
     float dist = bot->GetDistance(target);
 
-    // 1. Maintain Stance / Form:
-    // Holy Form (root 805301)
-    if (!bot->HasAura(805301))
+    // 1. Maintain Consecrated Weapons (root 704395) self-buff if known
+    if (!bot->HasAura(704395))
     {
-        if (uint32 spell = TrySpell(bot, bot, 805301, true))
+        if (uint32 spell = TrySpell(bot, bot, 704395, true))
             return spell;
     }
 
-    // 2. Group Heal Priority: heal the lowest-health group member before attacking.
-    // FindGroupHealTarget returns nullptr if nobody is below 95% HP (no action needed),
-    // or the bot itself if it's the only hurt unit (solo or nobody else is lower).
-    if (Player* healTarget = FindGroupHealTarget(bot))
-    {
-        bool isTeammate = (healTarget != bot);
-        // Always heal a teammate; only spend cooldowns on self when below 50%.
-        if (isTeammate || bot->GetHealthPct() < 50.0f)
-        {
-            // Sol Invictus (root 807732) - holy emergency shield/ward (self-only by DBC)
-            if (!isTeammate)
-            {
-                if (uint32 spell = TrySpell(bot, bot, 807732, true))
-                    return spell;
-            }
-
-            // Solar Invocation: Ascension (root 500152) - burst AoE heal (hits the area around bot)
-            if (uint32 spell = TrySpell(bot, bot, 500152, true))
-                return spell;
-
-            // Revivify (root 801790) - direct single-target heal / HoT
-            if (uint32 spell = TrySpell(bot, healTarget, 801790, true))
-                return spell;
-
-            // Daybreak (root 500147) - instant holy heal
-            if (uint32 spell = TrySpell(bot, healTarget, 500147, true))
-                return spell;
-
-            // Illumination (root 500143) - holy heal cast
-            if (uint32 spell = TrySpell(bot, healTarget, 500143, true))
-                return spell;
-        }
-    }
-
-    // Radiance (root 800054) - burst cooldown / holy radiance aura
-    if (!bot->HasAura(800054))
-    {
-        if (uint32 spell = TrySpell(bot, bot, 800054, true))
-            return spell;
-    }
-
-    // 4. In Melee Range (<= 5.0f, with 1H weapon equipped checked by CanCastSpell):
+    // 2. In Melee Range (<= 5.0f):
     if (dist <= 5.0f)
     {
-        // Gavel of Light (root 800611) - primary holy melee weapon strike
+        // Gavel of Atonement (root 800611) - primary holy melee weapon strike
         if (uint32 spell = TrySpell(bot, target, 800611))
             return spell;
-
-        // Gavel of Grace (root 800614) - secondary holy strike
-        if (uint32 spell = TrySpell(bot, target, 800614))
-            return spell;
-
-        // Gavel of Wrath (root 800617) - burst holy strike
-        if (uint32 spell = TrySpell(bot, target, 800617))
-            return spell;
     }
 
-    // 5. Ranged Caster Attacks:
-    // Injunction (root 800624) - holy debuff on target
-    if (!target->HasAura(800624))
-    {
-        if (uint32 spell = TrySpell(bot, target, 800624))
-            return spell;
-    }
-
-    // Dawnfall (root 806118) - heavy ground holy AoE nuke
-    if (uint32 spell = TrySpell(bot, target, 806118))
+    // 3. Ranged Offensive Attacks:
+    // Sunset (root 804584) - holy nuke / DoT
+    if (uint32 spell = TrySpell(bot, target, 804584))
         return spell;
 
     // Horusath Blast (root 500154) - heavy ranged holy nuke
     if (uint32 spell = TrySpell(bot, target, 500154))
-        return spell;
-
-    // Glare (root 805583) - instant holy damage
-    if (uint32 spell = TrySpell(bot, target, 805583))
         return spell;
 
     // Sunflare (root 800231) - primary holy fire ranged builder / spammer
@@ -1357,6 +1415,54 @@ uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32
 
         case 29: // Venomancer
             return SelectVenomancerRotationSpell(bot, target, activeSpec);
+
+        default:
+            return 0;
+    }
+}
+
+uint32 SelectClassHealRotationSpell(Player* bot, Player* healTarget, uint8 classId, uint32 activeSpec)
+{
+    if (!bot || !healTarget || !healTarget->IsAlive())
+        return 0;
+
+    switch (classId)
+    {
+        case 13: // Witch Doctor
+            return SelectWitchDoctorHealRotationSpell(bot, healTarget, activeSpec);
+
+        case 27: // Sun Cleric
+        {
+            // 1. Maintain Consecrated Weapons (root 704395) buff on self if known
+            if (!bot->HasAura(704395))
+            {
+                if (uint32 spell = TrySpell(bot, bot, 704395, true))
+                    return spell;
+            }
+
+            // 2. Emergency heal if target is below 50% HP: Illumination (root 500143)
+            if (healTarget->GetHealthPct() < 50.0f)
+            {
+                if (uint32 spell = TrySpell(bot, healTarget, 500143, true))
+                    return spell;
+            }
+
+            // 3. Maintain Revivify HoT (root 801790) on healTarget
+            if (!healTarget->HasAura(801790, bot->GetGUID()))
+            {
+                if (uint32 spell = TrySpell(bot, healTarget, 801790, true))
+                    return spell;
+            }
+
+            // 4. Primary direct heal: Illumination (root 500143) if below 85%
+            if (healTarget->GetHealthPct() < 85.0f)
+            {
+                if (uint32 spell = TrySpell(bot, healTarget, 500143, true))
+                    return spell;
+            }
+
+            return 0;
+        }
 
         default:
             return 0;
