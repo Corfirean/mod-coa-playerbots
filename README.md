@@ -26,14 +26,6 @@ Real-time floating control HUD for companion orders, formations, stances, and di
 Guild taskboard and management interface showing companions participating in guild progression.
 ![Guild Taskboard](docs/screenshots/guild_taskboard_live.png)
 
-### Active Companion Party HUD
-Companions assembled in party formation ready for dungeon runs.
-![Companion Party HUD](docs/screenshots/companion_party_hud.png)
-
-### Dungeon Combat & Triage
-Live combat execution: Tank threat management, dynamic triage healing, and AoE/single-target DPS execution.
-![Dungeon Combat & Triage](docs/screenshots/dungeon_combat_triage.jpg)
-
 ---
 
 ## Supported Classes & Specializations
