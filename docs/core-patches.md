@@ -118,6 +118,35 @@ doesn't show up live — always mirror before `ninja worldserver`.
    `.botcmd despawn <guid>` cycle on a non-protected test character
    confirms the binary is actually live and the bot chassis still works.
 
+## 3.5 Uncommitted working-tree patches (as of 2026-09-17) — needs attention
+
+Beyond the two committed patches above, `git status` against the current
+`azerothcore-wotlk-coa` checkout shows **10 modified core files with no
+commit at all** — they exist only in this checkout's working tree, on top
+of `6b7ccb5` (`Merge remote-tracking branch 'origin/main'`, 2026-09-17
+06:48). Discovered while answering "did we patch the core for bots?" — the
+answer was yes, more than this doc said, and none of it is safe from being
+silently lost by a `git reset --hard`, `git stash` left unapplied, or a bad
+merge conflict resolution. **These should be committed** (as their own
+commits, following the pattern of the two above) before anyone relies on
+this checkout surviving a routine git operation.
+
+| File | What changed | Bot-related? |
+| :--- | :--- | :--- |
+| `src/server/game/Guilds/Guild.h` | Added `friend class BotMgr;` | Yes — `BotMgr`'s guild deposit/withdraw/gather commands need private `Guild` access. |
+| `src/server/game/DungeonFinding/LFGMgr.h` + `.cpp` | Added `LFGMgr::GetProposalIdForPlayer(ObjectGuid)` | Yes — comment explicitly says "needed by anything that has to call `UpdateProposal()` without already knowing the id a real client would have learned from its own `SMSG_LFG_PROPOSAL_UPDATE` packet (mod-coa-playerbots)". Used by the LFG dungeon-fill feature. |
+| `src/server/game/Scripting/ScriptDefines/PlayerScript.h` + `.cpp`, `src/server/game/Scripting/ScriptMgr.h` | Added a new `PLAYERHOOK_ON_PETITION_OFFERED` hook (`ScriptMgr::OnPetitionOffered`) | Yes — lets a module react when a specific player (bot) is offered a guild/arena petition to sign, needed for bot guild-invite auto-accept. |
+| `src/server/game/Handlers/PetitionsHandler.cpp` | Wires the new hook into `HandleOfferPetitionOpcode`, **plus a large number of `LOG_ERROR` debug lines added throughout `HandlePetitionSignOpcode`** | The hook wiring is bot-related; the extra `LOG_ERROR` instrumentation looks like active debugging of a guild-petition-signing issue that was never cleaned up — worth reviewing and either removing or downgrading to `LOG_DEBUG` before committing. |
+| `src/server/game/Combat/CombatManager.cpp` | `CombatManager::PutReference` no longer `ASSERT`-crashes the whole process on a duplicate combat-reference slot; force-ends the stale reference and logs an error instead. | Indirectly — the comment says this was "observed under heavy concurrent-bot load," so it's a robustness fix the bot population's scale surfaced, not bot-specific logic. |
+| `src/server/game/Handlers/QueryHandler.cpp` | Added a diagnostic `LOG_ERROR` when `SendNameQueryOpcode` finds no `CharacterCache` entry for a guid | Likely bot-related (debugging a name-lookup issue), but generic/diagnostic — safe either way. |
+| `src/server/game/Entities/Player/Player.cpp` | `Player::ApplySpellMod`: a `SPELLMOD_COST`/`SPELLMOD_CASTING_TIME` early-return now also checks `mod->value <= 0`, so a modifier that *increases* cost/casting time from a free/instant baseline is no longer skipped. | Unclear — no bot-specific comment; may be an unrelated gameplay fix found via bot-scale testing rather than something bots specifically need. Verify before assuming it's safe to drop. |
+
+**Action needed**: review the `PetitionsHandler.cpp` debug logging (looks
+unfinished), then commit each logical group separately with a message
+matching the style of the two committed patches above, so this table can be
+updated with real commit hashes and this checkout stops depending on
+uncommitted working-tree state for core bot functionality.
+
 ## 4. What this module depends on but does not patch
 
 `mod-ascension-compat` (also in `azerothcore-wotlk-coa/modules/`, but *that*

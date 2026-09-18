@@ -1,0 +1,16 @@
+{
+    "version": "1.0",
+    "built": "2026-09-17",
+    "sourceRevision": "6b7ccb5b0940230991bf2e00aeedb0f0719b4a34",
+    "builtForRepack": {
+        "repository": "https://github.com/jealous-sound/azerothcore-wotlk-coa",
+        "mainRevision": "c3beca68b8d909d3a3d9e890fea856795f332f59",
+        "sourceRevision": "e4661b815cc84810fe298a0a82c472f01a156299"
+    },
+    "originalWorldserverSha256": [
+        "715bd37541cb90232f1fe91b64178682659c4f5f11a8ba8838ccf3fa13f87e1a"
+    ],
+    "patchedWorldserverSha256": [
+        "58c42068ee5d75f1fc66a1f2f659fae7aa7278cb92b1a8636bcc9a151f7a8365"
+    ]
+}

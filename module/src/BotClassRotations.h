@@ -20,6 +20,10 @@ namespace BotAI
     // Otherwise returns the specific spell ID to cast according to priority rules.
     uint32 SelectClassRotationSpell(Player* bot, Unit* target, uint8 classId, uint32 activeSpec);
 
+    // Returns 0 if no healer rotation exists for this class/spec, or if no class heal ability is currently eligible.
+    // Otherwise returns the specific heal spell ID to cast on healTarget according to priority rules.
+    uint32 SelectClassHealRotationSpell(Player* bot, Player* healTarget, uint8 classId, uint32 activeSpec);
+
     // Records a cast failure so this spell is temporarily blacklisted for this bot to avoid infinite retry loops.
     void RecordSpellCastFailure(ObjectGuid botGuid, uint32 spellId);
 

@@ -153,14 +153,14 @@ namespace BotAI
         }
 
         // -------------------------------------------------------------
-        // Profile 2: Witch Doctor DPS (Default / All Specs, Role Dps)
+        // Profile 2: Witch Doctor - Spec 4: Shadowhunting (RANGED DPS)
         // -------------------------------------------------------------
         {
             CombatProfile p;
             p.classId = 13;
-            p.specId = 0; // Wildcard
+            p.specId = 4; // Shadowhunting
             p.role = BotRole::Dps;
-            p.profileName = "WitchDoctor_Dps_Default";
+            p.profileName = "WitchDoctor_Shadowhunting_Dps";
 
             // 1. Major Self Buffs
             {
@@ -291,6 +291,11 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            ProfileRegistry::RegisterProfile(p);
+
+            // Register also for Spec 5: Voodoo DPS
+            p.specId = 5;
+            p.profileName = "WitchDoctor_Voodoo_Dps";
             ProfileRegistry::RegisterProfile(p);
         }
     }

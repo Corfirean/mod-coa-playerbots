@@ -1,4 +1,4 @@
-﻿/*
+/*
  * mod-coa-playerbots
  *
  * Data-Driven Combat AI Framework: CombatProfile
@@ -18,7 +18,7 @@ namespace BotAI
     struct CombatProfile
     {
         uint8 classId = 0;
-        uint32 specId = 0; // 0 = matches any spec of this class
+        uint32 specId = 0; // Ascension CoA specialization ID (retail-style fixed spec)
         BotRole role = BotRole::Dps;
         std::string profileName;
 

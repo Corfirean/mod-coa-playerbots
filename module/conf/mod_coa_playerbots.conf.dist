@@ -18,11 +18,34 @@ CoaBots.RandomSpawn.MaxCount = 1000
 # until spawned by guid later.
 CoaBots.RandomSpawn.AutoLogin = 1
 
+# How many bots '.botcmd spawnrandom'/'.botcmd spawnleveled' create per batch, and how many
+# milliseconds to wait between batches. Confirmed live: creating ~1000 bots synchronously
+# crashed the worldserver outright (no crash dump -- consistent with an OS-level kill under a
+# resource spike). The defaults (5 bots every 500ms = 10/sec) survived a live 1000-1500 bot
+# batch with no crash; lower BatchSize or raise BatchIntervalMs further on weaker hardware.
+CoaBots.RandomSpawn.BatchSize = 5
+CoaBots.RandomSpawn.BatchIntervalMs = 500
+
 # Username prefix for the accounts random bots are spread across (auto-created as needed, one
 # new account whenever the current one hits CharactersPerAccount). Never account 1 (the human
 # player's own account) or account 2 if it's the hand-made test-character account -- new
 # accounts are always created fresh under this prefix.
 CoaBots.RandomSpawn.AccountPrefix = "CoaBotHost"
+
+# If enabled, every bot character that already exists (any account matching
+CoaBots.AutoLoginOnStartup = 0
+CoaBots.AutoLogin.MaxCount = 800
+
+# Batch size / interval for CoaBots.AutoLoginOnStartup's gradual login. Login is much lighter
+# than character creation (just an async DB query per bot), so this can safely run faster than
+# CoaBots.RandomSpawn's batch pace -- default is 10 bots every 500ms (20/sec).
+CoaBots.AutoLogin.BatchSize = 10
+CoaBots.AutoLogin.BatchIntervalMs = 500
+
+# Human-like solo behavior: a bot has a persistent profile and keeps one intent instead of
+# retrying a fixed quest/gather/fish/grind sequence on every idle tick. Values are milliseconds.
+CoaBots.Profile.IntentMinMs = 900000
+CoaBots.Profile.IntentMaxMs = 2100000
 
 # When enabled, the moment anyone (real player or bot) joins a normal (non-arena, non-rated)
 # Battleground queue, both factions' queues for that bracket are automatically topped off with
@@ -38,3 +61,32 @@ CoaBots.BGFill.TargetPlayersPerTeam = 0
 # doesn't already cover, so a full 5-man is ready immediately. Group joins and raids are out of
 # scope -- see BotLfgFill.cpp's header comment.
 CoaBots.LfgFill.Enable = 1
+
+# Path to the community talent-build data (see reference/ascensionsidekick-level-builds.json in
+# the module's own repo, sourced from ascensionsidekick.com) that bots use to spend real talent
+# points as they level. Leave blank to use the built-in search (checks this path relative to the
+# working directory, one level up, two levels up, and a hardcoded dev-machine path as a last
+# resort) -- only set this if the file lives somewhere none of those find it.
+CoaBots.TalentBuildsPath = ""
+
+# Bots below level 10 have no specialization yet. Once a bot hits level 10 without one, it's
+# assigned a spec from the community build data, weighted toward whichever role (Tank/Healer)
+# the current online bot population is short of relative to these target percentages; DPS is
+# always the fallback. Raise TankTargetPct/HealerTargetPct if dungeon/raid groups keep running
+# short on tanks or healers.
+CoaBots.SpecBalance.TankTargetPct = 20
+CoaBots.SpecBalance.HealerTargetPct = 20
+
+# How low a heal target's health can drop (percent) before a healer bot breaks formation /
+# stops following to cast a heal, even with nothing else going on (no active group fight). Below
+# this, the heal always happens; above it, a healer keeps following the group and only heals
+# incidentally while doing so. Raise this if healers feel too passive about topping people off;
+# lower it if they break formation too often for trivial chip damage.
+CoaBots.Healer.CriticalHealPct = 50
+
+# How far (yards) a solo/ungrouped bot with nothing else to do will scan for a hostile to grind
+# on, and how many levels above its own level a target can be before it's skipped as too
+# dangerous. Lower SearchRadius if idle bots are grinding mobs uncomfortably far from where you'd
+# expect to find them; lower MaxLevelAbove if they're picking fights they shouldn't win.
+CoaBots.Grind.SearchRadius = 30
+CoaBots.Grind.MaxLevelAbove = 3

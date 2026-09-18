@@ -1,14 +1,22 @@
 #include "BotMgr.h"
 #include <algorithm>
+#include <array>
+#include <cctype>
+#include "AccountMgr.h"
 #include "AscensionCoATalentData.h"
 #include "BotAI.h"
+#include "BotSpawnRandom.h"
+#include "BotTalentBuilds.h"
+#include "BotZoneProgression.h"
 #include "ClassSpecRoles.h"
 #include "CellImpl.h"
 #include "CharacterCache.h"
 #include "Chat.h"
+#include "Config.h"
 #include "Corpse.h"
 #include "DatabaseEnv.h"
 #include "Group.h"
+#include "GroupScript.h"
 #include "Guild.h"
 #include "GuildMgr.h"
 #include "GuildPackets.h"
@@ -18,9 +26,12 @@
 #include "LootMgr.h"
 #include "Mail.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "PetDefines.h"
 #include "Player.h"
+#include "PlayerScript.h"
 #include "QueryHolder.h"
+#include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
 #include "SpellAuras.h"
@@ -92,6 +103,150 @@ std::unordered_map<uint32, std::vector<uint32>> const& CraftingRecipeIndex()
     return index;
 }
 
+// Trade Goods (item_template.class = 7) subclass -> the gather-order category name the addon
+// shows. Subclass 8 (Meat) also covers raw fish -- WotLK's own DB never splits them into
+// separate subclasses -- so entries in that subclass get a real, data-driven split below
+// instead of a name-guess: an item present in fishing_loot_template is Fish, anything else in
+// that subclass is Meat.
+struct GatherCategoryItem
+{
+    uint32 entry;
+    std::string name;
+};
+
+// category name -> every Trade Goods item this realm's own loot tables actually let a bot
+// obtain by gathering/looting on its own (no bot AI targets a specific item -- TryStartGathering
+// opens whatever herbalism/mining node it finds, TryProcessPendingLoot takes whatever a kill
+// drops -- so GuildGather's "order N of item X" is a background wait against opportunistic
+// pickup either way; this catalog only exists so the addon can offer a real, obtainable item
+// instead of the player typing an arbitrary id). Sourced from a single one-time query joining
+// item_template against gameobject_loot_template (herb/ore nodes), skinning_loot_template
+// (hides/meat from skinning), fishing_loot_template (raw fish), and creature_loot_template
+// (humanoid cloth drops, beast meat) -- deliberately excludes refined/crafted items in the same
+// subclasses (bars, bolts, cured leather) since those only ever come from a crafting cast, never
+// from anything a bot's autonomous gathering loop can produce, which a plain class/subclass
+// filter alone would have wrongly included. Built once and cached -- confirmed via EXPLAIN this
+// runs in ~0.1s as a JOIN (a correlated-EXISTS version of the same query took ~9.5s against this
+// realm's live creature_loot_template, unacceptable for anything running on the map thread).
+std::unordered_map<std::string, std::vector<GatherCategoryItem>> const& GatherableCatalog()
+{
+    static std::unordered_map<std::string, std::vector<GatherCategoryItem>> catalog = []
+    {
+        std::unordered_map<std::string, std::vector<GatherCategoryItem>> map;
+        QueryResult result = WorldDatabase.Query(
+            "SELECT it.entry, it.name, it.subclass, (fi.item IS NOT NULL) AS is_fish "
+            "FROM item_template it "
+            "JOIN (SELECT item FROM gameobject_loot_template UNION SELECT item FROM skinning_loot_template "
+            "UNION SELECT item FROM fishing_loot_template UNION SELECT item FROM creature_loot_template) src "
+            "ON src.item = it.entry "
+            "LEFT JOIN (SELECT DISTINCT item FROM fishing_loot_template) fi ON fi.item = it.entry "
+            "WHERE it.class = 7 AND it.subclass IN (5,6,7,8,9) "
+            "AND it.name NOT LIKE '%MISSING%' AND it.name NOT LIKE 'Z:%' "
+            "ORDER BY it.subclass, it.RequiredLevel, it.entry");
+        if (result)
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                uint32 entry = fields[0].Get<uint32>();
+                std::string name = fields[1].Get<std::string>();
+                uint32 subclass = fields[2].Get<uint32>();
+                bool isFish = fields[3].Get<bool>();
+
+                char const* category = "misc";
+                switch (subclass)
+                {
+                    case 5: category = "cloth"; break;
+                    case 6: category = "leather"; break;
+                    case 7: category = "ore"; break;
+                    case 9: category = "herb"; break;
+                    case 8: category = isFish ? "fish" : "meat"; break;
+                }
+                map[category].push_back({ entry, std::move(name) });
+            } while (result->NextRow());
+        }
+        return map;
+    }();
+    return catalog;
+}
+
+bool ResolveGatherLocationForItem(uint32 itemEntry, uint32& mapId, float& x, float& y, float& z)
+{
+    // 1. Try gameobject loot (mining, herbalism, chests)
+    QueryResult goRes = WorldDatabase.Query(
+        "SELECT g.map, g.position_x, g.position_y, g.position_z "
+        "FROM gameobject g "
+        "JOIN gameobject_template gt ON g.id = gt.entry "
+        "JOIN gameobject_loot_template glt ON gt.data1 = glt.Entry "
+        "WHERE glt.Item = {} AND g.map IN (0, 1, 530, 571) "
+        "ORDER BY RAND() LIMIT 1", itemEntry);
+    if (goRes)
+    {
+        Field* fields = goRes->Fetch();
+        mapId = fields[0].Get<uint32>();
+        x = fields[1].Get<float>();
+        y = fields[2].Get<float>();
+        z = fields[3].Get<float>();
+        return true;
+    }
+
+    // 2. Try creature loot (cloth, meat)
+    QueryResult crRes = WorldDatabase.Query(
+        "SELECT c.map, c.position_x, c.position_y, c.position_z "
+        "FROM creature c "
+        "JOIN creature_template ct ON c.id = ct.entry "
+        "JOIN creature_loot_template clt ON ct.lootid = clt.Entry "
+        "WHERE clt.Item = {} AND c.map IN (0, 1, 530, 571) "
+        "ORDER BY RAND() LIMIT 1", itemEntry);
+    if (crRes)
+    {
+        Field* fields = crRes->Fetch();
+        mapId = fields[0].Get<uint32>();
+        x = fields[1].Get<float>();
+        y = fields[2].Get<float>();
+        z = fields[3].Get<float>();
+        return true;
+    }
+
+    // 3. Try skinning loot (leather)
+    QueryResult skRes = WorldDatabase.Query(
+        "SELECT c.map, c.position_x, c.position_y, c.position_z "
+        "FROM creature c "
+        "JOIN creature_template ct ON c.id = ct.entry "
+        "JOIN skinning_loot_template slt ON ct.skinloot = slt.Entry "
+        "WHERE slt.Item = {} AND c.map IN (0, 1, 530, 571) "
+        "ORDER BY RAND() LIMIT 1", itemEntry);
+    if (skRes)
+    {
+        Field* fields = skRes->Fetch();
+        mapId = fields[0].Get<uint32>();
+        x = fields[1].Get<float>();
+        y = fields[2].Get<float>();
+        z = fields[3].Get<float>();
+        return true;
+    }
+
+    // 4. Try fishing loot
+    QueryResult fiRes = WorldDatabase.Query(
+        "SELECT entry FROM fishing_loot_template WHERE item = {} LIMIT 1", itemEntry);
+    if (fiRes)
+    {
+        QueryResult teleRes = WorldDatabase.Query(
+            "SELECT map, position_x, position_y, position_z FROM game_tele WHERE map IN (0, 1) LIMIT 1");
+        if (teleRes)
+        {
+            Field* fields = teleRes->Fetch();
+            mapId = fields[0].Get<uint32>();
+            x = fields[1].Get<float>();
+            y = fields[2].Get<float>();
+            z = fields[3].Get<float>();
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool CrafterHasReagentsFor(Player* crafter, SpellInfo const* spellInfo)
 {
     for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i)
@@ -144,6 +299,24 @@ constexpr ProfessionSkillEntry PROFESSION_SKILLS[] =
     { 755, "Jewelcrafting" }, { 773, "Inscription" },
     { 129, "First Aid" },     { 185, "Cooking" },        { 356, "Fishing" },
 };
+
+}
+
+// Same account-naming convention BotSpawnRandom.cpp's FindOrCreateBotAccount uses to create
+// bot-hosting accounts ("<prefix>N") -- reused here as the one safety rail that stops
+// RestoreGroupBotsOnLogin from ever auto-logging-in some other real player's alt just because
+// it was left in a group with our commander. Case-insensitive since account names are stored
+// upper-cased by AccountMgr::CreateAccount regardless of how the prefix is cased in config.
+bool BotMgr::IsBotAccountId(uint32 accountId)
+{
+    std::string prefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+    std::string name;
+    if (!accountId || !AccountMgr::GetName(accountId, name) || name.size() < prefix.size())
+        return false;
+    return std::equal(prefix.begin(), prefix.end(), name.begin(), [](char a, char b)
+    {
+        return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+    });
 }
 
 BotMgr* BotMgr::instance()
@@ -163,7 +336,7 @@ WorldSession* BotMgr::FindBotSession(ObjectGuid::LowType charLowGuid) const
     return nullptr;
 }
 
-void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
+void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std::function<void(Player*)> onReady)
 {
     ObjectGuid playerGuid = ObjectGuid::Create<HighGuid::Player>(charLowGuid);
 
@@ -201,7 +374,7 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
     // registration, so callbacks queued on the World-level processor still complete. See
     // pilot/README.md for the full story of how this was found.
     sWorld->AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder)).AfterComplete(
-        [botSession](SQLQueryHolderBase const& completedHolder)
+        [botSession, onReady](SQLQueryHolderBase const& completedHolder)
         {
             botSession->HandlePlayerLoginFromDB(static_cast<LoginQueryHolder const&>(completedHolder));
 
@@ -209,6 +382,8 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
             {
                 LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' ({}) logged in successfully.",
                     bot->GetName(), bot->GetGUID().ToString());
+                if (onReady)
+                    onReady(bot);
             }
             else
             {
@@ -384,6 +559,16 @@ void BotMgr::FinishPendingTeleport(WorldSession* session)
 
     LOG_INFO("module.coa-playerbots", "BotMgr: finished pending teleport for bot '{}'.", bot->GetName());
 
+    // Bots have no client to simulate gravity or emit falling/landing packets.
+    // Snap the bot's Z to walkable terrain/water surface and broadcast the corrected position
+    // to nearby observing clients so the bot doesn't render frozen/floating mid-air.
+    if (!bot->CanFly())
+    {
+        float z = bot->GetPositionZ();
+        bot->UpdateAllowedPositionZ(bot->GetPositionX(), bot->GetPositionY(), z);
+        bot->UpdatePosition(bot->GetPositionX(), bot->GetPositionY(), z, bot->GetOrientation());
+    }
+
     // Start following only once the teleport has actually landed -- doing this
     // before the ack would give MoveFollow a stale/pre-teleport position to work from.
     if (Group* group = bot->GetGroup())
@@ -424,6 +609,11 @@ void BotMgr::TryReturnGhostToCorpseMap(WorldSession* session)
 void BotMgr::QueueTeleportAck(WorldSession* session)
 {
     _pendingTeleportAck.push_back(session);
+}
+
+void BotMgr::QueueBotGroupLeave(ObjectGuid botGuid)
+{
+    _pendingGroupLeaves.push_back(botGuid);
 }
 
 Player* BotMgr::FindBotPlayer(ObjectGuid::LowType charLowGuid) const
@@ -913,17 +1103,160 @@ void BotMgr::GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint
             handler->PSendSysMessage("BotMgr: guildgather complete -- bot '{}' deposited all {}x item {} immediately from inventory.",
                 bot->GetName(), deposited, itemEntry);
         _guildGatherOrders.erase(bot->GetGUID());
+        DeleteGuildGatherOrder(bot->GetGUID());
         return;
     }
 
     uint32 remaining = targetCount - deposited;
-    _guildGatherOrders[bot->GetGUID()] = { itemEntry, remaining };
+    GuildGatherOrder order;
+    order.itemEntry = itemEntry;
+    order.targetCount = targetCount;
+    order.gatheredCount = deposited;
+    order.remainingCount = remaining;
+
+    uint32 locMap = 0;
+    float locX = 0.0f, locY = 0.0f, locZ = 0.0f;
+    if (ResolveGatherLocationForItem(itemEntry, locMap, locX, locY, locZ))
+    {
+        order.targetMapId = locMap;
+        order.targetX = locX;
+        order.targetY = locY;
+        order.targetZ = locZ;
+        order.hasTargetLocation = true;
+
+        if (bot->GetMapId() != locMap)
+        {
+            bot->TeleportTo(locMap, locX, locY, locZ, 0.0f);
+            QueueTeleportAck(session);
+        }
+    }
+    _guildGatherOrders[bot->GetGUID()] = order;
+    SaveGuildGatherOrder(bot->GetGUID(), order);
 
     if (handler)
         handler->PSendSysMessage("BotMgr: guildgather order placed for bot '{}': need {}x item {} (already deposited {}x).",
             bot->GetName(), remaining, itemEntry, deposited);
     LOG_INFO("module.coa-playerbots", "BotMgr: guildgather order for bot '{}': item {} need {} (already deposited {}).",
         bot->GetName(), itemEntry, remaining, deposited);
+}
+
+void BotMgr::GatherOrder(ObjectGuid::LowType requesterCharLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler)
+{
+    Player* requester = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(requesterCharLowGuid));
+    if (!requester)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no online player with guid {} found.", requesterCharLowGuid);
+        return;
+    }
+
+    uint32 guildId = requester->GetGuildId();
+    if (!guildId)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: '{}' is not in a guild -- gather orders only look at guild-mate bots.", requester->GetName());
+        return;
+    }
+
+    // Pick an online guild bot that is NOT currently grouped (grouped bots follow their player/leader).
+    Player* chosen = nullptr;
+    for (Player* bot : GetOnlineBots())
+    {
+        if (bot->GetGuildId() != guildId)
+            continue;
+        if (bot->GetGroup())
+            continue;
+        bool busy = _guildGatherOrders.count(bot->GetGUID()) || _craftOrders.count(bot->GetGUID());
+        if (!busy)
+        {
+            chosen = bot;
+            break;
+        }
+        if (!chosen)
+            chosen = bot;
+    }
+
+    if (!chosen)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no online guild-mate bot found to gather item {}.", itemEntry);
+        return;
+    }
+
+    GuildGather(chosen->GetGUID().GetCounter(), itemEntry, count, handler);
+}
+
+BotMgr::GuildGatherOrder const* BotMgr::GetGuildGatherOrder(ObjectGuid const& guid) const
+{
+    auto it = _guildGatherOrders.find(guid);
+    return it != _guildGatherOrders.end() ? &it->second : nullptr;
+}
+
+void BotMgr::LoadGuildGatherOrders()
+{
+    // Ensure database table exists
+    CharacterDatabase.DirectExecute(
+        "CREATE TABLE IF NOT EXISTS mod_coa_bot_guild_gather_orders ("
+        "  bot_guid INT UNSIGNED NOT NULL PRIMARY KEY,"
+        "  item_entry INT UNSIGNED NOT NULL,"
+        "  target_count INT UNSIGNED NOT NULL,"
+        "  gathered_count INT UNSIGNED NOT NULL,"
+        "  remaining_count INT UNSIGNED NOT NULL,"
+        "  target_map INT UNSIGNED NOT NULL,"
+        "  target_x FLOAT NOT NULL,"
+        "  target_y FLOAT NOT NULL,"
+        "  target_z FLOAT NOT NULL,"
+        "  has_target_location TINYINT UNSIGNED NOT NULL DEFAULT 0"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+    );
+
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT bot_guid, item_entry, target_count, gathered_count, remaining_count, target_map, target_x, target_y, target_z, has_target_location "
+        "FROM mod_coa_bot_guild_gather_orders"
+    );
+
+    if (!result)
+        return;
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+        uint32 lowGuid = fields[0].Get<uint32>();
+        ObjectGuid botGuid = ObjectGuid::Create<HighGuid::Player>(lowGuid);
+
+        GuildGatherOrder order;
+        order.itemEntry = fields[1].Get<uint32>();
+        order.targetCount = fields[2].Get<uint32>();
+        order.gatheredCount = fields[3].Get<uint32>();
+        order.remainingCount = fields[4].Get<uint32>();
+        order.targetMapId = fields[5].Get<uint32>();
+        order.targetX = fields[6].Get<float>();
+        order.targetY = fields[7].Get<float>();
+        order.targetZ = fields[8].Get<float>();
+        order.hasTargetLocation = fields[9].Get<uint8>() != 0;
+
+        _guildGatherOrders[botGuid] = order;
+        ++count;
+    } while (result->NextRow());
+
+    LOG_INFO("module.coa-playerbots", "BotMgr: Loaded {} guild gather orders from database.", count);
+}
+
+void BotMgr::SaveGuildGatherOrder(ObjectGuid const& guid, GuildGatherOrder const& order)
+{
+    CharacterDatabase.Execute(
+        "REPLACE INTO mod_coa_bot_guild_gather_orders "
+        "(bot_guid, item_entry, target_count, gathered_count, remaining_count, target_map, target_x, target_y, target_z, has_target_location) "
+        "VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        guid.GetCounter(), order.itemEntry, order.targetCount, order.gatheredCount, order.remainingCount,
+        order.targetMapId, order.targetX, order.targetY, order.targetZ, order.hasTargetLocation ? 1 : 0
+    );
+}
+
+void BotMgr::DeleteGuildGatherOrder(ObjectGuid const& guid)
+{
+    CharacterDatabase.Execute("DELETE FROM mod_coa_bot_guild_gather_orders WHERE bot_guid = {}", guid.GetCounter());
 }
 
 void BotMgr::CraftOrder(ObjectGuid::LowType requesterCharLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler)
@@ -1019,16 +1352,162 @@ std::vector<std::string> BotMgr::GetGuildRosterInfo(Player* commander) const
             professions += std::string(entry.name) + "=" + std::to_string(bot->GetSkillValue(entry.skillId));
         }
 
+        // "item N" was the raw entry id -- confirmed live this reads as meaningless noise to a
+        // player ("gathering 20x item 2450") since nothing on the client side ever resolves it.
+        // Real item names contain no ":" (the wire delimiter), so this is safe to inline as-is.
+        auto itemName = [](uint32 itemEntry) -> std::string
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemEntry);
+            return proto ? proto->Name1 : ("item " + std::to_string(itemEntry));
+        };
+
         std::string task = "idle";
         if (auto craftItr = _craftOrders.find(bot->GetGUID()); craftItr != _craftOrders.end())
-            task = "crafting " + std::to_string(craftItr->second.remainingCount) + "x item " + std::to_string(craftItr->second.itemEntry);
+            task = "crafting " + std::to_string(craftItr->second.remainingCount) + "x " + itemName(craftItr->second.itemEntry);
         else if (auto gatherItr = _guildGatherOrders.find(bot->GetGUID()); gatherItr != _guildGatherOrders.end())
-            task = "gathering " + std::to_string(gatherItr->second.remainingCount) + "x item " + std::to_string(gatherItr->second.itemEntry);
+        {
+            uint32 target = gatherItr->second.targetCount ? gatherItr->second.targetCount : 1;
+            uint32 gathered = gatherItr->second.gatheredCount;
+            uint32 percent = std::min<uint32>(100, (gathered * 100) / target);
+            task = "gathering " + itemName(gatherItr->second.itemEntry) + " (" + std::to_string(gathered) + "/" + std::to_string(target) + " - " + std::to_string(percent) + "%)";
+        }
 
         lines.push_back("ROSTER:" + std::to_string(bot->GetGUID().GetCounter()) + ":" + bot->GetName() + ":" +
             std::to_string(uint32(bot->getClass())) + ":" + std::to_string(bot->GetLevel()) + ":" + task + ":" + professions);
     }
     return lines;
+}
+
+namespace
+{
+// Shared chunking helper for both catalog replies below -- packs by actual byte length rather
+// than a fixed item count, so a reply body never risks exceeding WoW's real ~255-byte chat
+// length cap no matter how long a particular item's name turns out to be (GetRecipeCatalog in
+// particular draws from the full item_template, not just Trade Goods -- confirmed some item
+// names on this realm run past 100 characters, so a fixed "N items per chunk" count sized only
+// against gatherable materials' shorter names would not have been safe there).
+constexpr std::size_t CATALOG_CHUNK_BUDGET_BYTES = 200;
+
+void AppendCatalogChunks(std::vector<std::string>& lines, std::string const& prefix, std::vector<GatherCategoryItem> const& items)
+{
+    std::string body;
+    for (GatherCategoryItem const& item : items)
+    {
+        std::string entryStr = std::to_string(item.entry) + "," + item.name;
+        if (!body.empty() && body.size() + 1 + entryStr.size() > CATALOG_CHUNK_BUDGET_BYTES)
+        {
+            lines.push_back(prefix + body);
+            body.clear();
+        }
+        if (!body.empty())
+            body += "|";
+        body += entryStr;
+    }
+    if (!body.empty())
+        lines.push_back(prefix + body);
+}
+}
+
+std::vector<std::string> BotMgr::GetGatherCatalog() const
+{
+    std::vector<std::string> lines;
+    for (auto const& [category, items] : GatherableCatalog())
+        AppendCatalogChunks(lines, "GCAT:" + category + ":", items);
+    return lines;
+}
+
+std::vector<std::string> BotMgr::GetRecipeCatalog(Player* commander) const
+{
+    std::vector<std::string> lines;
+    uint32 guildId = commander ? commander->GetGuildId() : 0;
+    if (!guildId)
+        return lines;
+
+    // Same "knows a recipe" definition CraftOrder itself uses (Player::HasSpell on a real
+    // SPELL_EFFECT_CREATE_ITEM spell) -- only offer the addon items a guild-mate bot can
+    // *actually* craft right now, per the user's explicit ask, not every recipe that exists.
+    std::vector<GatherCategoryItem> known;
+    std::unordered_set<uint32> seen;
+    for (auto const& [itemEntry, spellIds] : CraftingRecipeIndex())
+    {
+        if (seen.count(itemEntry))
+            continue;
+        for (Player* bot : GetOnlineBots())
+        {
+            if (bot->GetGuildId() != guildId)
+                continue;
+            bool knows = false;
+            for (uint32 spellId : spellIds)
+            {
+                if (bot->HasSpell(spellId))
+                {
+                    knows = true;
+                    break;
+                }
+            }
+            if (knows)
+            {
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemEntry);
+                known.push_back({ itemEntry, proto ? proto->Name1 : ("item " + std::to_string(itemEntry)) });
+                seen.insert(itemEntry);
+                break;
+            }
+        }
+    }
+    std::sort(known.begin(), known.end(), [](GatherCategoryItem const& a, GatherCategoryItem const& b) { return a.name < b.name; });
+
+    AppendCatalogChunks(lines, "RCAT:", known);
+    return lines;
+}
+
+void BotMgr::DumpRecipeCoverage(ChatHandler* handler) const
+{
+    if (!handler)
+        return;
+
+    std::vector<Player*> bots = GetOnlineBots();
+
+    std::unordered_map<uint32, std::unordered_set<uint32>> itemsBySkillLine;
+    std::unordered_set<uint32> itemsUnresolvedSkillLine;
+
+    for (auto const& [itemEntry, spellIds] : CraftingRecipeIndex())
+    {
+        uint32 resolvedSkillLine = 0;
+        bool anyBotKnows = false;
+        for (uint32 spellId : spellIds)
+        {
+            for (Player* bot : bots)
+            {
+                if (bot->HasSpell(spellId))
+                {
+                    anyBotKnows = true;
+                    break;
+                }
+            }
+            if (anyBotKnows)
+            {
+                auto bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+                if (bounds.first != bounds.second)
+                    resolvedSkillLine = bounds.first->second->SkillLine;
+                break;
+            }
+        }
+        if (!anyBotKnows)
+            continue;
+        if (resolvedSkillLine)
+            itemsBySkillLine[resolvedSkillLine].insert(itemEntry);
+        else
+            itemsUnresolvedSkillLine.insert(itemEntry);
+    }
+
+    handler->PSendSysMessage("BotMgr: recipe coverage across {} online bot(s) (live sSpellMgr/HasSpell data, not the stale spell_dbc SQL export):", uint32(bots.size()));
+    for (ProfessionSkillEntry const& entry : PROFESSION_SKILLS)
+    {
+        auto itr = itemsBySkillLine.find(entry.skillId);
+        uint32 count = itr != itemsBySkillLine.end() ? uint32(itr->second.size()) : 0;
+        handler->PSendSysMessage("  {}: {} distinct craftable item(s)", entry.name, count);
+    }
+    handler->PSendSysMessage("  (custom/unresolved skill line): {} distinct craftable item(s)", uint32(itemsUnresolvedSkillLine.size()));
 }
 
 // Called from Update() every tick, same cadence as the guildgather order drain. Casts are
@@ -1042,8 +1521,14 @@ void BotMgr::ProcessCraftOrders()
     for (auto itr = _craftOrders.begin(); itr != _craftOrders.end(); )
     {
         Player* crafter = FindBotPlayer(itr->first.GetCounter());
-        SpellInfo const* info = crafter ? sSpellMgr->GetSpellInfo(itr->second.spellId) : nullptr;
-        if (!crafter || !crafter->IsInWorld() || !info)
+        if (!crafter || !crafter->IsInWorld())
+        {
+            ++itr;
+            continue;
+        }
+
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(itr->second.spellId);
+        if (!info)
         {
             itr = _craftOrders.erase(itr);
             continue;
@@ -1486,30 +1971,37 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
         }
     }
 
-    uint32 learned = 0;
-    for (AscensionCompatData::CoATalentEntry const& entry : AscensionCompatData::CoATalentEntries)
-    {
-        if (entry.ClassId != bot->getClass())
-            continue;
-        if (entry.SpecId != 0 && entry.SpecId != specId)
-            continue;
-        // AECost==0 && TECost==0 entries are "automatic" -- mod-ascension-compat's own
-        // SynchronizeProgression grants those itself once the PlayerSetting below is in
-        // place and the bot next logs in. We only need to reach the paid ones here.
-        if (entry.AECost == 0 && entry.TECost == 0)
-            continue;
-        if (entry.RequiredLevel > bot->GetLevel() || !entry.SpellCount)
-            continue;
+    bot->UpdatePlayerSetting("core.ascension_active_spec", 0, specId);
 
-        uint32 spellId = entry.SpellIds[entry.SpellCount - 1];
-        if (spellId && sSpellMgr->GetSpellInfo(spellId) && !bot->HasSpell(spellId))
+    uint32 learned = 0;
+    if (BotTalentBuilds::GetBuild(bot->getClass(), specId))
+    {
+        BotTalentBuilds::ApplyBuildForLevel(bot, bot->GetLevel());
+    }
+    else
+    {
+        for (AscensionCompatData::CoATalentEntry const& entry : AscensionCompatData::CoATalentEntries)
         {
-            bot->learnSpell(spellId, false);
-            ++learned;
+            if (entry.ClassId != bot->getClass())
+                continue;
+            if (entry.SpecId != 0 && entry.SpecId != specId)
+                continue;
+            // AECost==0 && TECost==0 entries are "automatic" -- mod-ascension-compat's own
+            // SynchronizeProgression grants those itself once the PlayerSetting below is in
+            // place and the bot next logs in. We only need to reach the paid ones here.
+            if (entry.AECost == 0 && entry.TECost == 0)
+                continue;
+            if (entry.RequiredLevel > bot->GetLevel() || !entry.SpellCount)
+                continue;
+
+            uint32 spellId = entry.SpellIds[entry.SpellCount - 1];
+            if (spellId && sSpellMgr->GetSpellInfo(spellId) && !bot->HasSpell(spellId))
+            {
+                bot->learnSpell(spellId, false);
+                ++learned;
+            }
         }
     }
-
-    bot->UpdatePlayerSetting("core.ascension_active_spec", 0, specId);
 
     char const* specName = BotAI::GetSpecName(bot->getClass(), specId);
     BotRole autoRole = BotAI::GetRoleForClassSpec(bot->getClass(), specId);
@@ -1696,12 +2188,185 @@ void BotMgr::SetAutoDungeonMode(ObjectGuid leaderGuid, bool enabled)
     if (enabled)
         _autoDungeonLeaders.insert(leaderGuid);
     else
+    {
         _autoDungeonLeaders.erase(leaderGuid);
+        _clearedBosses.erase(leaderGuid);
+    }
 }
 
 bool BotMgr::IsAutoDungeonModeEnabled(ObjectGuid leaderGuid) const
 {
     return _autoDungeonLeaders.count(leaderGuid) != 0;
+}
+
+void BotMgr::MarkBossCleared(ObjectGuid leaderGuid, uint32 bossEntry)
+{
+    _clearedBosses[leaderGuid].insert(bossEntry);
+}
+
+bool BotMgr::IsBossCleared(ObjectGuid leaderGuid, uint32 bossEntry) const
+{
+    auto itr = _clearedBosses.find(leaderGuid);
+    if (itr != _clearedBosses.end())
+        return itr->second.count(bossEntry) != 0;
+    return false;
+}
+
+void BotMgr::ClearBosses(ObjectGuid leaderGuid)
+{
+    _clearedBosses.erase(leaderGuid);
+}
+
+void BotMgr::SetGroupFormation(ObjectGuid leaderGuid, BotGroupFormation formation)
+{
+    _groupFormations[leaderGuid] = formation;
+}
+
+BotGroupFormation BotMgr::GetGroupFormation(ObjectGuid leaderGuid) const
+{
+    auto itr = _groupFormations.find(leaderGuid);
+    if (itr != _groupFormations.end())
+        return itr->second;
+    return BotGroupFormation::RoleBased;
+}
+
+void BotMgr::RestoreGroupBotsOnLogin(Player* player)
+{
+    if (!player || FindBotPlayer(player->GetGUID().GetCounter()))
+        return; // only for a real player's own login -- a bot's login already got here via whichever real player's own restore pass spawned it
+
+    Group* group = player->GetGroup();
+    if (!group)
+        return;
+
+    // GetMemberSlots() (not the online-only GroupReference list) so offline bots -- the
+    // whole point of this -- are actually seen.
+    for (Group::MemberSlot const& slot : group->GetMemberSlots())
+    {
+        if (slot.guid == player->GetGUID())
+            continue;
+        if (ObjectAccessor::FindPlayer(slot.guid))
+            continue; // already online (bot or real player) -- Player::_LoadGroup already reattached it if it's a bot
+
+        uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(slot.guid);
+        if (!IsBotAccountId(accountId))
+            continue; // never auto-log-in a real player's other character just because it's grouped with us
+
+        LOG_INFO("module.coa-playerbots", "BotMgr: auto-respawning bot '{}' to restore '{}''s pre-restart group.",
+            slot.name, player->GetName());
+        SpawnBot(slot.guid.GetCounter(), nullptr);
+    }
+}
+
+void BotMgr::GearUpBot(Player* bot, ChatHandler* handler)
+{
+    if (!bot)
+        return;
+
+    // Real WotLK ilvl-200 blue armor (Tier-9-equivalent naming, all AllowableClass=-1 on this
+    // realm's item_template), one full set per armor type. Order: head, shoulder, chest, waist,
+    // legs, feet, wrist, hands. Originally picked per bot via a switch on bot->getClass() using
+    // stock CLASS_WARRIOR/CLASS_MAGE/etc constants -- confirmed live that was wrong: on this
+    // realm getClass() returns Ascension's own custom ClassId (12-32, see ClassSpecRoles.h),
+    // never the stock 1-11 range, so every bot silently fell into the cloth default regardless
+    // of real proficiency. Several of the 21 custom classes genuinely can't wear cloth (a
+    // "Barbarian" bot got 0/14 armor pieces equipped that way). No classId-to-armor-type table
+    // exists for this project, so each slot below tries all four sets via the same real
+    // CanEquipNewItem check the mainhand fallback already uses, taking whichever the bot's real
+    // proficiency actually accepts.
+    static uint32 const clothArmor[8]   = { 37294, 37196, 37222, 37289, 37189, 37218, 37245, 37153 };
+    static uint32 const leatherArmor[8] = { 37149, 37139, 37165, 37243, 37374, 37176, 37183, 37230 };
+    static uint32 const mailArmor[8]    = { 37188, 37373, 37144, 37628, 37155, 37167, 37138, 37614 };
+    static uint32 const plateArmor[8]   = { 37135, 37376, 37395, 37152, 37263, 37150, 37175, 37625 };
+    static uint8 const armorSlots[8] = {
+        EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_SHOULDERS, EQUIPMENT_SLOT_CHEST, EQUIPMENT_SLOT_WAIST,
+        EQUIPMENT_SLOT_LEGS, EQUIPMENT_SLOT_FEET, EQUIPMENT_SLOT_WRISTS, EQUIPMENT_SLOT_HANDS,
+    };
+
+    // Neck/rings/trinkets/back plan -- armor-type-agnostic, same for every bot regardless of
+    // proficiency. Two DIFFERENT ring/trinket item ids, not the same one twice -- confirmed live
+    // that repeating one entry silently failed the second equip (ItemLimitCategory rejects a
+    // second copy of the same unique-equippable item; StoreNewItemInBestSlots then just bags it
+    // instead of erroring), leaving Finger2/Trinket2 empty every time.
+    std::array<std::pair<uint8, uint32>, 6> const plan = {{
+        { EQUIPMENT_SLOT_NECK,      37141 },
+        { EQUIPMENT_SLOT_FINGER1,   37151 },
+        { EQUIPMENT_SLOT_FINGER2,   37186 },
+        { EQUIPMENT_SLOT_TRINKET1,  37166 },
+        { EQUIPMENT_SLOT_TRINKET2,  37220 },
+        { EQUIPMENT_SLOT_BACK,      37174 },
+    }};
+
+    // Mainhand handled separately with a fallback chain, not a fixed dagger -- confirmed live
+    // that weapon-skill proficiency varies noticeably across this project's 21 custom classes
+    // (unlike armor, which every bot so far has been able to wear regardless of class), so a
+    // single fixed weapon type left some bots' mainhand slot empty. Tried in order until one is
+    // actually equippable; all real ilvl-200 rare weapons of common 1H subclasses.
+    static uint32 const mainhandCandidates[] = { 37179, 37681, 37260, 37631, 37181, 37190 }; // sword, mace, axe, fist, dagger, staff
+
+    uint8 level = bot->GetLevel();
+    uint32 given = 0;
+
+    // Shared by all three passes below: tries each candidate item id in order for one specific
+    // equipment slot, stopping at the first one CanEquipNewItem actually accepts (proficiency
+    // checked BEFORE anything is touched, so a slot this bot can't use any candidate for is left
+    // completely alone) or the first one that isn't actually an upgrade over what's already
+    // there. Returns true if something was equipped.
+    auto tryEquipBestOf = [&](uint8 slot, uint32 const* candidates, size_t count) -> bool
+    {
+        for (size_t i = 0; i < count; ++i)
+        {
+            uint32 itemId = candidates[i];
+            ItemTemplate const* newTemplate = sObjectMgr->GetItemTemplate(itemId);
+            if (!newTemplate)
+                continue;
+
+            uint16 dest = uint16(slot) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
+            InventoryResult canEquip = bot->CanEquipNewItem(NULL_SLOT, dest, itemId, true);
+            if (canEquip != EQUIP_ERR_OK)
+            {
+                LOG_INFO("module.coa-playerbots", "BotMgr::GearUpBot diag: '{}' (class {}) can't equip item {} in slot {} -- CanEquipNewItem result {}.",
+                    bot->GetName(), uint32(bot->getClass()), itemId, uint32(slot), uint32(canEquip));
+                continue; // this class/spec can't use this candidate -- try the next one
+            }
+
+            float newIlvl = newTemplate->GetItemLevelIncludingQuality(level);
+            if (Item* existing = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            {
+                ItemTemplate const* existingTemplate = existing->GetTemplate();
+                float existingIlvl = existingTemplate ? existingTemplate->GetItemLevelIncludingQuality(level) : 0.0f;
+                if (existingIlvl >= newIlvl)
+                    return false; // already at least as good -- done, no candidate needed
+                bot->DestroyItemCount(existing->GetEntry(), 1, true);
+            }
+
+            return bot->StoreNewItemInBestSlots(itemId, 1);
+        }
+        return false;
+    };
+
+    for (size_t i = 0; i < 8; ++i)
+    {
+        // Per-slot candidates come from 4 separate, non-contiguous arrays (one per armor type),
+        // so they're gathered into a small local array here rather than passed as a raw
+        // pointer+count into any one of those arrays.
+        uint32 const candidates[4] = { plateArmor[i], mailArmor[i], leatherArmor[i], clothArmor[i] };
+        if (tryEquipBestOf(armorSlots[i], candidates, 4))
+            ++given;
+    }
+
+    for (auto const& [slot, itemId] : plan)
+        if (tryEquipBestOf(slot, &itemId, 1))
+            ++given;
+
+    if (tryEquipBestOf(EQUIPMENT_SLOT_MAINHAND, mainhandCandidates, sizeof(mainhandCandidates) / sizeof(mainhandCandidates[0])))
+        ++given;
+
+    if (handler)
+        handler->PSendSysMessage("BotMgr: gave '{}' {} baseline item(s) (avg item level now {:.0f}).",
+            bot->GetName(), given, bot->GetAverageItemLevel());
+    LOG_INFO("module.coa-playerbots", "BotMgr::GearUpBot: gave '{}' {} baseline item(s), avg item level now {:.0f}.",
+        bot->GetName(), given, bot->GetAverageItemLevel());
 }
 
 void BotMgr::DoRollGreed(WorldSession* session, Roll* roll)
@@ -1717,8 +2382,94 @@ void BotMgr::DoRollGreed(WorldSession* session, Roll* roll)
     session->HandleLootRoll(packet);
 }
 
+void BotMgr::QueueAllBotsForAutoLogin()
+{
+    std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+    uint32 maxBots = sConfigMgr->GetOption<uint32>("CoaBots.AutoLogin.MaxCount", 800);
+
+    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE username LIKE '{}%'", accountPrefix);
+    if (!accounts)
+    {
+        LOG_INFO("module.coa-playerbots", "BotMgr: auto-login found no bot-hosting accounts yet.");
+        return;
+    }
+
+    std::ostringstream accountIds;
+    do
+    {
+        accountIds << (*accounts)[0].Get<uint32>() << ",";
+    } while (accounts->NextRow());
+    std::string idList = accountIds.str();
+    idList.pop_back();
+
+    // Prioritize bots in guilds or with active gather orders, then other bots
+    QueryResult chars = CharacterDatabase.Query(
+        "SELECT c.guid FROM characters c "
+        "LEFT JOIN guild_member gm ON c.guid = gm.guid "
+        "LEFT JOIN mod_coa_bot_guild_gather_orders go ON c.guid = go.bot_guid "
+        "WHERE c.account IN ({}) "
+        "ORDER BY (gm.guildid IS NOT NULL OR go.bot_guid IS NOT NULL) DESC, c.guid ASC",
+        idList
+    );
+    if (!chars)
+        return;
+
+    uint32 queued = 0;
+    do
+    {
+        if (maxBots > 0 && queued >= maxBots)
+            break;
+
+        ObjectGuid::LowType guid = (*chars)[0].Get<uint32>();
+        if (!FindBotSession(guid))
+        {
+            _pendingAutoLoginQueue.push_back(guid);
+            ++queued;
+        }
+    } while (chars->NextRow());
+
+    // ProcessPendingAutoLogin pops from the back, so reverse the queue so that
+    // top-priority characters (guild companions, active gatherers) pop first.
+    std::reverse(_pendingAutoLoginQueue.begin(), _pendingAutoLoginQueue.end());
+
+    LOG_INFO("module.coa-playerbots", "BotMgr: queued {} bot(s) for gradual auto-login (cap: {}).", queued, maxBots);
+}
+
 void BotMgr::Update(uint32 diff)
 {
+    // Must run even with zero bots currently online (e.g. right after a fresh restart, before
+    // anything has spawned yet) -- otherwise a `.botcmd spawnrandom` issued at that point would
+    // queue a batch that never starts draining until some unrelated bot happens to log in.
+    BotSpawn::ProcessPendingRandomBotSpawns(diff);
+    BotSpawn::ProcessPendingLeveledBotSpawns(diff);
+    BotZoneProgression::ProcessPendingRelocations(diff);
+
+    // See QueueAllBotsForAutoLogin -- gradual login for every known bot character, throttled the
+    // same way SpawnRandomBots/SpawnLeveledBots throttle bulk creation (login itself is much
+    // lighter -- SpawnBot just queues an async DB query and returns -- so this can run a faster
+    // pace than character creation without repeating the earlier crash). Also must run with zero
+    // bots online yet, same reasoning as the two calls above.
+    if (!_pendingAutoLoginQueue.empty())
+    {
+        uint32 autoLoginBatchSize = sConfigMgr->GetOption<uint32>("CoaBots.AutoLogin.BatchSize", 10);
+        uint32 autoLoginIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AutoLogin.BatchIntervalMs", 500);
+
+        if (_autoLoginThrottleMs > diff)
+            _autoLoginThrottleMs -= diff;
+        else
+        {
+            _autoLoginThrottleMs = autoLoginIntervalMs;
+            uint32 batch = std::min<uint32>(uint32(_pendingAutoLoginQueue.size()), autoLoginBatchSize);
+            for (uint32 i = 0; i < batch; ++i)
+            {
+                SpawnBot(_pendingAutoLoginQueue.back(), nullptr);
+                _pendingAutoLoginQueue.pop_back();
+            }
+            if (_pendingAutoLoginQueue.empty())
+                LOG_INFO("module.coa-playerbots", "BotMgr: auto-login queue drained.");
+        }
+    }
+
     if (_botSessions.empty())
         return;
 
@@ -1732,6 +2483,26 @@ void BotMgr::Update(uint32 diff)
         due.swap(_pendingTeleportAck);
         for (WorldSession* session : due)
             FinishPendingTeleport(session);
+    }
+
+    // See QueueBotGroupLeave/the new GroupScript hook -- a real player leaving/being removed
+    // from a group with no other real player left in it means the remaining bots have no one
+    // left to command, so send each one through the same real "leave party" call a client's own
+    // button triggers (Player::RemoveFromGroup), letting them fall back to their normal
+    // idle/solo behavior (TryGrindWhenSolo etc.) instead of standing around in a bot-only group.
+    if (!_pendingGroupLeaves.empty())
+    {
+        std::vector<ObjectGuid> due;
+        due.swap(_pendingGroupLeaves);
+        for (ObjectGuid botGuid : due)
+        {
+            Player* bot = FindBotPlayer(botGuid.GetCounter());
+            if (bot && bot->GetGroup())
+            {
+                LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' leaving its group -- no real player left in it.", bot->GetName());
+                bot->RemoveFromGroup(GROUP_REMOVEMETHOD_LEAVE);
+            }
+        }
     }
 
     // Auto-accept: checked every tick, not throttled. A bot with a real Player
@@ -1804,8 +2575,16 @@ void BotMgr::Update(uint32 diff)
         for (auto itr = _guildGatherOrders.begin(); itr != _guildGatherOrders.end(); )
         {
             Player* bot = FindBotPlayer(itr->first.GetCounter());
-            if (!bot || !bot->IsInWorld() || !bot->GetGuild())
+            if (!bot || !bot->IsInWorld())
             {
+                // Bot might be offline, loading, or mid-teleport -- NEVER erase the persistent order!
+                ++itr;
+                continue;
+            }
+
+            if (!bot->GetGuild())
+            {
+                DeleteGuildGatherOrder(itr->first);
                 itr = _guildGatherOrders.erase(itr);
                 continue;
             }
@@ -1819,16 +2598,19 @@ void BotMgr::Update(uint32 diff)
                 uint32 deposited = GuildDepositItem(bot->GetGUID().GetCounter(), itemEntry, toDeposit, nullptr);
                 if (deposited > 0)
                 {
+                    itr->second.gatheredCount += deposited;
                     if (deposited >= remaining)
                     {
                         LOG_INFO("module.coa-playerbots", "BotMgr: guildgather order completed for bot '{}' (item {}).",
                             bot->GetName(), itemEntry);
+                        DeleteGuildGatherOrder(itr->first);
                         itr = _guildGatherOrders.erase(itr);
                         continue;
                     }
                     else
                     {
                         itr->second.remainingCount -= deposited;
+                        SaveGuildGatherOrder(itr->first, itr->second);
                     }
                 }
             }
@@ -1907,4 +2689,60 @@ void BotMgr::CheckAllBotsMaxLevel()
         "twink pool exists yet, and this project never creates characters without being asked) -- "
         "spawn an existing lower-level character yourself with `.botcmd spawnbot <guid>` if you want "
         "someone leveling in the world again.", uint32(maxLevel));
+}
+
+namespace
+{
+class coa_bot_restore_group_script : public PlayerScript
+{
+public:
+    coa_bot_restore_group_script() : PlayerScript("coa_bot_restore_group_script", { PLAYERHOOK_ON_LOGIN }) { }
+
+    void OnPlayerLogin(Player* player) override
+    {
+        sBotMgr->RestoreGroupBotsOnLogin(player);
+    }
+};
+}
+
+void AddSC_coa_bot_restore_group_script()
+{
+    new coa_bot_restore_group_script();
+}
+
+namespace
+{
+// Confirmed live: a real player leaving/being removed from a group that still has bots in it
+// left the bots grouped together with a BOT promoted to leader (Group's normal
+// leader-succession picks the next member regardless of bot/real status) -- they kept following
+// whatever stale leader-position state they had instead of resuming their own idle/solo
+// behavior, since nothing ever told them the group no longer has a real commander. Only acts
+// when the departing member is real AND no real player is left afterward -- a group with two
+// real players where one leaves should leave the bots alone, and a bot leaving/getting kicked/
+// despawned on its own shouldn't cascade into disbanding everyone else's group.
+class coa_bot_leaderless_group_script : public GroupScript
+{
+public:
+    coa_bot_leaderless_group_script() : GroupScript("coa_bot_leaderless_group_script", { GROUPHOOK_ON_REMOVE_MEMBER }) { }
+
+    void OnRemoveMember(Group* group, ObjectGuid guid, RemoveMethod /*method*/, ObjectGuid /*kicker*/, char const* /*reason*/) override
+    {
+        if (!group)
+            return;
+        if (BotMgr::IsBotAccountId(sCharacterCache->GetCharacterAccountIdByGuid(guid)))
+            return; // a bot leaving on its own isn't a reason for the rest to bail too
+
+        for (Group::MemberSlot const& slot : group->GetMemberSlots())
+            if (!BotMgr::IsBotAccountId(sCharacterCache->GetCharacterAccountIdByGuid(slot.guid)))
+                return; // another real player is still here -- bots still have someone to follow
+
+        for (Group::MemberSlot const& slot : group->GetMemberSlots())
+            sBotMgr->QueueBotGroupLeave(slot.guid);
+    }
+};
+}
+
+void AddSC_coa_bot_leaderless_group_script()
+{
+    new coa_bot_leaderless_group_script();
 }

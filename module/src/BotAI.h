@@ -15,6 +15,7 @@
 
 class ChatHandler;
 class Player;
+struct ItemTemplate;
 
 // Bot role (Dps/Tank/Healer) that changes which target-selection and spell-selection
 // path BotAI::Update() takes. By default, auto-detected from the bot's active Ascension
@@ -80,6 +81,9 @@ namespace BotAI
     // Returns the bot's effective role (manual override if set, else auto-detected).
     BotRole GetRole(ObjectGuid botGuid);
 
+    // Evaluates and scores an item for a bot based on role and class stat affinity.
+    float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role);
+
     // Sets a manual movement/engagement command (see BotManualCommand above). pullTarget is
     // only used for Pull -- the guid of whatever the commanding player currently has
     // selected, resolved by the caller (BotAddonChat.cpp) so this API doesn't need to know
@@ -114,6 +118,10 @@ namespace BotAI
     // this, and see which predicate lights up.
     void ReportSpellbookRoleSignals(Player* bot, ChatHandler* handler);
 
+    // Prints the persistent personality and current solo intent for one bot. This is both an
+    // operator-facing inspection tool and a deliberately small first UI for the human-behavior layer.
+    void ReportProfile(Player* bot, ChatHandler* handler);
+
     // Per-bot follow angle derived from this bot's position within its own group (stable across
     // ticks, and collision-free for any group up to 8 real members) spread evenly around the
     // leader instead of every bot using the engine's default Unit::GetFollowAngle() (a single
@@ -135,6 +143,9 @@ namespace BotAI
     // for normal-to-large character models to visually overlap even once each bot has its own,
     // genuinely distinct slot. Confirmed live as still looking "clustered" at 2yd.
     constexpr float BOT_FOLLOW_DIST = 3.5f;
+
+    // Enqueues a killed creature into the bot's (and its bot groupmates') pending loot queue.
+    void EnqueuePendingLoot(Player* player, ObjectGuid creatureGuid);
 }
 
 #endif // COA_PLAYERBOTS_BOT_AI_H

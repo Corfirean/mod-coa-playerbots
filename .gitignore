@@ -1,0 +1,22 @@
+﻿# Build output and binaries
+*.exe
+*.dll
+*.pdb
+*.lib
+*.obj
+*.idb
+*.ipdb
+*.iobj
+*.ilk
+*.exp
+
+# IDE and tooling
+.vs/
+.vscode/
+build/
+bin/
+*.user
+*.suo
+
+# Repack local binaries
+dist/bin/

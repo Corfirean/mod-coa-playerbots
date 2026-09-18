@@ -92,7 +92,11 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     if (verb == "QUICKFILL")
     {
         LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> QUICKFILL.", commander->GetName());
-        sBotMgr->QuickFillGroup(commander, nullptr);
+        // A real ChatHandler (not nullptr) so the player actually sees *why* nothing happened
+        // when the bot pool is empty or the group's already full -- QuickFillGroup already had
+        // this feedback built in for the .botcmd path, it just never reached the addon path.
+        ChatHandler handler(commander->GetSession());
+        sBotMgr->QuickFillGroup(commander, &handler);
         return;
     }
 
@@ -127,6 +131,36 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     {
         LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GUILDROSTER.", commander->GetName());
         for (std::string const& line : sBotMgr->GetGuildRosterInfo(commander))
+            SendCoaBotReply(commander, line);
+        return;
+    }
+
+    // GATHERORDER: same shape as CRAFTORDER -- the requester is always the sender, and
+    // BotMgr::GatherOrder itself picks the guild-mate bot. Second colon-part is the itemEntry,
+    // third (optional) is count.
+    if (verb == "GATHERORDER" && parts.size() >= 2)
+    {
+        uint32 itemEntry = std::strtoul(parts[1].c_str(), nullptr, 10);
+        uint32 count = parts.size() >= 3 ? std::strtoul(parts[2].c_str(), nullptr, 10) : 1;
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GATHERORDER item {} x{}.", commander->GetName(), itemEntry, count);
+        sBotMgr->GatherOrder(commander->GetGUID().GetCounter(), itemEntry, count ? count : 1, nullptr);
+        return;
+    }
+
+    // GETGATHERCATALOG / GETRECIPECATALOG: catalog queries backing the addon's icon-menu
+    // pickers (see docs/addon-protocol.md) -- replies with several small GCAT:/RCAT: messages,
+    // same "one guid placeholder, several chunked replies" shape as GUILDROSTER.
+    if (verb == "GETGATHERCATALOG")
+    {
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GETGATHERCATALOG.", commander->GetName());
+        for (std::string const& line : sBotMgr->GetGatherCatalog())
+            SendCoaBotReply(commander, line);
+        return;
+    }
+    if (verb == "GETRECIPECATALOG")
+    {
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GETRECIPECATALOG.", commander->GetName());
+        for (std::string const& line : sBotMgr->GetRecipeCatalog(commander))
             SendCoaBotReply(commander, line);
         return;
     }

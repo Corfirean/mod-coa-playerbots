@@ -15,6 +15,8 @@
 #define COA_PLAYERBOTS_BOT_MGR_H
 
 #include "ObjectGuid.h"
+#include "BotFormations.h"
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -34,8 +36,11 @@ public:
     // Logs an existing character in through a fake, null-socket WorldSession
     // instead of a real client connection. Async: the result (success or
     // failure) is only known once the login query completes and is logged,
-    // not returned synchronously.
-    void SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
+    // not returned synchronously. onReady, if given, fires once the bot's real Player object
+    // exists (right after a successful login) -- for a caller that needs to do one-time setup
+    // on a freshly created character (see BotSpawnRandom.cpp's leveled-bot spawner) without
+    // adding yet another pending-queue mechanism just for that.
+    void SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std::function<void(Player*)> onReady = nullptr);
 
     // Manual/debug entry point: accepts a pending group invite on a bot's
     // behalf right now, reporting success/failure to handler. Bots normally
@@ -81,12 +86,62 @@ public:
     // docs/addon-protocol.md's CRAFTORDER verb for why that's a deliberate v1 simplification.
     void CraftOrder(ObjectGuid::LowType requesterCharLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler);
 
+    // Addon-facing counterpart to GuildGather: picks a suitable online guild-mate bot itself
+    // (same "auto-pick, don't make the player know a bot's raw guid" idea as CraftOrder) rather
+    // than requiring a specific charLowGuid, then places the same background order via the
+    // existing GuildGather. Prefers a bot not already busy with a gather/craft order of its own;
+    // falls back to the first online guild-mate bot if all are busy (same overwrite tolerance
+    // CraftOrder already has for _craftOrders). See docs/addon-protocol.md's GATHERORDER verb.
+    void GatherOrder(ObjectGuid::LowType requesterCharLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler);
+
+    struct GuildGatherOrder
+    {
+        uint32 itemEntry = 0;
+        uint32 targetCount = 0;
+        uint32 gatheredCount = 0;
+        uint32 remainingCount = 0;
+        uint32 targetMapId = 0;
+        float targetX = 0.0f;
+        float targetY = 0.0f;
+        float targetZ = 0.0f;
+        bool hasTargetLocation = false;
+    };
+    GuildGatherOrder const* GetGuildGatherOrder(ObjectGuid const& guid) const;
+    void LoadGuildGatherOrders();
+    void SaveGuildGatherOrder(ObjectGuid const& guid, GuildGatherOrder const& order);
+    void DeleteGuildGatherOrder(ObjectGuid const& guid);
+
     // One pre-formatted "ROSTER:botGuidLow:name:class:level:task:prof1=skill1,prof2=skill2"
     // body per online bot in `commander`'s guild -- the addon task-board query (see
     // docs/addon-protocol.md's GUILDROSTER verb). One string per bot rather than one combined
     // message, same reasoning as everything else on this wire channel: WoW chat messages have
     // a real length cap, and a big guild's full roster could exceed it in a single body.
     std::vector<std::string> GetGuildRosterInfo(Player* commander) const;
+
+    // Addon catalog queries (see docs/addon-protocol.md's GETGATHERCATALOG/GETRECIPECATALOG
+    // verbs) -- both return pre-chunked "GCAT:category:entry,name|entry,name|..." /
+    // "RCAT:entry,name|..." reply bodies (several per call, chat-length-safe, same chunking
+    // reasoning as GetGuildRosterInfo) so the addon can build icon-menu pickers instead of
+    // making the player type a raw item id. GetGatherCatalog is guild-agnostic (any online bot
+    // can gather any of these once granted every profession, see GrantAllProfessions) and its
+    // underlying data is cached process-wide after the first call. GetRecipeCatalog is scoped
+    // to `commander`'s guild -- only items an online guild-mate bot can *actually* craft right
+    // now (Player::HasSpell on a real SPELL_EFFECT_CREATE_ITEM spell, same definition of
+    // "knows a recipe" CraftOrder itself uses) are offered, per the user's explicit ask to only
+    // show recipes bots really have.
+    std::vector<std::string> GetGatherCatalog() const;
+    std::vector<std::string> GetRecipeCatalog(Player* commander) const;
+
+    // Diagnostic-only, not a wire-protocol verb: reports, per profession, how many distinct
+    // craftable items any CURRENTLY ONLINE bot in the whole population actually knows a recipe
+    // for. Added because this realm's `spell_dbc`/`skilllineability_dbc` SQL export tables turned
+    // out to be a small, stale subset (4486 rows, IDs up to ~80000) that doesn't cover this
+    // fork's real custom spell content (confirmed live: a working craft order used spell 807053,
+    // absent from that table entirely) -- so a SQL-only check of "does any bot know a real
+    // Blacksmithing/Leatherworking/Tailoring recipe" is unreliable. This asks the same live,
+    // authoritative in-memory `sSpellMgr`/`Player::HasSpell` data `CraftOrder` itself already
+    // trusts, instead.
+    void DumpRecipeCoverage(ChatHandler* handler) const;
 
     // Manual/debug entry point: has a bot invite another online player (bot or real client,
     // matched by name) to its group, by calling the real WorldSession::HandleGroupInviteOpcode
@@ -189,6 +244,38 @@ public:
     // a wipe/regroup until explicitly turned off.
     void SetAutoDungeonMode(ObjectGuid leaderGuid, bool enabled);
     bool IsAutoDungeonModeEnabled(ObjectGuid leaderGuid) const;
+    void MarkBossCleared(ObjectGuid leaderGuid, uint32 bossEntry);
+    bool IsBossCleared(ObjectGuid leaderGuid, uint32 bossEntry) const;
+    void ClearBosses(ObjectGuid leaderGuid);
+
+    void SetGroupFormation(ObjectGuid leaderGuid, BotGroupFormation formation);
+    BotGroupFormation GetGroupFormation(ObjectGuid leaderGuid) const;
+
+    // Called from a new PLAYERHOOK_ON_LOGIN hook whenever a REAL (non-bot) player logs in.
+    // Group membership itself already survives a restart natively -- Player::_LoadGroup()
+    // reattaches `player` to its pre-existing Group (loaded at world boot by
+    // GroupMgr::LoadGroups()) purely from the persisted group_member table, no action needed
+    // here for that part. What doesn't happen automatically is the bots' own login: an offline
+    // groupmate just stays offline forever unless something calls SpawnBot for it. This walks
+    // `player`'s (already-reattached) group's full member list -- including offline members,
+    // via Group::GetMemberSlots(), not just the online GroupReference list -- and SpawnBots
+    // any member that (a) isn't already online and (b) actually belongs to a bot-hosting
+    // account (checked via IsBotAccountId, matched against the same
+    // CoaBots.RandomSpawn.AccountPrefix config key BotSpawnRandom.cpp uses to create these
+    // accounts) -- that account check is the safety rail that stops this from ever
+    // auto-logging-in some other real player's alt just because it was left grouped.
+    void RestoreGroupBotsOnLogin(Player* player);
+
+    // One-off bootstrap/maintenance operation for `.botcmd geartrainer` -- tops up any EMPTY
+    // (not already-occupied, never replaces existing gear) equipment slot with a fixed, modest
+    // "heroic entry" item (real WotLK ilvl-200 blue tier-9-equivalent pieces, picked per the
+    // bot's armor proficiency from its base WoW class) so a freshly-created random bot (which
+    // only starts with mod-ascension-compat's minimal starter kit) can actually meet a
+    // dungeon's average-item-level gate (e.g. Halls of Stone heroic's 180) instead of dragging
+    // a Quick-Filled group's average down to zero. Deliberately blue/ilvl-200, not raid epics --
+    // enough to clear common heroic gates without bots one-shotting content. Safe to call
+    // repeatedly (StoreNewItemInBestSlots leaves already-filled slots untouched).
+    void GearUpBot(Player* bot, ChatHandler* handler);
 
     // Public counterpart to the private FindBotSession, for callers (BotAddonChat.cpp) that
     // need to confirm a guid is really one of our tracked bots and get its Player* -- e.g. to
@@ -223,6 +310,19 @@ public:
     // working. Callers outside BotMgr.cpp (BotAI.cpp's death handling) use this instead of
     // reaching into _pendingTeleportAck directly.
     void QueueTeleportAck(WorldSession* session);
+
+    // Checks whether the given account ID belongs to a bot-hosting account.
+    static bool IsBotAccountId(uint32 accountId);
+
+    // Called from a new GroupScript::OnRemoveMember hook whenever a real (non-bot) player
+    // leaves/is removed from a group that leaves no real player behind -- see that hook's own
+    // comment for why bots shouldn't just sit there leaderless. Queued for the next Update()
+    // tick rather than acted on immediately: OnRemoveMember fires from inside
+    // Group::RemoveMember itself, and having a bot call RemoveMember again on the same Group
+    // while it's still unwinding the first removal is exactly the kind of reentrancy the
+    // existing _pendingTeleportAck/QueueTeleportAck pattern was already built to avoid elsewhere
+    // in this file.
+    void QueueBotGroupLeave(ObjectGuid botGuid);
 
 private:
     BotMgr() = default;
@@ -301,11 +401,6 @@ private:
 
     void EnsureBotBankRights(Player* bot, Guild* guild);
 
-    struct GuildGatherOrder
-    {
-        uint32 itemEntry = 0;
-        uint32 remainingCount = 0;
-    };
     std::unordered_map<ObjectGuid, GuildGatherOrder> _guildGatherOrders;
 
     // See CraftOrder's header comment. A crafter (bot guid) may have at most one active order
@@ -329,8 +424,22 @@ private:
 
     std::vector<WorldSession*> _botSessions;
     std::vector<WorldSession*> _pendingTeleportAck;
+    std::vector<ObjectGuid> _pendingGroupLeaves;
+    std::vector<ObjectGuid::LowType> _pendingAutoLoginQueue;
+    uint32 _autoLoginThrottleMs = 0;
     uint32 _heartbeatTimer = 0;
     std::unordered_set<ObjectGuid> _autoDungeonLeaders;
+    std::unordered_map<ObjectGuid, std::unordered_set<uint32>> _clearedBosses;
+    std::unordered_map<ObjectGuid, BotGroupFormation> _groupFormations;
+
+public:
+    // Called once from a new WorldScript::OnStartup hook, gated behind CoaBots.AutoLoginOnStartup
+    // -- queries every character on a bot-hosting account (same COABOTHOST-prefix check
+    // IsBotAccountId uses elsewhere) not already online, and queues them for the same gradual,
+    // throttled login BotMgr::Update already drains SpawnRandomBots/SpawnLeveledBots's queues
+    // with. Also callable directly (e.g. from a GM command) to (re)populate the queue against an
+    // already-running server without needing a restart.
+    void QueueAllBotsForAutoLogin();
 };
 
 #define sBotMgr BotMgr::instance()

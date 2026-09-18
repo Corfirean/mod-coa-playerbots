@@ -168,6 +168,18 @@ void PortBotIntoBattleground(Player* bot, BattlegroundQueueTypeId bgQueueTypeId)
         return;
     }
 
+    // Confirmed live: bots reported "ported into battleground" here (SendToBattleground
+    // returned true -- the TeleportTo call itself didn't fail) but never actually became visible
+    // or interactive in the instance. Root cause -- SendToBattleground's TeleportTo crosses maps
+    // (a real "worldport"), which for a bot (no real client to ever send back
+    // MSG_MOVE_WORLDPORT_ACK) never actually finishes without something calling that ack on its
+    // behalf -- see BotMgr::QueueTeleportAck/FinishPendingTeleport, the same pattern
+    // BotZoneProgression::RelocateBot and DoAcceptInvite's group-teleport already use. This file
+    // never called it at all, so a bot ported into a battleground was left permanently stuck
+    // mid-teleport (IsBeingTeleportedFar() forever true) -- present in the queue/instance
+    // bookkeeping, but never actually landed.
+    sBotMgr->QueueTeleportAck(bot->GetSession());
+
     LOG_INFO("module.coa-playerbots", "BotBGFill: bot '{}' ported into battleground (type {}, instance {}, team {}).",
         bot->GetName(), uint32(bgTypeId), bg->GetInstanceID(), uint32(teamId));
 }
@@ -355,9 +367,9 @@ public:
         // once per join event (triggered by the group's leader specifically, or by the player themself
         // when solo) removes the repeat calls entirely instead of trying to make each one individually
         // safe against a race in the engine's own per-member bookkeeping.
-        if (Group* group = player->GetGroup())
-            if (group->GetLeaderGUID() != player->GetGUID())
-                return;
+        Group* group = player->GetGroup();
+        if (group && group->GetLeaderGUID() != player->GetGUID())
+            return;
 
         for (uint32 i = 0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
         {
@@ -376,6 +388,39 @@ public:
                 GetBattlegroundBracketByLevel(bgTemplate->GetMapId(), player->GetLevel());
             if (!bracketEntry)
                 continue;
+
+            // Confirmed live: a real player queuing WITH a group of bots ends up porting in
+            // alone. Root cause -- WorldSession::HandleBattlemasterJoinOpcode's group branch
+            // (BattleGroundHandler.cpp) DOES already call member->AddBattlegroundQueueId(...) and
+            // sScriptMgr->OnPlayerJoinBG(member) for every group member via Group::DoForAllMembers,
+            // bots included -- so a bot's own _BgBattlegroundQueueID bookkeeping and later invite
+            // flag (BattlegroundQueue::InviteGroupToBG, called once the match pops) both end up set
+            // correctly. What's actually missing: NOTHING ever watches for that invite and ports the
+            // bot in -- a real client's own game engine auto-sends the accept opcode
+            // (HandleBattleFieldPortOpcode) the instant its invite packet arrives, but a bot has no
+            // client to do that. queuedBots is this module's own watch-list for exactly that step
+            // (ProcessQueuedBots polls it every tick and calls PortBotIntoBattleground once
+            // IsInvitedForBattlegroundQueueType flips true) -- it's just never populated for a real
+            // player's own bot group-mates, only for bots this file queued itself (JoinBotToQueue).
+            // Fix: register every bot group-mate here too. DoForAllMembers's iteration order isn't
+            // guaranteed relative to when this leader-triggered firing runs, so AddBattlegroundQueueId
+            // is called again defensively (idempotent -- see its own body) in case this bot's own
+            // turn in the engine's loop hasn't happened yet.
+            if (group)
+            {
+                for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+                {
+                    Player* member = itr->GetSource();
+                    if (!member || member == player)
+                        continue;
+                    if (!member->GetSession() || !sBotMgr->IsBotAccountId(member->GetSession()->GetAccountId()))
+                        continue;
+                    member->AddBattlegroundQueueId(bgQueueTypeId);
+                    queuedBots.push_back({ member->GetGUID().GetCounter(), bgTypeId, bgQueueTypeId, bracketEntry->GetBracketId() });
+                    LOG_INFO("module.coa-playerbots", "BotBGFill: watching group-mate bot '{}' for its own queue invite (bg type {}).",
+                        member->GetName(), uint32(bgTypeId));
+                }
+            }
 
             TopOffQueue(bgTypeId, bgQueueTypeId, bgTemplate, bracketEntry);
         }
