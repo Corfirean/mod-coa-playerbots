@@ -29,6 +29,7 @@
 #include "AccountMgr.h"
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "BotProgression.h"
 #include "BotTalentBuilds.h"
 #include "CharacterCache.h"
 #include "Chat.h"
@@ -220,7 +221,7 @@ uint32 FindOrCreateBotAccount(std::string const& prefix, uint32 charactersPerAcc
 // test-bot character has one). Name is our own letters-only generated string, so no escaping
 // beyond simple quoting is needed.
 ObjectGuid::LowType CloneCharacter(uint32 templateGuid, uint32 accountId, std::string const& name,
-    uint8 race, uint8 gender)
+    uint8 race, uint8 gender, std::vector<std::pair<std::string, std::string>> const& overrides = {})
 {
     std::vector<std::string> const& columns = CharacterColumns();
     ObjectGuid::LowType newGuid = sObjectMgr->GetGenerator<HighGuid::Player>().Generate();
@@ -230,7 +231,11 @@ ObjectGuid::LowType CloneCharacter(uint32 templateGuid, uint32 accountId, std::s
     for (std::string const& col : columns)
     {
         insertCols << "`" << col << "`,";
-        if (col == "guid")
+        auto overrideItr = std::find_if(overrides.begin(), overrides.end(),
+            [&col](std::pair<std::string, std::string> const& entry) { return entry.first == col; });
+        if (overrideItr != overrides.end())
+            selectVals << overrideItr->second << ",";
+        else if (col == "guid")
             selectVals << newGuid << ",";
         else if (col == "account")
             selectVals << accountId << ",";
@@ -427,7 +432,62 @@ void ProcessPendingRandomBotSpawns(uint32 diff)
     }
 }
 
-ObjectGuid::LowType CreateOneRandomBot(uint8 race, ChatHandler* handler)
+namespace
+{
+// A fresh population bot's spec is rolled here, at clone time, instead of inherited: the clone copies
+// the template's character_settings, which handed every bot of a class the template's spec -- every
+// live Tinker bot was Invention, every Witch Hunter Black Knight -- so ChooseSpecForBot's role
+// balancing never ran for a single one of them. Writing it before the first login also means
+// mod-ascension-compat reads this spec on login rather than caching the template's.
+uint32 RollSpecForClass(uint8 classId)
+{
+    float tankPct = sConfigMgr->GetOption<float>("CoaBots.SpecBalance.TankTargetPct", 20.0f);
+    float healerPct = sConfigMgr->GetOption<float>("CoaBots.SpecBalance.HealerTargetPct", 20.0f);
+    float roll = float(RandomInt(1, 100));
+    BotRole wanted = roll <= tankPct ? BotRole::Tank : roll <= tankPct + healerPct ? BotRole::Healer : BotRole::Dps;
+
+    for (BotRole role : { wanted, BotRole::Dps, BotRole::Tank, BotRole::Healer })
+    {
+        std::vector<uint32> specs = BotAI::GetSpecsForRole(classId, role);
+        if (!specs.empty())
+            return specs[RandomInt(0, uint32(specs.size()) - 1)];
+    }
+    return 0;
+}
+
+std::string Zeros(uint32 count)
+{
+    std::string zeros;
+    for (uint32 i = 0; i < count; ++i)
+        zeros += "0 ";
+    return zeros;
+}
+
+// Everything on the cloned row that belongs to the level-80 template rather than to a character of
+// this level. Level is the one that matters most: written here, the bot's first login already happens
+// at its real level, so mod-ascension-compat's progression sync gives it that level's kit. The old
+// flow logged in at 80 and only lowered the level afterwards with GiveLevel, which removes nothing --
+// confirmed live: bots averaged 1318 spells at levels 1-10 against 1389 at 80. The masks are written
+// as the exact number of zero tokens the loader expects (14 taxi, 128 explored-zone, 6 title words).
+std::vector<std::pair<std::string, std::string>> FreshCharacterOverrides(uint8 level)
+{
+    uint32 money = uint32(level) * level * 20 * RandomInt(50, 150) / 100;
+    return {
+        { "level", std::to_string(level) },
+        { "xp", "0" },
+        { "money", std::to_string(money) },
+        { "totaltime", "0" },
+        { "leveltime", "0" },
+        { "taximask", "'" + Zeros(14) + "'" },
+        { "exploredZones", "'" + Zeros(128) + "'" },
+        { "knownTitles", "'" + Zeros(6) + "'" },
+        { "chosenTitle", "0" },
+    };
+}
+
+// level 0 keeps the template's own row untouched (the original .botcmd spawnrandom / BG-fill
+// behaviour: a level-80 copy); any other level creates a fresh character of that level.
+ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level)
 {
     std::unordered_map<uint8, ClassTemplate> templateRoster = BuildClassTemplateRoster();
     if (templateRoster.empty())
@@ -476,13 +536,35 @@ ObjectGuid::LowType CreateOneRandomBot(uint8 race, ChatHandler* handler)
     uint8 gender = uint8(RandomInt(0, 1));
     std::string name = GenerateUniqueName();
 
-    ObjectGuid::LowType newGuid = CloneCharacter(templateGuid, accountId, name, race, gender);
-    sCharacterCache->AddCharacterCacheEntry(ObjectGuid::Create<HighGuid::Player>(newGuid), accountId,
-        name, gender, race, classId, 80);
+    std::vector<std::pair<std::string, std::string>> overrides;
+    if (level)
+        overrides = FreshCharacterOverrides(level);
 
-    LOG_INFO("module.coa-playerbots", "BotMgr: created random bot '{}' (guid {}, class {}, race {}, account {}).",
-        name, newGuid, classId, race, accountId);
+    ObjectGuid::LowType newGuid = CloneCharacter(templateGuid, accountId, name, race, gender, overrides);
+
+    uint32 spec = 0;
+    if (level)
+    {
+        spec = RollSpecForClass(classId);
+        CharacterDatabase.DirectExecute(
+            "REPLACE INTO character_settings (guid, source, data) VALUES ({}, 'core.ascension_active_spec', '{} ')",
+            newGuid, spec);
+    }
+
+    uint8 cachedLevel = level ? level : 80;
+    sCharacterCache->AddCharacterCacheEntry(ObjectGuid::Create<HighGuid::Player>(newGuid), accountId,
+        name, gender, race, classId, cachedLevel);
+
+    LOG_INFO("module.coa-playerbots",
+        "BotMgr: created random bot '{}' (guid {}, class {}, race {}, level {}, spec {}, account {}).",
+        name, newGuid, classId, race, cachedLevel, spec, accountId);
     return newGuid;
+}
+}
+
+ObjectGuid::LowType CreateOneRandomBot(uint8 race, ChatHandler* handler)
+{
+    return CreateBotClone(race, handler, 0);
 }
 
 namespace
@@ -500,16 +582,15 @@ constexpr uint32 PROFESSION_SKILLS[] = {
 };
 
 constexpr uint32 BAG_ITEM_ID = 1977;   // "20-slot Bag" -- plain, no class/level restriction
-constexpr uint32 FOOD_ITEM_ID = 4540;  // "Tough Hunk of Bread" -- real vendor food, any level
-constexpr uint32 WATER_ITEM_ID = 1179; // "Ice Cold Milk" -- real vendor drink, any level
 
 // Candidate pool for one (class, subclass, InventoryType) combination, cached after its first
-// query -- see FindLevelAppropriateItem's comment for why. {requiredLevel, itemLevel, entry}.
+// query -- see CandidatePool's comment for why. {requiredLevel, itemLevel, entry, quality}.
 struct LevelItemCandidate
 {
     uint32 requiredLevel;
     uint32 itemLevel;
     uint32 entry;
+    uint32 quality;
 };
 
 // Confirmed live: querying item_template fresh per bot per slot (`ORDER BY ABS(ItemLevel - X)`
@@ -530,57 +611,73 @@ std::vector<LevelItemCandidate> const& CandidatePool(uint32 itemClass, uint32 su
 
     std::vector<LevelItemCandidate> pool;
     QueryResult result = WorldDatabase.Query(
-        "SELECT entry, ItemLevel, RequiredLevel FROM item_template WHERE class={} AND subclass={} "
-        "AND InventoryType={} AND Quality BETWEEN 1 AND 3 AND AllowableClass=-1",
+        "SELECT entry, ItemLevel, RequiredLevel, Quality FROM item_template WHERE class={} AND subclass={} "
+        "AND InventoryType={} AND Quality BETWEEN 1 AND 4 AND AllowableClass=-1 "
+        // Placeholder and test rows that exist in item_template but no player can ever obtain --
+        // the first test batch equipped "RPGITEM PH - Plate Shoulder" and "CoA Test Bow".
+        "AND name NOT LIKE '%RPGITEM%' AND name NOT LIKE '%[PH]%' AND name NOT LIKE '% PH %' "
+        "AND name NOT LIKE '%Test%' AND name NOT LIKE 'Monster - %' AND name NOT LIKE '%Deprecated%' "
+        "AND name NOT LIKE '%[DND]%' AND name NOT LIKE 'NPC %' "
+        // Items with a requirement a fresh bot cannot meet. CanEquipNewItem rejects them anyway, but
+        // they sort to the top of a quality-ordered pool, so on the first test batches whole weapon
+        // pools were nothing but these and two bots ended up with no weapon at all.
+        "AND RequiredSkill=0 AND requiredspell=0 AND requiredhonorrank=0 AND RequiredCityRank=0 "
+        "AND RequiredReputationFaction=0 AND Map=0 AND area=0 AND HolidayId=0 "
+        "AND (AllowableRace=-1 OR (AllowableRace & 1791)=1791)",
         itemClass, subclass, inventoryType);
     if (result)
     {
         do
         {
             Field* fields = result->Fetch();
-            pool.push_back({ fields[2].Get<uint32>(), fields[1].Get<uint32>(), fields[0].Get<uint32>() });
+            pool.push_back({ fields[2].Get<uint32>(), fields[1].Get<uint32>(), fields[0].Get<uint32>(),
+                fields[3].Get<uint32>() });
         } while (result->NextRow());
     }
     return cache.emplace(key, std::move(pool)).first->second;
 }
 
-// "Closest ItemLevel to this bracket's target, among items this level can actually wear" --
-// the whole selection rule, now answered from the cached in-memory pool instead of a live query.
-uint32 FindLevelAppropriateItem(uint32 itemClass, uint32 subclass, uint32 inventoryType, uint8 level, float targetIlvl)
+// Highest quality one gear slot may roll for a bot of this level: mostly greens while levelling,
+// blues toward the cap, the occasional epic at 80. Rolled per slot, so a bot ends up with a mix
+// the way a real character does instead of a uniform set.
+uint32 RollQualityCap(uint8 level)
 {
-    uint32 best = 0;
-    float bestDiff = 0.0f;
-    for (LevelItemCandidate const& candidate : CandidatePool(itemClass, subclass, inventoryType))
-    {
-        if (candidate.requiredLevel > level)
-            continue;
-        float diff = std::abs(float(candidate.itemLevel) - targetIlvl);
-        if (!best || diff < bestDiff)
-        {
-            best = candidate.entry;
-            bestDiff = diff;
-        }
-    }
-    return best;
+    uint32 roll = RandomInt(1, 100);
+    if (level <= 20)
+        return roll <= 25 ? ITEM_QUALITY_NORMAL : roll <= 90 ? ITEM_QUALITY_UNCOMMON : ITEM_QUALITY_RARE;
+    if (level <= 60)
+        return roll <= 5 ? ITEM_QUALITY_NORMAL : roll <= 75 ? ITEM_QUALITY_UNCOMMON : ITEM_QUALITY_RARE;
+    if (level < 80)
+        return roll <= 55 ? ITEM_QUALITY_UNCOMMON : ITEM_QUALITY_RARE;
+    return roll <= 20 ? ITEM_QUALITY_UNCOMMON : roll <= 90 ? ITEM_QUALITY_RARE : ITEM_QUALITY_EPIC;
 }
 
-// Same selection rule as FindLevelAppropriateItem, but returns up to maxCount entries instead of
-// just the single closest one -- every bot of the same (class, subclass, inventoryType, level)
-// used to get the literal same item id every time, since only the single closest match was ever
-// offered as a candidate. Feeding a wider pool into TryEquipBestOf lets its existing
-// ScoreItemForBot ranking (already role/stat aware) pick among genuinely different stat rolls
-// instead of there only ever being one option to "pick" -- this is what actually produces
-// variety, not a random roll independent of role fitness.
-std::vector<uint32> FindLevelAppropriateItemPool(uint32 itemClass, uint32 subclass, uint32 inventoryType, uint8 level, float targetIlvl, size_t maxCount = 6)
+// Candidates from the last few levels, so a bot looks like it levelled into its gear rather than
+// being handed the best item its level can wear (the previous rule, "closest to level * 2.5 item
+// level", amounted to exactly that). Falls back to anything wearable when that window is empty for a
+// slot, which happens at the lowest levels and for rarer item types. Several candidates are returned
+// so TryEquipBestOf's role-aware scoring still has a real choice.
+std::vector<uint32> GearPool(uint32 itemClass, uint32 subclass, uint32 inventoryType, uint8 level,
+    uint32 qualityCap, size_t maxCount = 6)
 {
     std::vector<LevelItemCandidate> matches;
-    for (LevelItemCandidate const& candidate : CandidatePool(itemClass, subclass, inventoryType))
-        if (candidate.requiredLevel <= level)
-            matches.push_back(candidate);
-
-    std::sort(matches.begin(), matches.end(), [targetIlvl](LevelItemCandidate const& a, LevelItemCandidate const& b)
+    for (uint32 window : { 5u, 255u })
     {
-        return std::abs(float(a.itemLevel) - targetIlvl) < std::abs(float(b.itemLevel) - targetIlvl);
+        for (LevelItemCandidate const& candidate : CandidatePool(itemClass, subclass, inventoryType))
+            if (candidate.requiredLevel <= level && candidate.requiredLevel + window >= level &&
+                candidate.quality <= qualityCap)
+                matches.push_back(candidate);
+        if (!matches.empty())
+            break;
+    }
+
+    std::sort(matches.begin(), matches.end(), [](LevelItemCandidate const& a, LevelItemCandidate const& b)
+    {
+        if (a.quality != b.quality)
+            return a.quality > b.quality;
+        if (a.requiredLevel != b.requiredLevel)
+            return a.requiredLevel > b.requiredLevel;
+        return a.itemLevel > b.itemLevel;
     });
 
     std::vector<uint32> pool;
@@ -608,7 +705,7 @@ bool TryEquipBestOf(Player* bot, uint8 slot, std::vector<uint32> const& candidat
 
     // Small, deterministic per-(bot, slot, item) jitter -- purely to stop every bot of the same
     // class/level/role from equipping the literal same item id when several candidates score
-    // within noise of each other (now that FindLevelAppropriateItemPool offers more than one).
+    // within noise of each other (now that GearPool offers more than one).
     // Seeded from stable identifiers (not rand()) so the same bot always resolves the same way
     // between gearing passes rather than re-rolling its look on every geartrainer run. Kept small
     // relative to ScoreItemForBot's typical spread (single stat points already swing the score by
@@ -642,7 +739,15 @@ bool TryEquipBestOf(Player* bot, uint8 slot, std::vector<uint32> const& candidat
     if (bestItem)
     {
         if (Item* existing = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            bot->DestroyItemCount(existing->GetEntry(), 1, true);
+        {
+            if (BotAI::IsProfessionTool(existing->GetTemplate()))
+            {
+                if (!BotAI::MoveEquippedToolToBags(bot, slot))
+                    return false;
+            }
+            else
+                bot->DestroyItemCount(existing->GetEntry(), 1, true);
+        }
         return bot->StoreNewItemInBestSlots(bestItem, 1);
     }
     return false;
@@ -652,15 +757,10 @@ bool TryEquipBestOf(Player* bot, uint8 slot, std::vector<uint32> const& candidat
 // "try every armor type, first that's actually equippable wins" shape as BotMgr::GearUpBot (see
 // its header comment: getClass() returns this realm's own custom ClassId, not a stock 1-11
 // value, so armor proficiency can't be inferred from class and has to be discovered by asking
-// the real engine). The difference here is scale: with 8 requested level brackets x 4 armor
-// types x 8 slots, a hand-picked table the size of GearUpBot's would mean over 250 curated item
-// ids. Querying item_template live for "closest ItemLevel to this bracket's midpoint, among
-// items this level can already wear" gets the same big-bracket, not-exact-BiS gearing without
-// that curation burden, and keeps working if this realm's item data changes later.
+// the real engine). Each slot rolls its own quality cap and draws from the last few levels'
+// items (see GearPool), so bots look levelled rather than uniformly best-in-slot.
 void GearUpFreshBotForLevel(Player* bot, uint8 level)
 {
-    float targetIlvl = float(level) * 2.5f; // roughly matches GearUpBot's own level80->ilvl200 baseline
-
     static uint8 const armorSlots[8] = {
         EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_SHOULDERS, EQUIPMENT_SLOT_CHEST, EQUIPMENT_SLOT_WAIST,
         EQUIPMENT_SLOT_LEGS, EQUIPMENT_SLOT_FEET, EQUIPMENT_SLOT_WRISTS, EQUIPMENT_SLOT_HANDS,
@@ -670,26 +770,25 @@ void GearUpFreshBotForLevel(Player* bot, uint8 level)
 
     for (int i = 0; i < 8; ++i)
     {
+        uint32 cap = RollQualityCap(level);
         std::vector<uint32> candidates;
         for (uint8 subclass : armorSubclasses)
         {
-            for (uint32 item : FindLevelAppropriateItemPool(4, subclass, armorInventoryTypes[i], level, targetIlvl))
+            for (uint32 item : GearPool(4, subclass, armorInventoryTypes[i], level, cap))
                 candidates.push_back(item);
             if (armorInventoryTypes[i] == 5) // chest: cloth robes use InventoryType=20, not 5
-                for (uint32 robe : FindLevelAppropriateItemPool(4, subclass, 20, level, targetIlvl))
+                for (uint32 robe : GearPool(4, subclass, 20, level, cap))
                     candidates.push_back(robe);
         }
         TryEquipBestOf(bot, armorSlots[i], candidates, level);
     }
 
-    // Neck/back: armor-type-agnostic (subclass 0), pooled the same way as armor for variety.
-    TryEquipBestOf(bot, EQUIPMENT_SLOT_NECK, FindLevelAppropriateItemPool(4, 0, 2, level, targetIlvl), level);
-    TryEquipBestOf(bot, EQUIPMENT_SLOT_BACK, FindLevelAppropriateItemPool(4, 1, 16, level, targetIlvl), level);
+    TryEquipBestOf(bot, EQUIPMENT_SLOT_NECK, GearPool(4, 0, 2, level, RollQualityCap(level)), level);
+    TryEquipBestOf(bot, EQUIPMENT_SLOT_BACK, GearPool(4, 1, 16, level, RollQualityCap(level)), level);
 
-    // Split a shared pool into two disjoint (alternating) candidate lists so each ring/trinket
-    // slot gets real variety via TryEquipBestOf's own scoring+jitter, while the two slots can
-    // never both land on the same item id (confirmed live: every bot was getting the literal
-    // same two rings/trinkets, since only the single closest-by-ilvl pair was ever offered).
+    // Split a shared pool into two disjoint (alternating) candidate lists so the two ring and the
+    // two trinket slots can never land on the same item id (confirmed live: every bot once got the
+    // literal same pair, since only the single closest match was ever offered).
     auto splitAlternating = [](std::vector<uint32> const& pool)
     {
         std::vector<uint32> a, b;
@@ -698,53 +797,122 @@ void GearUpFreshBotForLevel(Player* bot, uint8 level)
         return std::make_pair(a, b);
     };
 
-    auto [ringPoolA, ringPoolB] = splitAlternating(FindLevelAppropriateItemPool(4, 0, 11, level, targetIlvl, 10));
+    auto [ringPoolA, ringPoolB] = splitAlternating(GearPool(4, 0, 11, level, RollQualityCap(level), 10));
     if (!ringPoolA.empty() || !ringPoolB.empty())
     {
         TryEquipBestOf(bot, EQUIPMENT_SLOT_FINGER1, ringPoolA.empty() ? ringPoolB : ringPoolA, level);
         TryEquipBestOf(bot, EQUIPMENT_SLOT_FINGER2, ringPoolB.empty() ? ringPoolA : ringPoolB, level);
     }
 
-    auto [trinketPoolA, trinketPoolB] = splitAlternating(FindLevelAppropriateItemPool(4, 0, 12, level, targetIlvl, 10));
+    auto [trinketPoolA, trinketPoolB] = splitAlternating(GearPool(4, 0, 12, level, RollQualityCap(level), 10));
     if (!trinketPoolA.empty() || !trinketPoolB.empty())
     {
         TryEquipBestOf(bot, EQUIPMENT_SLOT_TRINKET1, trinketPoolA.empty() ? trinketPoolB : trinketPoolA, level);
         TryEquipBestOf(bot, EQUIPMENT_SLOT_TRINKET2, trinketPoolB.empty() ? trinketPoolA : trinketPoolB, level);
     }
 
-    // Mainhand: try common 1H weapon subclasses in turn -- same fallback-chain reasoning as
-    // GearUpBot's mainhandCandidates (weapon-skill proficiency varies noticeably across this
-    // project's 21 custom classes, unlike armor).
-    static uint32 const weaponSubclasses[] = { 7, 4, 0, 13, 15, 10 }; // sword, mace, axe, fist, dagger, staff
-    std::vector<uint32> weaponCandidates;
-    for (uint32 subclass : weaponSubclasses)
-        for (uint32 weapon : FindLevelAppropriateItemPool(2, subclass, 13 /*INVTYPE_WEAPON*/, level, targetIlvl))
-            weaponCandidates.push_back(weapon);
-    TryEquipBestOf(bot, EQUIPMENT_SLOT_MAINHAND, weaponCandidates, level);
+    // Main hand: one-handers and two-handers compete on score. Two-handers and staves used to be
+    // missing from the candidate list entirely (only InventoryType 13 was ever searched), which is
+    // why caster bots ended up with no weapon at all.
+    static std::pair<uint32, uint32> const mainHandTypes[] = {
+        { 0, 13 }, { 4, 13 }, { 7, 13 }, { 13, 13 }, { 15, 13 },   // one-handed axe/mace/sword/fist/dagger
+        { 0, 21 }, { 4, 21 }, { 7, 21 }, { 15, 21 },               // main-hand-only variants
+        { 1, 17 }, { 5, 17 }, { 6, 17 }, { 8, 17 }, { 10, 17 },   // two-handed axe/mace, polearm, sword, staff
+    };
+    uint32 weaponCap = RollQualityCap(level);
+    std::vector<uint32> mainHand;
+    for (auto const& [subclass, invType] : mainHandTypes)
+        for (uint32 item : GearPool(2, subclass, invType, level, weaponCap, 12))
+            mainHand.push_back(item);
+    TryEquipBestOf(bot, EQUIPMENT_SLOT_MAINHAND, mainHand, level);
 
-    // Tanks equip a Shield in off-hand (e.g. Guardian Vanguard, Templar Oathkeeper)
-    uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
-    BotRole role = BotAI::GetRoleForClassSpec(bot->getClass(), activeSpec);
-    if (role == BotRole::Tank)
+    Item* equippedMainHand = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+    bool twoHanded = equippedMainHand && equippedMainHand->GetTemplate()->InventoryType == INVTYPE_2HWEAPON;
+    if (!twoHanded)
     {
-        // Class 4 (Armor), Subclass 6 (Shield), InventoryType 14 (INVTYPE_SHIELD)
-        if (uint32 shield = FindLevelAppropriateItem(4, 6, 14, level, targetIlvl))
-            TryEquipBestOf(bot, EQUIPMENT_SLOT_OFFHAND, { shield }, level);
+        // Off hand: whatever this bot can actually use there -- a shield for tanks, a held item for
+        // casters, a second weapon for anyone the engine says can dual wield. CanEquipNewItem inside
+        // TryEquipBestOf filters out everything else.
+        uint32 offCap = RollQualityCap(level);
+        std::vector<uint32> offHand;
+        uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        if (BotAI::GetRoleForClassSpec(bot->getClass(), activeSpec) == BotRole::Tank)
+            for (uint32 item : GearPool(4, 6, 14, level, offCap))
+                offHand.push_back(item);
+        for (uint32 item : GearPool(4, 0, 23, level, offCap))
+            offHand.push_back(item);
+        if (bot->CanDualWield())
+            for (uint32 subclass : { 0u, 4u, 7u, 13u, 15u })
+                for (uint32 invType : { 13u, 22u })
+                    for (uint32 item : GearPool(2, subclass, invType, level, offCap))
+                        offHand.push_back(item);
+        TryEquipBestOf(bot, EQUIPMENT_SLOT_OFFHAND, offHand, level);
+    }
+
+    // Ranged: bows, guns, crossbows, wands and thrown -- again only what the class can equip.
+    static std::pair<uint32, uint32> const rangedTypes[] = { { 2, 15 }, { 3, 26 }, { 18, 26 }, { 19, 26 }, { 16, 25 } };
+    uint32 rangedCap = RollQualityCap(level);
+    std::vector<uint32> ranged;
+    for (auto const& [subclass, invType] : rangedTypes)
+        for (uint32 item : GearPool(2, subclass, invType, level, rangedCap))
+            ranged.push_back(item);
+    TryEquipBestOf(bot, EQUIPMENT_SLOT_RANGED, ranged, level);
+}
+
+// Profession skills shaped by the bot's personality. CoA lets a character hold every profession,
+// so every one is learned, but at values below the level's cap and spread per bot, with the ones
+// its personality leans toward (gathering, fishing) kept higher -- which is also what makes Gatherer
+// bots the ones able to open the higher-level nodes.
+void GrantShapedProfessions(Player* bot, uint8 level)
+{
+    constexpr uint32 SKILL_WOODCUTTING = 732;
+    uint16 cap = uint16(std::max<uint32>(1, std::min<uint32>(450, uint32(level) * 6)));
+    uint8 gathering = 50;
+    uint8 fishing = 25;
+    BotAI::GetProfessionLeans(bot, gathering, fishing);
+
+    for (uint32 skillId : PROFESSION_SKILLS)
+    {
+        uint32 lo = 35;
+        uint32 hi = 80;
+        if (skillId == SKILL_HERBALISM || skillId == SKILL_MINING || skillId == SKILL_SKINNING ||
+            skillId == SKILL_WOODCUTTING)
+        {
+            lo = 30 + gathering / 2;
+            hi = std::min<uint32>(100, lo + 25);
+        }
+        else if (skillId == SKILL_FISHING)
+        {
+            lo = 20 + fishing / 2;
+            hi = std::min<uint32>(100, lo + 25);
+        }
+        uint16 value = uint16(std::max<uint32>(1, uint32(cap) * RandomInt(lo, hi) / 100));
+        bot->SetSkill(uint16(skillId), 1, value, cap);
     }
 }
 
-// Post-login setup for a freshly cloned population bot: brings it down from the level-80
-// template to its actually-requested level via the real engine call (recalculates HP/mana/
-// stats correctly, same as a GM `.levelup`), then grants professions/bags/food/water/gear. Runs
-// once, from BotMgr::SpawnBot's onReady callback -- needs a real logged-in Player object for
-// GiveLevel/SetSkill/StoreNewItemInBestSlots to work, so it can't happen at DB-clone time.
+// Post-login setup for a freshly cloned population bot. Runs once, from BotMgr::SpawnBot's onReady
+// callback -- it needs a real logged-in Player for learnSpell/SetSkill/StoreNewItemInBestSlots. The
+// order matters: bags before anything that goes in them, abilities from the book before talents
+// (a pick can build on an ability), skills before recipes (recipes are gated on skill).
 void ApplyFreshBotSetup(Player* bot, uint8 level)
 {
     if (!bot)
         return;
 
+    // Sanity check: bot level should never exceed server max level
+    uint8 serverMaxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    ASSERT(level <= serverMaxLevel && level >= 1);
+
+    // Normally already true, since the level is written into the cloned row; kept for a bot whose
+    // row predates that or was edited by hand.
     if (level != bot->GetLevel())
         bot->GiveLevel(level);
+
+    for (int i = 0; i < 4; ++i)
+        bot->StoreNewItemInBestSlots(BAG_ITEM_ID, 1);
+
+    BotProgression::LearnAbilitiesFromBook(bot);
 
     if (level >= 10)
     {
@@ -761,31 +929,87 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
         }
     }
 
-    GrantAllProfessions(bot, level);
-
-    for (int i = 0; i < 4; ++i)
-        bot->StoreNewItemInBestSlots(BAG_ITEM_ID, 1);
-    bot->StoreNewItemInBestSlots(FOOD_ITEM_ID, 20);
-    bot->StoreNewItemInBestSlots(WATER_ITEM_ID, 20);
+    GrantShapedProfessions(bot, level);
+    BotProgression::LearnRecipesFromBook(bot);
+    BotProgression::GrantCompanions(bot);
+    BotProgression::GrantMounts(bot);
+    BotProgression::ProvisionFood(bot, 20);
 
     GearUpFreshBotForLevel(bot, level);
+
+    // After gear, not before: a fishing pole handed out first went straight into the empty main
+    // hand, and the gear-up then destroyed it while equipping a real weapon -- confirmed live on the
+    // first test batch. With the weapons already equipped, every tool lands in the bags.
+    BotProgression::GrantProfessionTools(bot);
 
     // Relocate fresh bot to a level-appropriate zone hub instead of leaving it at the cloned template's coordinates
     BotZoneProgression::RelocateBot(bot, true /*force initial relocation*/);
 
-    LOG_INFO("module.coa-playerbots", "BotMgr: applied fresh-bot setup (level {}, professions, bags, food/water, gear) to '{}'.",
-        level, bot->GetName());
+    LOG_INFO("module.coa-playerbots", "BotMgr: applied fresh-bot setup (level {}, spec {}, {} spells) to '{}'.",
+        level, bot->GetPlayerSetting("core.ascension_active_spec", 0).value, bot->GetSpellMap().size(),
+        bot->GetName());
 }
 
-// Weighted level roll for SpawnLeveledBots: mostly 1-10 (explicit user request -- a realistic
-// "mostly fresh characters, some further along" population), tapering off toward 80.
-uint8 RollWeightedLevel()
+struct LevelBracket
 {
-    uint32 roll = RandomInt(1, 100);
-    if (roll <= 60) return uint8(RandomInt(1, 10));
-    if (roll <= 80) return uint8(RandomInt(11, 30));
-    if (roll <= 95) return uint8(RandomInt(31, 60));
-    return uint8(RandomInt(61, 80));
+    uint8 low;
+    uint8 high;
+    uint32 weight;
+};
+
+// CoaBots.LeveledSpawn.Brackets, e.g. "1-20:40,21-60:33,61-79:20,80-80:7" -- level ranges with
+// relative weights. Malformed entries are skipped; an unusable setting falls back to the default.
+std::vector<LevelBracket> LevelBrackets()
+{
+    static std::string const defaultSpec = "1-20:40,21-60:33,61-79:20,80-80:7";
+    auto parse = [](std::string const& spec)
+    {
+        std::vector<LevelBracket> brackets;
+        std::stringstream stream(spec);
+        std::string token;
+        while (std::getline(stream, token, ','))
+        {
+            size_t dash = token.find('-');
+            size_t colon = token.find(':');
+            if (dash == std::string::npos || colon == std::string::npos || colon < dash)
+                continue;
+            try
+            {
+                uint32 low = std::stoul(token.substr(0, dash));
+                uint32 high = std::stoul(token.substr(dash + 1, colon - dash - 1));
+                uint32 weight = std::stoul(token.substr(colon + 1));
+                if (low >= 1 && low <= high && high <= 255 && weight)
+                    brackets.push_back({ uint8(low), uint8(high), weight });
+            }
+            catch (std::exception const&)
+            {
+            }
+        }
+        return brackets;
+    };
+
+    std::vector<LevelBracket> brackets = parse(sConfigMgr->GetOption<std::string>("CoaBots.LeveledSpawn.Brackets",
+        defaultSpec));
+    return brackets.empty() ? parse(defaultSpec) : brackets;
+}
+
+// Weighted level roll for SpawnLeveledBots, driven by CoaBots.LeveledSpawn.Brackets and never above
+// the server's max player level.
+uint8 RollWeightedLevel(uint8 serverMaxLevel = 80)
+{
+    std::vector<LevelBracket> brackets = LevelBrackets();
+    uint32 total = 0;
+    for (LevelBracket const& bracket : brackets)
+        total += bracket.weight;
+
+    uint32 roll = RandomInt(1, total);
+    for (LevelBracket const& bracket : brackets)
+    {
+        if (roll <= bracket.weight)
+            return std::min<uint8>(uint8(RandomInt(bracket.low, bracket.high)), serverMaxLevel);
+        roll -= bracket.weight;
+    }
+    return 1;
 }
 
 uint32 g_pendingLeveledBotCount = 0;
@@ -850,7 +1074,7 @@ void SpawnLeveledBots(uint32 requestedCount, ChatHandler* handler)
                 g_pendingLeveledBotCount, count);
         else
             handler->PSendSysMessage(
-                "BotMgr: queued {} leveled bot(s) (levels 1-80, weighted mostly 1-10) for gradual spawn "
+                "BotMgr: queued {} leveled bot(s) (levels per CoaBots.LeveledSpawn.Brackets) for gradual spawn "
                 "({} every {}ms -- watch Server.log for progress).",
                 count, RandomSpawnBatchSize(), RandomSpawnIntervalMs());
     }
@@ -871,16 +1095,17 @@ void ProcessPendingLeveledBotSpawns(uint32 diff)
     }
     g_pendingLeveledBotThrottleMs = RandomSpawnIntervalMs();
 
+    uint8 serverMaxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
     uint32 thisBatch = std::min(g_pendingLeveledBotCount, RandomSpawnBatchSize());
     for (uint32 i = 0; i < thisBatch; ++i)
     {
-        uint8 level = RollWeightedLevel();
+        uint8 level = RollWeightedLevel(serverMaxLevel);
         ObjectGuid::LowType newGuid = 0;
         constexpr uint32 MAX_RACE_ATTEMPTS = 10;
         for (uint32 attempt = 0; attempt < MAX_RACE_ATTEMPTS && !newGuid; ++attempt)
         {
             uint8 race = VALID_RACES[RandomInt(0, VALID_RACES.size() - 1)];
-            newGuid = CreateOneRandomBot(race, nullptr);
+            newGuid = CreateBotClone(race, nullptr, level);
         }
 
         if (!newGuid)

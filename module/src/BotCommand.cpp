@@ -438,7 +438,7 @@ public:
 
         BotGroupFormation formation = ParseFormation(formationName);
         sBotMgr->SetGroupFormation(player->GetGUID(), formation);
-        handler->PSendSysMessage("Bot formation set to: %s", FormationToString(formation));
+        handler->PSendSysMessage("Bot formation set to: {}", FormationToString(formation));
 
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
@@ -479,7 +479,7 @@ public:
 
         bool enable = (stateStr == "on" || stateStr == "1" || stateStr == "true" || stateStr == "enable");
         sBotMgr->SetAutoDungeonMode(player->GetGUID(), enable);
-        handler->PSendSysMessage("Auto-dungeon mode: %s", enable ? "ENABLED" : "DISABLED");
+        handler->PSendSysMessage("Auto-dungeon mode: {}", enable ? "ENABLED" : "DISABLED");
 
         if (!enable)
         {

@@ -382,6 +382,12 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
             {
                 LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' ({}) logged in successfully.",
                     bot->GetName(), bot->GetGUID().ToString());
+
+                // Ensure all newly spawned bots relocate to appropriate zones (fixes bots clustering at spawn points).
+                // This is called for all spawn paths; if onReady also relocates (e.g., ApplyFreshBotSetup),
+                // calling it twice is safe and idempotent.
+                BotZoneProgression::RelocateBot(bot, true /*force initial relocation*/);
+
                 if (onReady)
                     onReady(bot);
             }
@@ -844,6 +850,16 @@ uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntr
     {
         if (handler)
             handler->PSendSysMessage("BotMgr: bot session for guid {} has no Player yet.", charLowGuid);
+        return 0;
+    }
+
+    // A bot keeps its profession tools, whoever asks: a guild gather order or an explicit
+    // `.botcmd guilddeposit` must never empty its bags of the pick or knife it gathers with.
+    if (BotAI::IsProfessionTool(sObjectMgr->GetItemTemplate(itemEntry)))
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: bot '{}' keeps its profession tools; item {} was not deposited.",
+                bot->GetName(), itemEntry);
         return 0;
     }
 
@@ -2337,7 +2353,14 @@ void BotMgr::GearUpBot(Player* bot, ChatHandler* handler)
                 float existingIlvl = existingTemplate ? existingTemplate->GetItemLevelIncludingQuality(level) : 0.0f;
                 if (existingIlvl >= newIlvl)
                     return false; // already at least as good -- done, no candidate needed
-                bot->DestroyItemCount(existing->GetEntry(), 1, true);
+                if (BotAI::IsProfessionTool(existingTemplate))
+                {
+                    // A tool that ended up equipped goes back to the bags, never to the void.
+                    if (!BotAI::MoveEquippedToolToBags(bot, slot))
+                        return false;
+                }
+                else
+                    bot->DestroyItemCount(existing->GetEntry(), 1, true);
             }
 
             return bot->StoreNewItemInBestSlots(itemId, 1);

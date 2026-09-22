@@ -66,6 +66,34 @@ namespace BotAI
     // UpdateDeathHandling for the full behavior.
     void Update(Player* bot, uint32 diff);
 
+    // Loads the static loot classification bot gathering needs (which gameobject loot templates are
+    // quest-only). Called once from the module's OnStartup, after the world's loot store is loaded.
+    void LoadGatherLootData();
+
+    // Hooks for the ambient world-behavior layer (BotWorldBehavior.cpp), which lives in its own
+    // translation unit and can't see BotAI.cpp's internals. Each one reuses the logic BotAI itself
+    // already applies, so the two layers can never disagree about what a need is.
+    bool IsQuestOnlyGameObjectLoot(uint32 lootId);
+    bool NeedsRepair(Player* bot);
+    bool NeedsVendor(Player* bot);
+    void MaintainEquipmentNow(Player* bot);
+    bool IsInCity(Player const* bot);
+    void TryMountForTravel(Player* bot);
+
+    // The bot's persistent personality preferences for gathering and fishing (0-100), used to
+    // shape its profession skills at creation the same way they shape its solo intent.
+    void GetProfessionLeans(Player* bot, uint8& gathering, uint8& fishing);
+
+    // Profession tools a bot must never part with -- not sold, destroyed, banked or deposited in a
+    // guild bank: anything with a TotemCategory (pick, knife, hammer, spanner, axe, inking set,
+    // enchanting rod, micro-adjustor), plus misc-class weapons and fishing poles.
+    bool IsProfessionTool(ItemTemplate const* proto);
+
+    // Moves an equipped profession tool out of `slot` into the bags instead of destroying it, for
+    // the gear-up paths that replace whatever is equipped. Returns false when there is no bag room,
+    // in which case the caller must leave the slot alone.
+    bool MoveEquippedToolToBags(Player* bot, uint8 slot);
+
     // Drops any per-bot AI state (cast-gate timer, assigned role) held for this guid. Call
     // when a bot despawns, so BotAI's internal state map doesn't grow unbounded across
     // repeated spawn/despawn cycles.

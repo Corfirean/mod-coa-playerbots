@@ -10,6 +10,7 @@
 #include "Player.h"
 #include "Random.h"
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace BotZoneProgression
@@ -367,8 +368,16 @@ namespace BotZoneProgression
         // Update homebind with real destination WorldLocation and real areaId
         bot->SetHomebind(WorldLocation(dest->mapId, dest->x, dest->y, dest->z, dest->o), dest->zoneId);
 
+        // Spread arrivals a few yards around the hub point: a spawn batch used to materialise every
+        // bot on the one game_tele coordinate, stacked inside each other. Kept small and lifted by a
+        // yard so a sloped hub can't put anyone under the ground; the homebind above stays exact.
+        float angle = frand(0.0f, 2.0f * float(M_PI));
+        float radius = frand(1.0f, 5.0f);
+        float x = dest->x + std::cos(angle) * radius;
+        float y = dest->y + std::sin(angle) * radius;
+
         // Request teleport and queue the ack for the next tick
-        bot->TeleportTo(dest->mapId, dest->x, dest->y, dest->z, dest->o);
+        bot->TeleportTo(dest->mapId, x, y, dest->z + 1.0f, dest->o);
         sBotMgr->QueueTeleportAck(bot->GetSession());
 
         return true;

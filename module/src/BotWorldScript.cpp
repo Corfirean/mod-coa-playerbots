@@ -1,6 +1,7 @@
 #include "BotAI.h"
 #include "BotMgr.h"
 #include "BotTalentBuilds.h"
+#include "BotWorldBehavior.h"
 #include "Config.h"
 #include "Creature.h"
 #include "KillRewarder.h"
@@ -27,6 +28,8 @@ public:
     {
         BotTalentBuilds::Initialize();
         sBotMgr->LoadGuildGatherOrders();
+        BotAI::LoadGatherLootData();
+        BotWorldBehavior::LoadConfig();
 
         if (sConfigMgr->GetOption<bool>("CoaBots.AutoLoginOnStartup", false))
             sBotMgr->QueueAllBotsForAutoLogin();

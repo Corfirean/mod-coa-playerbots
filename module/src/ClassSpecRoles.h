@@ -11,6 +11,7 @@
 
 #include "Define.h"
 #include "BotAI.h"
+#include <vector>
 
 namespace BotAI
 {
@@ -29,6 +30,11 @@ namespace BotAI
     // class has no spec at all for that role (e.g. most classes have no Tank spec) --
     // callers must treat 0 as "not possible for this class," not "default/shared spec."
     uint32 FindSpecForRole(uint8 classId, BotRole role, uint32 preferredSpecId = 0);
+
+    // Every specId this ClassId has for the given role, in table order. FindSpecForRole only ever
+    // returns the first one, which is fine for "can this class tank" but would hand every DPS bot
+    // of a class the same spec; population spawning picks among all of them instead.
+    std::vector<uint32> GetSpecsForRole(uint8 classId, BotRole role);
 
     // Bitmask (1 << uint8(BotRole)) of every role this ClassId has at least one spec for,
     // always including Dps (specId 0, the shared/default tree, is always Dps regardless of
