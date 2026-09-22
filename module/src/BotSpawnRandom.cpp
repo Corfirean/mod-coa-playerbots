@@ -30,6 +30,7 @@
 #include "BotAI.h"
 #include "BotMgr.h"
 #include "BotProgression.h"
+#include "BotTaxi.h"
 #include "BotTalentBuilds.h"
 #include "CharacterCache.h"
 #include "Chat.h"
@@ -966,6 +967,7 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
     BotProgression::LearnRecipesFromBook(bot);
     BotProgression::GrantCompanions(bot);
     BotProgression::GrantMounts(bot);
+    BotTaxi::GrantNodesForLevel(bot);
     BotProgression::ProvisionFood(bot, 20);
 
     GearUpFreshBotForLevel(bot, level);

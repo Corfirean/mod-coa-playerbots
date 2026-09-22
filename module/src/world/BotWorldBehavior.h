@@ -76,6 +76,12 @@ namespace BotWorldBehavior
     // is whether any of them started work (a walk, a cast, an attack) this tick.
     void UpdateAfterSolo(Player* bot, AmbientProfile const& profile, bool soloStartedSomething);
 
+    // Asks the bot to travel to a destination on its current map by flight path: walk to the nearest
+    // flight master, fly to the known node nearest the destination, walk the rest. Returns false
+    // without changing anything when that cannot work (different map, no flight master in reach, no
+    // known node near the destination), so the caller can fall back to teleporting.
+    bool RequestTravel(Player* bot, uint32 mapId, float x, float y, float z);
+
     // One line for `.botcmd profile`.
     std::string Describe(ObjectGuid botGuid);
 

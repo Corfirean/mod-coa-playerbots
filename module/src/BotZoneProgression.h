@@ -3,6 +3,7 @@
 
 #include "Common.h"
 #include "SharedDefines.h"
+#include <vector>
 
 class Player;
 
@@ -27,6 +28,11 @@ namespace BotZoneProgression
 
     // Returns an appropriate hub for the given level and faction
     ZoneHub const* GetRandomHubForLevel(uint8 level, TeamId team);
+
+    // Every hub a character of this level and race would already have passed through: its race's
+    // starting hub, and each progression hub of its faction (or neutral) whose bracket starts at or
+    // below its level. Used to give a fresh bot the flight paths it would have picked up.
+    std::vector<ZoneHub const*> HubsUpToLevel(uint8 level, uint8 race);
 
     // Checks if the specified zone is appropriate for the bot's current level
     bool IsZoneAppropriateForLevel(uint32 zoneId, uint8 level);

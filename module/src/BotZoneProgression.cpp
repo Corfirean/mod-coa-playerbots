@@ -1,5 +1,6 @@
 #include "BotZoneProgression.h"
 #include "BotMgr.h"
+#include "BotWorldBehavior.h"
 #include "CellImpl.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -196,6 +197,19 @@ namespace BotZoneProgression
         return candidates.back();
     }
 
+    std::vector<ZoneHub const*> HubsUpToLevel(uint8 level, uint8 race)
+    {
+        std::vector<ZoneHub const*> hubs;
+        if (ZoneHub const* start = GetStartingHubForRace(race))
+            hubs.push_back(start);
+
+        TeamId team = Player::TeamIdForRace(race);
+        for (ZoneHub const& hub : PROGRESSION_HUBS)
+            if (hub.minLevel <= level && (hub.team == TEAM_NEUTRAL || hub.team == team))
+                hubs.push_back(&hub);
+        return hubs;
+    }
+
     bool IsZoneAppropriateForLevel(uint32 zoneId, uint8 level)
     {
         // Confirmed live: zone 876 (GM Island) matched no deny-list below and fell through to
@@ -387,6 +401,17 @@ namespace BotZoneProgression
 
         if (!dest)
             return false;
+
+        // A bot that levels into a new bracket travels there the way a player would -- walks to a
+        // flight master and flies -- whenever its known flight paths reach the new hub. Teleporting
+        // stays for creation (force) and as the fallback when no route exists.
+        if (!force && BotWorldBehavior::RequestTravel(bot, dest->mapId, dest->x, dest->y, dest->z))
+        {
+            LOG_INFO("module.coa-playerbots", "BotZoneProgression: bot '{}' (level {}) will fly to {} instead of teleporting.",
+                bot->GetName(), level, dest->name);
+            bot->SetHomebind(WorldLocation(dest->mapId, dest->x, dest->y, dest->z, dest->o), dest->zoneId);
+            return true;
+        }
 
         // Stop current movement
         bot->StopMoving();

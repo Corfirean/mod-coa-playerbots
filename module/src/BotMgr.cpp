@@ -2508,6 +2508,20 @@ void BotMgr::Update(uint32 diff)
             FinishPendingTeleport(session);
     }
 
+    // Safety net for teleports nothing explicitly queued an ack for. A spell-driven teleport -- a
+    // portal or teleport crystal the ambient layer uses, a hearthstone -- only starts when its cast
+    // lands, possibly ticks after whatever triggered it, so the caller cannot queue the ack itself.
+    // Without one a null-socket bot stays IsBeingTeleported forever (see FinishPendingTeleport).
+    // Queued here it is finished next tick, keeping the one-tick separation that function needs.
+    for (WorldSession* session : _botSessions)
+    {
+        Player* bot = session->GetPlayer();
+        if (!bot || !(bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar()))
+            continue;
+        if (std::find(_pendingTeleportAck.begin(), _pendingTeleportAck.end(), session) == _pendingTeleportAck.end())
+            _pendingTeleportAck.push_back(session);
+    }
+
     // See QueueBotGroupLeave/the new GroupScript hook -- a real player leaving/being removed
     // from a group with no other real player left in it means the remaining bots have no one
     // left to command, so send each one through the same real "leave party" call a client's own
