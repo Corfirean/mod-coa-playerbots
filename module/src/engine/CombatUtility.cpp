@@ -19,6 +19,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include <algorithm>
+#include <vector>
 
 namespace BotAI
 {
@@ -64,22 +65,57 @@ namespace BotAI
             return false;
         }
 
-        // First groupmate (self included) carrying a negative, dispel-typed aura within range --
-        // see IsUsableDispelSpell's own comment on why this doesn't try to match the specific
-        // DispelType against what the bot's known spell actually removes.
-        Unit* FindDispellableAlly(Player* bot)
+        struct CleansePlan
         {
-            auto hasDispellableDebuff = [](Unit* unit) -> bool
+            Unit* target = nullptr;
+            uint32 spellId = 0;
+        };
+
+        // Finds a (target, spell) pair where spellId's real DispelType actually removes some
+        // debuff currently on target -- item 4, Phase 2 fixup. The old version picked any ally
+        // with any dispellable debuff and any known dispel-shaped spell independently, so a bot
+        // that only knows Remove Curse would still try (and fail) against a Magic debuff. Bounded
+        // cost: the bot's own known-dispel-spell list is gathered once (usually 0-2 entries for
+        // any class), then checked against each candidate ally's own (usually small) debuff list.
+        CleansePlan FindCleansePlan(Player* bot)
+        {
+            CleansePlan plan;
+
+            std::vector<uint32> knownDispelSpells;
+            for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
             {
-                for (auto const& pair : unit->GetAppliedAuras())
+                if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                    continue;
+                if (IsUsableDispelSpell(sSpellMgr->GetSpellInfo(spellId)))
+                    knownDispelSpells.push_back(spellId);
+            }
+            if (knownDispelSpells.empty())
+                return plan;
+
+            auto considerAlly = [&](Unit* ally) -> bool
+            {
+                for (auto const& pair : ally->GetAppliedAuras())
                 {
                     AuraApplication const* app = pair.second;
                     if (!app || app->IsPositive())
                         continue;
                     Aura const* aura = app->GetBase();
-                    SpellInfo const* si = aura ? aura->GetSpellInfo() : nullptr;
-                    if (si && si->Dispel != DISPEL_NONE)
+                    SpellInfo const* debuffInfo = aura ? aura->GetSpellInfo() : nullptr;
+                    if (!debuffInfo || debuffInfo->Dispel == DISPEL_NONE)
+                        continue;
+
+                    for (uint32 dispelSpellId : knownDispelSpells)
+                    {
+                        SpellInfo const* dispelInfo = sSpellMgr->GetSpellInfo(dispelSpellId);
+                        if (!IsDispelCompatible(dispelInfo, debuffInfo))
+                            continue;
+                        if (!IsKnownSpellCastable(bot, dispelSpellId, ally, true))
+                            continue;
+
+                        plan.target = ally;
+                        plan.spellId = dispelSpellId;
                         return true;
+                    }
                 }
                 return false;
             };
@@ -93,13 +129,14 @@ namespace BotAI
                         continue;
                     if (!member->IsWithinDistInMap(bot, CLEANSE_SEARCH_RANGE))
                         continue;
-                    if (hasDispellableDebuff(member))
-                        return member;
+                    if (considerAlly(member))
+                        return plan;
                 }
-                return nullptr;
+                return plan;
             }
 
-            return hasDispellableDebuff(bot) ? bot : nullptr;
+            considerAlly(bot);
+            return plan;
         }
     }
 
@@ -158,12 +195,16 @@ namespace BotAI
             }
         }
 
-        // 3. Cleanse -- any role with a known dispel-shaped spell.
-        if (Unit* dispelTarget = FindDispellableAlly(bot))
+        // 3. Cleanse -- any role with a known dispel-shaped spell whose DispelType actually
+        // matches a debuff present on some ally (item 4, Phase 2 fixup). FindCleansePlan only
+        // ever returns a type-compatible pair, so there's nothing incompatible to fail on here --
+        // if TryCast still fails, that's a genuine transient issue (range/LoS changed between
+        // selection and cast), and recording a failure-cooldown for it is correct.
+        CleansePlan cleansePlan = FindCleansePlan(bot);
+        if (cleansePlan.target && cleansePlan.spellId)
         {
-            if (uint32 spellId = SelectDispelSpell(bot, dispelTarget))
-                if (TryCast(bot, spellId, dispelTarget, "cleansed", nextCastAllowedMs))
-                    return true;
+            if (TryCast(bot, cleansePlan.spellId, cleansePlan.target, "cleansed", nextCastAllowedMs))
+                return true;
         }
 
         return false;

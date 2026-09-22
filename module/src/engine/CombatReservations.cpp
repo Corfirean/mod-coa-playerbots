@@ -5,7 +5,12 @@
  */
 
 #include "engine/CombatReservations.h"
+#include "ObjectAccessor.h"
+#include "Player.h"
+#include "Spell.h"
+#include "SpellInfo.h"
 #include "Timer.h"
+#include <algorithm>
 #include <unordered_map>
 
 namespace BotAI
@@ -70,26 +75,67 @@ namespace BotAI
             s_interruptReservations.erase(itr);
     }
 
+    namespace
+    {
+        // Grace window (item 2, Phase 2 fixup) absorbing the latency between "cast finishes" and
+        // "the target's health has actually updated," plus a floor so even an instant heal's
+        // reservation survives long enough for a sibling healer evaluated moments later this same
+        // tick to see it. Scales a little with the cast itself so a long cast-time heal isn't
+        // held to the same tight grace as an instant one.
+        constexpr uint32 HEAL_RESERVATION_MIN_GRACE_MS = 300;
+        constexpr uint32 HEAL_RESERVATION_HARD_CEILING_MS = 10000;
+
+        // True while `reservation` is still genuinely in flight -- the primary liveness check is
+        // "is this healer still actually mid-cast on this exact spell," not just a fixed TTL (see
+        // this file's header comment). Falls back to the hard ceiling if the healer can't be
+        // resolved at all (shouldn't normally happen, but a despawned/unloaded bot must not pin a
+        // reservation alive forever).
+        bool IsHealReservationLive(HealReservation const& reservation, uint32 now)
+        {
+            if (now >= reservation.expiresAt)
+                return false;
+
+            Player* healerPlayer = ObjectAccessor::FindPlayer(reservation.healerGuid);
+            if (!healerPlayer || !healerPlayer->IsInWorld() || !healerPlayer->IsAlive())
+                return false;
+
+            // Give the tick the reservation was created on a pass -- an instant heal's CastSpell
+            // call may already show no CurrentSpell by the time a sibling healer reads this in
+            // the same tick, and that's not "the cast resolved," it's "it was instant."
+            if (now < reservation.castStartedAt + 50)
+                return true;
+
+            Spell const* current = healerPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            return current && current->GetSpellInfo() && current->GetSpellInfo()->Id == reservation.spellId;
+        }
+    }
+
     uint32 CombatReservations::GetReservedIncomingHeal(ObjectGuid targetGuid, ObjectGuid excludingHealer)
     {
         uint32 now = getMSTime();
         uint32 total = 0;
-        for (auto const& [healerGuid, reservation] : s_healReservations)
+        for (auto itr = s_healReservations.begin(); itr != s_healReservations.end();)
         {
-            if (healerGuid == excludingHealer)
+            if (!IsHealReservationLive(itr->second, now))
+            {
+                itr = s_healReservations.erase(itr);
                 continue;
-            if (reservation.targetGuid != targetGuid)
-                continue;
-            if (now >= reservation.expiresAt)
-                continue;
-            total += reservation.expectedHeal;
+            }
+
+            if (itr->first != excludingHealer && itr->second.targetGuid == targetGuid)
+                total += itr->second.expectedHeal;
+            ++itr;
         }
         return total;
     }
 
-    void CombatReservations::ReserveHeal(ObjectGuid healerGuid, ObjectGuid targetGuid, uint32 spellId, uint32 expectedHeal, uint32 durationMs)
+    void CombatReservations::ReserveHeal(ObjectGuid healerGuid, ObjectGuid targetGuid, uint32 spellId, uint32 expectedHeal, uint32 castTimeMs)
     {
-        s_healReservations[healerGuid] = HealReservation{ healerGuid, targetGuid, spellId, expectedHeal, getMSTime() + durationMs };
+        uint32 now = getMSTime();
+        uint32 landingAt = now + castTimeMs;
+        uint32 grace = std::max(HEAL_RESERVATION_MIN_GRACE_MS, castTimeMs / 4);
+        uint32 expiresAt = std::min(landingAt + grace, now + HEAL_RESERVATION_HARD_CEILING_MS);
+        s_healReservations[healerGuid] = HealReservation{ healerGuid, targetGuid, spellId, expectedHeal, now, landingAt, expiresAt };
     }
 
     void CombatReservations::ClearHealReservation(ObjectGuid healerGuid)

@@ -24,13 +24,20 @@ namespace BotAI
     class HealEvaluator
     {
     public:
+        // Eligibility gate (item 11, Phase 2 fixup), separate from scoring: is `candidate` worth
+        // healing *at all* right now? The old code used a magic `score > 5.0` threshold that
+        // worked out to "missing >= 2.5% HP," an overly aggressive top-off trigger (a player at
+        // 98% HP with nothing hurting them doesn't need attention; one at 98% taking heavy burst
+        // does). True when missing HP alone already justifies it (>=5%), or a lesser dip is made
+        // urgent by a real incoming-damage trend, a low time-to-die, or a dangerous DoT debuff.
+        static bool ShouldConsiderHealing(Player* healer, Player* candidate);
+
         // Higher is better; -1 means "not a valid heal candidate at all" (dead, out of world,
-        // absurdly far away).
+        // absurdly far away). Does NOT itself gate eligibility -- see ShouldConsiderHealing.
         static float ScoreHealUrgency(Player* healer, Player* candidate);
 
-        // Best heal target among the healer and its group within maxRange, or nullptr if nobody
-        // is meaningfully hurt (mirrors the old FindHealTarget's implicit "must be below ~95%"
-        // floor).
+        // Best heal target among the healer and its group within maxRange that passes
+        // ShouldConsiderHealing, or nullptr if nobody currently needs it.
         static Player* SelectBestHealTarget(Player* healer, float maxRange = 60.0f);
 
         // Max range among the healer's own currently-known, usable heal-shaped spells (falls back

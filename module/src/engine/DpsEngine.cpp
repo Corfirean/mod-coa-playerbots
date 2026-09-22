@@ -14,6 +14,8 @@
 #include "Log.h"
 #include "Player.h"
 #include "SpellMgr.h"
+#include "Timer.h"
+#include <unordered_map>
 
 namespace BotAI
 {
@@ -25,15 +27,23 @@ namespace BotAI
         // the combat-engine rework); this is only the AI's own decision-tick throttle after a
         // successful cast, not a simulated GCD.
         constexpr uint32 AI_REACTION_GATE_MS = 150;
+
+        // [botGuid] -> absolute getMSTime() this engine may next bother recomputing
+        // EvaluateBestAction after finding nothing castable. Strictly internal: never surfaced to
+        // the caller via nextCastAllowedMs (item 1, Phase 2 fixup) -- NoAction must let the
+        // caller fall through to the legacy chain on the very same tick it happens, every time.
+        // This only paces how often *this engine itself* re-scans a profile that's genuinely
+        // found nothing for a while, so a hopeless profile doesn't get rescored every world tick.
+        std::unordered_map<ObjectGuid, uint32> s_noActionRetryAt;
     }
 
-    CombatResult DpsEngine::Execute(Player* bot, Unit* target, uint32 diff, uint32& nextCastAllowedMs)
+    CombatResult DpsEngine::Execute(Player* bot, CombatContext const& ctx, BotRole profileRole, uint32 diff, uint32& nextCastAllowedMs)
     {
-        if (!bot || !bot->IsInWorld() || !bot->IsAlive() || !target || !target->IsAlive())
+        if (!bot || !bot->IsInWorld() || !bot->IsAlive() || !ctx.victim || !ctx.victim->IsAlive())
             return CombatResult::NoAction;
 
         uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
-        CombatProfile const* profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Dps);
+        CombatProfile const* profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, profileRole);
         if (!profile)
             return CombatResult::NoAction;
 
@@ -44,9 +54,9 @@ namespace BotAI
         }
         nextCastAllowedMs = 0;
 
-        CombatContext ctx = CombatContext::Build(bot, target);
-
-        // Check ongoing cast
+        // Check ongoing cast -- always allowed to re-evaluate for a higher-priority interrupt,
+        // regardless of the internal no-action recompute gate below (that gate only paces "found
+        // nothing to do" re-attempts, not "am I still doing the right thing").
         if (CastGuard::IsCurrentlyCasting(bot))
         {
             BotAction candidate = ActionEvaluator::EvaluateBestAction(ctx, profile->abilities);
@@ -56,12 +66,21 @@ namespace BotAI
                 return CombatResult::Busy;
         }
 
+        ObjectGuid botGuid = bot->GetGUID();
+        uint32 now = getMSTime();
+        auto retryItr = s_noActionRetryAt.find(botGuid);
+        if (retryItr != s_noActionRetryAt.end() && now < retryItr->second)
+            return CombatResult::NoAction;
+
         BotAction action = ActionEvaluator::EvaluateBestAction(ctx, profile->abilities);
         if (!action.IsValid())
         {
-            nextCastAllowedMs = RETRY_GATE_MS;
+            // NoAction (item 1): nextCastAllowedMs stays untouched -- the caller must be free to
+            // try the legacy chain immediately. Only this engine's own internal gate is set.
+            s_noActionRetryAt[botGuid] = now + RETRY_GATE_MS;
             return CombatResult::NoAction;
         }
+        s_noActionRetryAt.erase(botGuid);
 
         // Cast-time spell while still repositioning would guarantee SPELL_FAILED_MOVING -- defer
         // one tick instead (see CombatMovement::ReadyToCast). This is still "Busy," not
@@ -98,5 +117,10 @@ namespace BotAI
         LOG_INFO("module.coa-playerbots", "DataDrivenAI [DPS]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
             bot->GetName(), action.name, action.spellId, action.target->GetName(), static_cast<uint32>(result));
         return CombatResult::Busy;
+    }
+
+    void DpsEngine::ForgetBot(ObjectGuid botGuid)
+    {
+        s_noActionRetryAt.erase(botGuid);
     }
 }

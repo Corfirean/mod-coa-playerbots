@@ -32,12 +32,23 @@ namespace BotAI
     // the same critical ally in the same tick. `expectedHeal` is a deliberately rough estimate
     // (see HealEvaluator's own comment on why) -- good enough to stop redundant overhealing, not
     // a real combat-log-accurate prediction.
+    //
+    // Lifecycle (item 2 of the Phase 2 fixup pass): a reservation must not outlive the cast it
+    // was made for by more than a brief grace window -- otherwise it keeps subtracting from a
+    // target's missing health for seconds after the heal already landed, double-counting the
+    // incoming heal and causing other healers to under-value a target that's actually still
+    // hurting. expiresAt is a hard ceiling safety net, not the primary mechanism: see
+    // CombatReservations::GetReservedIncomingHeal, which lazily confirms the healer is still
+    // genuinely mid-cast on this exact spell on every read and drops the entry the moment that's
+    // no longer true (landed, failed, interrupted, replaced by a new cast, or the healer died).
     struct HealReservation
     {
         ObjectGuid healerGuid;
         ObjectGuid targetGuid;
         uint32 spellId = 0;
         uint32 expectedHeal = 0;
+        uint32 castStartedAt = 0;
+        uint32 expectedLandingAt = 0; // absolute getMSTime() the cast is expected to finish at
         uint32 expiresAt = 0;
     };
 
@@ -64,16 +75,24 @@ namespace BotAI
         // timeout. Cheap: a single map lookup, no scanning.
         static void ReconcileInterruptReservation(ObjectGuid enemyGuid, uint32 currentCastSpellId);
 
-        // Sum of live (unexpired) expected-heal reservations on targetGuid, excluding any held by
+        // Sum of live expected-heal reservations on targetGuid, excluding any held by
         // `excludingHealer` -- HealEvaluator subtracts this from a candidate's missing health so a
         // second healer doesn't also commit a big heal to someone already about to be topped off.
+        // "Live" is checked lazily on every call (see this file's header comment on why) -- this
+        // also opportunistically sweeps out any reservation (for any target, not just the one
+        // asked about) that's gone stale, so the map doesn't accumulate dead entries between
+        // heal-urgency scans (item 20 of the Phase 2 fixup pass).
         static uint32 GetReservedIncomingHeal(ObjectGuid targetGuid, ObjectGuid excludingHealer);
 
-        // Records that `healerGuid` is about to land roughly `expectedHeal` on `targetGuid`.
-        // Multiple simultaneous reservations from different healers on the same target are
-        // allowed to coexist (a genuinely critical target may legitimately need two heals at
-        // once) -- this is additive, not a single-slot claim like the interrupt reservation.
-        static void ReserveHeal(ObjectGuid healerGuid, ObjectGuid targetGuid, uint32 spellId, uint32 expectedHeal, uint32 durationMs);
+        // Records that `healerGuid` is about to land roughly `expectedHeal` on `targetGuid` via
+        // `spellId`, whose real cast time is `castTimeMs` (0 for an instant heal) -- used to size
+        // both the expected-landing estimate and the grace window before the reservation is
+        // treated as stale. Multiple simultaneous reservations from different healers on the same
+        // target are allowed to coexist (a genuinely critical target may legitimately need two
+        // heals at once) -- this is additive, not a single-slot claim like the interrupt
+        // reservation. A second call for the same healerGuid replaces its previous reservation
+        // (a healer only ever has one cast in flight at a time).
+        static void ReserveHeal(ObjectGuid healerGuid, ObjectGuid targetGuid, uint32 spellId, uint32 expectedHeal, uint32 castTimeMs);
 
         // Drops this healer's own pending reservation -- called once its cast resolves (success
         // or failure) so a reservation never outlives the cast it was made for by more than the

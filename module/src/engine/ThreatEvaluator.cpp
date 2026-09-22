@@ -39,12 +39,16 @@ namespace BotAI
         if (IsBossOrEliteTarget(candidate))
             score += 150.0f;
 
-        // Avoid a pointless re-taunt war between two tank bots -- if a different Tank-role
-        // groupmate already has this exact enemy as ITS victim, someone's already handling it.
+        // Avoid a pointless re-taunt war between two tank bots (item 9, Phase 2 fixup): the
+        // signal for "someone else already has this" is the ENEMY targeting that other tank
+        // (candidate->GetVictim() == member) -- two tanks can both legitimately be swinging on
+        // the same boss (member->GetVictim() == candidate) without either one "holding" it, so
+        // that direction must not be penalized, or an off-tank attacking the boss alongside the
+        // main tank would itself look like a reason to deprioritize the boss.
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
         {
             Player* member = ref->GetSource();
-            if (member && member != tank && member->GetVictim() == candidate &&
+            if (member && member != tank && candidate->GetVictim() == member &&
                 BotAI::GetRole(member->GetGUID()) == BotRole::Tank)
             {
                 score -= 250.0f;
@@ -57,25 +61,29 @@ namespace BotAI
         return score;
     }
 
-    Unit* ThreatEvaluator::SelectThreatTarget(Player* tank, float range)
+    ThreatDecision ThreatEvaluator::SelectThreatDecision(Player* tank, float range)
     {
+        ThreatDecision decision;
         if (!tank || !tank->GetGroup())
-            return nullptr;
+            return decision;
 
         std::vector<Unit*> enemies;
         GetNearbyEnemies(tank, tank, range, enemies);
 
-        Unit* best = nullptr;
         float bestScore = 0.0f;
         for (Unit* candidate : enemies)
         {
             float score = ScoreThreatTarget(tank, candidate);
+            if (score < 0.0f)
+                continue; // not attacking any groupmate at all -- not a real candidate
+
+            decision.hadCandidates = true;
             if (score > bestScore)
             {
                 bestScore = score;
-                best = candidate;
+                decision.target = candidate;
             }
         }
-        return best;
+        return decision;
     }
 }

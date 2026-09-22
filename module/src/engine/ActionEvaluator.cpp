@@ -5,8 +5,10 @@
  */
 
 #include "engine/ActionEvaluator.h"
+#include "engine/HealEvaluator.h"
 #include "engine/SpellPredicates.h"
 #include "engine/SpellResolver.h"
+#include "engine/TargetEvaluator.h"
 #include "BotClassRotations.h"
 #include "Group.h"
 #include "Player.h"
@@ -60,8 +62,17 @@ namespace BotAI
                 return ctx.bot;
 
             case TargetType::CurrentTarget:
-            case TargetType::AreaHostile:
                 return (ctx.victim && ctx.victim->IsAlive()) ? ctx.victim : nullptr;
+
+            case TargetType::AreaHostile:
+            {
+                // Real cluster-center pick among already-engaged enemies (item 18, Phase 2
+                // fixup) -- previously identical to CurrentTarget. See TargetEvaluator::
+                // FindBestAoECluster's own comment.
+                if (!ctx.victim || !ctx.victim->IsAlive())
+                    return nullptr;
+                return TargetEvaluator::FindBestAoECluster(ctx.bot, ctx.victim);
+            }
 
             case TargetType::LowestHealthAlly:
                 return ctx.lowestAlly ? ctx.lowestAlly : ctx.bot;
@@ -71,22 +82,34 @@ namespace BotAI
 
             case TargetType::AnyInjuredAlly:
             {
-                if (Group const* group = ctx.bot->GetGroup())
+                // Triage-aware (item 15, Phase 2 fixup): pick the best-scoring valid candidate
+                // (HealEvaluator::ScoreHealUrgency) instead of the first one in GroupReference
+                // iteration order that happens to satisfy the descriptor's own constraints.
+                Player* best = nullptr;
+                float bestUrgency = -1.0f;
+                auto consider = [&](Player* candidate)
                 {
-                    for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
-                    {
-                        Player* member = ref->GetSource();
-                        if (!member || !member->IsAlive() || !member->IsInWorld())
-                            continue;
+                    if (!candidate || !candidate->IsAlive() || !candidate->IsInWorld())
+                        return;
+                    if (candidate->GetHealthPct() > desc.maxTargetHpPct)
+                        return;
+                    if (desc.requireAuraMissingOnTarget && candidate->HasAura(desc.rootSpellId, ctx.bot->GetGUID()))
+                        return;
 
-                        if (member->GetHealthPct() <= desc.maxTargetHpPct &&
-                            (!desc.requireAuraMissingOnTarget || !member->HasAura(desc.rootSpellId, ctx.bot->GetGUID())))
-                        {
-                            return member;
-                        }
+                    float urgency = HealEvaluator::ScoreHealUrgency(ctx.bot, candidate);
+                    if (urgency > bestUrgency)
+                    {
+                        bestUrgency = urgency;
+                        best = candidate;
                     }
-                }
-                return (ctx.bot->GetHealthPct() <= desc.maxTargetHpPct) ? ctx.bot : nullptr;
+                };
+
+                if (Group const* group = ctx.bot->GetGroup())
+                    for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+                        consider(ref->GetSource());
+                consider(ctx.bot); // always a candidate too, same as the old fallback
+
+                return best;
             }
 
             case TargetType::PartyMissingBuff:
@@ -135,6 +158,21 @@ namespace BotAI
         // (StartRecoveryTime == 0) always pass this, matching IsOffGlobalCooldown's own comment.
         if (!IsOffGlobalCooldown(bot, spellInfo))
             return false;
+
+        // Cheap pre-cast validation (item 17, Phase 2 fixup) -- catches a chunk of predictable
+        // SPELL_FAILED_* outcomes before ever reaching CastSpell, without duplicating the real
+        // Spell::CheckCast pipeline: a stunned caster can't start any new cast, line-of-sight
+        // blocks any explicitly-targeted spell, and a hard immunity on the target rules this
+        // spell out outright. Reduces how often a "predictable failure" eats the 500ms retry gate.
+        if (bot->HasUnitState(UNIT_STATE_STUNNED))
+            return false;
+        if (target != bot)
+        {
+            if (spellInfo->NeedsExplicitUnitTarget() && !bot->IsWithinLOSInMap(target))
+                return false;
+            if (target->IsImmunedToSpell(spellInfo, bot))
+                return false;
+        }
 
         // Equipment / weapon requirement
         if (!bot->HasItemFitToSpellRequirements(spellInfo))
@@ -266,9 +304,16 @@ namespace BotAI
         }
         if (HasTag(desc.tags, AbilityTag::AoEDamage))
         {
-            // Scales with the real nearby-enemy count (item 15/#8 -- CombatContext::
-            // nearbyEnemyCount is now actually populated instead of always reading 0) so an AoE
-            // entry only outscores single-target ones when there's an actual pack to hit.
+            // Hard eligibility floor (item 7, Phase 2 fixup): below minAoETargets (default 3),
+            // an AoE-tagged ability is disqualified outright rather than merely scoring low --
+            // a flat count-based bonus alone still let a high-baseScore AoE entry (e.g. Multi-
+            // Shot at 205) outscore a genuine single-target one (Aimed Shot at 195) against a
+            // single enemy, since the bonus only needed to be non-negative to tip the balance.
+            if (ctx.nearbyEnemyCount < desc.minAoETargets)
+                return -1.0f;
+            // Above the floor, scales with the real nearby-enemy count (item 15/#8 --
+            // CombatContext::nearbyEnemyCount is now actually populated) so a genuine pack still
+            // outscores single-target ones, more so for a bigger pack (5+ "high-value" AoE).
             score += static_cast<float>(ctx.nearbyEnemyCount) * 20.0f;
         }
         if (HasTag(desc.tags, AbilityTag::DefensiveCD))

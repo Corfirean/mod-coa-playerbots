@@ -14,6 +14,8 @@
 #include "Log.h"
 #include "Player.h"
 #include "SpellMgr.h"
+#include "Timer.h"
+#include <unordered_map>
 
 namespace BotAI
 {
@@ -21,15 +23,18 @@ namespace BotAI
     {
         constexpr uint32 RETRY_GATE_MS = 500;
         constexpr uint32 AI_REACTION_GATE_MS = 150;
+
+        // See DpsEngine.cpp's own comment on this pattern (item 1, Phase 2 fixup).
+        std::unordered_map<ObjectGuid, uint32> s_noActionRetryAt;
     }
 
-    CombatResult TankEngine::Execute(Player* bot, Unit* target, uint32 diff, uint32& nextCastAllowedMs)
+    CombatResult TankEngine::Execute(Player* bot, CombatContext const& ctx, BotRole profileRole, uint32 diff, uint32& nextCastAllowedMs)
     {
-        if (!bot || !bot->IsInWorld() || !bot->IsAlive() || !target || !target->IsAlive())
+        if (!bot || !bot->IsInWorld() || !bot->IsAlive() || !ctx.victim || !ctx.victim->IsAlive())
             return CombatResult::NoAction;
 
         uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
-        CombatProfile const* profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Tank);
+        CombatProfile const* profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, profileRole);
         if (!profile)
             return CombatResult::NoAction;
 
@@ -40,9 +45,6 @@ namespace BotAI
         }
         nextCastAllowedMs = 0;
 
-        CombatContext ctx = CombatContext::Build(bot, target);
-
-        // Check ongoing cast
         if (CastGuard::IsCurrentlyCasting(bot))
         {
             BotAction candidate = ActionEvaluator::EvaluateBestAction(ctx, profile->abilities);
@@ -52,12 +54,19 @@ namespace BotAI
                 return CombatResult::Busy;
         }
 
+        ObjectGuid botGuid = bot->GetGUID();
+        uint32 now = getMSTime();
+        auto retryItr = s_noActionRetryAt.find(botGuid);
+        if (retryItr != s_noActionRetryAt.end() && now < retryItr->second)
+            return CombatResult::NoAction;
+
         BotAction action = ActionEvaluator::EvaluateBestAction(ctx, profile->abilities);
         if (!action.IsValid())
         {
-            nextCastAllowedMs = RETRY_GATE_MS;
+            s_noActionRetryAt[botGuid] = now + RETRY_GATE_MS;
             return CombatResult::NoAction;
         }
+        s_noActionRetryAt.erase(botGuid);
 
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(action.spellId);
         if (!CombatMovement::ReadyToCast(bot, spellInfo))
@@ -83,5 +92,10 @@ namespace BotAI
         LOG_INFO("module.coa-playerbots", "DataDrivenAI [Tank]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
             bot->GetName(), action.name, action.spellId, action.target->GetName(), static_cast<uint32>(result));
         return CombatResult::Busy;
+    }
+
+    void TankEngine::ForgetBot(ObjectGuid botGuid)
+    {
+        s_noActionRetryAt.erase(botGuid);
     }
 }

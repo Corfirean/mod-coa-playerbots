@@ -1282,6 +1282,7 @@ using BotAI::IsUsableInterruptSpell;
 using BotAI::IsUsableOffensiveSpell;
 using BotAI::IsUsableSingleTargetOffensiveSpell;
 using BotAI::IsUsableTauntSpell;
+using BotAI::IsUnitUnderBreakableCrowdControl;
 using BotAI::SelectAoeSpell;
 using BotAI::SelectBuffSpell;
 using BotAI::SelectBurstSpell;
@@ -1298,6 +1299,7 @@ using BotAI::CombatUtility;
 using BotAI::HealEvaluator;
 using BotAI::TargetEvaluator;
 using BotAI::ThreatEvaluator;
+using BotAI::ThreatDecision;
 
 uint32 FindKnownAutoRepeatRangedSpell(Player const* bot)
 {
@@ -3164,7 +3166,12 @@ AmbientProfile MakeAmbientProfile(Player* bot, BotAIState& state)
     return profile;
 }
 
-void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
+// combatRole drives movement/positioning/taunt-eligibility behavior; profileRole is what's
+// looked up in the Data-Driven profile registry (item 12, Phase 2 fixup) -- normally the same
+// value, except for Support, which fights like Dps (combatRole) but must still find its own
+// Support-tagged profile (profileRole), not silently fail profile lookup and fall back to the
+// generic spellbook chain forever.
+void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profileRole, BotAIState& state)
 {
     Unit* target = bot->GetVictim();
     // Stay means "don't go looking for a fight" -- skip inheriting the leader's target, but
@@ -3243,10 +3250,15 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // drop a boss for a loose add that barely tapped a full-HP DPS -- see ThreatEvaluator. Old
     // FindAllyThreatenedTarget kept as-is (item 23) in case this ever needs a plain fallback.
     bool threatOverride = false;
-    if (role == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
+    if (combatRole == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
     {
-        Unit* allyThreat = ThreatEvaluator::SelectThreatTarget(bot);
-        if (!allyThreat)
+        // ThreatDecision distinguishes "no real candidates at all" from "found candidates, none
+        // warrant switching" (item 8, Phase 2 fixup) -- the plain first-match legacy fallback
+        // only makes sense for the former; falling back to it after the latter would silently
+        // overrule a deliberate, already-scored decision with an unscored first match.
+        ThreatDecision threatDecision = ThreatEvaluator::SelectThreatDecision(bot);
+        Unit* allyThreat = threatDecision.target;
+        if (!threatDecision.hadCandidates)
             allyThreat = FindAllyThreatenedTarget(bot); // plain first-match fallback, item 23
         if (allyThreat && allyThreat != target)
         {
@@ -3298,7 +3310,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
             if (TryProcessPendingLoot(bot, diff, state))
                 return;
 
-            if (TryRestIfNeeded(bot, diff, role, state))
+            if (TryRestIfNeeded(bot, diff, combatRole, state))
                 return;
 
             if (!bot->InBattleground())
@@ -3403,7 +3415,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
                     BotWorldBehavior::UpdateAfterSolo(bot, ambientProfile, started);
                 }
             }
-            else if (role == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
+            else if (combatRole == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
                 TryAutoPullInInstance(bot);
         }
         return;
@@ -3427,7 +3439,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // table check isn't available without the SpellHistory-era threat API this fork
     // predates -- "is the target currently swinging on me" is the cheap, good-enough proxy),
     // try a taunt before falling through to the normal offensive pick.
-    float preferredDist = GetBotPreferredEngageDistance(bot, role);
+    float preferredDist = GetBotPreferredEngageDistance(bot, combatRole);
     float distance = bot->GetDistance(target);
 
     // Positioning is handled once, up front, independent of whatever ends up castable this
@@ -3450,6 +3462,33 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // Boss avoidance (frontal cleaves, point-blank AoE / whirlwind)
     if (BotAvoidance::TryAvoidBossTelegraphedAttacks(bot, target))
         return;
+
+    // CC protection policy (item 6, Phase 2 fixup): damaging a target under breakable crowd
+    // control -- even via auto-attack -- breaks it. TargetEvaluator's own scoring already tries
+    // to steer away from a CC'd target (see ScoreTarget's penalty and RefineTarget's forced-
+    // switch handling), but when there's no other engaged target at all, it has nothing better
+    // to offer and returns the CC'd one anyway as "best of what's left." This is the backstop for
+    // that case: never stun-lock into a groupmate's sheep/fear/sap just because it's still
+    // technically "the target." A hard stun/root is deliberately NOT covered here (see
+    // IsUnitUnderBreakableCrowdControl's own comment) -- only mechanics that actually break on
+    // damage warrant holding off.
+    if (IsUnitUnderBreakableCrowdControl(target))
+    {
+        if (Unit* alternative = TargetEvaluator::FindEngagedAlternative(bot, target))
+        {
+            LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' switched off breakable-CC'd target '{}' onto '{}'.",
+                bot->GetName(), target->GetName(), alternative->GetName());
+            target = alternative;
+        }
+        else
+        {
+            if (bot->GetVictim())
+                bot->AttackStop();
+            LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' holding damage -- target '{}' is breakable-CC'd and no other engaged target exists.",
+                bot->GetName(), target->GetName());
+            return;
+        }
+    }
 
     if (preferredDist > MELEE_ENGAGE_RANGE)
     {
@@ -3489,8 +3528,12 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // profile (if any) bothers to tag Interrupt/Cleanse -- most don't yet (see ProfileRegistry
     // audit notes), and this is the generic floor under all of them, not a replacement for a
     // profile's own hand-tuned Taunt/Interrupt entries where those do exist.
-    CombatContext utilityCtx = CombatContext::Build(bot, target);
-    if (BotAI::CombatUtility::Execute(bot, utilityCtx, diff, state.nextCastAllowedMs))
+    //
+    // Built once and shared with RoleEngine below (item 14, Phase 2 fixup) -- Build() itself
+    // does a group scan, HealUrgency pass, DamageTracker sample, and nearby-enemy scan, all of
+    // which were previously repeated a second time inside DpsEngine/TankEngine::Execute.
+    CombatContext ctx = CombatContext::Build(bot, target);
+    if (BotAI::CombatUtility::Execute(bot, ctx, diff, state.nextCastAllowedMs))
         return;
 
     // Data-Driven Combat AI Framework. CombatResult::NoAction means the profile (if any) found
@@ -3498,9 +3541,19 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // to the legacy taunt/interrupt/AoE/burst/rotation/fallback chain below instead of eating the
     // tick silently (see item 2 of the combat-engine rework: DataDrivenAI must not swallow
     // fallback logic just because a profile happens to exist for this class/spec/role).
-    BotAI::CombatResult ddResult = (role == BotRole::Tank)
-        ? BotAI::TankEngine::Execute(bot, target, diff, state.nextCastAllowedMs)
-        : BotAI::DpsEngine::Execute(bot, target, diff, state.nextCastAllowedMs);
+    // profileRole (item 12) is the profile-registry lookup role -- a Support bot fights like Dps
+    // (combatRole) but must still find its own Support-tagged profile.
+    BotAI::CombatResult ddResult = (combatRole == BotRole::Tank)
+        ? BotAI::TankEngine::Execute(bot, ctx, profileRole, diff, state.nextCastAllowedMs)
+        : BotAI::DpsEngine::Execute(bot, ctx, profileRole, diff, state.nextCastAllowedMs);
+    if (ddResult == BotAI::CombatResult::Cast && profileRole != combatRole)
+    {
+        // Item 12/#25: makes it possible to confirm via logs alone that a Support bot's own
+        // Support-tagged profile was actually used, not a silent Dps-role lookup failure that
+        // happened to still produce a cast via the generic fallback further down.
+        LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' used its {} profile (fighting as {}).",
+            bot->GetName(), profileRole == BotRole::Support ? "Support" : "non-combat-role", combatRole == BotRole::Tank ? "Tank" : "Dps");
+    }
     if (ddResult != BotAI::CombatResult::NoAction)
         return;
 
@@ -3508,7 +3561,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     char const* castVerb = "cast";
 
     // 1. Tank priority: taunt if not holding aggro
-    if (role == BotRole::Tank && target->GetVictim() != bot)
+    if (combatRole == BotRole::Tank && target->GetVictim() != bot)
     {
         spellId = SelectTauntSpell(bot, target);
         if (spellId)
@@ -3529,7 +3582,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     }
 
     // 3. AoE priority: 3+ hostile enemies around target
-    uint32 nearbyEnemies = utilityCtx.nearbyEnemyCount;
+    uint32 nearbyEnemies = ctx.nearbyEnemyCount;
     if (!spellId && nearbyEnemies >= 3)
     {
         spellId = SelectAoeSpell(bot, target);
@@ -3657,8 +3710,10 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     {
         // Nobody needs healing right now -- a real healer doesn't stand idle with a full
         // group, they contribute damage. Dps, not Tank: a Healer bot has no business trying
-        // to hold aggro just because there's nothing to heal this tick.
-        UpdateOffensive(bot, diff, BotRole::Dps, state);
+        // to hold aggro just because there's nothing to heal this tick. profileRole is also
+        // Dps here (not Healer) -- a Healer-role bot generally has no separate Dps-tagged
+        // profile of its own, so this correctly falls through to the generic spellbook chain.
+        UpdateOffensive(bot, diff, BotRole::Dps, BotRole::Dps, state);
         return;
     }
 
@@ -3699,12 +3754,13 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     // Global Combat Utility Layer: emergency taunt/interrupt/cleanse, ahead of role rotation --
     // see engine/CombatUtility.h. Built off the bot's real spellbook shape, so it covers every
     // class regardless of whether its profile (if any) has bothered to tag Interrupt/Cleanse.
-    CombatContext utilityCtx = CombatContext::Build(bot, threat);
-    if (BotAI::CombatUtility::Execute(bot, utilityCtx, diff, state.nextCastAllowedMs))
+    // Shared with HealerEngine below (item 14, Phase 2 fixup) instead of each building its own.
+    CombatContext ctx = CombatContext::Build(bot, threat);
+    if (BotAI::CombatUtility::Execute(bot, ctx, diff, state.nextCastAllowedMs))
         return;
 
     // Data-Driven Combat AI Framework
-    BotAI::CombatResult ddResult = BotAI::HealerEngine::Execute(bot, diff, state.nextCastAllowedMs);
+    BotAI::CombatResult ddResult = BotAI::HealerEngine::Execute(bot, ctx, diff, state.nextCastAllowedMs);
     if (ddResult != BotAI::CombatResult::NoAction)
         return;
 
@@ -3730,15 +3786,18 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
             return;
         }
 
-        // Heal reservation (item 11, Phase 2): a rough 20%-of-max-health estimate is all this
+        // Heal reservation (items 2/11, Phase 2): a rough 20%-of-max-health estimate is all this
         // legacy fallback has to go on (no AbilityTag here to size it more precisely the way
-        // HealerEngine's Data-Driven path does). Reserved before the cast so a sibling healer bot
-        // evaluated later -- this tick or the next few, while a cast-time heal is still in
-        // flight -- already sees it; left to expire on its own TTL rather than cleared
-        // immediately after CastSpell returns, since a non-instant heal's actual effect (and the
-        // target's real HP) doesn't land until the cast finishes.
-        CombatReservations::ReserveHeal(bot->GetGUID(), healTarget->GetGUID(), spellId,
-            uint32(healTarget->GetMaxHealth() * 0.20f), 6000);
+        // HealerEngine's Data-Driven path does). Tied to the spell's real cast time (item 2) --
+        // not a fixed duration -- so the reservation's lazy liveness check (see
+        // CombatReservations::ReserveHeal's own comment) tracks how long this specific heal is
+        // actually in flight, dropping it as soon as the cast lands/fails/is interrupted rather
+        // than holding a stale reservation for a fixed several seconds regardless.
+        uint32 healCastTimeMs = healSpellInfo ? healSpellInfo->CalcCastTime(bot) : 0;
+        uint32 expectedLegacyHeal = uint32(healTarget->GetMaxHealth() * 0.20f);
+        CombatReservations::ReserveHeal(bot->GetGUID(), healTarget->GetGUID(), spellId, expectedLegacyHeal, healCastTimeMs);
+        LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' reserved ~{} heal on '{}' (spell {}, cast {}ms).",
+            bot->GetName(), expectedLegacyHeal, healTarget->GetName(), spellId, healCastTimeMs);
 
         SpellCastResult result = LogCastAttempt(bot, spellId, healTarget, "cast heal");
         if (result != SPELL_CAST_OK)
@@ -3771,7 +3830,11 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 void UpdateSupport(Player* bot, uint32 diff, BotAIState& state)
 {
     TryMaintainBuff(bot, diff, state);
-    UpdateOffensive(bot, diff, BotRole::Dps, state);
+    // Item 12, Phase 2 fixup: combatRole is Dps (fights like one -- taunt/threat logic must not
+    // apply), but profileRole stays Support so a registered "*_Support" Data-Driven profile is
+    // actually found instead of silently failing lookup under BotRole::Dps forever and falling
+    // back to the generic spellbook chain for every Support-role class/spec.
+    UpdateOffensive(bot, diff, BotRole::Dps, BotRole::Support, state);
 }
 
 // Called every tick a bot is dead, instead of the normal role update -- see BotAI::Update.
@@ -4014,7 +4077,7 @@ void Update(Player* bot, uint32 diff)
     else if (state.role == BotRole::Support)
         UpdateSupport(bot, diff, state);
     else
-        UpdateOffensive(bot, diff, state.role, state);
+        UpdateOffensive(bot, diff, state.role, state.role, state);
 }
 
 void LoadGatherLootData()
@@ -4046,6 +4109,9 @@ void Forget(ObjectGuid botGuid)
     DamageTracker::Forget(botGuid);
     HealEvaluator::ForgetBot(botGuid);
     TargetEvaluator::ForgetBot(botGuid);
+    DpsEngine::ForgetBot(botGuid);
+    TankEngine::ForgetBot(botGuid);
+    HealerEngine::ForgetBot(botGuid);
     BotBattlegroundAI::Forget(botGuid);
     BotMovement::Forget(botGuid);
     BotWorldBehavior::Forget(botGuid);

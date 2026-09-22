@@ -33,6 +33,47 @@ namespace BotAI
         constexpr uint32 HEAL_RANGE_CACHE_TTL_MS = 15000;
     }
 
+    namespace
+    {
+        // Below this missing-HP%, a target is only worth healing if something else makes it
+        // urgent (see ShouldConsiderHealing) -- otherwise a healer would chase a 98%-HP ally for
+        // a routine top-off, which is what the old flat `score > 5` threshold effectively did.
+        constexpr float MIN_MISSING_HP_PCT = 5.0f;
+        // Incoming damage expressed as a fraction of max health per second -- gear/level
+        // independent, unlike a raw incomingDps number (see item 10's own comment).
+        constexpr float SIGNIFICANT_INCOMING_PCT_PER_SEC = 2.0f;
+        constexpr float URGENT_TTD_SEC = 8.0f;
+    }
+
+    bool HealEvaluator::ShouldConsiderHealing(Player* healer, Player* candidate)
+    {
+        if (!healer || !candidate || !candidate->IsAlive() || !candidate->IsInWorld())
+            return false;
+        if (candidate->GetMap() != healer->GetMap())
+            return false;
+
+        float maxHealth = float(candidate->GetMaxHealth());
+        if (maxHealth <= 0.0f)
+            return false;
+
+        if (100.0f - candidate->GetHealthPct() >= MIN_MISSING_HP_PCT)
+            return true;
+
+        float incomingDps = DamageTracker::SampleIncomingDps(candidate);
+        if (incomingDps > 1.0f)
+        {
+            if ((incomingDps / maxHealth) * 100.0f >= SIGNIFICANT_INCOMING_PCT_PER_SEC)
+                return true;
+            if (float(candidate->GetHealth()) / incomingDps < URGENT_TTD_SEC)
+                return true;
+        }
+
+        if (candidate->HasAuraType(SPELL_AURA_PERIODIC_DAMAGE) || candidate->HasAuraType(SPELL_AURA_PERIODIC_DAMAGE_PERCENT))
+            return true;
+
+        return false;
+    }
+
     float HealEvaluator::ScoreHealUrgency(Player* healer, Player* candidate)
     {
         if (!healer || !candidate || !candidate->IsAlive() || !candidate->IsInWorld())
@@ -54,14 +95,21 @@ namespace BotAI
 
         float score = missingPct * 2.0f;
 
-        // Incoming-damage trend (cheap rolling estimate, see DamageTracker) -- a tank taking
-        // heavy sustained damage at 55% can outrank a DPS sitting at 30% nobody's still hitting.
+        // Incoming-damage trend (cheap rolling estimate, see DamageTracker), normalized to
+        // %-of-max-health-per-second (item 10, Phase 2 fixup) -- a raw incomingDps number scales
+        // with gear/level (a huge-HP-pool tank takes huge raw hits at the same relative danger as
+        // a squishy DPS), so a tank with a big health pool no longer automatically dominates
+        // scoring just by having more absolute HP to lose per second.
         float incomingDps = DamageTracker::SampleIncomingDps(candidate);
-        score += incomingDps * 0.5f;
+        float incomingPctPerSecond = (incomingDps / maxHealth) * 100.0f;
+        score += incomingPctPerSecond * 5.0f;
 
+        // TTD stays in real seconds (not normalized) -- explicitly called out as its own
+        // important factor regardless of scale: a 3-second TTD matters the same whether it's a
+        // huge tank or a squishy DPS about to die.
         float timeToDieSec = (incomingDps > 1.0f) ? (float(candidate->GetHealth()) / incomingDps) : 999.0f;
-        if (timeToDieSec < 8.0f)
-            score += (8.0f - timeToDieSec) * 30.0f;
+        if (timeToDieSec < URGENT_TTD_SEC)
+            score += (URGENT_TTD_SEC - timeToDieSec) * 30.0f;
 
         if (BotAI::GetRole(candidate->GetGUID()) == BotRole::Tank)
             score *= 1.3f;
@@ -95,6 +143,10 @@ namespace BotAI
                 return;
             if (healer->GetDistance(candidate) > maxRange)
                 return;
+            // Eligibility gate first (item 11) -- scoring only ranks candidates that already
+            // passed it, so there's no separate magic score threshold to keep in sync with it.
+            if (!ShouldConsiderHealing(healer, candidate))
+                return;
 
             float score = ScoreHealUrgency(healer, candidate);
             if (score > bestScore)
@@ -109,10 +161,7 @@ namespace BotAI
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                 consider(ref->GetSource());
 
-        // bestScore > 5.0 roughly mirrors the old FindHealTarget's "must be below ~95% HP" floor
-        // (missingPct * 2.0 alone already crosses 5.0 at ~2.5% missing) -- don't report a target
-        // that's effectively full just because it technically scored above zero.
-        return (best && bestScore > 5.0f) ? best : nullptr;
+        return best;
     }
 
     float HealEvaluator::BestKnownHealRange(Player* healer, float fallback)

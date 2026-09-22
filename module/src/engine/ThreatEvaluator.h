@@ -20,18 +20,29 @@ class Unit;
 
 namespace BotAI
 {
+    // Item 8 of the Phase 2 fixup pass: a plain nullptr target conflated two very different
+    // situations -- "I found real threats and none of them warrant switching" vs. "I have
+    // nothing to work with at all" (no group, nothing nearby). A caller needs to tell these
+    // apart: the old first-match FindAllyThreatenedTarget fallback only makes sense for the
+    // second case -- falling back to it after the first would silently overrule a deliberate,
+    // already-scored "don't switch" decision with an unscored first match.
+    struct ThreatDecision
+    {
+        Unit* target = nullptr;
+        bool hadCandidates = false; // true once at least one real "attacking a groupmate" candidate was scored
+    };
+
     class ThreatEvaluator
     {
     public:
-        // Higher is better. Only meaningful for an enemy currently attacking a groupmate other
-        // than `tank` -- see SelectThreatTarget, which is the actual entry point.
+        // Higher is better; negative means "not a real candidate at all" (not attacking any
+        // groupmate). Only meaningful for an enemy currently attacking a groupmate other than
+        // `tank` -- see SelectThreatDecision, the actual entry point.
         static float ScoreThreatTarget(Player* tank, Unit* candidate);
 
         // Best enemy for `tank` to pick up right now among ones attacking a groupmate within
-        // range, or nullptr if none qualify -- same "nothing to react to" outcome as the old
-        // first-match FindAllyThreatenedTarget, just choosing among candidates by score instead
-        // of by scan order when more than one groupmate is under threat.
-        static Unit* SelectThreatTarget(Player* tank, float range = 30.0f);
+        // range -- see ThreatDecision's own comment on why hadCandidates matters to the caller.
+        static ThreatDecision SelectThreatDecision(Player* tank, float range = 30.0f);
     };
 }
 

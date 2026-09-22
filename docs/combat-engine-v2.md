@@ -1,10 +1,12 @@
-# Combat Engine v2 -- Phase 1 & 2 (2026-09-22)
+# Combat Engine v2 -- Phase 1, Phase 2 & Phase 2 fixup pass (2026-09-22)
 
 Audit + architectural rework of the Data-Driven Combat AI framework
 (`BotAI.cpp` + `engine/*`), requested to make bots noticeably more effective
 in PvE/PvP by fixing the combat *engine*, not by hand-tuning individual
-class profiles. This file records Phase 1 and Phase 2 (see "Phased plan"
-below) -- Phase 3 (per-profile tuning across all 21 classes) is not started.
+class profiles. This file records Phase 1, Phase 2, and a subsequent fixup
+pass that corrected 21 second-order logical defects found in Phase 1/2's own
+code before merge (see "Phase 2 fixup pass" below) -- Phase 3 (per-profile
+tuning across all 21 classes) is still not started.
 
 ## Audit findings (pre-existing bugs, confirmed by reading the code)
 
@@ -466,3 +468,277 @@ during this pass specifically so these decisions were actually observable in
   measured-safe-so-far perf notes -- worth profiling under real sustained
   bot load before Phase 3, not fixed here to avoid threading a shared
   snapshot through every call site in the same pass as the correctness work.
+
+## Phase 2 fixup pass (2026-09-22)
+
+Before merging `combat-engine-v2` into `master`, a second read specifically
+looking for second-order logical defects in Phase 1/2's own code (not new
+features, not Phase 3 profile work) found 21 real issues. All 21 are fixed
+in this pass -- no new files, only corrections inside the architecture
+Phase 1/2 already established. The branch was also merged forward from
+`master` first (bringing in the `leave-city`/`BotTaxi`/flight-path-travel
+merge, PR #2) -- clean merge, no conflicts, verified by a sanity build
+before starting the fixup work itself.
+
+### Fixed
+
+1. **Healer/Dps/Tank `NoAction` set a blocking retry timer.** All three
+   engines set `nextCastAllowedMs = RETRY_GATE_MS` (500ms) on the
+   `!action.IsValid()` path before returning `NoAction` -- the caller's very
+   next check (`if (nextCastAllowedMs > diff) return;`) then ate that same
+   tick, and on the *next* tick the engine's own gate now reads `Busy`
+   instead of `NoAction` (its timer hasn't expired), so the caller `return`s
+   again. Net effect: the legacy fallback chain was unreachable for any
+   profile that exists but currently finds nothing castable -- a real bug,
+   not just theoretical (confirmed by tracing the exact call sequence).
+   **Fixed**: `NoAction` no longer touches `nextCastAllowedMs` at all; each
+   engine now paces its own re-attempts via a private, caller-invisible
+   `s_noActionRetryAt` map (cleared via each engine's new `ForgetBot`).
+2. **Heal reservations lived a fixed ~6000ms regardless of the real cast.**
+   Double-counted incoming healing for several seconds after a heal had
+   already landed. **Fixed**: `HealReservation` now carries
+   `castStartedAt`/`expectedLandingAt`, sized from the spell's real
+   `CalcCastTime()`; `GetReservedIncomingHeal` lazily confirms the healer is
+   still genuinely mid-cast on that exact spell on every read (via
+   `ObjectAccessor::FindPlayer` + `GetCurrentSpell`) and drops the entry the
+   moment that's no longer true -- landed, failed, interrupted, replaced by
+   a new cast, or the healer died all resolve correctly through this one
+   mechanism, no separate handling needed per case.
+3. **`HealerEngine` reserved a heal for every action, including offensive
+   ones.** **Fixed**: gated behind `HasTag(action.tags, EmergencyHeal |
+   DirectHeal | PeriodicHeal | AoEHeal)` -- `Shield` deliberately excluded
+   (an absorb isn't incoming healing; a real shield-coordination model would
+   be its own reservation type, not a fake heal).
+4. **Cleanse never checked `DispelType` compatibility.** Could try Remove
+   Curse against a Magic debuff, guaranteed to fail. **Fixed**:
+   `SpellPredicates::IsDispelCompatible` compares the cleanse spell's
+   `SPELL_EFFECT_DISPEL` `MiscValue` against the debuff's own
+   `SpellInfo::Dispel`, via the same `SpellInfo::GetDispelMask` the real
+   dispel effect handler uses. `CombatUtility::FindCleansePlan` now only
+   ever considers type-compatible (target, spell) pairs -- an incompatible
+   attempt (and its failure-cooldown penalty) can no longer happen at all.
+5. **`TargetEvaluator` could pull in an uninvolved nearby mob.** Scored
+   *any* valid-attack-target within range, not just enemies already part of
+   the fight. **Fixed**: added `IsEngagedCandidate` (current target, real
+   combat reference with the bot, or fighting/fought-by a groupmate) and
+   filtered every candidate through it. `TargetEvaluator` now only ever
+   re-ranks already-engaged enemies -- new pulls stay the job of dedicated
+   systems (tank pull logic, Auto Dungeon, solo grind, manual Pull, BG).
+6. **CC protection was score-only, not a real policy.** A CC'd target with
+   no better alternative could still be returned by `RefineTarget`, and
+   nothing stopped auto-attack/rotation from then breaking it. **Fixed**:
+   added an explicit CC-protection block in `UpdateOffensive` -- if the
+   resolved target is under breakable CC (fear/polymorph/sleep/banish/
+   shackle/sap/charm/horror/disorient; hard stun/root deliberately excluded,
+   they don't break on damage), switch to `TargetEvaluator::
+   FindEngagedAlternative` if one exists, else `AttackStop()` and hold --
+   no damage, no cast, this tick.
+7. **AoE scoring had no hard floor.** `score += nearbyEnemyCount * 20` alone
+   could still let a high-`baseScore` AoE ability (e.g. Multi-Shot 205)
+   outscore a genuine single-target one (Aimed Shot 195) against one enemy.
+   **Fixed**: `AbilityDescriptor::minAoETargets` (default 3, profile-
+   overridable) is now a hard eligibility floor in `ScoreAbility` -- below
+   it, an `AoEDamage`-tagged ability is disqualified outright, not merely
+   deprioritized.
+8. **`ThreatEvaluator`'s `nullptr` fallback overrode a deliberate decision.**
+   The old `if (!allyThreat) allyThreat = FindAllyThreatenedTarget(bot);`
+   couldn't tell "no real candidates at all" from "found candidates, none
+   warrant switching" -- the plain first-match fallback would silently
+   override the latter. **Fixed**: `ThreatDecision{ target, hadCandidates }`
+   replaces the old `Unit*` return; the legacy fallback now only fires when
+   `hadCandidates == false`.
+9. **Multi-tank ownership check compared the wrong direction.** `member->
+   GetVictim() == candidate` means "a tank is swinging on it" (true for
+   *every* tank on a shared boss), not "the enemy is being tanked by it" --
+   an off-tank attacking the boss alongside the main tank looked like a
+   reason to deprioritize the boss entirely. **Fixed**: flipped to
+   `candidate->GetVictim() == member`.
+10. **`HealUrgencyScore` mixed relative and absolute units.** `missingPct`
+    (0-100) plus a raw `incomingDps` number meant a big-health-pool tank's
+    absolute incoming damage could dominate scoring regardless of real
+    relative danger. **Fixed**: incoming damage is now expressed as
+    `incomingDps / maxHealth * 100` (%-of-max-health-per-second) before
+    scoring; TTD deliberately stays in real seconds (explicitly still an
+    important factor regardless of scale, per its own request).
+11. **Heal eligibility was a magic score threshold.** `bestScore > 5.0`
+    worked out to "missing >= 2.5% HP," an overly aggressive top-off
+    trigger. **Fixed**: `HealEvaluator::ShouldConsiderHealing` is now a
+    separate eligibility gate (missing HP >= 5%, OR a significant incoming-
+    damage trend, OR low TTD, OR a real DoT debuff) checked *before*
+    `ScoreHealUrgency` ranks the candidates that already passed it.
+12. **Support bots never found their own profile.** `UpdateSupport` called
+    `UpdateOffensive(bot, diff, BotRole::Dps, state)`, and `DpsEngine::
+    Execute` looked up `FindProfile(class, spec, BotRole::Dps)` --
+    unconditionally, even though real Support profiles (e.g.
+    `Ranger_Farstrider_Support`) are registered under `BotRole::Support`. A
+    Support bot's own Data-Driven profile was unreachable, silently, forever.
+    **Fixed**: `UpdateOffensive` now takes both `combatRole` (drives
+    movement/taunt/positioning) and `profileRole` (drives the registry
+    lookup) -- Support passes `combatRole=Dps, profileRole=Support`.
+13. **`TargetEvaluator` could re-scan every tick once the lock expired.**
+    The 3s target-lock (Phase 2's own oscillation fix) covers *stability*,
+    not *scan frequency* -- once it lapsed, nothing stopped a fresh nearby-
+    hostile scan on literally the next ~100ms tick. **Fixed**: a separate
+    `EVALUATION_INTERVAL_MS` (300ms) gate, independent of the lock, paces
+    re-scans once the lock is off; a forced event (target gone bad) bypasses
+    both, same as it already bypassed the lock.
+14. **`CombatContext` was built twice per tick.** Once for the Utility
+    Layer, once more inside `DpsEngine`/`TankEngine`/`HealerEngine::
+    Execute` -- each `Build()` call does a group scan, `HealUrgencyScore`
+    pass, `DamageTracker` sample, and nearby-enemy scan. **Fixed**: all
+    three engines now take `CombatContext const&` instead of building their
+    own; `BotAI.cpp` builds one `ctx` per tick and shares it with the
+    Utility Layer and RoleEngine call.
+15. **`AnyInjuredAlly` picked the first match in `GroupReference` order.**
+    Not the same bug as Phase 2's `LowestHealthAlly`/`TankAlly` (both
+    already urgency-aware via `CombatContext`), but the same class of issue.
+    **Fixed**: now scores every valid candidate via `HealEvaluator::
+    ScoreHealUrgency` and picks the best one, same as the others.
+16. **Multi-tank `tankAlly` selection was iteration-order-dependent.**
+    `CombatContext::Build` simply overwrote `ctx.tankAlly` for every
+    Tank-role member found -- with two tanks, whichever iterated last "won."
+    **Fixed**: scored (boss/elite aggro +1000, incoming-dps, low-TTD bonus)
+    so a meaningful tank is chosen, not scan order.
+17. **No pre-cast validation beyond the engine's own checks.** Predictable
+    failures (stunned caster, no LOS, hard target immunity) still reached
+    `CastSpell`, costing the 500ms retry gate every time. **Fixed**: three
+    cheap checks added to `ActionEvaluator::CanCast` --
+    `HasUnitState(UNIT_STATE_STUNNED)`, `IsWithinLOSInMap`, and
+    `target->IsImmunedToSpell(spellInfo, bot)` -- deliberately not a
+    reimplementation of `Spell::CheckCast`, just the cheapest, highest-value
+    subset.
+18. **`TargetType::AreaHostile` was a bare alias for `CurrentTarget`.**
+    Pretended to support ground-target AoE positioning without actually
+    doing anything different. **Fixed**: `TargetEvaluator::
+    FindBestAoECluster` picks whichever already-engaged enemy (never an
+    uninvolved mob, same `IsEngagedCandidate` filter as item 5) has the most
+    *other* engaged enemies within a tight radius of it.
+19. **`CombatMovement`/`MoveOwner` integration, reviewed.** Traced the
+    stop-to-cast flow end to end: `ReadyToCast` only calls `StopMoving()`
+    when `bot->isMoving()` is actually true (i.e. genuinely outside the
+    chase band), so re-issuing `MoveChase` next tick settles without
+    physical movement in the common case (already-in-band). Hazard/boss
+    avoidance (`BotAvoidance`) structurally outrank positioning/casting
+    already -- both `return` before any chase/cast logic runs on a tick
+    they act. **No code change** -- `BotAvoidance` issues `MovePoint`
+    directly rather than through `BotMovement::MoveOwner`'s arbitration,
+    which predates this work and is out of scope for a defect-fixup pass
+    (would be a real, if small, architectural change, not a fix).
+20. **Heal reservation cleanup.** Addressed as a side effect of item 2's
+    lazy-liveness rewrite: `GetReservedIncomingHeal` now opportunistically
+    erases every stale entry it walks past (any target, not just the one
+    asked about), not only the fixed-duration ones from before.
+21. **`DamageTracker` had no cleanup for non-bot guids.** Only a bot's own
+    despawn dropped its entry; a sampled ally/target/real-player guid could
+    sit in the map for the server's entire uptime. **Fixed**: a lazy sweep
+    (at most once a minute, run from inside an already-happening
+    `SampleIncomingDps` call, no dedicated timer) drops any entry untouched
+    for more than 5 minutes.
+
+### Files changed (no new files this pass)
+
+`BotAI.cpp`, `engine/AbilityDescriptor.h`, `engine/ActionEvaluator.cpp`,
+`engine/CombatContext.cpp`, `engine/CombatReservations.{h,cpp}`,
+`engine/CombatUtility.cpp`, `engine/DamageTracker.cpp`,
+`engine/DpsEngine.{h,cpp}`, `engine/HealEvaluator.{h,cpp}`,
+`engine/HealerEngine.{h,cpp}`, `engine/SpellPredicates.{h,cpp}`,
+`engine/TankEngine.{h,cpp}`, `engine/TargetEvaluator.{h,cpp}`,
+`engine/ThreatEvaluator.{h,cpp}`.
+
+### API changes
+
+- `DpsEngine`/`TankEngine::Execute` now take `(Player*, CombatContext
+  const&, BotRole profileRole, uint32 diff, uint32&)` instead of
+  `(Player*, Unit* target, uint32, uint32&)`.
+- `HealerEngine::Execute` now takes `(Player*, CombatContext const&,
+  uint32, uint32&)` instead of `(Player*, uint32, uint32&)`.
+- `UpdateOffensive` now takes `(Player*, uint32, BotRole combatRole,
+  BotRole profileRole, BotAIState&)` instead of `(..., BotRole role, ...)`.
+- `ThreatEvaluator::SelectThreatTarget(Player*, float) -> Unit*` replaced by
+  `SelectThreatDecision(Player*, float) -> ThreatDecision`.
+- `CombatReservations::ReserveHeal`'s last parameter is now `castTimeMs`
+  (the spell's real cast time), not an arbitrary `durationMs`.
+- New: `SpellPredicates::IsDispelCompatible`, `IsKnownSpellCastable`
+  (extracted from `SelectKnownSpell`'s body, same behavior);
+  `TargetEvaluator::IsEngagedCandidate`, `FindEngagedAlternative`,
+  `FindBestAoECluster`; `AbilityDescriptor::minAoETargets`;
+  `HealEvaluator::ShouldConsiderHealing`; `DpsEngine`/`TankEngine`/
+  `HealerEngine::ForgetBot`. `AbilityTag`'s `operator|`/`operator&`/
+  `HasTag` are now `constexpr` (needed for a compile-time tag-mask
+  constant in `HealerEngine.cpp`; behavior unchanged).
+
+### Live-tested against `CoA-Repack`
+
+Deployed and observed the live ambient population (0 real players connected
+throughout) for roughly 15 minutes across boot + two targeted test bouts on
+`Shaniel` (guid 2, Ranger/Farstrider Support):
+
+- **No crashes, no new errors** the entire session; update-tick time healthy
+  after the initial boot spike (median 64ms, 95th/99th/max 155/178/195ms in
+  a stable window, versus a 4081ms max observed briefly right at boot).
+- **Target-lock fix (item 13's own oscillation bugfix, carried from before
+  this pass) confirmed still healthy**: 34 target switches across the whole
+  population in ~2 minutes, all at a sane cadence -- no repeat of the
+  every-tick flip-flop.
+- **Heal reservations confirmed live** with correctly varied sizes (e.g.
+  ~321/~554 on different bots' self-heals, ~114 on an `AoEHeal`-shaped one)
+  and the new cast-time-based log line (`reserved ~N heal on 'X' (spell Y,
+  cast Zms)`).
+- **Cleanse fired once** in the fresh session (rare trigger condition --
+  needs an actual dispellable debuff, uncommon against ordinary world mobs)
+  with no incompatible-attempt failures observed.
+- **Not independently observed live this pass** (same class of caveat as
+  Phase 1/2's own): `ThreatEvaluator` pickup (`picked up threat target`: 0
+  hits -- ambient bots mostly fight solo, not in tank+healer+DPS groups),
+  CC-protection triggering (`holding damage`/`switched off breakable-CC'd`:
+  0 hits -- ambient world combat rarely produces a breakable-CC situation),
+  and the Support-profile fix specifically (item 12) -- `used its Support
+  profile` logged 0 hits despite several direct attempts to force a
+  sustained fight on `Shaniel` (a confirmed Support-role bot with a real
+  registered `Ranger_Farstrider_Support` profile): the ambient
+  world-behavior system kept reclaiming her between manual `.botcmd attack`
+  calls before a fight lasted long enough to produce a scoreable
+  `DataDrivenAI [DPS]` tick, and the handful of nearby mobs available for
+  manual testing either died in 1-2 auto-attacks (too fast for any AI
+  decision tick to fire at all) or, once, appear to have killed her via
+  fall damage during a zone teleport rather than in a real fight. Item 12's
+  fix is **verified correct by code inspection** (confirmed
+  `Ranger_Farstrider_Support` is genuinely registered under `BotRole::
+  Support` in `ProfileRegistry`, confirmed `profileRole` threads correctly
+  from `UpdateSupport` through to `ProfileRegistry::FindProfile`) but not
+  by an observed live cast through that exact path -- worth a follow-up
+  RA session with a real client (much easier to hold a bot in a sustained
+  fight by direct control than to fight the ambient scheduler via text
+  commands) before treating it as fully closed.
+
+### Known limitations added or carried forward by this pass
+
+- Item 19 (`CombatMovement`/hazard-avoidance integration): reviewed, no
+  conflict found, no code changed -- `BotAvoidance` still bypasses
+  `BotMovement::MoveOwner`'s arbitration entirely, pre-existing and out of
+  scope here.
+- The Phase 1/2 "known limitations" around `TargetEvaluator`/
+  `ThreatEvaluator` each independently re-scanning nearby hostiles, and the
+  double-ish `CombatContext::Build` (now down to once per `UpdateOffensive`/
+  `UpdateHealer` tick, item 14 of this pass -- but `TargetEvaluator`'s own
+  `RefineTarget` and `ThreatEvaluator`'s `SelectThreatDecision` still each
+  do their own `GetNearbyEnemies` scan, independent of `CombatContext`'s),
+  remain open, unchanged perf notes for a future pass.
+- Cleanse still doesn't guarantee the *best* dispellable debuff is chosen
+  when an ally has several and the bot's own dispel repertoire could remove
+  more than one -- it takes the first compatible (aura, spell) pair found,
+  not a prioritized one. Reasonable given "not an encounter database yet."
+
+### Ready for merge?
+
+Yes, with the live-test caveats above (Support-profile fix, CC-protection
+trigger, ThreatEvaluator pickup, and multi-tank scenarios not directly
+observed this session, though the first is also code-verified and the
+others are inherently hard to trigger from ambient solo-heavy bot combat
+via text-only RA commands) flagged for a follow-up session with a real
+client and a deliberately constructed group before considering Phase 2
+fully closed out. No regression evidence found against `leave-city`/
+`BotTaxi`/Ambient World Behavior -- the merge was clean and the same
+ambient population (repair/gather/quest/grind errands, flight-path travel)
+was observed functioning normally throughout every test window this
+session.

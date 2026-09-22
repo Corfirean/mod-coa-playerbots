@@ -88,6 +88,7 @@ namespace BotAI
             float bestUrgency = -1.0f;
             Player* bestLowestAlly = nullptr;
             float bestLowestAllyHp = 100.0f;
+            float bestTankScore = -1.0f;
 
             for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
             {
@@ -113,11 +114,31 @@ namespace BotAI
                     bestLowestAllyHp = hp;
                 }
 
-                BotRole mRole = BotAI::GetRole(member->GetGUID());
-                if (mRole == BotRole::Tank)
+                // Multi-tank selection (item 16, Phase 2 fixup): the old code just kept
+                // overwriting ctx.tankAlly for every Tank-role member found, so with two tanks
+                // the "chosen" one was whichever happened to iterate last -- pure GroupReference
+                // order, not meaningful. Priority: holding a boss/elite's aggro outranks
+                // everything else; among ties (or no boss aggro at all), the tank under the most
+                // real pressure (incoming damage trend, low time-to-die) wins; the first tank
+                // seen is the fallback if nothing distinguishes them.
+                if (BotAI::GetRole(member->GetGUID()) == BotRole::Tank)
                 {
-                    ctx.tankAlly = member;
-                    ctx.tankAllyHpPct = hp;
+                    float tankScore = 0.0f;
+                    if (ctx.victim && ctx.targetIsBossOrElite && ctx.victim->GetVictim() == member)
+                        tankScore += 1000.0f;
+
+                    float tankIncomingDps = DamageTracker::SampleIncomingDps(member);
+                    tankScore += tankIncomingDps;
+                    float tankTtd = (tankIncomingDps > 1.0f) ? (float(member->GetHealth()) / tankIncomingDps) : 999.0f;
+                    if (tankTtd < 10.0f)
+                        tankScore += (10.0f - tankTtd) * 50.0f;
+
+                    if (tankScore > bestTankScore)
+                    {
+                        bestTankScore = tankScore;
+                        ctx.tankAlly = member;
+                        ctx.tankAllyHpPct = hp;
+                    }
                 }
             }
 

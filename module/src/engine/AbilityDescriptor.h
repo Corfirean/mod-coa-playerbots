@@ -39,17 +39,17 @@ namespace BotAI
         Filler           = 1 << 18  // Low-priority resource builder / spammer
     };
 
-    inline AbilityTag operator|(AbilityTag a, AbilityTag b)
+    constexpr AbilityTag operator|(AbilityTag a, AbilityTag b)
     {
         return static_cast<AbilityTag>(static_cast<uint32>(a) | static_cast<uint32>(b));
     }
 
-    inline AbilityTag operator&(AbilityTag a, AbilityTag b)
+    constexpr AbilityTag operator&(AbilityTag a, AbilityTag b)
     {
         return static_cast<AbilityTag>(static_cast<uint32>(a) & static_cast<uint32>(b));
     }
 
-    inline bool HasTag(AbilityTag mask, AbilityTag tag)
+    constexpr bool HasTag(AbilityTag mask, AbilityTag tag)
     {
         return (static_cast<uint32>(mask) & static_cast<uint32>(tag)) != 0;
     }
@@ -90,6 +90,15 @@ namespace BotAI
 
         // Internal rotation cooldown / throttle (ms) for abilities without native DBC cooldowns
         uint32 internalThrottleMs = 0;
+
+        // AoE eligibility (item 7 of the Phase 2 fixup pass): a flat `nearbyEnemyCount * bonus`
+        // wasn't enough to stop an AoE ability outscoring a single-target one at 1-2 targets just
+        // because its baseScore happened to be close. minAoETargets is a hard eligibility floor
+        // (ScoreAbility disqualifies below it); the default of 3 matches AbilityTag::AoEDamage's
+        // own "Area of Effect offensive" intent, but a profile can lower it (e.g. to 2) for a
+        // specific spell that's genuinely worth it that early, or a spell that's formally AoE-
+        // shaped but authored/used as a single-target filler can leave AoEDamage off entirely.
+        uint8 minAoETargets = 3;
 
         // Resource management (item 13 of the combat-engine rework). All three default to
         // "unrestricted" (0/0/1) so existing profiles that don't set them are unaffected --

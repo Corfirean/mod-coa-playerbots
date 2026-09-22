@@ -47,6 +47,13 @@ namespace BotAI
     // not a bad cast landing.
     bool IsUsableDispelSpell(SpellInfo const* spellInfo);
 
+    // True when `cleanseSpell` can actually remove `debuffSpell` -- compares cleanseSpell's own
+    // SPELL_EFFECT_DISPEL effect(s) (MiscValue = the DispelType it removes, DISPEL_ALL meaning
+    // "any") against debuffSpell's own DispelType (SpellInfo::Dispel), using the same
+    // SpellInfo::GetDispelMask the real dispel effect handler uses -- see item 4 of the Phase 2
+    // fixup pass. A bot that only knows Remove Curse must not try it on a Magic debuff.
+    bool IsDispelCompatible(SpellInfo const* cleanseSpell, SpellInfo const* debuffSpell);
+
     // True while `target` is mid-cast on something both interruptible and worth interrupting
     // (matches the InterruptFlags/ChannelInterruptFlags the real client's own kick UI reacts to).
     bool IsTargetCastingInterruptibleSpell(Unit const* target);
@@ -69,6 +76,13 @@ namespace BotAI
     // also covers stun/root/snare/daze -- none of those break on damage, so attacking through
     // them is normal and not penalized here.
     bool IsUnitUnderBreakableCrowdControl(Unit const* unit);
+
+    // The per-spell eligibility core behind SelectKnownSpell (cooldown, GCD, item/aura
+    // requirements, failure backoff, range, power cost) for one already-chosen, already-known
+    // spellId -- exposed separately so a caller that needs to pick a *specific* spell (e.g.
+    // CombatUtility's dispel-type-compatible cleanse pairing, item 4) can reuse the exact same
+    // castability checks instead of scanning the whole spellbook with a predicate function.
+    bool IsKnownSpellCastable(Player* bot, uint32 spellId, Unit* target, bool positiveRange);
 
     // Shared scan shape for all "pick a ready, affordable, in-range known spell matching this
     // predicate" lookups -- only the predicate and whether beneficial-spell ranges apply differ.

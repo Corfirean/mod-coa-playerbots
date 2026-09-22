@@ -32,12 +32,48 @@ namespace BotAI
         // unreachable, now CC'd), only to "found something merely better."
         constexpr uint32 MIN_TARGET_LOCK_MS = 3000;
 
+        // Separate from the lock (item 13, Phase 2 fixup): once the lock itself has expired, this
+        // paces how often a full nearby-hostile scan + rescoring happens at all, so a bot sitting
+        // on a long fight doesn't re-scan every single ~100ms world tick just because the lock
+        // is technically off. The lock is about stability (don't abandon a target too readily);
+        // this is purely about not repeating an expensive scan needlessly. A forced event
+        // (current target gone bad) always bypasses this, same as it bypasses the lock.
+        constexpr uint32 EVALUATION_INTERVAL_MS = 300;
+
         struct TargetLock
         {
             ObjectGuid targetGuid;
             uint32 lockedAtMs = 0;
         };
         std::unordered_map<ObjectGuid, TargetLock> s_targetLocks;
+        std::unordered_map<ObjectGuid, uint32> s_nextEvaluationAt;
+    }
+
+    bool TargetEvaluator::IsEngagedCandidate(Player* bot, Unit* candidate)
+    {
+        if (!bot || !candidate)
+            return false;
+
+        if (bot->GetVictim() == candidate || candidate->GetVictim() == bot)
+            return true;
+        if (bot->IsInCombatWith(candidate))
+            return true;
+
+        if (Group* group = bot->GetGroup())
+        {
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (!member || !member->IsAlive() || !member->IsInWorld())
+                    continue;
+                if (member->GetVictim() == candidate || candidate->GetVictim() == member)
+                    return true;
+                if (member->IsInCombatWith(candidate))
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     float TargetEvaluator::ScoreTarget(Player* bot, Unit* candidate)
@@ -117,17 +153,24 @@ namespace BotAI
             currentScore = ScoreTarget(bot, currentTarget);
         bool currentIsBad = !currentValid || currentScore <= UNREACHABLE_SCORE * 0.5f;
 
-        // An active lock on the current target blocks another *voluntary* switch (see
-        // MIN_TARGET_LOCK_MS) -- a forced one (current target went bad) always bypasses it.
         if (!currentIsBad)
         {
+            // An active lock on the current target blocks another *voluntary* switch (see
+            // MIN_TARGET_LOCK_MS) -- a forced one (current target went bad) always bypasses it.
             auto lockItr = s_targetLocks.find(botGuid);
             if (lockItr != s_targetLocks.end() && lockItr->second.targetGuid == currentTarget->GetGUID() &&
                 now - lockItr->second.lockedAtMs < MIN_TARGET_LOCK_MS)
             {
                 return currentTarget;
             }
+
+            // Lock's expired, but don't re-scan every single tick just because of that (item 13)
+            // -- a forced event always bypasses this too, same as the lock above.
+            auto evalItr = s_nextEvaluationAt.find(botGuid);
+            if (evalItr != s_nextEvaluationAt.end() && now < evalItr->second)
+                return currentTarget;
         }
+        s_nextEvaluationAt[botGuid] = now + EVALUATION_INTERVAL_MS;
 
         std::vector<Unit*> candidates;
         GetNearbyEnemies(bot, bot, scanRange, candidates);
@@ -137,6 +180,11 @@ namespace BotAI
         for (Unit* candidate : candidates)
         {
             if (candidate == currentTarget)
+                continue;
+            // Engaged-only (item 5, Phase 2 fixup): never pull in a nearby mob that isn't
+            // already part of this fight -- see IsEngagedCandidate's own comment on why that's
+            // a different system's job entirely.
+            if (!IsEngagedCandidate(bot, candidate))
                 continue;
             float score = ScoreTarget(bot, candidate);
             if (score > bestScore)
@@ -174,8 +222,80 @@ namespace BotAI
         return lockOnto((best && bestScore > 0.0f) ? best : nullptr);
     }
 
+    Unit* TargetEvaluator::FindEngagedAlternative(Player* bot, Unit* exclude, float scanRange)
+    {
+        if (!bot)
+            return nullptr;
+
+        std::vector<Unit*> candidates;
+        GetNearbyEnemies(bot, bot, scanRange, candidates);
+
+        Unit* best = nullptr;
+        float bestScore = 0.0f;
+        for (Unit* candidate : candidates)
+        {
+            if (candidate == exclude)
+                continue;
+            if (!IsEngagedCandidate(bot, candidate))
+                continue;
+            // Don't hop from one CC'd target straight onto another one.
+            if (IsUnitUnderBreakableCrowdControl(candidate))
+                continue;
+
+            float score = ScoreTarget(bot, candidate);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    Unit* TargetEvaluator::FindBestAoECluster(Player* bot, Unit* fallbackTarget, float clusterRadius, float scanRange)
+    {
+        if (!bot)
+            return fallbackTarget;
+
+        std::vector<Unit*> candidates;
+        GetNearbyEnemies(bot, bot, scanRange, candidates);
+
+        std::vector<Unit*> engaged;
+        if (fallbackTarget)
+            engaged.push_back(fallbackTarget);
+        for (Unit* candidate : candidates)
+        {
+            if (candidate == fallbackTarget)
+                continue;
+            if (IsEngagedCandidate(bot, candidate))
+                engaged.push_back(candidate);
+        }
+
+        if (engaged.size() <= 1)
+            return fallbackTarget;
+
+        Unit* best = fallbackTarget;
+        size_t bestClusterSize = 0;
+        for (Unit* center : engaged)
+        {
+            size_t clusterSize = 0;
+            for (Unit* other : engaged)
+            {
+                if (other != center && center->GetDistance(other) <= clusterRadius)
+                    ++clusterSize;
+            }
+            if (clusterSize > bestClusterSize)
+            {
+                bestClusterSize = clusterSize;
+                best = center;
+            }
+        }
+        return best;
+    }
+
     void TargetEvaluator::ForgetBot(ObjectGuid botGuid)
     {
         s_targetLocks.erase(botGuid);
+        s_nextEvaluationAt.erase(botGuid);
     }
 }

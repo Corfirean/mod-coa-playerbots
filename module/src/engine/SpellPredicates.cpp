@@ -107,6 +107,25 @@ namespace BotAI
         return spellInfo->HasEffect(SPELL_EFFECT_DISPEL);
     }
 
+    bool IsDispelCompatible(SpellInfo const* cleanseSpell, SpellInfo const* debuffSpell)
+    {
+        if (!cleanseSpell || !debuffSpell)
+            return false;
+        if (debuffSpell->Dispel == DISPEL_NONE)
+            return false;
+
+        uint32 debuffMask = SpellInfo::GetDispelMask(DispelType(debuffSpell->Dispel));
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (cleanseSpell->Effects[i].Effect != SPELL_EFFECT_DISPEL)
+                continue;
+            uint32 cleanseMask = SpellInfo::GetDispelMask(DispelType(cleanseSpell->Effects[i].MiscValue));
+            if (cleanseMask & debuffMask)
+                return true;
+        }
+        return false;
+    }
+
     bool IsTargetCastingInterruptibleSpell(Unit const* target, uint32& outSpellId, uint32& outFinishTimeMs)
     {
         outSpellId = 0;
@@ -215,6 +234,80 @@ namespace BotAI
         return !bot->GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo);
     }
 
+    bool IsKnownSpellCastable(Player* bot, uint32 spellId, Unit* target, bool positiveRange)
+    {
+        if (!bot || !spellId || !target)
+            return false;
+
+        PlayerSpellMap const& spellMap = bot->GetSpellMap();
+        auto spellItr = spellMap.find(spellId);
+        if (spellItr == spellMap.end() || !spellItr->second || spellItr->second->State == PLAYERSPELL_REMOVED || !spellItr->second->Active)
+            return false;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo)
+            return false;
+        if (bot->HasSpellCooldown(spellId))
+            return false;
+        if (!IsOffGlobalCooldown(bot, spellInfo))
+            return false;
+        if (!bot->HasItemFitToSpellRequirements(spellInfo))
+            return false;
+        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
+            return false;
+        if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
+            return false;
+        if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
+            return false;
+        if (target && spellInfo->TargetAuraSpell && !target->HasAura(spellInfo->TargetAuraSpell))
+            return false;
+
+        if (BotAI::IsSpellInFailureCooldown(bot->GetGUID(), spellId))
+            return false;
+
+        // Both bounds matter for a ranged spell -- see SelectKnownSpell's header comment.
+        float dist = bot->GetDistance(target);
+        float maxRange = spellInfo->GetMaxRange(positiveRange, bot);
+        if (maxRange > 0.0f)
+        {
+            if (dist > maxRange)
+                return false;
+        }
+        else if (spellInfo->IsAffectingArea())
+        {
+            float maxRadius = 0.0f;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                if (spellInfo->Effects[i].IsEffect())
+                {
+                    float r = spellInfo->Effects[i].CalcRadius(bot);
+                    if (r > maxRadius)
+                        maxRadius = r;
+                }
+            }
+            if (maxRadius > 0.0f && dist > maxRadius)
+                return false;
+        }
+        float minRange = spellInfo->GetMinRange(positiveRange);
+        if (minRange > 0.0f && bot->IsWithinRange(target, minRange + bot->GetMeleeRange(target)))
+            return false;
+
+        if (spellInfo->PowerType == POWER_HEALTH)
+        {
+            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
+            if (cost > 0 && bot->GetHealth() <= (uint32)cost)
+                return false;
+        }
+        else
+        {
+            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
+            if (cost > 0 && bot->GetPower(Powers(spellInfo->PowerType)) < cost)
+                return false;
+        }
+
+        return true;
+    }
+
     uint32 SelectKnownSpell(Player* bot, Unit* target, bool positiveRange, bool (*predicate)(SpellInfo const*))
     {
         for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
@@ -225,65 +318,9 @@ namespace BotAI
             SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
             if (!predicate(spellInfo))
                 continue;
-            if (bot->HasSpellCooldown(spellId))
-                continue;
-            if (!IsOffGlobalCooldown(bot, spellInfo))
-                continue;
-            if (!bot->HasItemFitToSpellRequirements(spellInfo))
-                continue;
-            if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
-                continue;
-            if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
-                continue;
-            if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
-                continue;
-            if (target && spellInfo->TargetAuraSpell && !target->HasAura(spellInfo->TargetAuraSpell))
-                continue;
 
-            if (BotAI::IsSpellInFailureCooldown(bot->GetGUID(), spellId))
-                continue;
-
-            // Both bounds matter for a ranged spell -- see SelectKnownSpell's header comment.
-            float dist = bot->GetDistance(target);
-            float maxRange = spellInfo->GetMaxRange(positiveRange, bot);
-            if (maxRange > 0.0f)
-            {
-                if (dist > maxRange)
-                    continue;
-            }
-            else if (spellInfo->IsAffectingArea())
-            {
-                float maxRadius = 0.0f;
-                for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-                {
-                    if (spellInfo->Effects[i].IsEffect())
-                    {
-                        float r = spellInfo->Effects[i].CalcRadius(bot);
-                        if (r > maxRadius)
-                            maxRadius = r;
-                    }
-                }
-                if (maxRadius > 0.0f && dist > maxRadius)
-                    continue;
-            }
-            float minRange = spellInfo->GetMinRange(positiveRange);
-            if (minRange > 0.0f && bot->IsWithinRange(target, minRange + bot->GetMeleeRange(target)))
-                continue;
-
-            if (spellInfo->PowerType == POWER_HEALTH)
-            {
-                int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
-                if (cost > 0 && bot->GetHealth() <= (uint32)cost)
-                    continue;
-            }
-            else
-            {
-                int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
-                if (cost > 0 && bot->GetPower(Powers(spellInfo->PowerType)) < cost)
-                    continue;
-            }
-
-            return spellId;
+            if (IsKnownSpellCastable(bot, spellId, target, positiveRange))
+                return spellId;
         }
         return 0;
     }
