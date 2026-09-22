@@ -67,6 +67,7 @@
 #include "BotFormations.h"
 #include "BotMovement.h"
 #include "BotProgression.h"
+#include "BotTaxi.h"
 #include "BotWorldBehavior.h"
 #include "BotQuestTracker.h"
 #include "BotZoneProgression.h"
@@ -258,6 +259,11 @@ struct BotAIState
     // See TryMaintainProgression -- shared throttle for both the mount-ownership check and the
     // gear-upgrade bag scan.
     uint32 nextProgressionCheckMs = 0;
+
+    // Flight paths a character of this level would know are granted once per session: bots created
+    // before flight paths existed knew none and could never fly, and the grant is idempotent, so
+    // doing it again on the next login is harmless but not worth doing every check.
+    bool flightPathsGranted = false;
 
     // Loot queue: corpses of creatures killed in combat or by party members
     std::deque<ObjectGuid> pendingLootGuids;
@@ -1239,6 +1245,11 @@ void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
     state.nextProgressionCheckMs = PROGRESSION_CHECK_INTERVAL_MS;
 
     EnsureBotHasMount(bot);
+    if (!state.flightPathsGranted)
+    {
+        BotTaxi::GrantNodesForLevel(bot);
+        state.flightPathsGranted = true;
+    }
     TryUpgradeGearOnce(bot, state.role);
     TryMaintainEquipment(bot);
     TryAutoSignLeaderPetition(bot);
@@ -4038,6 +4049,11 @@ void Update(Player* bot, uint32 diff)
     BotAIState& state = states[bot->GetGUID()];
 
     if (state.suspended)
+        return;
+
+    // A taxi flight is a server-driven spline; anything that touches the MotionMaster now -- a
+    // follow, a grind walk-back, an ambient leg -- would pull the bot off its gryphon mid-air.
+    if (bot->IsInFlight())
         return;
 
     uint8 currentLevel = bot->GetLevel();
