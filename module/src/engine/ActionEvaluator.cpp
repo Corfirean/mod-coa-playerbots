@@ -5,6 +5,7 @@
  */
 
 #include "engine/ActionEvaluator.h"
+#include "engine/CombatResource.h"
 #include "engine/HealEvaluator.h"
 #include "engine/SpellPredicates.h"
 #include "engine/SpellResolver.h"
@@ -281,6 +282,15 @@ namespace BotAI
         // rule (e.g. a finisher that's not worth its real cost below some threshold), not "can
         // the bot literally pay for it." Defaults to 0 (unrestricted) for profiles that don't set it.
         if (desc.minPowerPct > 0.0f && ctx.botPowerPct < desc.minPowerPct)
+            return false;
+
+        // Universal resource-management engine: custom Ascension resources (aura-stack channels
+        // like Heat/Ember, Soul Fragment, sigils, ...) that most of CoA's 21 classes spend
+        // alongside or instead of native power. The native check above only ever looks at the
+        // bot's own getPowerType() bar, so a class whose ability needs 30 native power *and* 2
+        // Felfury (or any other custom resource) could previously pass CanCast on the native leg
+        // alone and only fail at real CastSpell time. See engine/CombatResource.h.
+        if (!CombatResourceEvaluator::CanAfford(ctx.resources, bot, resolvedSpellId))
             return false;
 
         // Range check

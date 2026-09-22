@@ -150,6 +150,11 @@ namespace BotAI
     // operator-facing inspection tool and a deliberately small first UI for the human-behavior layer.
     void ReportProfile(Player* bot, ChatHandler* handler);
 
+    // Prints this bot's full resource snapshot (native power bar(s) + every custom Ascension
+    // resource channel its class has) -- see engine/CombatResource.h. Live-testing/verification
+    // tool for the universal resource-management engine, e.g. `.botcmd resources <guid>`.
+    void ReportResources(Player* bot, ChatHandler* handler);
+
     // Per-bot follow angle derived from this bot's position within its own group (stable across
     // ticks, and collision-free for any group up to 8 real members) spread evenly around the
     // leader instead of every bot using the engine's default Unit::GetFollowAngle() (a single

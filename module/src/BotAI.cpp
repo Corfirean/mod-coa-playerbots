@@ -46,6 +46,7 @@
 #include "engine/ActionEvaluator.h"
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
+#include "engine/CombatResource.h"
 #include "engine/CombatReservations.h"
 #include "engine/CombatUtility.h"
 #include "engine/DamageTracker.h"
@@ -4191,6 +4192,25 @@ void ReportProfile(Player* bot, ChatHandler* handler)
     handler->PSendSysMessage("  current solo intent: {} ({} sec remaining).", IntentName(state.soloIntent),
         state.soloIntentRemainingMs / IN_MILLISECONDS);
     handler->PSendSysMessage("  {}.", BotWorldBehavior::Describe(bot->GetGUID()));
+}
+
+void ReportResources(Player* bot, ChatHandler* handler)
+{
+    if (!bot || !handler)
+        return;
+
+    CombatResourceSnapshot snapshot = CombatResourceEvaluator::BuildSnapshot(bot);
+    handler->PSendSysMessage("Resource snapshot for '{}' (class {}):", bot->GetName(), uint32(bot->getClass()));
+    for (uint8 i = 0; i < snapshot.count; ++i)
+    {
+        CombatResourceState const& r = snapshot.resources[i];
+        if (r.maximumKnown)
+            handler->PSendSysMessage("  {}: {}/{}", r.name, r.current, r.maximum);
+        else
+            handler->PSendSysMessage("  {}: {} (max unknown)", r.name, r.current);
+    }
+    if (snapshot.count == 0)
+        handler->SendSysMessage("  (no resource channels found -- this should never happen, native power is always present)");
 }
 
 void SetRole(ObjectGuid botGuid, BotRole role)
