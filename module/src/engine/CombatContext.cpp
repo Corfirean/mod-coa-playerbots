@@ -5,11 +5,15 @@
  */
 
 #include "engine/CombatContext.h"
+#include "engine/DamageTracker.h"
+#include "engine/HealEvaluator.h"
+#include "engine/SpellPredicates.h"
 #include "Group.h"
 #include "Player.h"
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "Timer.h"
+#include <algorithm>
 
 namespace BotAI
 {
@@ -37,25 +41,8 @@ namespace BotAI
 
         if (ctx.victim && ctx.victim->IsAlive())
         {
-            // Check interruptible spell cast on victim
-            for (uint32 i = CURRENT_FIRST_NON_MELEE_SPELL; i < CURRENT_AUTOREPEAT_SPELL; ++i)
-            {
-                if (Spell const* spell = ctx.victim->GetCurrentSpell(CurrentSpellTypes(i)))
-                {
-                    SpellInfo const* curSpellInfo = spell->GetSpellInfo();
-                    if (!curSpellInfo)
-                        continue;
-
-                    if ((spell->getState() == SPELL_STATE_CASTING || (spell->getState() == SPELL_STATE_PREPARING && spell->GetCastTime() > 0.0f))
-                            && spell->IsInterruptable()
-                            && ((i == CURRENT_GENERIC_SPELL && (curSpellInfo->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT))
-                                || (i == CURRENT_CHANNELED_SPELL && (curSpellInfo->ChannelInterruptFlags & CHANNEL_INTERRUPT_FLAG_INTERRUPT))))
-                    {
-                        ctx.victimIsCastingInterruptible = true;
-                        break;
-                    }
-                }
-            }
+            ctx.victimIsCastingInterruptible = IsTargetCastingInterruptibleSpell(
+                ctx.victim, ctx.victimCastingSpellId, ctx.victimCastFinishTimeMs);
 
             // Check if victim is attacking someone other than our tank
             if (Unit const* victimTarget = ctx.victim->GetVictim())
@@ -67,14 +54,40 @@ namespace BotAI
                         ctx.victimTargetingNonTank = true;
                 }
             }
+
+            // Fight value: does this target justify a long-cooldown burst/defensive button --
+            // see item 14/#9 of the combat-engine rework. A boss/elite, or a real pack, and not
+            // already about to die (don't blow a 2-minute CD to finish off a 10%-HP trash mob).
+            ctx.targetHpPct = ctx.victim->GetHealthPct();
+            ctx.targetIsBossOrElite = IsBossOrEliteTarget(ctx.victim);
+            ctx.nearbyEnemyCount = static_cast<uint8>(std::min<uint32>(255,
+                CountNearbyEnemies(bot, ctx.victim, 10.0f)));
+            bool targetIsPvP = ctx.victim->GetTypeId() == TYPEID_PLAYER;
+            ctx.worthOffensiveCooldown = (ctx.targetIsBossOrElite || targetIsPvP || ctx.nearbyEnemyCount >= 3)
+                && ctx.targetHpPct > 15.0f;
         }
+
+        // Defensive prediction (item 19, Phase 2): a rolling incoming-dps estimate for the bot
+        // itself, cheap (one hash-map lookup, see DamageTracker), plus a contextual "is this
+        // actually dangerous right now" flag instead of a flat HP-threshold. Emergency HP floor,
+        // a real incoming-damage trend implying death soon, or the current victim being both
+        // dangerous (boss/elite mid-cast) and actually targeting the bot all count.
+        ctx.botIncomingDps = DamageTracker::SampleIncomingDps(bot);
+        float timeToDieSec = (ctx.botIncomingDps > 1.0f)
+            ? (float(bot->GetHealth()) / ctx.botIncomingDps) : 999.0f;
+        bool dangerousBossOnBot = ctx.targetIsBossOrElite && ctx.victim && ctx.victim->GetVictim() == bot
+            && ctx.victimIsCastingInterruptible;
+        ctx.worthDefensiveCooldown = ctx.botHpPct < 25.0f
+            || timeToDieSec < 6.0f
+            || (ctx.botHpPct < 60.0f && dangerousBossOnBot);
 
         // Ally triage snapshot
         Group const* group = bot->GetGroup();
         if (group)
         {
-            float lowestHp = 100.0f;
+            float bestUrgency = -1.0f;
             Player* bestLowestAlly = nullptr;
+            float bestLowestAllyHp = 100.0f;
 
             for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
             {
@@ -88,10 +101,16 @@ namespace BotAI
                 if (hp < 40.0f)
                     ++ctx.criticalAllyCount;
 
-                if (hp < lowestHp)
+                // HealUrgencyScore (item 10/#4, Phase 2) instead of plain lowest-HP% -- a tank
+                // taking heavy incoming damage at 55% can matter more than a DPS at 30% nobody's
+                // still hitting. Feeds every profile ability that targets TargetType::
+                // LowestHealthAlly/AnyInjuredAlly, not just the legacy healer fallback.
+                float urgency = HealEvaluator::ScoreHealUrgency(bot, member);
+                if (urgency > bestUrgency)
                 {
-                    lowestHp = hp;
+                    bestUrgency = urgency;
                     bestLowestAlly = member;
+                    bestLowestAllyHp = hp;
                 }
 
                 BotRole mRole = BotAI::GetRole(member->GetGUID());
@@ -103,7 +122,7 @@ namespace BotAI
             }
 
             ctx.lowestAlly = bestLowestAlly ? bestLowestAlly : bot;
-            ctx.lowestAllyHpPct = bestLowestAlly ? lowestHp : ctx.botHpPct;
+            ctx.lowestAllyHpPct = bestLowestAlly ? bestLowestAllyHp : ctx.botHpPct;
         }
         else
         {

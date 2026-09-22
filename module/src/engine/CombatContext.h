@@ -36,8 +36,26 @@ namespace BotAI
 
         // Threat & hostile environment
         bool victimIsCastingInterruptible = false;
+        uint32 victimCastingSpellId = 0;    // spell id behind victimIsCastingInterruptible, 0 if none
+        uint32 victimCastFinishTimeMs = 0;  // absolute getMSTime() the cast above finishes at
         bool victimTargetingNonTank = false;
-        uint8 nearbyEnemyCount = 0;   // Hostile units within 8 yards
+        uint8 nearbyEnemyCount = 0;   // Hostile units within 10 yards of the victim
+
+        // Fight value -- see item 14/#9 of the combat-engine rework: whether this fight actually
+        // justifies spending a long-cooldown offensive/defensive button, not just "is one ready."
+        bool targetIsBossOrElite = false;
+        float targetHpPct = 100.0f;
+        // Boss/elite/PvP target, or a real pack (nearbyEnemyCount>=3), and not already about to
+        // die -- see ActionEvaluator::ScoreAbility's OffensiveCD gating.
+        bool worthOffensiveCooldown = false;
+
+        // Defensive prediction (item 19, Phase 2) -- a cheap rolling incoming-damage-per-second
+        // estimate for the bot itself (see DamageTracker), and whether the bot's actual
+        // situation right now (not just "HP below a fixed threshold") justifies a defensive
+        // cooldown: taking real incoming damage, or the victim is mid-cast on something
+        // dangerous while the bot is its target.
+        float botIncomingDps = 0.0f;
+        bool worthDefensiveCooldown = false;
 
         // Metadata
         uint8 classId = 0;

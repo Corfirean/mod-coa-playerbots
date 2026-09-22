@@ -5,6 +5,7 @@
  */
 
 #include "engine/ActionEvaluator.h"
+#include "engine/SpellPredicates.h"
 #include "engine/SpellResolver.h"
 #include "BotClassRotations.h"
 #include "Group.h"
@@ -12,6 +13,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Timer.h"
+#include <algorithm>
 #include <unordered_map>
 
 namespace BotAI
@@ -129,6 +131,11 @@ namespace BotAI
         if (!spellInfo)
             return false;
 
+        // Real per-spell GCD (see item 6 of the combat-engine rework) -- off-GCD abilities
+        // (StartRecoveryTime == 0) always pass this, matching IsOffGlobalCooldown's own comment.
+        if (!IsOffGlobalCooldown(bot, spellInfo))
+            return false;
+
         // Equipment / weapon requirement
         if (!bot->HasItemFitToSpellRequirements(spellInfo))
             return false;
@@ -167,6 +174,13 @@ namespace BotAI
                 return false;
         }
 
+        // Resource management hard floor (item 13, Phase 2): distinct from the raw affordability
+        // check above -- this is a profile-authored "don't even consider this below X% power"
+        // rule (e.g. a finisher that's not worth its real cost below some threshold), not "can
+        // the bot literally pay for it." Defaults to 0 (unrestricted) for profiles that don't set it.
+        if (desc.minPowerPct > 0.0f && ctx.botPowerPct < desc.minPowerPct)
+            return false;
+
         // Range check
         bool positiveRange = spellInfo->IsPositive();
         if (target != bot)
@@ -201,7 +215,13 @@ namespace BotAI
 
         float score = desc.baseScore;
 
-        // Tag-driven contextual utility bonuses
+        // Tag-driven contextual utility bonuses -- independent `if`s, not an else-if chain: an
+        // ability can legitimately carry more than one of these (e.g. EmergencyHeal|DirectHeal,
+        // which used to only ever score as EmergencyHeal and silently lose its DirectHeal
+        // contribution), and each tag's own bonus should still apply. See item 16 of the
+        // combat-engine rework. Interrupt/Taunt/Execute stay hard disqualifiers when tagged --
+        // every profile observed tags them alone, purpose-built for that one situation, so
+        // failing their condition means this entry has nothing else useful to contribute.
         if (HasTag(desc.tags, AbilityTag::EmergencyHeal))
         {
             // Highest priority: explosive bonus as HP drops below 40%
@@ -209,40 +229,59 @@ namespace BotAI
             if (target == ctx.tankAlly)
                 score += 50.0f;
         }
-        else if (HasTag(desc.tags, AbilityTag::DirectHeal))
+        if (HasTag(desc.tags, AbilityTag::DirectHeal))
         {
             score += (100.0f - targetHpPct) * 2.0f;
             if (target == ctx.tankAlly)
                 score += 30.0f;
         }
-        else if (HasTag(desc.tags, AbilityTag::PeriodicHeal))
+        if (HasTag(desc.tags, AbilityTag::PeriodicHeal))
         {
             // HoT priority: bonus for maintaining on tank and damaged targets
             if (target == ctx.tankAlly)
                 score += 35.0f;
             score += (100.0f - targetHpPct) * 0.8f;
         }
-        else if (HasTag(desc.tags, AbilityTag::AoEHeal))
+        if (HasTag(desc.tags, AbilityTag::AoEHeal))
         {
             score += static_cast<float>(ctx.injuredAllyCount) * 25.0f;
         }
-        else if (HasTag(desc.tags, AbilityTag::Interrupt))
+        if (HasTag(desc.tags, AbilityTag::Interrupt))
         {
             if (!ctx.victimIsCastingInterruptible)
                 return -1.0f; // Do not waste kick when nothing is casting
             score += 500.0f;
         }
-        else if (HasTag(desc.tags, AbilityTag::Taunt))
+        if (HasTag(desc.tags, AbilityTag::Taunt))
         {
             if (!ctx.victimTargetingNonTank)
                 return -1.0f; // Do not waste taunt if already holding aggro
             score += 400.0f;
         }
-        else if (HasTag(desc.tags, AbilityTag::Execute))
+        if (HasTag(desc.tags, AbilityTag::Execute))
         {
             if (targetHpPct > 20.0f)
                 return -1.0f;
             score += 150.0f;
+        }
+        if (HasTag(desc.tags, AbilityTag::AoEDamage))
+        {
+            // Scales with the real nearby-enemy count (item 15/#8 -- CombatContext::
+            // nearbyEnemyCount is now actually populated instead of always reading 0) so an AoE
+            // entry only outscores single-target ones when there's an actual pack to hit.
+            score += static_cast<float>(ctx.nearbyEnemyCount) * 20.0f;
+        }
+        if (HasTag(desc.tags, AbilityTag::DefensiveCD))
+        {
+            // Contextual bonus/penalty (item 19, Phase 2) on top of the HP-threshold eligibility
+            // gate already applied above -- a real incoming-damage trend or a dangerous boss cast
+            // targeting the bot makes this much more urgent than the flat HP check alone; a dip
+            // that's already stopped hurting the bot (enemy nearly dead, no incoming damage)
+            // makes it less so, even while still under the HP threshold.
+            if (ctx.worthDefensiveCooldown)
+                score += 200.0f;
+            else
+                score *= 0.5f;
         }
 
         // Custom scriptable scoring callback
@@ -252,6 +291,25 @@ namespace BotAI
             if (customBonus < 0.0f)
                 return -1.0f;
             score += customBonus;
+        }
+
+        // Cooldown fight-value gate (item 14/#9): heavily deprioritize -- not hard-disqualify,
+        // so a class whose only usable ability happens to be tagged OffensiveCD still eventually
+        // fires it rather than going silent -- spending a long cooldown on a fight that doesn't
+        // warrant it (a trash mob, or a target already about to die on its own).
+        if (HasTag(desc.tags, AbilityTag::OffensiveCD) && !ctx.worthOffensiveCooldown)
+            score *= 0.15f;
+
+        // Resource management soft floor (item 13, Phase 2): once power is below this ability's
+        // own reserve threshold, penalize it in proportion to how inefficient it is
+        // (resourceEfficiency < 1) and how deep into the reserve the bot already is -- an
+        // efficient option (>= 1.0, the default) takes no penalty at all, so it naturally
+        // outscores a penalized wasteful one without needing a separate "low resource" rotation.
+        if (desc.reservePowerPct > 0.0f && ctx.botPowerPct < desc.reservePowerPct)
+        {
+            float depth = 1.0f - (ctx.botPowerPct / desc.reservePowerPct); // 0 at the floor, ->1 at 0 power
+            float inefficiencyPenalty = std::max(0.0f, 1.0f - desc.resourceEfficiency);
+            score *= std::max(0.15f, 1.0f - depth * inefficiencyPenalty);
         }
 
         return score;
@@ -283,11 +341,13 @@ namespace BotAI
             {
                 bestScore = score;
                 bestAction.spellId = resolvedSpellId;
+                bestAction.rootSpellId = desc.rootSpellId;
                 bestAction.target = target;
                 bestAction.score = score;
                 bestAction.tags = desc.tags;
                 bestAction.name = desc.name;
                 bestAction.reason = "highest utility score";
+                bestAction.internalThrottleMs = desc.internalThrottleMs;
             }
         }
 

@@ -8,6 +8,7 @@
 #define COA_PLAYERBOTS_HEALER_ENGINE_H
 
 #include "Define.h"
+#include "engine/CombatResult.h"
 
 class Player;
 
@@ -16,8 +17,10 @@ namespace BotAI
     class HealerEngine
     {
     public:
-        // Returns true if handled by a data-driven profile, false to fall back to legacy AI.
-        static bool Execute(Player* bot, uint32 diff, uint32& nextCastAllowedMs);
+        // See CombatResult's own comment -- NoAction (no profile, or a profile that found
+        // nothing castable) is the caller's signal to fall through to the legacy AI instead of
+        // treating the tick as handled.
+        static CombatResult Execute(Player* bot, uint32 diff, uint32& nextCastAllowedMs);
     };
 }
 
