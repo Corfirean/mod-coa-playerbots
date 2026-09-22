@@ -140,8 +140,22 @@ void Initialize()
             s_builds[MakeBuildKey(classId, specId)] = std::move(build);
         }
 
-        LOG_INFO("module.coa-playerbots", "BotTalentBuilds: successfully loaded {} talent builds from '{}'.",
-            s_builds.size(), jsonPath);
+        // Picks resolve against mod-ascension-compat's talent table, which it loads from the client
+        // DBCs in its own OnStartup. If that ever runs after this, every pick resolves to 0 and no bot
+        // learns a single talent while this log still reads "loaded 70 builds" -- so say how many
+        // resolved, and let ApplyBuildForLevel resolve lazily as a fallback.
+        uint32 picks = 0;
+        uint32 unresolved = 0;
+        for (auto const& [key, build] : s_builds)
+            for (TalentPick const& pick : build.picks)
+            {
+                ++picks;
+                if (!pick.spellId)
+                    ++unresolved;
+            }
+
+        LOG_INFO("module.coa-playerbots", "BotTalentBuilds: successfully loaded {} talent builds from '{}' ({} picks, {} unresolved).",
+            s_builds.size(), jsonPath, picks, unresolved);
     }
     catch (std::exception const& ex)
     {
@@ -184,12 +198,13 @@ void ApplyBuildForLevel(Player* bot, uint8 toLevel)
         if (pick.level > maxPickLevel)
             break;
 
-        if (!pick.spellId)
+        uint32 spellId = pick.spellId ? pick.spellId : ResolveTalentSpellId(pick.entryId, pick.rank);
+        if (!spellId)
             continue;
 
         ++pointsSpent;
 
-        if (bot->HasSpell(pick.spellId))
+        if (bot->HasSpell(spellId))
             continue;
 
         // If an earlier rank is known, cleanly remove it first
@@ -200,7 +215,7 @@ void ApplyBuildForLevel(Player* bot, uint8 toLevel)
                 bot->removeSpell(prevSpellId, SPEC_MASK_ALL, false);
         }
 
-        bot->learnSpell(pick.spellId, false);
+        bot->learnSpell(spellId, false);
     }
 
     uint32 totalEarned = bot->CalculateTalentsPoints();

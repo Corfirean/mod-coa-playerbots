@@ -94,10 +94,15 @@ bool BotAvoidance::TryAvoidBossTelegraphedAttacks(Player* bot, Unit* target)
     // 1. Point-blank AoE / Whirlwind Avoidance
     if (boss->IsNonMeleeSpellCast(false))
     {
-        if (Spell const* spell = boss->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        // Check both generic spells and channeled spells (channeled spells are in CURRENT_CHANNELED_SPELL slot)
+        Spell const* spell = boss->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        if (!spell)
+            spell = boss->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+
+        if (spell)
         {
             SpellInfo const* spellInfo = spell->GetSpellInfo();
-            if (spellInfo && spellInfo->IsChanneled())
+            if (spellInfo && (spellInfo->IsChanneled() || spell == boss->GetCurrentSpell(CURRENT_CHANNELED_SPELL)))
             {
                 for (uint8 i = 0; i < 3; ++i)
                 {

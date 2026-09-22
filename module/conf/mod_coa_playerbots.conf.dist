@@ -90,3 +90,28 @@ CoaBots.Healer.CriticalHealPct = 50
 # expect to find them; lower MaxLevelAbove if they're picking fights they shouldn't win.
 CoaBots.Grind.SearchRadius = 30
 CoaBots.Grind.MaxLevelAbove = 3
+
+# Ambient world behavior (src/world/BotWorldBehavior.cpp): gives an idle, ungrouped bot a concrete
+# errand -- town services, a trip to a gathering or grinding area, or a short wander -- once its own
+# quest/gather/fish/grind scans have found nothing nearby. Never runs for grouped bots, under Stay,
+# in battlegrounds or dungeons, or during combat.
+CoaBots.World.Enable = 1
+
+# How often each bot re-evaluates its errand. Bots are staggered across this interval so a large
+# population never thinks on the same tick.
+CoaBots.World.ThinkIntervalMs = 2000
+
+# Outside cities, how long the solo scans must keep coming up empty before an errand starts.
+CoaBots.World.IdleBeforeErrandMs = 10000
+
+# Search radius (yards) for service NPCs and mailboxes, and for gathering/grinding destinations.
+CoaBots.World.ServiceRadius = 200
+CoaBots.World.AreaRadius = 350
+
+# Log every errand transition (chose / arrived / completed / expired / resumed) to the
+# module.coa-playerbots.world log category. Useful while tuning, noisy with thousands of bots.
+CoaBots.World.VerboseLog = 1
+
+# Level distribution for `.botcmd spawnleveled`: comma-separated "low-high:weight" brackets.
+# The default gives many levelling bots and few at the cap: 40% 1-20, 33% 21-60, 20% 61-79, 7% 80.
+CoaBots.LeveledSpawn.Brackets = "1-20:40,21-60:33,61-79:20,80-80:7"

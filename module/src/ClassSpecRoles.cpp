@@ -167,6 +167,15 @@ uint32 GetAvailableRolesMask(uint8 classId)
     return mask;
 }
 
+std::vector<uint32> GetSpecsForRole(uint8 classId, BotRole role)
+{
+    std::vector<uint32> specs;
+    for (auto const& entry : SPEC_ROLE_TABLE)
+        if (entry.classId == classId && entry.role == role)
+            specs.push_back(entry.specId);
+    return specs;
+}
+
 uint32 FindSpecForRole(uint8 classId, BotRole role, uint32 preferredSpecId)
 {
     if (preferredSpecId && GetRoleForClassSpec(classId, preferredSpecId) == role)

@@ -10,6 +10,7 @@
 #include "Player.h"
 #include "Random.h"
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace BotZoneProgression
@@ -95,6 +96,18 @@ namespace BotZoneProgression
         { "VengeanceLanding",    495, 571,   1942.86f,  -6167.11f,  23.724f,  2.64258f,  TEAM_HORDE,    68, 72 },
         { "WintergardeKeep",      65, 571,   3682.71f,   -722.635f, 212.729f, 5.7991f,   TEAM_ALLIANCE, 71, 76 },
         { "AgmarsHammer",         65, 571,   3841.51f,   1534.04f,  89.7246f, 4.78105f,  TEAM_HORDE,    71, 76 },
+        // 73-80 used to have no hub at all besides Dalaran, so every bot from 77 up was sent there --
+        // confirmed live: 77 of a regenerated population's 155 bots of 61-80 ended up in the one
+        // city with no open world to walk out into. Coordinates from game_tele, like the rest.
+        { "AmberpineLodge",       394, 571,   3412.88f,  -2791.17f,  201.52f,  2.246f,    TEAM_ALLIANCE, 73, 75 },
+        { "ConquestHold",         394, 571,   3251.86f,  -2244.98f,  114.56f,  1.201f,    TEAM_HORDE,    73, 75 },
+        { "ZimTorga",              66, 571,   5757.21f,  -3528.22f,  388.18f,  4.716f,    TEAM_NEUTRAL,  74, 77 },
+        { "TheArgentStand",        66, 571,   5450.38f,  -2422.65f,  292.42f,  4.693f,    TEAM_NEUTRAL,  74, 77 },
+        { "NesingwaryBaseCamp",  3711, 571,   5561.69f,   5748.65f,  -76.28f,  1.516f,    TEAM_NEUTRAL,  76, 78 },
+        { "K3",                    67, 571,   6123.7f,   -1059.19f,  402.62f,  4.66f,     TEAM_NEUTRAL,  77, 80 },
+        { "Frosthold",             67, 571,   6666.43f,   -211.34f,  947.82f,  1.565f,    TEAM_ALLIANCE, 77, 80 },
+        { "GromarshCrashSite",     67, 571,   7843.9f,    -796.83f, 1183.4f,   4.797f,    TEAM_HORDE,    77, 80 },
+        { "TheArgentVanguard",    210, 571,   6216.68f,     -2.73f,  410.17f,  0.391f,    TEAM_NEUTRAL,  77, 80 },
         { "Dalaran",            4395, 571,   5807.98f,    588.487f, 660.94f,  1.66594f,  TEAM_NEUTRAL,  70, 80 },
     };
 
@@ -162,7 +175,25 @@ namespace BotZoneProgression
             return nullptr;
         }
 
-        return candidates[urand(0, candidates.size() - 1)];
+        // Capitals are hubs too, but a bot parked in one has no open world on its doorstep, so they
+        // are picked a third as often as a quest hub of the same bracket.
+        auto weightOf = [](ZoneHub const* hub) -> uint32
+        {
+            return (hub->zoneId == 4395 || hub->zoneId == 3703) ? 1 : 3; // Dalaran, Shattrath
+        };
+
+        uint32 total = 0;
+        for (ZoneHub const* hub : candidates)
+            total += weightOf(hub);
+
+        uint32 roll = urand(1, total);
+        for (ZoneHub const* hub : candidates)
+        {
+            if (roll <= weightOf(hub))
+                return hub;
+            roll -= weightOf(hub);
+        }
+        return candidates.back();
     }
 
     bool IsZoneAppropriateForLevel(uint32 zoneId, uint8 level)
@@ -367,8 +398,16 @@ namespace BotZoneProgression
         // Update homebind with real destination WorldLocation and real areaId
         bot->SetHomebind(WorldLocation(dest->mapId, dest->x, dest->y, dest->z, dest->o), dest->zoneId);
 
+        // Spread arrivals a few yards around the hub point: a spawn batch used to materialise every
+        // bot on the one game_tele coordinate, stacked inside each other. Kept small and lifted by a
+        // yard so a sloped hub can't put anyone under the ground; the homebind above stays exact.
+        float angle = frand(0.0f, 2.0f * float(M_PI));
+        float radius = frand(1.0f, 5.0f);
+        float x = dest->x + std::cos(angle) * radius;
+        float y = dest->y + std::sin(angle) * radius;
+
         // Request teleport and queue the ack for the next tick
-        bot->TeleportTo(dest->mapId, dest->x, dest->y, dest->z, dest->o);
+        bot->TeleportTo(dest->mapId, x, y, dest->z + 1.0f, dest->o);
         sBotMgr->QueueTeleportAck(bot->GetSession());
 
         return true;

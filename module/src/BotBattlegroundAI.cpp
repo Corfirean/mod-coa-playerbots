@@ -244,20 +244,7 @@ bool BotBattlegroundAI::Update(Player* bot, uint32 diff)
     if (status != STATUS_IN_PROGRESS)
         return false;
 
-    // 1. Proactive Enemy Combat Acquisition
-    Unit* pvpTarget = FindHostilePvPTarget(bot, 40.0f);
-    if (pvpTarget)
-    {
-        if (bot->IsMounted())
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
-
-        if (bot->GetVictim() != pvpTarget)
-            bot->Attack(pvpTarget, true);
-
-        return false; // let normal combat rotation handle the fight
-    }
-
-    // If bot already has a valid living victim, let combat run
+    // If bot already in combat defending itself, let combat continue
     if (bot->GetVictim() && bot->GetVictim()->IsAlive() && bot->IsValidAttackTarget(bot->GetVictim()))
     {
         if (bot->IsMounted())
@@ -265,8 +252,11 @@ bool BotBattlegroundAI::Update(Player* bot, uint32 diff)
         return false;
     }
 
-    // 2. Out of Combat / No Target -> Execute Battleground Objectives
-    switch (bg->GetBgTypeID(true))
+    // Battleground Objectives have priority over proactive combat acquisition.
+    // Flag carriers should not abandon the flag to fight a random enemy.
+    // Objective handlers will defend against attackers while completing objectives.
+    BattlegroundTypeId bgType = bg->GetBgTypeID(true);
+    switch (bgType)
     {
         case BATTLEGROUND_EY:
             if (BattlegroundEY* ey = bg->ToBattlegroundEY())
