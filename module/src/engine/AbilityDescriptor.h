@@ -39,17 +39,17 @@ namespace BotAI
         Filler           = 1 << 18  // Low-priority resource builder / spammer
     };
 
-    inline AbilityTag operator|(AbilityTag a, AbilityTag b)
+    constexpr AbilityTag operator|(AbilityTag a, AbilityTag b)
     {
         return static_cast<AbilityTag>(static_cast<uint32>(a) | static_cast<uint32>(b));
     }
 
-    inline AbilityTag operator&(AbilityTag a, AbilityTag b)
+    constexpr AbilityTag operator&(AbilityTag a, AbilityTag b)
     {
         return static_cast<AbilityTag>(static_cast<uint32>(a) & static_cast<uint32>(b));
     }
 
-    inline bool HasTag(AbilityTag mask, AbilityTag tag)
+    constexpr bool HasTag(AbilityTag mask, AbilityTag tag)
     {
         return (static_cast<uint32>(mask) & static_cast<uint32>(tag)) != 0;
     }
@@ -90,6 +90,31 @@ namespace BotAI
 
         // Internal rotation cooldown / throttle (ms) for abilities without native DBC cooldowns
         uint32 internalThrottleMs = 0;
+
+        // AoE eligibility (item 7 of the Phase 2 fixup pass): a flat `nearbyEnemyCount * bonus`
+        // wasn't enough to stop an AoE ability outscoring a single-target one at 1-2 targets just
+        // because its baseScore happened to be close. minAoETargets is a hard eligibility floor
+        // (ScoreAbility disqualifies below it); the default of 3 matches AbilityTag::AoEDamage's
+        // own "Area of Effect offensive" intent, but a profile can lower it (e.g. to 2) for a
+        // specific spell that's genuinely worth it that early, or a spell that's formally AoE-
+        // shaped but authored/used as a single-target filler can leave AoEDamage off entirely.
+        uint8 minAoETargets = 3;
+
+        // Resource management (item 13 of the combat-engine rework). All three default to
+        // "unrestricted" (0/0/1) so existing profiles that don't set them are unaffected --
+        // per-ability tuning is Phase 3 work, this is just the engine plumbing for it.
+        //   minPowerPct: hard eligibility floor -- CanCast disqualifies below this (e.g. a
+        //     builder/spender finisher that's pointless below its real resource cost).
+        //   reservePowerPct: soft floor -- ScoreAbility deprioritizes (not disqualifies) this
+        //     ability once the bot's power is below it, so a healer facing empty mana favors an
+        //     efficient heal over a big expensive one, and a tank holds mana/rage for defensives
+        //     instead of an optional filler.
+        //   resourceEfficiency: relative "value per point of resource spent" (1.0 = neutral).
+        //     Above 1.0 nudges this ability up once power is scarce (an efficient option);
+        //     below 1.0 nudges it down (a wasteful one) -- see ScoreAbility's resource-aware bonus.
+        float minPowerPct = 0.0f;
+        float reservePowerPct = 0.0f;
+        float resourceEfficiency = 1.0f;
 
         // Optional custom score function: return added score, or < 0 to disqualify
         std::function<float(CombatContext const&, AbilityDescriptor const&)> customScorer = nullptr;

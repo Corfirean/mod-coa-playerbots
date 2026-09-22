@@ -44,6 +44,15 @@
 #include "engine/TankEngine.h"
 #include "engine/SpellResolver.h"
 #include "engine/ActionEvaluator.h"
+#include "engine/CombatContext.h"
+#include "engine/CombatMovement.h"
+#include "engine/CombatReservations.h"
+#include "engine/CombatUtility.h"
+#include "engine/DamageTracker.h"
+#include "engine/HealEvaluator.h"
+#include "engine/SpellPredicates.h"
+#include "engine/TargetEvaluator.h"
+#include "engine/ThreatEvaluator.h"
 #include "ClassSpecRoles.h"
 #include "CombatManager.h"
 #include "Config.h"
@@ -101,13 +110,14 @@
 
 namespace
 {
-// This AzerothCore fork predates TrinityCore's SpellHistory refactor (no per-spell "time
-// until GCD/cooldown clears" query API), so there's no cheap way to ask "is this bot off
-// its real global cooldown right now." GCD is approximated at 1500ms base, reduced by haste.
-constexpr uint32 APPROXIMATE_GCD_MS = 1500;
+// Real per-spell GCD is now queried directly off the engine's own Player::GetGlobalCooldownMgr()
+// (populated automatically by every real CastSpell -- see engine/SpellPredicates.h's
+// IsOffGlobalCooldown), not approximated. After a successful cast this AI reaction gate is all
+// that throttles the next decision tick -- short enough that an off-GCD/instant follow-up fires
+// promptly, long enough that a spellbook scan doesn't run every single 100ms world tick.
+constexpr uint32 AI_REACTION_GATE_MS = 150;
 constexpr float MELEE_ENGAGE_RANGE = 4.0f;
 constexpr float RANGED_ENGAGE_DISTANCE = 22.0f;
-constexpr uint32 BURST_SPELL_MIN_COOLDOWN_MS = 45000;
 
 // How close a Healer bot tries to stay to whoever it's healing. Set to 35 yards to accommodate
 // heal spells with 35-40 yard range without requiring the target to be within the rigid 25yd bound.
@@ -1255,161 +1265,41 @@ void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
     TryAutoSignLeaderPetition(bot);
 }
 
-// Filters a learned spell down to "looks like something a player would press on an enemy
-// in combat," without knowing anything about what the spell is actually named or which of
-// the 21 custom classes it belongs to:
-//  - NeedsExplicitUnitTarget(): excludes self-buffs, ground-targeted effects, and passives
-//    that don't take a unit target at all -- keeps this to simple single-target casts.
-//  - !IsPositive(): a targeted-enemy spell should never be a buff/heal.
-//  - !IsPassive(), CanBeUsedInCombat(): excludes passives and out-of-combat-only spells.
-//  - !IsAutoRepeatRangedSpell(): Auto Shot/Wand behave as a standing toggle the engine
-//    manages itself once triggered, not something to re-cast every tick.
-//  - at least one clearly offensive effect (direct/weapon damage, or a periodic-damage
-//    aura): the actual "is this a damage ability" signal. Without this, plenty of
-//    NeedsExplicitUnitTarget()+non-positive spells would still slip through (e.g. a
-//    non-damaging enemy-targeted utility effect) with no real offensive purpose.
-bool IsUsableOffensiveSpell(SpellInfo const* spellInfo)
-{
-    if (!spellInfo || spellInfo->IsPassive() || spellInfo->IsPositive())
-        return false;
-    if (!spellInfo->NeedsExplicitUnitTarget() || !spellInfo->CanBeUsedInCombat())
-        return false;
-    if (spellInfo->IsAutoRepeatRangedSpell())
-        return false;
-
-    return spellInfo->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE) ||
-        spellInfo->HasEffect(SPELL_EFFECT_WEAPON_DAMAGE) ||
-        spellInfo->HasEffect(SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL) ||
-        spellInfo->HasEffect(SPELL_EFFECT_WEAPON_PERCENT_DAMAGE) ||
-        spellInfo->HasAura(SPELL_AURA_PERIODIC_DAMAGE) ||
-        spellInfo->HasAura(SPELL_AURA_PERIODIC_DAMAGE_PERCENT);
-}
-
-// Same idea as IsUsableOffensiveSpell, but for "is this a taunt": the two real WotLK taunt
-// shapes are a direct SPELL_EFFECT_ATTACK_ME (e.g. Warrior Taunt) or a SPELL_AURA_MOD_TAUNT
-// aura (e.g. Growl-style pet taunts). Still requires an explicit enemy target and combat
-// usability, same as the offensive filter, since a taunt is itself an enemy-targeted spell.
-bool IsUsableTauntSpell(SpellInfo const* spellInfo)
-{
-    if (!spellInfo || spellInfo->IsPassive())
-        return false;
-    if (!spellInfo->NeedsExplicitUnitTarget() || !spellInfo->CanBeUsedInCombat())
-        return false;
-
-    return spellInfo->HasEffect(SPELL_EFFECT_ATTACK_ME) || spellInfo->HasAura(SPELL_AURA_MOD_TAUNT);
-}
-
-// Same idea again, but for "is this a single-target heal": a positive spell (never an enemy
-// ability) with a direct SPELL_EFFECT_HEAL/HEAL_PCT or a SPELL_AURA_PERIODIC_HEAL (a HoT).
-bool IsUsableHealSpell(SpellInfo const* spellInfo)
-{
-    if (!spellInfo || spellInfo->IsPassive() || !spellInfo->IsPositive())
-        return false;
-    if (!spellInfo->NeedsExplicitUnitTarget() || !spellInfo->CanBeUsedInCombat())
-        return false;
-
-    return spellInfo->HasEffect(SPELL_EFFECT_HEAL) || spellInfo->HasEffect(SPELL_EFFECT_HEAL_PCT) ||
-        spellInfo->HasAura(SPELL_AURA_PERIODIC_HEAL);
-}
-
-// Real Ascension "Support" specs are DPS-hybrids with a party/raid buff layered on top
-// (docs/roles.md's role taxonomy), not a backline-only role -- so this only needs to find
-// "a buff that reaches the whole party/raid," not every possible positive spell (that would
-// also match single-target heals and personal self-buffs, neither of which need Support's
-// own special handling: heals aren't this role's job, and ordinary self-buffs get learned
-// and used passively/on cooldown by the class kit regardless of what BotAI does). The three
-// AREA_AURA effect types below are the actual WotLK engine mechanism real party/raid buffs
-// use (e.g. Fortitude/Blessing-of-Kings-style spells): cast on self, the engine propagates
-// the aura to nearby party/raid/friendly members automatically -- no ally-targeting needed.
-bool IsUsableBuffSpell(SpellInfo const* spellInfo)
-{
-    if (!spellInfo || spellInfo->IsPassive() || !spellInfo->IsPositive())
-        return false;
-
-    return spellInfo->HasEffect(SPELL_EFFECT_APPLY_AREA_AURA_PARTY) ||
-        spellInfo->HasEffect(SPELL_EFFECT_APPLY_AREA_AURA_RAID) ||
-        spellInfo->HasEffect(SPELL_EFFECT_APPLY_AREA_AURA_FRIEND);
-}
-
-bool IsUsableInterruptSpell(SpellInfo const* spellInfo)
-{
-    if (!spellInfo || spellInfo->IsPassive() || spellInfo->IsPositive())
-        return false;
-    if (!spellInfo->CanBeUsedInCombat())
-        return false;
-
-    return spellInfo->HasEffect(SPELL_EFFECT_INTERRUPT_CAST) ||
-        spellInfo->HasAura(SPELL_AURA_MOD_SILENCE);
-}
-
-bool IsTargetCastingInterruptibleSpell(Unit const* target)
-{
-    if (!target || !target->IsAlive())
-        return false;
-
-    for (uint32 i = CURRENT_FIRST_NON_MELEE_SPELL; i < CURRENT_AUTOREPEAT_SPELL; ++i)
-    {
-        if (Spell* spell = target->GetCurrentSpell(CurrentSpellTypes(i)))
-        {
-            SpellInfo const* curSpellInfo = spell->m_spellInfo;
-            if (!curSpellInfo)
-                continue;
-            if ((spell->getState() == SPELL_STATE_CASTING || (spell->getState() == SPELL_STATE_PREPARING && spell->GetCastTime() > 0.0f))
-                    && spell->IsInterruptable()
-                    && ((i == CURRENT_GENERIC_SPELL && (curSpellInfo->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT))
-                        || (i == CURRENT_CHANNELED_SPELL && (curSpellInfo->ChannelInterruptFlags & CHANNEL_INTERRUPT_FLAG_INTERRUPT))))
-            {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-bool IsUsableAoeSpell(SpellInfo const* spellInfo)
-{
-    if (!IsUsableOffensiveSpell(spellInfo))
-        return false;
-
-    if (spellInfo->IsAffectingArea() || spellInfo->IsTargetingArea())
-        return true;
-
-    if (spellInfo->MaxAffectedTargets > 1)
-        return true;
-
-    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-    {
-        if (spellInfo->Effects[i].IsEffect() && spellInfo->Effects[i].ChainTarget > 1)
-            return true;
-    }
-
-    return false;
-}
-
-bool IsUsableSingleTargetOffensiveSpell(SpellInfo const* spellInfo)
-{
-    return IsUsableOffensiveSpell(spellInfo) && !IsUsableAoeSpell(spellInfo);
-}
-
-bool IsBossOrEliteTarget(Unit const* target)
-{
-    if (!target)
-        return false;
-
-    if (Creature const* creature = target->ToCreature())
-        return creature->isElite() || creature->isWorldBoss() || creature->IsDungeonBoss();
-
-    return false;
-}
-
-bool IsUsableBurstSpell(SpellInfo const* spellInfo)
-{
-    if (!IsUsableOffensiveSpell(spellInfo))
-        return false;
-
-    uint32 cd = spellInfo->RecoveryTime > spellInfo->CategoryRecoveryTime ? spellInfo->RecoveryTime : spellInfo->CategoryRecoveryTime;
-    return cd >= BURST_SPELL_MIN_COOLDOWN_MS;
-}
+// "Is this known spell shaped like an offensive/taunt/heal/interrupt/dispel ability" and the
+// generic spellbook scanners built on them now live in engine/SpellPredicates.h -- pulled out
+// of this anonymous namespace so engine/CombatUtility.cpp's Global Combat Utility Layer can
+// reuse the exact same taunt/interrupt/dispel shape checks instead of re-deriving its own copy.
+// See that header's own comment. Brought into scope here via `using` so every call site below
+// (SelectSpell, SelectTauntSpell, IsUsableOffensiveSpell, etc.) keeps working unqualified.
+using BotAI::BURST_SPELL_MIN_COOLDOWN_MS;
+using BotAI::IsBossOrEliteTarget;
+using BotAI::IsTargetCastingInterruptibleSpell;
+using BotAI::IsUsableAoeSpell;
+using BotAI::IsUsableBuffSpell;
+using BotAI::IsUsableBurstSpell;
+using BotAI::IsUsableHealSpell;
+using BotAI::IsUsableInterruptSpell;
+using BotAI::IsUsableOffensiveSpell;
+using BotAI::IsUsableSingleTargetOffensiveSpell;
+using BotAI::IsUsableTauntSpell;
+using BotAI::IsUnitUnderBreakableCrowdControl;
+using BotAI::SelectAoeSpell;
+using BotAI::SelectBuffSpell;
+using BotAI::SelectBurstSpell;
+using BotAI::SelectHealSpell;
+using BotAI::SelectInterruptSpell;
+using BotAI::SelectKnownSpell;
+using BotAI::SelectSingleTargetSpell;
+using BotAI::SelectSpell;
+using BotAI::SelectTauntSpell;
+using BotAI::CountNearbyEnemies;
+using BotAI::CombatContext;
+using BotAI::CombatReservations;
+using BotAI::CombatUtility;
+using BotAI::HealEvaluator;
+using BotAI::TargetEvaluator;
+using BotAI::ThreatEvaluator;
+using BotAI::ThreatDecision;
 
 uint32 FindKnownAutoRepeatRangedSpell(Player const* bot)
 {
@@ -1499,110 +1389,9 @@ private:
     float _range;
 };
 
-uint32 CountNearbyEnemies(Player const* bot, Unit const* center, float range = 10.0f)
-{
-    if (!bot || !center)
-        return 0;
-
-    std::vector<Unit*> enemies;
-    HostileEnemyCheck check(bot, center, range);
-    Acore::UnitListSearcher<HostileEnemyCheck> searcher(center, enemies, check);
-    Cell::VisitObjects(center, searcher, range);
-    return static_cast<uint32>(enemies.size());
-}
-
-// Shared shape for all "pick a ready, affordable, in-range known spell matching this
-// predicate" scans below -- only the predicate and the range-table selection (hostile vs.
-// beneficial spells keep separate min/max range entries) differ.
-uint32 SelectKnownSpell(Player* bot, Unit* target, bool positiveRange, bool (*predicate)(SpellInfo const*))
-{
-    for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
-    {
-        if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
-            continue;
-
-        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-        if (!predicate(spellInfo))
-            continue;
-        if (bot->HasSpellCooldown(spellId))
-            continue;
-        if (!bot->HasItemFitToSpellRequirements(spellInfo))
-            continue;
-        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
-            continue;
-        if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
-            continue;
-        if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
-            continue;
-        if (target && spellInfo->TargetAuraSpell && !target->HasAura(spellInfo->TargetAuraSpell))
-            continue;
-
-        if (BotAI::IsSpellInFailureCooldown(bot->GetGUID(), spellId))
-            continue;
-
-        // Both bounds matter for a ranged spell: SelectKnownSpell used to only check
-        // maxRange, so a bot standing inside a spell's real minRange (e.g. a hunter-style
-        // shot with a ~5yd dead zone) would still pick it as "in range," guaranteeing
-        // SPELL_FAILED_TOO_CLOSE on cast. Check both.
-        float dist = bot->GetDistance(target);
-        float maxRange = spellInfo->GetMaxRange(positiveRange, bot);
-        if (maxRange > 0.0f)
-        {
-            if (dist > maxRange)
-                continue;
-        }
-        else if (spellInfo->IsAffectingArea())
-        {
-            float maxRadius = 0.0f;
-            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-            {
-                if (spellInfo->Effects[i].IsEffect())
-                {
-                    float r = spellInfo->Effects[i].CalcRadius(bot);
-                    if (r > maxRadius)
-                        maxRadius = r;
-                }
-            }
-            if (maxRadius > 0.0f && dist > maxRadius)
-                continue;
-        }
-        float minRange = spellInfo->GetMinRange(positiveRange);
-        if (minRange > 0.0f && bot->IsWithinRange(target, minRange + bot->GetMeleeRange(target)))
-            continue;
-
-        if (spellInfo->PowerType == POWER_HEALTH)
-        {
-            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
-            if (cost > 0 && bot->GetHealth() <= (uint32)cost)
-                continue;
-        }
-        else
-        {
-            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
-            if (cost > 0 && bot->GetPower(Powers(spellInfo->PowerType)) < cost)
-                continue;
-        }
-
-        return spellId;
-    }
-    return 0;
-}
-
-// First ready, affordable, in-range candidate wins -- not the "best" one by any priority
-// (there's no per-class priority data for any of the 21 classes yet). Iteration order over
-// an unordered_map is arbitrary, so which spell gets picked among several simultaneously
-// ready candidates isn't meaningful; it's still a real, currently-castable spell from the
-// bot's own spellbook either way.
-uint32 SelectSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableOffensiveSpell); }
-uint32 SelectTauntSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableTauntSpell); }
-uint32 SelectHealSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, true, IsUsableHealSpell); }
-// Self-targeted (the party/raid-area effect propagates from there) -- distance is always 0,
-// so the range check in SelectKnownSpell trivially passes regardless of maxRange.
-uint32 SelectBuffSpell(Player* bot) { return SelectKnownSpell(bot, bot, true, IsUsableBuffSpell); }
-uint32 SelectInterruptSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableInterruptSpell); }
-uint32 SelectAoeSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableAoeSpell); }
-uint32 SelectSingleTargetSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableSingleTargetOffensiveSpell); }
-uint32 SelectBurstSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableBurstSpell); }
+// CountNearbyEnemies, SelectKnownSpell, and the Select*Spell wrappers now live in
+// engine/SpellPredicates.h (brought into scope by the `using` block above) -- HostileEnemyCheck
+// stays here since FindAllyThreatenedTarget below needs the actual unit list, not just a count.
 
 // Reads this bot's own quest log (Player::GetQuestSlotQuestId/GetQuestSlotCounter -- the same
 // real quest-log data a client's own quest log window reads, not a synthetic re-derivation) to
@@ -3377,7 +3166,12 @@ AmbientProfile MakeAmbientProfile(Player* bot, BotAIState& state)
     return profile;
 }
 
-void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
+// combatRole drives movement/positioning/taunt-eligibility behavior; profileRole is what's
+// looked up in the Data-Driven profile registry (item 12, Phase 2 fixup) -- normally the same
+// value, except for Support, which fights like Dps (combatRole) but must still find its own
+// Support-tagged profile (profileRole), not silently fail profile lookup and fall back to the
+// generic spellbook chain forever.
+void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profileRole, BotAIState& state)
 {
     Unit* target = bot->GetVictim();
     // Stay means "don't go looking for a fight" -- skip inheriting the leader's target, but
@@ -3452,10 +3246,48 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
 
     // Tank-only, checked before positioning/casting settle on anything: a teammate being
     // free-hit by a loose add outranks whatever this tank was already doing, including having
-    // no target at all. See FindAllyThreatenedTarget's comment.
-    if (role == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
-        if (Unit* allyThreat = FindAllyThreatenedTarget(bot))
+    // no target at all. Scored (item 9/#3, Phase 2) instead of "first match" so a tank doesn't
+    // drop a boss for a loose add that barely tapped a full-HP DPS -- see ThreatEvaluator. Old
+    // FindAllyThreatenedTarget kept as-is (item 23) in case this ever needs a plain fallback.
+    bool threatOverride = false;
+    if (combatRole == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
+    {
+        // ThreatDecision distinguishes "no real candidates at all" from "found candidates, none
+        // warrant switching" (item 8, Phase 2 fixup) -- the plain first-match legacy fallback
+        // only makes sense for the former; falling back to it after the latter would silently
+        // overrule a deliberate, already-scored decision with an unscored first match.
+        ThreatDecision threatDecision = ThreatEvaluator::SelectThreatDecision(bot);
+        Unit* allyThreat = threatDecision.target;
+        if (!threatDecision.hadCandidates)
+            allyThreat = FindAllyThreatenedTarget(bot); // plain first-match fallback, item 23
+        if (allyThreat && allyThreat != target)
+        {
+            LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' picked up threat target '{}', reason=ally_threatened.",
+                bot->GetName(), allyThreat->GetName());
+        }
+        if (allyThreat)
+        {
             target = allyThreat;
+            threatOverride = true;
+        }
+    }
+
+    // General target refinement (item 1/#8, Phase 2): among nearby hostiles, prefer whichever
+    // actually matters most right now (attacking the healer, mid-cast, low HP, the tank's/
+    // leader's own target) over whatever was simply acquired first, with a stickiness margin so
+    // the bot doesn't ping-pong between similarly-threatening enemies every tick -- see
+    // TargetEvaluator. Skipped when ThreatEvaluator just picked this tick's target for a Tank:
+    // that's a higher-priority, already-scored decision this shouldn't immediately second-guess.
+    if (target && !threatOverride)
+    {
+        if (Unit* refined = TargetEvaluator::RefineTarget(bot, target))
+        {
+            if (refined != target)
+                LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' switched target '{}' -> '{}', reason=target_score.",
+                    bot->GetName(), target->GetName(), refined->GetName());
+            target = refined;
+        }
+    }
 
     if (target && !target->IsAlive())
     {
@@ -3478,7 +3310,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
             if (TryProcessPendingLoot(bot, diff, state))
                 return;
 
-            if (TryRestIfNeeded(bot, diff, role, state))
+            if (TryRestIfNeeded(bot, diff, combatRole, state))
                 return;
 
             if (!bot->InBattleground())
@@ -3583,7 +3415,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
                     BotWorldBehavior::UpdateAfterSolo(bot, ambientProfile, started);
                 }
             }
-            else if (role == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
+            else if (combatRole == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
                 TryAutoPullInInstance(bot);
         }
         return;
@@ -3607,7 +3439,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // table check isn't available without the SpellHistory-era threat API this fork
     // predates -- "is the target currently swinging on me" is the cheap, good-enough proxy),
     // try a taunt before falling through to the normal offensive pick.
-    float preferredDist = GetBotPreferredEngageDistance(bot, role);
+    float preferredDist = GetBotPreferredEngageDistance(bot, combatRole);
     float distance = bot->GetDistance(target);
 
     // Positioning is handled once, up front, independent of whatever ends up castable this
@@ -3630,6 +3462,33 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     // Boss avoidance (frontal cleaves, point-blank AoE / whirlwind)
     if (BotAvoidance::TryAvoidBossTelegraphedAttacks(bot, target))
         return;
+
+    // CC protection policy (item 6, Phase 2 fixup): damaging a target under breakable crowd
+    // control -- even via auto-attack -- breaks it. TargetEvaluator's own scoring already tries
+    // to steer away from a CC'd target (see ScoreTarget's penalty and RefineTarget's forced-
+    // switch handling), but when there's no other engaged target at all, it has nothing better
+    // to offer and returns the CC'd one anyway as "best of what's left." This is the backstop for
+    // that case: never stun-lock into a groupmate's sheep/fear/sap just because it's still
+    // technically "the target." A hard stun/root is deliberately NOT covered here (see
+    // IsUnitUnderBreakableCrowdControl's own comment) -- only mechanics that actually break on
+    // damage warrant holding off.
+    if (IsUnitUnderBreakableCrowdControl(target))
+    {
+        if (Unit* alternative = TargetEvaluator::FindEngagedAlternative(bot, target))
+        {
+            LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' switched off breakable-CC'd target '{}' onto '{}'.",
+                bot->GetName(), target->GetName(), alternative->GetName());
+            target = alternative;
+        }
+        else
+        {
+            if (bot->GetVictim())
+                bot->AttackStop();
+            LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' holding damage -- target '{}' is breakable-CC'd and no other engaged target exists.",
+                bot->GetName(), target->GetName());
+            return;
+        }
+    }
 
     if (preferredDist > MELEE_ENGAGE_RANGE)
     {
@@ -3663,31 +3522,59 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         bot->Attack(target, true);
     }
 
-    // Data-Driven Combat AI Framework
-    if (role == BotRole::Tank)
+    // Global Combat Utility Layer: emergency taunt/interrupt/cleanse ahead of role rotation --
+    // see engine/CombatUtility.h's own comment and item 3/22 of the combat-engine rework. Runs
+    // off the bot's real spellbook shape, so it covers every class regardless of whether its
+    // profile (if any) bothers to tag Interrupt/Cleanse -- most don't yet (see ProfileRegistry
+    // audit notes), and this is the generic floor under all of them, not a replacement for a
+    // profile's own hand-tuned Taunt/Interrupt entries where those do exist.
+    //
+    // Built once and shared with RoleEngine below (item 14, Phase 2 fixup) -- Build() itself
+    // does a group scan, HealUrgency pass, DamageTracker sample, and nearby-enemy scan, all of
+    // which were previously repeated a second time inside DpsEngine/TankEngine::Execute.
+    CombatContext ctx = CombatContext::Build(bot, target);
+    if (BotAI::CombatUtility::Execute(bot, ctx, diff, state.nextCastAllowedMs))
+        return;
+
+    // Data-Driven Combat AI Framework. CombatResult::NoAction means the profile (if any) found
+    // nothing castable this tick -- unlike the old bool return, that specifically falls through
+    // to the legacy taunt/interrupt/AoE/burst/rotation/fallback chain below instead of eating the
+    // tick silently (see item 2 of the combat-engine rework: DataDrivenAI must not swallow
+    // fallback logic just because a profile happens to exist for this class/spec/role).
+    // profileRole (item 12) is the profile-registry lookup role -- a Support bot fights like Dps
+    // (combatRole) but must still find its own Support-tagged profile.
+    BotAI::CombatResult ddResult = (combatRole == BotRole::Tank)
+        ? BotAI::TankEngine::Execute(bot, ctx, profileRole, diff, state.nextCastAllowedMs)
+        : BotAI::DpsEngine::Execute(bot, ctx, profileRole, diff, state.nextCastAllowedMs);
+    if (ddResult == BotAI::CombatResult::Cast && profileRole != combatRole)
     {
-        if (BotAI::TankEngine::Execute(bot, target, diff, state.nextCastAllowedMs))
-            return;
+        // Item 12/#25: makes it possible to confirm via logs alone that a Support bot's own
+        // Support-tagged profile was actually used, not a silent Dps-role lookup failure that
+        // happened to still produce a cast via the generic fallback further down.
+        LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' used its {} profile (fighting as {}).",
+            bot->GetName(), profileRole == BotRole::Support ? "Support" : "non-combat-role", combatRole == BotRole::Tank ? "Tank" : "Dps");
     }
-    else
-    {
-        if (BotAI::DpsEngine::Execute(bot, target, diff, state.nextCastAllowedMs))
-            return;
-    }
+    if (ddResult != BotAI::CombatResult::NoAction)
+        return;
 
     uint32 spellId = 0;
     char const* castVerb = "cast";
 
     // 1. Tank priority: taunt if not holding aggro
-    if (role == BotRole::Tank && target->GetVictim() != bot)
+    if (combatRole == BotRole::Tank && target->GetVictim() != bot)
     {
         spellId = SelectTauntSpell(bot, target);
         if (spellId)
             castVerb = "cast taunt";
     }
 
-    // 2. Interrupt priority: target is actively casting an interruptible spell
-    if (!spellId && IsTargetCastingInterruptibleSpell(target))
+    // 2. Interrupt priority: target is actively casting an interruptible spell, and no other bot
+    // already has a reservation on interrupting this specific cast (see CombatReservations --
+    // the Utility Layer above already tried and reserves on success, so this only still fires
+    // when it declined for some other reason, e.g. this bot's own interrupt spell didn't match
+    // the generic shape check).
+    if (!spellId && IsTargetCastingInterruptibleSpell(target) &&
+        !BotAI::CombatReservations::IsInterruptReserved(target->GetGUID(), bot->GetGUID()))
     {
         spellId = SelectInterruptSpell(bot, target);
         if (spellId)
@@ -3695,7 +3582,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     }
 
     // 3. AoE priority: 3+ hostile enemies around target
-    uint32 nearbyEnemies = CountNearbyEnemies(bot, target, 10.0f);
+    uint32 nearbyEnemies = ctx.nearbyEnemyCount;
     if (!spellId && nearbyEnemies >= 3)
     {
         spellId = SelectAoeSpell(bot, target);
@@ -3746,21 +3633,25 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole role, BotAIState& state)
 
     if (spellId)
     {
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
         Unit* castTarget = target;
-        if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId))
+        if (spellInfo && (spellInfo->IsPositive() || !spellInfo->NeedsExplicitUnitTarget()))
+            castTarget = bot;
+
+        // Positioning (chase/kite) was already handled unconditionally above -- this only gates
+        // the cast itself: a cast-time spell needs the bot actually stationary first (see
+        // CombatMovement::ReadyToCast), or it's a guaranteed SPELL_FAILED_MOVING. Instant spells
+        // and auto-attack/auto-repeat (already engaged up front) are untouched either way.
+        if (!BotAI::CombatMovement::ReadyToCast(bot, spellInfo))
         {
-            if (spellInfo->IsPositive() || !spellInfo->NeedsExplicitUnitTarget())
-                castTarget = bot;
+            state.nextCastAllowedMs = AI_REACTION_GATE_MS;
+            return;
         }
 
-        // Positioning was already handled unconditionally above (a persistent
-        // ChaseMovementGenerator, not tied to which branch of spellId this is) -- casting
-        // doesn't need to touch movement at all anymore, regardless of whether this spell
-        // targets the enemy or the bot itself.
         SpellCastResult result = LogCastAttempt(bot, spellId, castTarget, castVerb);
         if (result != SPELL_CAST_OK)
             BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
-        state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? APPROXIMATE_GCD_MS : NO_CANDIDATE_RETRY_MS;
+        state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? AI_REACTION_GATE_MS : NO_CANDIDATE_RETRY_MS;
         return;
     }
 
@@ -3789,10 +3680,20 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     if (BotAvoidance::TryAvoidGroundHazards(bot))
         return;
 
-    Player* healTarget = FindHealTarget(bot);
+    // HealUrgencyScore (item 10/#4, Phase 2): missing HP, incoming-damage trend, role, whether
+    // an enemy is actively on them, and other healers' already-reserved incoming heals -- not
+    // just lowest HP%. See HealEvaluator. Old FindHealTarget kept as-is (item 23) as a plain
+    // lowest-HP% fallback for the rare case urgency scoring finds nobody worth healing.
+    Player* healTarget = HealEvaluator::SelectBestHealTarget(bot);
+    if (!healTarget)
+        healTarget = FindHealTarget(bot);
     Unit* threat = FindGroupCombatTarget(bot, bot->GetGroup());
     if (!threat && healTarget && healTarget->IsInCombat())
         threat = healTarget->GetVictim();
+
+    // Real spell range (item 12, Phase 2) instead of a fixed 25/35yd -- a healer whose best known
+    // heal reaches 40yd shouldn't be forced to approach any closer than that.
+    float healRange = HealEvaluator::BestKnownHealRange(bot, HEAL_ENGAGE_RANGE);
 
     // Confirmed live -- explicit user feedback: outside any real fight, chasing a groupmate who
     // merely dipped under FindHealTarget's 95% "worth healing" threshold (incidental chip/fall
@@ -3809,8 +3710,10 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     {
         // Nobody needs healing right now -- a real healer doesn't stand idle with a full
         // group, they contribute damage. Dps, not Tank: a Healer bot has no business trying
-        // to hold aggro just because there's nothing to heal this tick.
-        UpdateOffensive(bot, diff, BotRole::Dps, state);
+        // to hold aggro just because there's nothing to heal this tick. profileRole is also
+        // Dps here (not Healer) -- a Healer-role bot generally has no separate Dps-tagged
+        // profile of its own, so this correctly falls through to the generic spellbook chain.
+        UpdateOffensive(bot, diff, BotRole::Dps, BotRole::Dps, state);
         return;
     }
 
@@ -3832,10 +3735,10 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
             bot->GetMotionMaster()->MoveChase(threat, ChaseRange(RANGED_ENGAGE_DISTANCE * 0.7f, RANGED_ENGAGE_DISTANCE));
     }
-    else if (bot->GetDistance(healTarget) > HEAL_ENGAGE_RANGE)
+    else if (bot->GetDistance(healTarget) > healRange)
     {
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-            bot->GetMotionMaster()->MoveChase(healTarget, HEAL_ENGAGE_RANGE - 5.0f);
+            bot->GetMotionMaster()->MoveChase(healTarget, healRange - 5.0f);
         return;
     }
     else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
@@ -3845,11 +3748,20 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     // used above -- being out of heal range of healTarget after prioritizing safety from the
     // threat is the correct, honest outcome of that tradeoff (matches a real healer choosing
     // not to facetank a boss just to keep someone topped off), not a bug to paper over here.
-    if (bot->GetDistance(healTarget) > HEAL_ENGAGE_RANGE)
+    if (bot->GetDistance(healTarget) > healRange)
+        return;
+
+    // Global Combat Utility Layer: emergency taunt/interrupt/cleanse, ahead of role rotation --
+    // see engine/CombatUtility.h. Built off the bot's real spellbook shape, so it covers every
+    // class regardless of whether its profile (if any) has bothered to tag Interrupt/Cleanse.
+    // Shared with HealerEngine below (item 14, Phase 2 fixup) instead of each building its own.
+    CombatContext ctx = CombatContext::Build(bot, threat);
+    if (BotAI::CombatUtility::Execute(bot, ctx, diff, state.nextCastAllowedMs))
         return;
 
     // Data-Driven Combat AI Framework
-    if (BotAI::HealerEngine::Execute(bot, diff, state.nextCastAllowedMs))
+    BotAI::CombatResult ddResult = BotAI::HealerEngine::Execute(bot, ctx, diff, state.nextCastAllowedMs);
+    if (ddResult != BotAI::CombatResult::NoAction)
         return;
 
     if (state.nextCastAllowedMs > diff)
@@ -3867,10 +3779,34 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 
     if (spellId)
     {
+        SpellInfo const* healSpellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!BotAI::CombatMovement::ReadyToCast(bot, healSpellInfo))
+        {
+            state.nextCastAllowedMs = AI_REACTION_GATE_MS;
+            return;
+        }
+
+        // Heal reservation (items 2/11, Phase 2): a rough 20%-of-max-health estimate is all this
+        // legacy fallback has to go on (no AbilityTag here to size it more precisely the way
+        // HealerEngine's Data-Driven path does). Tied to the spell's real cast time (item 2) --
+        // not a fixed duration -- so the reservation's lazy liveness check (see
+        // CombatReservations::ReserveHeal's own comment) tracks how long this specific heal is
+        // actually in flight, dropping it as soon as the cast lands/fails/is interrupted rather
+        // than holding a stale reservation for a fixed several seconds regardless.
+        uint32 healCastTimeMs = healSpellInfo ? healSpellInfo->CalcCastTime(bot) : 0;
+        uint32 expectedLegacyHeal = uint32(healTarget->GetMaxHealth() * 0.20f);
+        CombatReservations::ReserveHeal(bot->GetGUID(), healTarget->GetGUID(), spellId, expectedLegacyHeal, healCastTimeMs);
+        LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' reserved ~{} heal on '{}' (spell {}, cast {}ms).",
+            bot->GetName(), expectedLegacyHeal, healTarget->GetName(), spellId, healCastTimeMs);
+
         SpellCastResult result = LogCastAttempt(bot, spellId, healTarget, "cast heal");
         if (result != SPELL_CAST_OK)
+        {
+            // Didn't actually go out -- no real heal is coming, so don't hold the reservation.
+            CombatReservations::ClearHealReservation(bot->GetGUID());
             BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
-        state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? APPROXIMATE_GCD_MS : NO_CANDIDATE_RETRY_MS;
+        }
+        state.nextCastAllowedMs = (result == SPELL_CAST_OK) ? AI_REACTION_GATE_MS : NO_CANDIDATE_RETRY_MS;
         return;
     }
 
@@ -3894,7 +3830,11 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 void UpdateSupport(Player* bot, uint32 diff, BotAIState& state)
 {
     TryMaintainBuff(bot, diff, state);
-    UpdateOffensive(bot, diff, BotRole::Dps, state);
+    // Item 12, Phase 2 fixup: combatRole is Dps (fights like one -- taunt/threat logic must not
+    // apply), but profileRole stays Support so a registered "*_Support" Data-Driven profile is
+    // actually found instead of silently failing lookup under BotRole::Dps forever and falling
+    // back to the generic spellbook chain for every Support-role class/spec.
+    UpdateOffensive(bot, diff, BotRole::Dps, BotRole::Support, state);
 }
 
 // Called every tick a bot is dead, instead of the normal role update -- see BotAI::Update.
@@ -4137,7 +4077,7 @@ void Update(Player* bot, uint32 diff)
     else if (state.role == BotRole::Support)
         UpdateSupport(bot, diff, state);
     else
-        UpdateOffensive(bot, diff, state.role, state);
+        UpdateOffensive(bot, diff, state.role, state.role, state);
 }
 
 void LoadGatherLootData()
@@ -4165,6 +4105,13 @@ void Forget(ObjectGuid botGuid)
     BotAI::ForgetRotationState(botGuid);
     SpellResolver::Invalidate(botGuid);
     ActionEvaluator::ClearThrottles(botGuid);
+    CombatReservations::ForgetBot(botGuid);
+    DamageTracker::Forget(botGuid);
+    HealEvaluator::ForgetBot(botGuid);
+    TargetEvaluator::ForgetBot(botGuid);
+    DpsEngine::ForgetBot(botGuid);
+    TankEngine::ForgetBot(botGuid);
+    HealerEngine::ForgetBot(botGuid);
     BotBattlegroundAI::Forget(botGuid);
     BotMovement::Forget(botGuid);
     BotWorldBehavior::Forget(botGuid);
