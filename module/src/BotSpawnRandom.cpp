@@ -49,6 +49,7 @@
 #include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -126,23 +127,50 @@ struct ClassTemplate
     uint8 race = 0;
 };
 
-// One representative level-80 template guid (+ its race) per custom class (12-32), queried live
-// rather than hardcoded so the pool tracks the test-character roster as it changes. Deliberately
-// excludes account 1 (LOCAL, the human player's own account) -- see BotMgr.h's standing rule
-// that characters there must never be used as bots.
-std::unordered_map<uint8, ClassTemplate> BuildClassTemplateRoster()
+// Up to one template per faction for a class, indexed by TeamId.
+struct ClassTemplates
 {
-    std::unordered_map<uint8, ClassTemplate> roster;
+    std::array<ClassTemplate, 2> byTeam;
+};
+
+// Level-80 template characters per custom class (12-32) and faction, queried live rather than
+// hardcoded so the pool tracks the test-character roster as it changes. Excludes account 1
+// (LOCAL, the human player's own account -- see BotMgr.h's standing rule) and every bot-hosting
+// account, so a population bot that reaches 80 can never become the template for the next one.
+//
+// Keeping one template per faction, not just the lowest guid per class, is what balances classes:
+// with only one, a class existed for one faction alone, and 311 Horde bots were split across the
+// five classes whose lowest-guid template happened to be Horde -- confirmed live at 52-75 bots each
+// for those against 12-25 for everything else.
+std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster()
+{
+    std::string prefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+    std::unordered_set<uint32> botAccounts;
+    for (uint32 n = 1; n <= 10000; ++n)
+    {
+        uint32 accountId = AccountMgr::GetId(prefix + std::to_string(n));
+        if (!accountId)
+            break;
+        botAccounts.insert(accountId);
+    }
+
+    std::unordered_map<uint8, ClassTemplates> roster;
     QueryResult result = CharacterDatabase.Query(
-        "SELECT c.class, c.guid, c.race FROM characters c "
-        "JOIN (SELECT class, MIN(guid) AS guid FROM characters WHERE account <> 1 AND level >= 80 "
-        "AND class BETWEEN 12 AND 32 GROUP BY class) m ON m.class = c.class AND m.guid = c.guid");
+        "SELECT class, guid, race, account FROM characters WHERE account <> 1 AND level >= 80 "
+        "AND class BETWEEN 12 AND 32 ORDER BY guid");
     if (!result)
         return roster;
     do
     {
         Field* fields = result->Fetch();
-        roster[fields[0].Get<uint8>()] = ClassTemplate{ fields[1].Get<uint32>(), fields[2].Get<uint8>() };
+        if (botAccounts.count(fields[3].Get<uint32>()))
+            continue;
+
+        uint8 race = fields[2].Get<uint8>();
+        size_t team = Player::TeamIdForRace(race) == TEAM_ALLIANCE ? 0 : 1;
+        ClassTemplate& slot = roster[fields[0].Get<uint8>()].byTeam[team];
+        if (!slot.guid)
+            slot = ClassTemplate{ fields[1].Get<uint32>(), race };
     } while (result->NextRow());
     return roster;
 }
@@ -489,7 +517,7 @@ std::vector<std::pair<std::string, std::string>> FreshCharacterOverrides(uint8 l
 // behaviour: a level-80 copy); any other level creates a fresh character of that level.
 ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level)
 {
-    std::unordered_map<uint8, ClassTemplate> templateRoster = BuildClassTemplateRoster();
+    std::unordered_map<uint8, ClassTemplates> templateRoster = BuildClassTemplateRoster();
     if (templateRoster.empty())
     {
         if (handler)
@@ -505,15 +533,18 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
         return 0;
     }
 
-    // Only consider templates whose OWN race is the same faction as the one being requested here
-    // -- CloneCharacter below copies a template's map/position/homebind verbatim regardless of
-    // the new character's own race, so cloning e.g. an Orc from a Human template's row put a
-    // Horde-race bot standing in the middle of Stormwind. Confirmed live.
-    TeamId wantedTeam = Player::TeamIdForRace(race);
+    // A template of the requested race's own faction is preferred -- CloneCharacter copies a
+    // template's map/position/homebind verbatim regardless of the new character's race, so cloning
+    // an Orc from a Human template's row once put a Horde bot in the middle of Stormwind (confirmed
+    // live). A fresh levelled bot (level != 0) is exempt when its class has no same-faction
+    // template: ApplyFreshBotSetup force-relocates it to its own race's hub on first login, so the
+    // template's position never matters. Without that exemption ten classes, whose templates are all
+    // one faction, could never be played by the other.
+    size_t wantedTeam = Player::TeamIdForRace(race) == TEAM_ALLIANCE ? 0 : 1;
     std::vector<uint8> availableClasses;
     availableClasses.reserve(templateRoster.size());
     for (auto const& [classId, tmpl] : templateRoster)
-        if (Player::TeamIdForRace(tmpl.race) == wantedTeam)
+        if (tmpl.byTeam[wantedTeam].guid || (level && tmpl.byTeam[1 - wantedTeam].guid))
             availableClasses.push_back(classId);
 
     if (availableClasses.empty())
@@ -532,7 +563,9 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
         return 0;
 
     uint8 classId = availableClasses[RandomInt(0, availableClasses.size() - 1)];
-    uint32 templateGuid = templateRoster[classId].guid;
+    ClassTemplates const& templates = templateRoster[classId];
+    uint32 templateGuid = templates.byTeam[wantedTeam].guid ? templates.byTeam[wantedTeam].guid
+        : templates.byTeam[1 - wantedTeam].guid;
     uint8 gender = uint8(RandomInt(0, 1));
     std::string name = GenerateUniqueName();
 
