@@ -35,9 +35,20 @@ namespace BotAI
     class ThreatEvaluator
     {
     public:
-        // Higher is better; negative means "not a real candidate at all" (not attacking any
-        // groupmate). Only meaningful for an enemy currently attacking a groupmate other than
-        // `tank` -- see SelectThreatDecision, the actual entry point.
+        // True when `candidate` is attacking a groupmate other than `tank` at all -- i.e. a real
+        // pickup candidate exists, independent of how it ultimately scores. Split out from
+        // ScoreThreatTarget (review finding #2 on the Phase 2 fixup pass): ScoreThreatTarget's
+        // own re-taunt-war and distance penalties can legitimately push a genuine candidate's
+        // score below 0 (e.g. another tank already holds it, or it's at the edge of `range`) --
+        // using that same "score < 0" check to also mean "not a candidate at all" made
+        // SelectThreatDecision report hadCandidates=false for those cases, which then let the old
+        // unscored first-match FindAllyThreatenedTarget fallback re-pick exactly the target the
+        // scorer had deliberately deprioritized.
+        static bool IsThreatCandidate(Player* tank, Unit* candidate);
+
+        // Higher is better among real candidates (see IsThreatCandidate) -- ranks how much a
+        // legitimate pickup target actually matters right now. Meaningless (and not guaranteed
+        // sign-consistent) when called on something IsThreatCandidate would reject.
         static float ScoreThreatTarget(Player* tank, Unit* candidate);
 
         // Best enemy for `tank` to pick up right now among ones attacking a groupmate within

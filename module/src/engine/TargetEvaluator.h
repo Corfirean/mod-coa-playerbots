@@ -66,6 +66,15 @@ namespace BotAI
         // never considers a mob that isn't already part of this fight, same as IsEngagedCandidate.
         static Unit* FindBestAoECluster(Player* bot, Unit* fallbackTarget, float clusterRadius = 10.0f, float scanRange = 30.0f);
 
+        // Count of already-engaged hostiles (see IsEngagedCandidate) within range of center --
+        // review finding #1 on the Phase 2 fixup pass: CombatContext previously sized AoE
+        // eligibility off SpellPredicates::CountNearbyEnemies, which counts every attackable unit
+        // in range regardless of whether it's part of this fight, so one engaged mob plus two
+        // idle bystanders standing nearby could still satisfy an AoE ability's minAoETargets floor
+        // and pull the bystanders in. This is the engaged-only equivalent CombatContext now uses
+        // instead for that one field.
+        static uint32 CountEngaged(Player* bot, Unit* center, float range = 10.0f);
+
         // Drops this bot's target-lock and evaluation-interval timers -- called on despawn (see
         // BotAI::Forget) so the maps don't grow across repeated spawn/despawn cycles.
         static void ForgetBot(ObjectGuid botGuid);

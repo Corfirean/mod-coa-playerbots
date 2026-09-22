@@ -39,7 +39,15 @@ namespace BotAI
         uint32 victimCastingSpellId = 0;    // spell id behind victimIsCastingInterruptible, 0 if none
         uint32 victimCastFinishTimeMs = 0;  // absolute getMSTime() the cast above finishes at
         bool victimTargetingNonTank = false;
-        uint8 nearbyEnemyCount = 0;   // Hostile units within 10 yards of the victim
+        uint8 nearbyEnemyCount = 0;   // Attackable hostile units within 10 yards of the victim,
+                                      // engaged or not -- only used for worthOffensiveCooldown's
+                                      // "is this actually a pack" check below, never for AoE
+                                      // eligibility (see engagedEnemyCount, Phase 2 fixup #1).
+        uint8 engagedEnemyCount = 0;  // Same 10-yard scan, but only hostiles already part of this
+                                      // fight (TargetEvaluator::IsEngagedCandidate) -- what
+                                      // ActionEvaluator's AoEDamage eligibility floor actually
+                                      // gates on, so an idle bystander pack standing near the
+                                      // fight can never satisfy minAoETargets on its own.
 
         // Fight value -- see item 14/#9 of the combat-engine rework: whether this fight actually
         // justifies spending a long-cooldown offensive/defensive button, not just "is one ready."

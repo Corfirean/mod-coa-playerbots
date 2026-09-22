@@ -225,6 +225,34 @@ namespace BotAI
         return unit->HasAuraWithMechanic(BREAKS_ON_DAMAGE_CC_MASK);
     }
 
+    bool WouldAoEHitBreakableCrowdControl(Player* bot, Unit* target, SpellInfo const* spellInfo)
+    {
+        if (!bot || !target || !spellInfo)
+            return false;
+
+        float radius = 0.0f;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (spellInfo->Effects[i].IsEffect())
+            {
+                float r = spellInfo->Effects[i].CalcRadius(bot);
+                if (r > radius)
+                    radius = r;
+            }
+        }
+        if (radius <= 0.0f)
+            return false; // not actually an area effect -- nothing to protect against
+
+        std::vector<Unit*> nearby;
+        GetNearbyEnemies(bot, target, radius, nearby);
+        for (Unit* unit : nearby)
+        {
+            if (IsUnitUnderBreakableCrowdControl(unit))
+                return true;
+        }
+        return false;
+    }
+
     bool IsOffGlobalCooldown(Player* bot, SpellInfo const* spellInfo)
     {
         if (!bot || !spellInfo)

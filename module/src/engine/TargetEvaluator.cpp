@@ -293,6 +293,21 @@ namespace BotAI
         return best;
     }
 
+    uint32 TargetEvaluator::CountEngaged(Player* bot, Unit* center, float range)
+    {
+        if (!bot || !center)
+            return 0;
+
+        std::vector<Unit*> candidates;
+        GetNearbyEnemies(bot, center, range, candidates);
+
+        uint32 count = 0;
+        for (Unit* candidate : candidates)
+            if (IsEngagedCandidate(bot, candidate))
+                ++count;
+        return count;
+    }
+
     void TargetEvaluator::ForgetBot(ObjectGuid botGuid)
     {
         s_targetLocks.erase(botGuid);

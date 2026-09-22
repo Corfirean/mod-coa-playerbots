@@ -13,20 +13,30 @@
 
 namespace BotAI
 {
-    float ThreatEvaluator::ScoreThreatTarget(Player* tank, Unit* candidate)
+    bool ThreatEvaluator::IsThreatCandidate(Player* tank, Unit* candidate)
     {
         if (!tank || !candidate || !candidate->IsAlive())
-            return -1.0f;
+            return false;
 
         Unit* victim = candidate->GetVictim();
         if (!victim || victim == tank || !victim->IsAlive())
-            return -1.0f; // not threatening anyone else right now
+            return false; // not threatening anyone else right now
 
         Player* victimPlayer = victim->ToPlayer();
         Group* group = tank->GetGroup();
         if (!victimPlayer || !group || victimPlayer->GetGroup() != group)
-            return -1.0f; // ignore an enemy fighting some unrelated bystander
+            return false; // ignore an enemy fighting some unrelated bystander
 
+        return true;
+    }
+
+    float ThreatEvaluator::ScoreThreatTarget(Player* tank, Unit* candidate)
+    {
+        if (!IsThreatCandidate(tank, candidate))
+            return -1.0f;
+
+        Player* victimPlayer = candidate->GetVictim()->ToPlayer();
+        Group* group = tank->GetGroup();
         float score = 100.0f;
 
         BotRole victimRole = BotAI::GetRole(victimPlayer->GetGUID());
@@ -73,11 +83,17 @@ namespace BotAI
         float bestScore = 0.0f;
         for (Unit* candidate : enemies)
         {
-            float score = ScoreThreatTarget(tank, candidate);
-            if (score < 0.0f)
-                continue; // not attacking any groupmate at all -- not a real candidate
+            // hadCandidates keys off eligibility (review finding #2 on the Phase 2 fixup pass),
+            // not the score -- ScoreThreatTarget's own re-taunt-war and distance penalties can
+            // legitimately push a genuine candidate below 0, and using that same threshold for
+            // both "is this a real candidate" and "does it rank well" made a deliberately
+            // deprioritized target look like "no candidates at all," letting the caller's
+            // unscored first-match legacy fallback re-pick exactly that target.
+            if (!IsThreatCandidate(tank, candidate))
+                continue;
 
             decision.hadCandidates = true;
+            float score = ScoreThreatTarget(tank, candidate);
             if (score > bestScore)
             {
                 bestScore = score;

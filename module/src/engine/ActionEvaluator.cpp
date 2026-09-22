@@ -24,6 +24,68 @@ namespace BotAI
     {
         // [botGuid][rootSpellId] -> expiryMSTime
         std::unordered_map<ObjectGuid, std::unordered_map<uint32, uint32>> s_internalThrottles;
+
+        // True when `bot` could actually reach `candidate` with `spellInfo` right now -- range,
+        // line of sight, alive, in-world, same map. Self is always reachable. Deliberately not the
+        // full CanCast pipeline (cooldown/power/GCD don't vary by which ally is chosen, so
+        // filtering candidates on them here would be redundant with the CanCast call that already
+        // follows target resolution) -- just the target-specific geometry that made review finding
+        // #3 possible in the first place: the most urgent ally being out of THIS spell's range.
+        bool IsHealTargetReachable(Player* bot, Unit* candidate, SpellInfo const* spellInfo)
+        {
+            if (!bot || !candidate || !spellInfo || !candidate->IsAlive() || !candidate->IsInWorld())
+                return false;
+            if (candidate->GetMap() != bot->GetMap())
+                return false;
+            if (candidate == bot)
+                return true;
+
+            float dist = bot->GetDistance(candidate);
+            float maxRange = spellInfo->GetMaxRange(true, bot);
+            if (maxRange > 0.0f && dist > maxRange)
+                return false;
+            return bot->IsWithinLOSInMap(candidate);
+        }
+
+        // Shared triage scan behind AnyInjuredAlly/LowestHealthAlly/TankAlly (review finding #3):
+        // best HealEvaluator::ScoreHealUrgency among group members (and the bot itself) that both
+        // satisfy the descriptor's own constraints (HP threshold, aura-missing) AND are actually
+        // reachable by the specific spell about to be cast -- not just the single best-urgency
+        // ally group-wide, which could easily be out of THIS ability's range while a slightly-
+        // less-urgent one sits well within it. `spellInfo` may be null (spell not resolved yet);
+        // reachability is then skipped, matching the old unfiltered behavior.
+        Player* SelectBestReachableAlly(CombatContext const& ctx, AbilityDescriptor const& desc, SpellInfo const* spellInfo, bool requireTankRole)
+        {
+            Player* best = nullptr;
+            float bestUrgency = -1.0f;
+            auto consider = [&](Player* candidate)
+            {
+                if (!candidate || !candidate->IsAlive() || !candidate->IsInWorld())
+                    return;
+                if (requireTankRole && BotAI::GetRole(candidate->GetGUID()) != BotRole::Tank)
+                    return;
+                if (candidate->GetHealthPct() > desc.maxTargetHpPct)
+                    return;
+                if (desc.requireAuraMissingOnTarget && candidate->HasAura(desc.rootSpellId, ctx.bot->GetGUID()))
+                    return;
+                if (spellInfo && !IsHealTargetReachable(ctx.bot, candidate, spellInfo))
+                    return;
+
+                float urgency = HealEvaluator::ScoreHealUrgency(ctx.bot, candidate);
+                if (urgency > bestUrgency)
+                {
+                    bestUrgency = urgency;
+                    best = candidate;
+                }
+            };
+
+            if (Group const* group = ctx.bot->GetGroup())
+                for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+                    consider(ref->GetSource());
+            consider(ctx.bot);
+
+            return best;
+        }
     }
 
     bool ActionEvaluator::IsThrottled(ObjectGuid botGuid, uint32 rootSpellId)
@@ -54,7 +116,7 @@ namespace BotAI
         s_internalThrottles.erase(botGuid);
     }
 
-    Unit* ActionEvaluator::ResolveTarget(CombatContext const& ctx, TargetType targetType, AbilityDescriptor const& desc)
+    Unit* ActionEvaluator::ResolveTarget(CombatContext const& ctx, TargetType targetType, AbilityDescriptor const& desc, uint32 resolvedSpellId)
     {
         switch (targetType)
         {
@@ -74,42 +136,34 @@ namespace BotAI
                 return TargetEvaluator::FindBestAoECluster(ctx.bot, ctx.victim);
             }
 
+            // Ally triage target types (review finding #3 on the Phase 2 fixup pass): all three
+            // route through SelectBestReachableAlly so the ally picked is the best-urgency one
+            // this specific spell can actually reach, not just the single best-urgency ally
+            // group-wide (which CombatContext computes once, shared by every ability regardless
+            // of its own range) -- a healer that "sees the wounded but doesn't heal" because its
+            // most urgent target happened to be out of THIS spell's range now considers the next
+            // best reachable one instead of silently failing CanCast and skipping the ability.
             case TargetType::LowestHealthAlly:
-                return ctx.lowestAlly ? ctx.lowestAlly : ctx.bot;
+            {
+                SpellInfo const* spellInfo = resolvedSpellId ? sSpellMgr->GetSpellInfo(resolvedSpellId) : nullptr;
+                return SelectBestReachableAlly(ctx, desc, spellInfo, false);
+            }
 
             case TargetType::TankAlly:
-                return ctx.tankAlly ? ctx.tankAlly : ctx.lowestAlly;
+            {
+                SpellInfo const* spellInfo = resolvedSpellId ? sSpellMgr->GetSpellInfo(resolvedSpellId) : nullptr;
+                if (Player* tank = SelectBestReachableAlly(ctx, desc, spellInfo, true))
+                    return tank;
+                // No reachable tank (none in group, or the only one(s) are out of range) -- fall
+                // back to the best reachable ally regardless of role, same spirit as the old
+                // "ctx.tankAlly ? ctx.tankAlly : ctx.lowestAlly" fallback.
+                return SelectBestReachableAlly(ctx, desc, spellInfo, false);
+            }
 
             case TargetType::AnyInjuredAlly:
             {
-                // Triage-aware (item 15, Phase 2 fixup): pick the best-scoring valid candidate
-                // (HealEvaluator::ScoreHealUrgency) instead of the first one in GroupReference
-                // iteration order that happens to satisfy the descriptor's own constraints.
-                Player* best = nullptr;
-                float bestUrgency = -1.0f;
-                auto consider = [&](Player* candidate)
-                {
-                    if (!candidate || !candidate->IsAlive() || !candidate->IsInWorld())
-                        return;
-                    if (candidate->GetHealthPct() > desc.maxTargetHpPct)
-                        return;
-                    if (desc.requireAuraMissingOnTarget && candidate->HasAura(desc.rootSpellId, ctx.bot->GetGUID()))
-                        return;
-
-                    float urgency = HealEvaluator::ScoreHealUrgency(ctx.bot, candidate);
-                    if (urgency > bestUrgency)
-                    {
-                        bestUrgency = urgency;
-                        best = candidate;
-                    }
-                };
-
-                if (Group const* group = ctx.bot->GetGroup())
-                    for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
-                        consider(ref->GetSource());
-                consider(ctx.bot); // always a candidate too, same as the old fallback
-
-                return best;
+                SpellInfo const* spellInfo = resolvedSpellId ? sSpellMgr->GetSpellInfo(resolvedSpellId) : nullptr;
+                return SelectBestReachableAlly(ctx, desc, spellInfo, false);
             }
 
             case TargetType::PartyMissingBuff:
@@ -173,6 +227,16 @@ namespace BotAI
             if (target->IsImmunedToSpell(spellInfo, bot))
                 return false;
         }
+
+        // AoE blast-radius CC guard (review finding #1 on the Phase 2 fixup pass): the
+        // minAoETargets eligibility floor in ScoreAbility only looks at how many engaged enemies
+        // are nearby, never whether one of them is something a groupmate deliberately sheeped/
+        // feared/sapped -- an AoE landing on the primary target can still catch an incidental
+        // CC'd mob standing inside its own blast radius even though the primary target itself is
+        // never CC'd here (BotAI's own CC-protection policy already guarantees that before this
+        // engine ever runs).
+        if (HasTag(desc.tags, AbilityTag::AoEDamage) && WouldAoEHitBreakableCrowdControl(bot, target, spellInfo))
+            return false;
 
         // Equipment / weapon requirement
         if (!bot->HasItemFitToSpellRequirements(spellInfo))
@@ -309,12 +373,16 @@ namespace BotAI
             // a flat count-based bonus alone still let a high-baseScore AoE entry (e.g. Multi-
             // Shot at 205) outscore a genuine single-target one (Aimed Shot at 195) against a
             // single enemy, since the bonus only needed to be non-negative to tip the balance.
-            if (ctx.nearbyEnemyCount < desc.minAoETargets)
+            // Gated on engagedEnemyCount, not the wider nearbyEnemyCount (review finding #1 on
+            // the Phase 2 fixup pass) -- nearbyEnemyCount counts every attackable unit in range
+            // regardless of whether it's part of this fight, so an idle bystander pack standing
+            // near the real 1-mob fight could otherwise satisfy the floor on its own and pull
+            // them in.
+            if (ctx.engagedEnemyCount < desc.minAoETargets)
                 return -1.0f;
-            // Above the floor, scales with the real nearby-enemy count (item 15/#8 --
-            // CombatContext::nearbyEnemyCount is now actually populated) so a genuine pack still
+            // Above the floor, scales with the real engaged-enemy count so a genuine pack still
             // outscores single-target ones, more so for a bigger pack (5+ "high-value" AoE).
-            score += static_cast<float>(ctx.nearbyEnemyCount) * 20.0f;
+            score += static_cast<float>(ctx.engagedEnemyCount) * 20.0f;
         }
         if (HasTag(desc.tags, AbilityTag::DefensiveCD))
         {
@@ -367,12 +435,16 @@ namespace BotAI
 
         for (AbilityDescriptor const& desc : abilities)
         {
-            Unit* target = ResolveTarget(ctx, desc.targetType, desc);
-            if (!target || !target->IsAlive())
-                continue;
-
+            // Resolved before target selection (review finding #3 on the Phase 2 fixup pass) so
+            // the ally-triage target types can filter candidates by THIS spell's real range
+            // instead of picking the single best-urgency ally group-wide and only discovering
+            // it's unreachable once CanCast rejects it -- see ResolveTarget's own comment.
             uint32 resolvedSpellId = SpellResolver::ResolveSpell(ctx.bot, desc.rootSpellId);
             if (!resolvedSpellId)
+                continue;
+
+            Unit* target = ResolveTarget(ctx, desc.targetType, desc, resolvedSpellId);
+            if (!target || !target->IsAlive())
                 continue;
 
             if (!CanCast(ctx, desc, resolvedSpellId, target))

@@ -77,6 +77,15 @@ namespace BotAI
     // them is normal and not penalized here.
     bool IsUnitUnderBreakableCrowdControl(Unit const* unit);
 
+    // True when casting `spellInfo` at `target` would also catch a breakable-CC'd unit inside its
+    // own effect radius (review finding #1 on the Phase 2 fixup pass) -- the AoE eligibility floor
+    // alone only ever counted *how many* engaged enemies were nearby, never whether one of them
+    // was something a groupmate had gone to the trouble of sheeping/fearing/sapping. Scans around
+    // `target` (the resolved AoE cluster center), not `bot`; a non-area spell (radius 0) always
+    // returns false. Deliberately unit-target-anchored, same limitation as
+    // TargetEvaluator::FindBestAoECluster -- see AreaHostile's own known-limitation note.
+    bool WouldAoEHitBreakableCrowdControl(Player* bot, Unit* target, SpellInfo const* spellInfo);
+
     // The per-spell eligibility core behind SelectKnownSpell (cooldown, GCD, item/aura
     // requirements, failure backoff, range, power cost) for one already-chosen, already-known
     // spellId -- exposed separately so a caller that needs to pick a *specific* spell (e.g.

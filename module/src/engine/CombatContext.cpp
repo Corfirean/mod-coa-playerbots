@@ -8,6 +8,7 @@
 #include "engine/DamageTracker.h"
 #include "engine/HealEvaluator.h"
 #include "engine/SpellPredicates.h"
+#include "engine/TargetEvaluator.h"
 #include "Group.h"
 #include "Player.h"
 #include "Spell.h"
@@ -62,6 +63,8 @@ namespace BotAI
             ctx.targetIsBossOrElite = IsBossOrEliteTarget(ctx.victim);
             ctx.nearbyEnemyCount = static_cast<uint8>(std::min<uint32>(255,
                 CountNearbyEnemies(bot, ctx.victim, 10.0f)));
+            ctx.engagedEnemyCount = static_cast<uint8>(std::min<uint32>(255,
+                TargetEvaluator::CountEngaged(bot, ctx.victim, 10.0f)));
             bool targetIsPvP = ctx.victim->GetTypeId() == TYPEID_PLAYER;
             ctx.worthOffensiveCooldown = (ctx.targetIsBossOrElite || targetIsPvP || ctx.nearbyEnemyCount >= 3)
                 && ctx.targetHpPct > 15.0f;
