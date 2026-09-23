@@ -89,6 +89,7 @@ namespace BotAI
 
     SpecStrategy const* SpecStrategyRegistry::FindStrategy(uint8 classId, uint32 specId, BotRole role)
     {
+        ProfileRegistry::Initialize();
         for (SpecStrategy const& s : s_strategies)
         {
             if (s.classId == classId && s.specId == specId && s.role == role)
@@ -99,6 +100,7 @@ namespace BotAI
 
     SpecStrategy const* SpecStrategyRegistry::FindStrategy(uint8 classId, uint32 specId)
     {
+        ProfileRegistry::Initialize();
         for (SpecStrategy const& s : s_strategies)
         {
             if (s.classId == classId && s.specId == specId)
@@ -114,6 +116,7 @@ namespace BotAI
 
     std::vector<SpecStrategy> const& SpecStrategyRegistry::GetAllStrategies()
     {
+        ProfileRegistry::Initialize();
         return s_strategies;
     }
 
@@ -483,6 +486,7 @@ namespace BotAI
 
     void SpecStrategyRegistry::Validate()
     {
+        ProfileRegistry::Initialize();
         LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry: Validating strategies census...");
 
         uint32 strategyCount = static_cast<uint32>(s_strategies.size());
