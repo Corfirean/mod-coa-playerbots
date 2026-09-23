@@ -4213,6 +4213,65 @@ void ReportResources(Player* bot, ChatHandler* handler)
         handler->SendSysMessage("  (no resource channels found -- this should never happen, native power is always present)");
 }
 
+void ReportSpellResources(Player* bot, uint32 resolvedSpellId, ChatHandler* handler)
+{
+    if (!bot || !handler)
+        return;
+
+    handler->PSendSysMessage("Resource requirements for '{}', spell {}:", bot->GetName(), resolvedSpellId);
+    // Resolved ONCE (item: diagnostic consistency) -- SpellInfo::CalcPowerCost is not guaranteed
+    // side-effect-free (charge-based spell mods can be consumed by ApplySpellMod on each call), so
+    // calling it a second time for a separate CanAfford() verdict could show a different, already-
+    // mutated cost than what's printed above it. The verdict below is derived purely from this one
+    // resolved list, never from a second CombatResourceEvaluator::CanAfford() call.
+    auto requirements = CombatResourceEvaluator::ResolveRequirements(bot, resolvedSpellId);
+    if (requirements.empty())
+        handler->SendSysMessage("  (no requirements -- either a free ability or an unknown spell id)");
+
+    CombatResourceSnapshot snapshot = CombatResourceEvaluator::BuildSnapshot(bot);
+    bool canAfford = true;
+    for (CombatResourceEvaluator::Requirement const& req : requirements)
+    {
+        char const* kindName = req.key.kind == CombatResourceKind::NativePower ? "Native" :
+            req.key.kind == CombatResourceKind::MinionCapacity ? "Minion capacity" : "Custom";
+        uint32 resourceId = req.key.kind == CombatResourceKind::NativePower ? uint32(req.key.powerType) : req.key.auraSpellId;
+
+        if (!req.activeForBot)
+        {
+            char const* reason = req.forbiddenAuraSpellId ? "forbidden aura is present" : "required aura is absent";
+            handler->PSendSysMessage("  {} {}: not currently active (condition: {}).", kindName, resourceId, reason);
+            continue;
+        }
+
+        CombatResourceState const* state = snapshot.Find(req.key);
+        bool ok;
+        int32 have;
+        if (req.key.kind == CombatResourceKind::MinionCapacity)
+        {
+            // Inverted semantics vs. every other resource kind: `current` is USED capacity (lower
+            // is better), so affordability is about REMAINING capacity (maximum - current), not
+            // current itself.
+            int32 remaining = state ? (state->maximum - state->current) : 0;
+            have = remaining;
+            ok = remaining >= req.amount;
+        }
+        else
+        {
+            have = state ? state->current : 0;
+            ok = have >= req.amount;
+        }
+        if (!ok)
+            canAfford = false;
+
+        handler->PSendSysMessage("  {} {}: need {}, have {} ({}). {}", kindName, resourceId, req.amount, have,
+            ok ? "OK" : "SHORT",
+            req.consumption == AscensionCompatData::ResourceConsumption::Fixed ? "Consumption: Fixed" :
+            req.consumption == AscensionCompatData::ResourceConsumption::All ? "Consumption: All" : "Consumption: None");
+    }
+
+    handler->PSendSysMessage("CanAfford: {}", canAfford ? "true" : "false");
+}
+
 void SetRole(ObjectGuid botGuid, BotRole role)
 {
     BotAIState& state = states[botGuid];

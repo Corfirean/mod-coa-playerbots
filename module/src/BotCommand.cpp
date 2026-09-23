@@ -375,7 +375,7 @@ public:
         return true;
     }
 
-    static bool HandleBotResourcesCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    static bool HandleBotResourcesCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, Optional<uint32> spellId)
     {
         Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
         if (!bot)
@@ -384,7 +384,10 @@ public:
                 handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
             return true;
         }
-        BotAI::ReportResources(bot, handler);
+        if (spellId)
+            BotAI::ReportSpellResources(bot, *spellId, handler);
+        else
+            BotAI::ReportResources(bot, handler);
         return true;
     }
 

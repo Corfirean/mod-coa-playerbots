@@ -263,33 +263,22 @@ namespace BotAI
         if (spellInfo->TargetAuraSpell && !target->HasAura(spellInfo->TargetAuraSpell))
             return false;
 
-        // Power cost check
-        if (spellInfo->PowerType == POWER_HEALTH)
-        {
-            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
-            if (cost > 0 && bot->GetHealth() <= static_cast<uint32>(cost))
-                return false;
-        }
-        else
-        {
-            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
-            if (cost > 0 && bot->GetPower(Powers(spellInfo->PowerType)) < cost)
-                return false;
-        }
-
-        // Resource management hard floor (item 13, Phase 2): distinct from the raw affordability
-        // check above -- this is a profile-authored "don't even consider this below X% power"
-        // rule (e.g. a finisher that's not worth its real cost below some threshold), not "can
-        // the bot literally pay for it." Defaults to 0 (unrestricted) for profiles that don't set it.
+        // Resource management hard floor (item 13, Phase 2): distinct from real affordability --
+        // this is a profile-authored "don't even consider this below X% power" rule (e.g. a
+        // finisher that's not worth its real cost below some threshold), not "can the bot
+        // literally pay for it." Defaults to 0 (unrestricted) for profiles that don't set it.
         if (desc.minPowerPct > 0.0f && ctx.botPowerPct < desc.minPowerPct)
             return false;
 
-        // Universal resource-management engine: custom Ascension resources (aura-stack channels
-        // like Heat/Ember, Soul Fragment, sigils, ...) that most of CoA's 21 classes spend
-        // alongside or instead of native power. The native check above only ever looks at the
-        // bot's own getPowerType() bar, so a class whose ability needs 30 native power *and* 2
-        // Felfury (or any other custom resource) could previously pass CanCast on the native leg
-        // alone and only fail at real CastSpell time. See engine/CombatResource.h.
+        // Universal resource-management engine: the single owner of "can this bot actually afford
+        // this cast" -- native power (any PowerType the spell uses, not just the bot's own primary
+        // bar), every custom Ascension resource (aura-stack channels like Heat/Ember, Soul
+        // Fragment, sigils, ...), Necromancer's minion-capacity economy, and pure aura-presence
+        // gates (e.g. Sun Cleric's Dawn). Previously this function had its own separate native-
+        // power check ahead of a second, independent custom-resource check -- two owners of the
+        // same question, one of which (native) read wrong data in edge cases. See
+        // engine/CombatResource.h's own comment on why CanAfford reads native cost straight from
+        // `bot`, never from `ctx.resources`.
         if (!CombatResourceEvaluator::CanAfford(ctx.resources, bot, resolvedSpellId))
             return false;
 

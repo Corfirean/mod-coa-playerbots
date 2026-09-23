@@ -155,6 +155,12 @@ namespace BotAI
     // tool for the universal resource-management engine, e.g. `.botcmd resources <guid>`.
     void ReportResources(Player* bot, ChatHandler* handler);
 
+    // Prints the full resource-requirement breakdown for one specific already-resolved spellId
+    // against this bot (need/have/consumption per requirement, whether each conditional
+    // requirement is currently active, and the final CanAfford verdict) -- the per-ability
+    // diagnostic form, e.g. `.botcmd resources <guid> <spellId>`.
+    void ReportSpellResources(Player* bot, uint32 resolvedSpellId, ChatHandler* handler);
+
     // Per-bot follow angle derived from this bot's position within its own group (stable across
     // ticks, and collision-free for any group up to 8 real members) spread evenly around the
     // leader instead of every bot using the engine's default Unit::GetFollowAngle() (a single
