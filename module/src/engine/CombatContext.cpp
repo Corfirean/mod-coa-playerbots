@@ -32,6 +32,7 @@ namespace BotAI
         uint32 maxPower = bot->GetMaxPower(powerType);
         ctx.botPowerPct = (maxPower > 0) ? (static_cast<float>(bot->GetPower(powerType)) * 100.0f / maxPower) : 100.0f;
         ctx.isCasting = bot->IsNonMeleeSpellCast(false);
+        ctx.resources = CombatResourceEvaluator::BuildSnapshot(bot);
 
         ctx.classId = bot->getClass();
         ctx.activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
