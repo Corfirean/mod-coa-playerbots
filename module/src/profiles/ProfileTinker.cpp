@@ -13,6 +13,7 @@
 #include "profiles/ProfileRegistry.h"
 #include "engine/CombatContext.h"
 #include "engine/SpecStrategyRegistry.h"
+#include "engine/SpellResolver.h"
 #include "Player.h"
 
 namespace BotAI
@@ -29,7 +30,35 @@ namespace BotAI
             s.role = BotRole::Tank;
 
             // Mechsuit (spell 92141, aura 801384) is mandatory baseline form
-            s.requiredState = RequiredCombatState{ 92141, 801384, {} };
+            s.requiredState.formSpellId = 92141;
+            s.requiredState.formAuraId = 801384;
+            s.requiredState.setupSpellId = 801647; // Shotgun (Scrap builder)
+
+            // Setup is needed if Mechsuit is missing and Scrap (801816) is insufficient (< 10)
+            s.requiredState.isSetupNeeded = [](Player* bot, CombatContext const& /*ctx*/) -> bool
+            {
+                if (bot->HasAura(801384))
+                    return false;
+                Aura const* scrapAura = bot->GetAura(801816);
+                return !scrapAura || scrapAura->GetStackAmount() < 10;
+            };
+
+            // Scrap builder recovery action: generates Scrap so Mechsuit can be constructed
+            s.requiredState.buildStateRecoveryAction = [](Player* bot, CombatContext const& ctx) -> BotAction
+            {
+                BotAction act;
+                uint32 spellId = 801647; // Shotgun
+                if (bot->HasSpell(500236)) // Deathball
+                    spellId = 500236;
+                act.spellId = SpellResolver::ResolveSpell(bot, spellId);
+                act.rootSpellId = spellId;
+                act.target = ctx.victim ? ctx.victim : bot->GetVictim();
+                act.score = 1100.0f;
+                act.tags = AbilityTag::MeleeAttack;
+                act.name = "Scrap Generator";
+                act.reason = "Generate Scrap for Mechsuit";
+                return act;
+            };
 
             // Mechanics cannot pull without its Mechsuit active
             s.isReadyToPull = [](Player* bot, CombatContext const& ctx) -> bool
@@ -315,6 +344,7 @@ namespace BotAI
                 d.rootSpellId = 92140;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.trackedEntityType = TrackedEntityType::Turret;
                 d.internalThrottleMs = 30000;
                 d.baseScore = 220.0f;
                 p.abilities.push_back(d);
@@ -412,6 +442,7 @@ namespace BotAI
                 d.rootSpellId = 804673;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.trackedEntityType = TrackedEntityType::Turret;
                 d.internalThrottleMs = 45000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);

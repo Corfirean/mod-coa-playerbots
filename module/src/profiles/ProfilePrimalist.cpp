@@ -460,35 +460,6 @@ namespace BotAI
             };
 
             SpecStrategyRegistry::RegisterStrategy(std::move(sHeal));
-
-            // SpecStrategy for Grovekeeper (Support role audit dual-registration)
-            SpecStrategy sSupp;
-            sSupp.classId = 31;
-            sSupp.specId = 58;
-            sSupp.role = BotRole::Support;
-            sSupp.strategyName = "Primalist_Grovekeeper_Support_Strategy";
-            sSupp.requiredState = RequiredCombatState{ 800137, 800137, {} };
-
-            sSupp.phaseModifiers[CombatPhase::Opener] = {
-                { AbilityTag::Shield,     1.5f, 40.0f },
-                { AbilityTag::DirectHeal, 1.3f, 30.0f }
-            };
-            sSupp.phaseModifiers[CombatPhase::Burst] = {
-                { AbilityTag::EmergencyHeal, 2.0f, 60.0f },
-                { AbilityTag::DirectHeal,    1.5f, 40.0f }
-            };
-            sSupp.phaseModifiers[CombatPhase::AoE] = {
-                { AbilityTag::AoEHeal,    2.0f, 50.0f },
-                { AbilityTag::DirectHeal, 1.3f, 30.0f }
-            };
-
-            sSupp.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
-            {
-                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 35) &&
-                       (bot->GetHealthPct() >= 55.0f);
-            };
-
-            SpecStrategyRegistry::RegisterStrategy(std::move(sSupp));
         }
 
         // -------------------------------------------------------------

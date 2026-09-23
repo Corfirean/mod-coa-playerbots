@@ -1,4 +1,4 @@
-﻿/*
+/*
  * mod-coa-playerbots
  *
  * Data-Driven Combat AI Framework: AbilityDescriptor & Tags
@@ -65,6 +65,24 @@ namespace BotAI
         AreaHostile
     };
 
+    enum class StateRequirement : uint8
+    {
+        Any = 0,             // Can be cast in any valid state
+        BaselineOnly,        // Can ONLY be cast in baseline combat state (e.g. normal rotation)
+        AllowedInTemporary,  // Permitted in temporary alternate state (e.g. movement, burst form)
+        EmergencyOnly,       // Permitted outside baseline form only during extreme emergency
+        StateTransition      // Form shift / stance change ability itself
+    };
+
+    enum class TrackedEntityType : uint8
+    {
+        None = 0,
+        Pet,                 // Main pet (e.g. Houndmaster hound)
+        Minion,              // Summoned minion / undead army (e.g. Necromancer)
+        Turret,              // Placed mechanical device (e.g. Tinker ZIGGI / Destructo-Bot)
+        Ward                 // Placed ward / totem (e.g. Witch Doctor Serpent / Healing Ward)
+    };
+
     struct AbilityDescriptor
     {
         char const* name = "";
@@ -85,33 +103,26 @@ namespace BotAI
 
         // Aura requirements
         bool requireAuraMissingOnTarget = false;
+        uint32 targetAuraId = 0;             // Explicit aura to check on target if different from root/resolved spell
+        uint32 refreshBelowMs = 0;           // Only refresh DoT/HoT/buff if remaining duration < ms
+        uint8 refreshBelowStacks = 0;        // Only refresh stackable aura if stacks < count
         uint32 requiredAuraOnCaster = 0;
         uint32 missingAuraOnCaster = 0;
+
+        // Form / state requirement
+        StateRequirement stateRequirement = StateRequirement::Any;
+
+        // Entity tracking (Pet / Minion / Turret / Ward)
+        TrackedEntityType trackedEntityType = TrackedEntityType::None;
+        uint32 trackedEntityEntry = 0;
 
         // Internal rotation cooldown / throttle (ms) for abilities without native DBC cooldowns
         uint32 internalThrottleMs = 0;
 
-        // AoE eligibility (item 7 of the Phase 2 fixup pass): a flat `nearbyEnemyCount * bonus`
-        // wasn't enough to stop an AoE ability outscoring a single-target one at 1-2 targets just
-        // because its baseScore happened to be close. minAoETargets is a hard eligibility floor
-        // (ScoreAbility disqualifies below it); the default of 3 matches AbilityTag::AoEDamage's
-        // own "Area of Effect offensive" intent, but a profile can lower it (e.g. to 2) for a
-        // specific spell that's genuinely worth it that early, or a spell that's formally AoE-
-        // shaped but authored/used as a single-target filler can leave AoEDamage off entirely.
+        // AoE eligibility
         uint8 minAoETargets = 3;
 
-        // Resource management (item 13 of the combat-engine rework). All three default to
-        // "unrestricted" (0/0/1) so existing profiles that don't set them are unaffected --
-        // per-ability tuning is Phase 3 work, this is just the engine plumbing for it.
-        //   minPowerPct: hard eligibility floor -- CanCast disqualifies below this (e.g. a
-        //     builder/spender finisher that's pointless below its real resource cost).
-        //   reservePowerPct: soft floor -- ScoreAbility deprioritizes (not disqualifies) this
-        //     ability once the bot's power is below it, so a healer facing empty mana favors an
-        //     efficient heal over a big expensive one, and a tank holds mana/rage for defensives
-        //     instead of an optional filler.
-        //   resourceEfficiency: relative "value per point of resource spent" (1.0 = neutral).
-        //     Above 1.0 nudges this ability up once power is scarce (an efficient option);
-        //     below 1.0 nudges it down (a wasteful one) -- see ScoreAbility's resource-aware bonus.
+        // Resource management
         float minPowerPct = 0.0f;
         float reservePowerPct = 0.0f;
         float resourceEfficiency = 1.0f;

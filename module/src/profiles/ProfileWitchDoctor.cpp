@@ -198,6 +198,7 @@ namespace BotAI
                 d.rootSpellId = 500957;
                 d.tags = AbilityTag::TotemOrWard | AbilityTag::PeriodicHeal;
                 d.targetType = TargetType::Self;
+                d.trackedEntityType = TrackedEntityType::Ward;
                 d.maxTargetHpPct = 85.0f;
                 d.internalThrottleMs = 25000;
                 d.baseScore = 170.0f;
@@ -335,6 +336,7 @@ namespace BotAI
                 d.rootSpellId = 500957;
                 d.tags = AbilityTag::TotemOrWard | AbilityTag::DefensiveCD;
                 d.targetType = TargetType::Self;
+                d.trackedEntityType = TrackedEntityType::Ward;
                 d.maxSelfHpPct = 50.0f;
                 d.internalThrottleMs = 25000;
                 d.baseScore = 280.0f;
@@ -346,6 +348,7 @@ namespace BotAI
                 d.rootSpellId = 500960;
                 d.tags = AbilityTag::TotemOrWard;
                 d.targetType = TargetType::CurrentTarget;
+                d.trackedEntityType = TrackedEntityType::Ward;
                 d.internalThrottleMs = 25000;
                 d.baseScore = 180.0f;
                 p.abilities.push_back(d);

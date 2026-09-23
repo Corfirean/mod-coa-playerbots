@@ -9,6 +9,7 @@
 #include "PlayerScript.h"
 #include "ScriptMgr.h"
 #include "WorldScript.h"
+#include "engine/SpecStrategyRegistry.h"
 
 class coa_playerbots_worldscript : public WorldScript
 {
@@ -27,6 +28,7 @@ public:
     void OnStartup() override
     {
         BotTalentBuilds::Initialize();
+        BotAI::SpecStrategyRegistry::Validate();
         sBotMgr->LoadGuildGatherOrders();
         BotAI::LoadGatherLootData();
         BotWorldBehavior::LoadConfig();

@@ -63,6 +63,11 @@ namespace BotAI
             s.role = BotRole::Dps;
 
             // Readiness requires pet/hound summoned
+            s.isPetReady = [](Player* bot) -> bool
+            {
+                return bot->HasAura(801343) || bot->GetPet() != nullptr;
+            };
+
             s.isReadyToPull = [](Player* bot, CombatContext const& ctx) -> bool
             {
                 if (!bot->HasAura(801343) && !bot->GetPet())
@@ -257,6 +262,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 801343;
+                d.trackedEntityType = TrackedEntityType::Pet;
                 d.internalThrottleMs = 30000;
                 d.baseScore = 300.0f;
                 p.abilities.push_back(d);

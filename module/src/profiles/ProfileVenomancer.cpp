@@ -97,14 +97,14 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // Weapon Buff (Anti-spam throttle)
+            // Weapon / Defense Buff (Anti-spam throttle)
             {
                 AbilityDescriptor d;
-                d.name = "Envenom Weapons";
-                d.rootSpellId = 803177;
+                d.name = "Beetle Pheromone";
+                d.rootSpellId = 803651;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
-                d.missingAuraOnCaster = 803177;
+                d.missingAuraOnCaster = 803651;
                 d.internalThrottleMs = 30000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
@@ -152,6 +152,20 @@ namespace BotAI
             s.requiredState.formSpellId = 803183; // Beetle Form
             s.requiredState.formAuraId = 803183;
             s.requiredState.alternateFormAuras = { 800841 }; // Spider Form mobility allowed
+
+            // Out-of-combat mobility rule: allows Spider Form only for movement, returns before pull
+            s.requiredState.transitionRules.push_back({
+                800841, // Spider Form
+                800841,
+                4000,
+                [](Player* bot, CombatContext const& ctx) -> bool {
+                    return !bot->IsInCombat() && !ctx.victim && bot->isMoving();
+                },
+                [](Player* bot, CombatContext const& ctx) -> bool {
+                    return bot->IsInCombat() || ctx.victim != nullptr || !bot->isMoving();
+                }
+            });
+
             s.minResourceToEngage = 0.0f; // Rage starts at 0
 
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
@@ -186,6 +200,19 @@ namespace BotAI
             p.specId = 101;
             p.role = BotRole::Healer;
             p.profileName = "Venomancer_Vizier_Healer";
+
+            // Form: Vizier Form (Baseline Healer Form)
+            {
+                AbilityDescriptor d;
+                d.name = "Vizier Form";
+                d.rootSpellId = 800912;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 800912;
+                d.internalThrottleMs = 4000;
+                d.baseScore = 500.0f;
+                p.abilities.push_back(d);
+            }
 
             // Critical Emergency Direct Heal
             {
@@ -269,12 +296,29 @@ namespace BotAI
             s.specId = 101;
             s.role = BotRole::Healer;
             s.strategyName = "Vizier_Healer_Strategy";
+            s.requiredState.formSpellId = 800912; // Vizier Form
+            s.requiredState.formAuraId = 800912;
+            s.requiredState.alternateFormAuras = { 803183 }; // Beetle Form emergency defense allowed
+
+            // Emergency defensive weaving: Beetle Form when low HP or aggro
+            s.requiredState.transitionRules.push_back({
+                803183, // Beetle Form
+                803183,
+                4000,
+                [](Player* bot, CombatContext const& ctx) -> bool {
+                    return bot->IsInCombat() && (bot->GetHealthPct() < 35.0f || (ctx.victim && ctx.victim->GetVictim() == bot));
+                },
+                [](Player* bot, CombatContext const& ctx) -> bool {
+                    return bot->GetHealthPct() > 55.0f && (!ctx.victim || ctx.victim->GetVictim() != bot);
+                }
+            });
+
             s.minResourceToEngage = 50.0f; // Needs >= 50% mana before starting pull
             s.recoveryThreshold = 20.0f;
 
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
             {
-                return bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 50;
+                return bot->HasAura(800912) && (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 50);
             };
 
             s.phaseModifiers[CombatPhase::Emergency] = {
@@ -421,6 +465,19 @@ namespace BotAI
             s.requiredState.formAuraId = 800841;
             s.requiredState.alternateFormAuras = { 800843 }; // Skulk state allowed
 
+            // Skulk stealth opener: only out of combat, must exit on combat/victim
+            s.requiredState.transitionRules.push_back({
+                800843, // Skulk
+                800843,
+                3000,
+                [](Player* bot, CombatContext const& ctx) -> bool {
+                    return !bot->IsInCombat() && !ctx.victim;
+                },
+                [](Player* bot, CombatContext const& ctx) -> bool {
+                    return bot->IsInCombat() || ctx.victim != nullptr;
+                }
+            });
+
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
             {
                 return (bot->HasAura(800841) || bot->HasAura(800843)) && bot->GetHealthPct() >= 70.0f;
@@ -450,6 +507,19 @@ namespace BotAI
             p.specId = 54;
             p.role = BotRole::Dps;
             p.profileName = "Venomancer_Rot_Dps";
+
+            // Weapon / Poison Buff
+            {
+                AbilityDescriptor d;
+                d.name = "Toxic Pheromone";
+                d.rootSpellId = 707689;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 707689;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
 
             // Emergency Defense
             {

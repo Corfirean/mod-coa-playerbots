@@ -161,6 +161,10 @@ namespace BotAI
     // diagnostic form, e.g. `.botcmd resources <guid> <spellId>`.
     void ReportSpellResources(Player* bot, uint32 resolvedSpellId, ChatHandler* handler);
 
+    // Prints the PvE strategic combat state for one bot (spec, role, phase, form status,
+    // pull readiness, tank/healer ready flags, and pull blockers), e.g. `.botcmd strategy <guid>`.
+    void ReportStrategy(Player* bot, ChatHandler* handler);
+
     // Per-bot follow angle derived from this bot's position within its own group (stable across
     // ticks, and collision-free for any group up to 8 real members) spread evenly around the
     // leader instead of every bot using the engine's default Unit::GetFollowAngle() (a single

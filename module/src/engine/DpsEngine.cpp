@@ -9,6 +9,7 @@
 #include "engine/CastGuard.h"
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "profiles/ProfileRegistry.h"
 #include "BotClassRotations.h"
 #include "Log.h"
@@ -101,6 +102,9 @@ namespace BotAI
             if (action.internalThrottleMs > 0 && action.rootSpellId != 0)
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
 
+            SpecStrategyRuntime& runtime = SpecStrategyRegistry::GetRuntime(bot->GetGUID());
+            runtime.successfulCastsCount++;
+
             nextCastAllowedMs = AI_REACTION_GATE_MS;
             LOG_INFO("module.coa-playerbots", "DataDrivenAI [DPS]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",
                 bot->GetName(), action.name, action.spellId, action.target->GetName(), action.score);
@@ -122,5 +126,6 @@ namespace BotAI
     void DpsEngine::ForgetBot(ObjectGuid botGuid)
     {
         s_noActionRetryAt.erase(botGuid);
+        SpecStrategyRegistry::ForgetBot(botGuid);
     }
 }

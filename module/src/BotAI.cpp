@@ -44,6 +44,7 @@
 #include "engine/TankEngine.h"
 #include "engine/SpellResolver.h"
 #include "engine/ActionEvaluator.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
 #include "engine/CombatResource.h"
@@ -1886,6 +1887,19 @@ void TryAutoPullInInstance(Player* bot)
 
     if (target)
     {
+        // Round 2 pull readiness pipeline: TankReady, HealerReady, group distance and recovery
+        BotAI::PullReadinessInfo pullInfo = BotAI::SpecStrategyRegistry::EvaluateGroupPullReadiness(bot, group);
+        uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        if (!pullInfo.IsReady())
+        {
+            LOG_INFO("module.coa-playerbots", "PullAI: tank='{}' spec={} TankReady={} HealerReady={} PullReady=false reason='{}'",
+                bot->GetName(), activeSpec, pullInfo.tankReady, pullInfo.healerReady, pullInfo.reason);
+            return;
+        }
+
+        LOG_INFO("module.coa-playerbots", "PullAI: tank='{}' spec={} TankReady=true HealerReady=true PullReady=true target='{}'",
+            bot->GetName(), activeSpec, target->GetName());
+
         BotMovement::Release(bot, MoveOwner::AutoDungeon);
         bot->Attack(target, true);
         return;
@@ -3558,6 +3572,16 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     if (ddResult != BotAI::CombatResult::NoAction)
         return;
 
+    // GLOBAL GATE (item 8 & 41): if spec has a strategy and denies legacy fallback
+    // (e.g. missing mandatory baseline form, in setup phase, or critical recovery),
+    // legacy combat fallback MUST NOT execute -- doing so would blindly cast out-of-form spells!
+    uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+    if (BotAI::SpecStrategy const* strategy = BotAI::SpecStrategyRegistry::FindStrategy(bot->getClass(), activeSpec, profileRole))
+    {
+        if (!strategy->CanUseLegacyFallback(ctx))
+            return;
+    }
+
     uint32 spellId = 0;
     char const* castVerb = "cast";
 
@@ -3582,8 +3606,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             castVerb = "cast interrupt";
     }
 
-    // 3. AoE priority: 3+ hostile enemies around target
-    uint32 nearbyEnemies = ctx.nearbyEnemyCount;
+    // 3. AoE priority: 3+ engaged hostile enemies around target (item 42 AoE safety)
+    uint32 nearbyEnemies = ctx.engagedEnemyCount;
     if (!spellId && nearbyEnemies >= 3)
     {
         spellId = SelectAoeSpell(bot, target);
@@ -4270,6 +4294,60 @@ void ReportSpellResources(Player* bot, uint32 resolvedSpellId, ChatHandler* hand
     }
 
     handler->PSendSysMessage("CanAfford: {}", canAfford ? "true" : "false");
+}
+
+void ReportStrategy(Player* bot, ChatHandler* handler)
+{
+    if (!bot || !handler)
+        return;
+
+    uint8 classId = bot->getClass();
+    uint32 specId = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+    BotRole role = GetRole(bot->GetGUID());
+    char const* roleStr = "DPS";
+    if (role == BotRole::Tank) roleStr = "Tank";
+    else if (role == BotRole::Healer) roleStr = "Healer";
+    else if (role == BotRole::Support) roleStr = "Support";
+
+    SpecStrategy const* strategy = SpecStrategyRegistry::FindStrategy(classId, specId, role);
+    SpecStrategyRuntime& runtime = SpecStrategyRegistry::GetRuntime(bot->GetGUID());
+
+    CombatContext ctx = CombatContext::Build(bot, bot->GetVictim());
+    PullReadinessInfo pullInfo = SpecStrategyRegistry::EvaluatePullReadiness(bot, &ctx);
+
+    handler->PSendSysMessage("Strategy status for '{}' (class {}, spec {}, role {}):", bot->GetName(), classId, specId, roleStr);
+    handler->PSendSysMessage("  Strategy: {}", strategy ? strategy->strategyName : "None (Fallback)");
+
+    char const* phaseStr = "SingleTarget";
+    switch (runtime.phase)
+    {
+        case CombatPhase::Opener: phaseStr = "Opener"; break;
+        case CombatPhase::Burst: phaseStr = "Burst"; break;
+        case CombatPhase::Execute: phaseStr = "Execute"; break;
+        case CombatPhase::AoE: phaseStr = "AoE"; break;
+        case CombatPhase::Recovery: phaseStr = "Recovery"; break;
+        case CombatPhase::Emergency: phaseStr = "Emergency"; break;
+        default: break;
+    }
+    handler->PSendSysMessage("  Phase: {} (OpenerCompleted: {})", phaseStr, runtime.openerCompleted ? "Yes" : "No");
+
+    uint32 baselineAura = (strategy && strategy->requiredState.formAuraId) ? strategy->requiredState.formAuraId : (strategy ? strategy->requiredState.formSpellId : 0);
+    bool inBaseline = (baselineAura == 0) || bot->HasAura(baselineAura);
+    handler->PSendSysMessage("  Baseline Form Aura: {} (Active: {})", baselineAura, inBaseline ? "Yes" : "No");
+
+    char const* stateStatusStr = "Ready";
+    switch (runtime.lastStateStatus)
+    {
+        case CombatStateStatus::NeedEnterBaseline: stateStatusStr = "NeedEnterBaseline"; break;
+        case CombatStateStatus::TemporaryAlternate: stateStatusStr = "TemporaryAlternate"; break;
+        case CombatStateStatus::ReturningToBaseline: stateStatusStr = "ReturningToBaseline"; break;
+        case CombatStateStatus::CannotEnter: stateStatusStr = "CannotEnter"; break;
+        case CombatStateStatus::SetupRequired: stateStatusStr = "SetupRequired"; break;
+        default: break;
+    }
+    handler->PSendSysMessage("  Form State Status: {}", stateStatusStr);
+    handler->PSendSysMessage("  Pull Readiness: {} (reason: {})", pullInfo.IsReady() ? "READY" : "NOT READY", pullInfo.reason);
+    handler->PSendSysMessage("  TankReady: {} | HealerReady: {}", pullInfo.tankReady ? "Yes" : "No", pullInfo.healerReady ? "Yes" : "No");
 }
 
 void SetRole(ObjectGuid botGuid, BotRole role)

@@ -49,6 +49,7 @@ public:
             { "checkrole",    HandleBotCheckRoleCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "profile",      HandleBotProfileCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "resources",    HandleBotResourcesCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "strategy",     HandleBotStrategyCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "learnspec",    HandleBotLearnSpecCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "follow",       HandleBotFollowCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "stay",         HandleBotStayCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -388,6 +389,19 @@ public:
             BotAI::ReportSpellResources(bot, *spellId, handler);
         else
             BotAI::ReportResources(bot, handler);
+        return true;
+    }
+
+    static bool HandleBotStrategyCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        BotAI::ReportStrategy(bot, handler);
         return true;
     }
 
