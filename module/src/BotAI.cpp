@@ -3123,16 +3123,13 @@ void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
         Aura const* aura = nullptr;
         if (matchedDesc)
         {
-            if (matchedDesc->casterAuraId)
-                aura = bot->GetAura(matchedDesc->casterAuraId);
-            if (!aura && matchedDesc->missingAuraOnCaster)
-                aura = bot->GetAura(matchedDesc->missingAuraOnCaster);
-            if (!aura && matchedDesc->targetAuraId && matchedDesc->targetType == TargetType::Self)
-                aura = bot->GetAura(matchedDesc->targetAuraId);
+            uint32 resolvedId = BotAI::SpellResolver::ResolveSpell(bot, matchedDesc->rootSpellId);
+            aura = BotAI::FindCasterAuraForDescriptor(bot, *matchedDesc, resolvedId ? resolvedId : spellId);
         }
 
         if (!aura)
         {
+            // Fallback when no descriptor: walk triggered auras + resolved rank directly
             if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId))
             {
                 for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
@@ -3161,39 +3158,24 @@ void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
 
         if (aura)
         {
-            // 1. If aura is permanent -> never recast
-            if (aura->IsPermanent())
-                return;
-
-            // 2. If stack threshold specified (refreshCasterBelowStacks > 0, or refreshBelowStacks > 0 for self):
-            uint8 stackThreshold = 0;
+            // Delegate all refresh-policy decisions to shared helper (Round 3.2.2).
+            // ShouldRefreshCasterAura returns true  → recast is warranted (fall through to cast).
+            //                           returns false → aura is good, skip cast.
             if (matchedDesc)
             {
-                stackThreshold = matchedDesc->refreshCasterBelowStacks;
-                if (stackThreshold == 0 && matchedDesc->targetType == TargetType::Self)
-                    stackThreshold = matchedDesc->refreshBelowStacks;
-            }
-            if (stackThreshold > 0 && aura->GetStackAmount() >= stackThreshold)
-                return;
-
-            // 3. Explicit refresh window (refreshCasterBelowMs > 0, or refreshBelowMs > 0 for self):
-            uint32 refreshWindow = 0;
-            if (matchedDesc)
-            {
-                refreshWindow = matchedDesc->refreshCasterBelowMs;
-                if (refreshWindow == 0 && matchedDesc->targetType == TargetType::Self)
-                    refreshWindow = matchedDesc->refreshBelowMs;
-            }
-
-            if (refreshWindow > 0)
-            {
-                // Recast ONLY when duration <= refreshWindow
-                if (aura->GetDuration() > static_cast<int32>(refreshWindow))
+                if (!BotAI::ShouldRefreshCasterAura(aura, *matchedDesc))
                     return;
+                // ShouldRefreshCasterAura returned true → proceed to recast below.
             }
             else
             {
-                // 4. No explicit refresh window: aura is active -> DO NOT RECAST AT ALL until full expiration
+                // No descriptor: legacy fallback — only recast once aura expires.
+                if (!aura->IsPermanent())
+                {
+                    // If there's no policy info at all, treat as presence-only: skip.
+                    return;
+                }
+                // Permanent without descriptor → never recast.
                 return;
             }
         }

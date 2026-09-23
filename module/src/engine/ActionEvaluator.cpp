@@ -289,21 +289,29 @@ namespace BotAI
             }
         }
 
-        // Caster aura state & requirements
+        // Caster aura state & requirements (chain-aware: Round 3.2.2)
         if (desc.requiredAuraOnCaster && !bot->HasAura(desc.requiredAuraOnCaster))
             return false;
-        if (desc.missingAuraOnCaster && bot->HasAura(desc.missingAuraOnCaster))
-            return false;
 
+        // missingAuraOnCaster: block cast if the aura IS present (rank-chain aware)
+        if (desc.missingAuraOnCaster)
+        {
+            // Build a minimal descriptor that only points at the missingAuraOnCaster ID
+            // so FindCasterAuraForDescriptor resolves its rank chain.
+            AbilityDescriptor missingCheck{};
+            missingCheck.rootSpellId = desc.missingAuraOnCaster;
+            missingCheck.casterAuraId = desc.missingAuraOnCaster;
+            uint32 missingResolved = SpellResolver::ResolveSpell(bot, desc.missingAuraOnCaster);
+            if (FindCasterAuraForDescriptor(bot, missingCheck, missingResolved ? missingResolved : desc.missingAuraOnCaster))
+                return false;
+        }
+
+        // casterAuraId: if aura is active, apply refresh policy; if no policy → block cast
         if (desc.casterAuraId)
         {
-            if (Aura* cAura = bot->GetAura(desc.casterAuraId))
-            {
-                if (desc.refreshCasterBelowMs > 0 && cAura->GetDuration() > static_cast<int32>(desc.refreshCasterBelowMs))
-                    return false;
-                if (desc.refreshCasterBelowStacks > 0 && cAura->GetStackAmount() >= desc.refreshCasterBelowStacks)
-                    return false;
-            }
+            Aura const* cAura = FindCasterAuraForDescriptor(bot, desc, resolvedSpellId);
+            if (cAura && !ShouldRefreshCasterAura(cAura, desc))
+                return false;
         }
 
         if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
