@@ -71,6 +71,7 @@ namespace BotAI
                 d.rootSpellId = 800086;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.casterAuraId = 800086;
                 d.missingAuraOnCaster = 800086;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 180.0f;
@@ -82,6 +83,7 @@ namespace BotAI
                 d.rootSpellId = 806359;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.casterAuraId = 806359;
                 d.missingAuraOnCaster = 806359;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 175.0f;
@@ -93,6 +95,7 @@ namespace BotAI
                 d.rootSpellId = 806360;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.casterAuraId = 806360;
                 d.missingAuraOnCaster = 806360;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 170.0f;
@@ -104,6 +107,7 @@ namespace BotAI
                 d.rootSpellId = 524600;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.casterAuraId = 524600;
                 d.missingAuraOnCaster = 524600;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 165.0f;
@@ -117,6 +121,7 @@ namespace BotAI
                 d.rootSpellId = 800260;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.casterAuraId = 800260;
                 d.missingAuraOnCaster = 800260;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 160.0f;
@@ -252,6 +257,14 @@ namespace BotAI
                 return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 30) &&
                        (bot->GetHealthPct() >= 50.0f);
             };
+
+            // ResourcePolicy for Ranger Advantage (804329)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 804329 };
+                pol.overcapThreshold = 4;
+                s.resourcePolicies.push_back(pol);
+            }
 
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }

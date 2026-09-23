@@ -19,6 +19,8 @@
 #include "SpellMgr.h"
 #include "Timer.h"
 #include "Unit.h"
+#include "engine/SpellResolver.h"
+#include "profiles/ProfileRegistry.h"
 #include <algorithm>
 #include <vector>
 
@@ -356,7 +358,52 @@ namespace BotAI
     uint32 SelectSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableOffensiveSpell); }
     uint32 SelectTauntSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableTauntSpell); }
     uint32 SelectHealSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, true, IsUsableHealSpell); }
-    uint32 SelectBuffSpell(Player* bot) { return SelectKnownSpell(bot, bot, true, IsUsableBuffSpell); }
+    uint32 SelectBuffSpell(Player* bot)
+    {
+        CombatProfile const* profile = nullptr;
+        uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Support);
+        if (!profile)
+            profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Dps);
+        if (!profile)
+            profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Healer);
+        if (!profile)
+            profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Tank);
+
+        for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+        {
+            if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                continue;
+
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+            if (!IsUsableBuffSpell(spellInfo))
+                continue;
+
+            // Never select cooldowns tagged as DefensiveCD or OffensiveCD for routine buff maintenance
+            if (profile)
+            {
+                bool isCooldown = false;
+                for (auto const& desc : profile->abilities)
+                {
+                    uint32 resolved = SpellResolver::ResolveSpell(bot, desc.rootSpellId);
+                    if (desc.rootSpellId == spellId || (resolved && resolved == spellId))
+                    {
+                        if (HasTag(desc.tags, AbilityTag::DefensiveCD) || HasTag(desc.tags, AbilityTag::OffensiveCD))
+                        {
+                            isCooldown = true;
+                            break;
+                        }
+                    }
+                }
+                if (isCooldown)
+                    continue;
+            }
+
+            if (IsKnownSpellCastable(bot, spellId, bot, true))
+                return spellId;
+        }
+        return 0;
+    }
     uint32 SelectInterruptSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableInterruptSpell); }
     uint32 SelectAoeSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableAoeSpell); }
     uint32 SelectSingleTargetSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableSingleTargetOffensiveSpell); }

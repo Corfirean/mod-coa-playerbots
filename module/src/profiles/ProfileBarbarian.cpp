@@ -333,6 +333,7 @@ namespace BotAI
                 d.rootSpellId = 500995;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.casterAuraId = 500995;
                 d.missingAuraOnCaster = 500995;
                 d.internalThrottleMs = 30000;
                 d.baseScore = 220.0f;

@@ -1304,6 +1304,10 @@ using BotAI::HealEvaluator;
 using BotAI::TargetEvaluator;
 using BotAI::ThreatEvaluator;
 using BotAI::ThreatDecision;
+using BotAI::AbilityDescriptor;
+using BotAI::AbilityTag;
+using BotAI::TargetType;
+using BotAI::HasTag;
 
 uint32 FindKnownAutoRepeatRangedSpell(Player const* bot)
 {
@@ -3089,11 +3093,16 @@ void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
 
     if (uint32 spellId = SelectBuffSpell(bot))
     {
-        // Buff maintenance safety:
-        // A cast spell ID may not equal the resulting aura ID (e.g. driver/triggered aura or profile descriptor override).
-        Aura const* aura = nullptr;
         uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
         BotAI::CombatProfile const* profile = BotAI::ProfileRegistry::FindProfile(bot->getClass(), activeSpec, state.role);
+        if (!profile)
+            profile = BotAI::ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Support);
+        if (!profile)
+            profile = BotAI::ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Dps);
+
+        // Buff maintenance safety:
+        // A cast spell ID may not equal the resulting aura ID (e.g. driver/triggered aura or profile descriptor override).
+        AbilityDescriptor const* matchedDesc = nullptr;
         if (profile)
         {
             for (auto const& desc : profile->abilities)
@@ -3101,14 +3110,25 @@ void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
                 uint32 resolvedId = BotAI::SpellResolver::ResolveSpell(bot, desc.rootSpellId);
                 if (desc.rootSpellId == spellId || (resolvedId && resolvedId == spellId))
                 {
-                    if (desc.casterAuraId)
-                        aura = bot->GetAura(desc.casterAuraId);
-                    if (!aura && desc.targetAuraId)
-                        aura = bot->GetAura(desc.targetAuraId);
-                    if (aura)
-                        break;
+                    matchedDesc = &desc;
+                    break;
                 }
             }
+        }
+
+        // Never maintain defensive or offensive cooldowns via routine buff maintenance
+        if (matchedDesc && (HasTag(matchedDesc->tags, AbilityTag::DefensiveCD) || HasTag(matchedDesc->tags, AbilityTag::OffensiveCD)))
+            return;
+
+        Aura const* aura = nullptr;
+        if (matchedDesc)
+        {
+            if (matchedDesc->casterAuraId)
+                aura = bot->GetAura(matchedDesc->casterAuraId);
+            if (!aura && matchedDesc->missingAuraOnCaster)
+                aura = bot->GetAura(matchedDesc->missingAuraOnCaster);
+            if (!aura && matchedDesc->targetAuraId && matchedDesc->targetType == TargetType::Self)
+                aura = bot->GetAura(matchedDesc->targetAuraId);
         }
 
         if (!aura)
@@ -3130,17 +3150,56 @@ void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
         }
 
         if (!aura)
+        {
+            uint32 resolvedId = BotAI::SpellResolver::ResolveSpell(bot, spellId);
+            if (resolvedId && resolvedId != spellId)
+                aura = bot->GetAura(resolvedId);
+        }
+
+        if (!aura)
             aura = bot->GetAura(spellId);
 
         if (aura)
         {
-            // Do not recast/spam if remaining duration > 60s or permanent
-            if (aura->GetDuration() > 60000 || aura->IsPermanent())
+            // 1. If aura is permanent -> never recast
+            if (aura->IsPermanent())
                 return;
+
+            // 2. If stack threshold specified (refreshCasterBelowStacks > 0, or refreshBelowStacks > 0 for self):
+            uint8 stackThreshold = 0;
+            if (matchedDesc)
+            {
+                stackThreshold = matchedDesc->refreshCasterBelowStacks;
+                if (stackThreshold == 0 && matchedDesc->targetType == TargetType::Self)
+                    stackThreshold = matchedDesc->refreshBelowStacks;
+            }
+            if (stackThreshold > 0 && aura->GetStackAmount() >= stackThreshold)
+                return;
+
+            // 3. Explicit refresh window (refreshCasterBelowMs > 0, or refreshBelowMs > 0 for self):
+            uint32 refreshWindow = 0;
+            if (matchedDesc)
+            {
+                refreshWindow = matchedDesc->refreshCasterBelowMs;
+                if (refreshWindow == 0 && matchedDesc->targetType == TargetType::Self)
+                    refreshWindow = matchedDesc->refreshBelowMs;
+            }
+
+            if (refreshWindow > 0)
+            {
+                // Recast ONLY when duration <= refreshWindow
+                if (aura->GetDuration() > static_cast<int32>(refreshWindow))
+                    return;
+            }
+            else
+            {
+                // 4. No explicit refresh window: aura is active -> DO NOT RECAST AT ALL until full expiration
+                return;
+            }
         }
         else
         {
-            // Fallback: If no aura could be matched, avoid spamming by checking last successful cast timestamp
+            // 5. Fallback: If no aura could be matched, avoid spamming by checking last successful cast timestamp
             uint32 now = getMSTime();
             auto it = state.lastBuffCastTimeMs.find(spellId);
             if (it != state.lastBuffCastTimeMs.end())

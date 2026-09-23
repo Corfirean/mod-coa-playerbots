@@ -181,6 +181,7 @@ namespace BotAI
                 d.rootSpellId = 804018;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.casterAuraId = 804018;
                 d.missingAuraOnCaster = 804018;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 200.0f;

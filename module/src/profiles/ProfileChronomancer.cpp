@@ -433,6 +433,14 @@ namespace BotAI
                 { AbilityTag::RangedAttack, 1.3f, 30.0f }
             };
 
+            // ResourcePolicy for Chronomancer Echo Fragment (804455)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 804455 };
+                pol.overcapThreshold = 4;
+                s.resourcePolicies.push_back(pol);
+            }
+
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
     }
