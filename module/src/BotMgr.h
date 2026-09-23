@@ -251,50 +251,6 @@ public:
     void SetGroupFormation(ObjectGuid leaderGuid, BotGroupFormation formation);
     BotGroupFormation GetGroupFormation(ObjectGuid leaderGuid) const;
 
-    // Out-of-combat "bring bots to me": teleports every bot in `commander`'s group to
-    // `commander`'s exact location, same two-phase TeleportTo()-then-queue-ack sequencing
-    // DoAcceptInvite/TryFollowLeaderAcrossMaps already use (see FinishPendingTeleport's
-    // comment for why the ack can't fire same-tick) -- FinishPendingTeleport's existing
-    // post-landing re-follow picks formation/follow back up with no extra code here. Refuses
-    // (no-op) if `commander` is in combat; skips (rather than aborts) any individual bot that
-    // is itself in combat, so pulling the group together never yanks one bot out of a fight it's
-    // already in. See docs/addon-protocol.md's TELEPORT verb.
-    void TeleportBotsToPlayer(Player* commander, ChatHandler* handler);
-
-    // Per-bot gear preference (which basic armor/weapon subclass to favor when rolling on and
-    // auto-equipping loot), persisted via PlayerSetting the same way "core.ascension_active_spec"
-    // is (survives a relog, in-memory only until then). Armor preference is stored as a raw
-    // ItemSubclassArmor value with 0 (ITEM_SUBCLASS_ARMOR_MISC, never itself a preference choice)
-    // doubling as the "auto/any" sentinel. Weapon preference is stored as (subclass + 1) since
-    // ITEM_SUBCLASS_WEAPON_AXE is itself 0 and would otherwise collide with an "unset" sentinel;
-    // 0 means "auto/any". See docs/addon-protocol.md's GETGEAR/SETGEARPREF verbs.
-    uint32 GetGearPreference(Player* bot, bool weapon) const;
-    void SetGearPreference(Player* bot, bool weapon, uint32 subclass);
-
-    // Whether `itemEntry` (an armor or weapon item) is one this bot should Greed-roll on / treat
-    // as a valid upgrade candidate, given its real equip proficiency (CanEquipNewItem) and its
-    // gear preference above. Non-armor/non-weapon items, and armor/weapon subclasses outside the
-    // 4 basic armor types or 6 basic one-handed/staff weapon types this feature covers, always
-    // return true (unaffected -- see docs/addon-protocol.md's TELEPORT verb's neighbor entries
-    // for why this deliberately doesn't try to cover shields/rings/trinkets/ranged weapons/etc).
-    bool MatchesGearPreference(Player* bot, uint32 itemEntry) const;
-
-    // Which of the 4 basic armor subclasses (cloth/leather/mail/plate) and which of the 6 basic
-    // weapon subclasses (axe/mace/sword/staff/fist/dagger) this bot's class can actually equip at
-    // all, probed live via the real CanEquipNewItem proficiency check against one representative
-    // real item per subclass (same item ids/technique GearUpBot already uses) -- no
-    // classId-to-proficiency table exists for Ascension's custom classes, so this has to ask the
-    // engine rather than look anything up. Returns raw ItemSubclassArmor/ItemSubclassWeapon
-    // values. See docs/addon-protocol.md's GETGEAR verb.
-    std::vector<uint32> GetLegalArmorSubclasses(Player* bot) const;
-    std::vector<uint32> GetLegalWeaponSubclasses(Player* bot) const;
-
-    // One "GEAR:botGuidLow:slot:itemEntry:itemName" line per currently-equipped item (skips empty
-    // slots and the cosmetic-only shirt/tabard slots, which have no "type" concept relevant to
-    // gear preference) -- the addon-facing gear inspector. See docs/addon-protocol.md's GETGEAR
-    // verb.
-    std::vector<std::string> GetEquippedGearInfo(Player* bot) const;
-
     // Called from a new PLAYERHOOK_ON_LOGIN hook whenever a REAL (non-bot) player logs in.
     // Group membership itself already survives a restart natively -- Player::_LoadGroup()
     // reattaches `player` to its pre-existing Group (loaded at world boot by
@@ -428,11 +384,6 @@ private:
     // Roll object — no packet-guessing needed). Caller must have already
     // confirmed this bot has a pending, not-yet-answered vote on this roll.
     void DoRollGreed(WorldSession* session, Roll* roll);
-
-    // Same shape as DoRollGreed but casts ROLL_PASS -- used when MatchesGearPreference says this
-    // roll's item is an armor/weapon type this bot's class can't wear or doesn't prefer. See
-    // Update()'s roll loop and docs/addon-protocol.md's SETGEARPREF verb.
-    void DoRollPass(WorldSession* session, Roll* roll);
 
     // Checked alongside the heartbeat (every 10s): if every currently active bot session is
     // already at the level cap, logs a one-time (edge-triggered) notice that there's no lower-

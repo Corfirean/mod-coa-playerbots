@@ -7,7 +7,7 @@
 
 local ADDON_NAME = "CoABotUI"
 local PROTOCOL_PREFIX = "COABOT"
-local VERSION = "1.2.0"
+local VERSION = "1.0.0"
 
 -- Role configuration: names, labels, and display colors
 local ROLES = {
@@ -23,21 +23,6 @@ for _, r in ipairs(ROLES) do
     ROLE_BY_ID[r.id] = r
 end
 
--- Group movement formations -- see BotFormations.h server-side and the FORMATION/GETFORMATION
--- verbs in docs/addon-protocol.md. Ids match ParseFormation's canonical spelling.
-local FORMATIONS = {
-    { id = "rolebased", name = "Role-Based" },
-    { id = "shieldwall", name = "Shieldwall" },
-    { id = "arrow",      name = "Arrow" },
-    { id = "circle",     name = "Circle" },
-    { id = "line",       name = "Line" },
-    { id = "chaos",      name = "Chaos" },
-}
-local FORMATION_BY_ID = {}
-for _, f in ipairs(FORMATIONS) do
-    FORMATION_BY_ID[f.id] = f
-end
-
 -- Default Database
 local dbDefaults = {
     point = "CENTER",
@@ -49,7 +34,6 @@ local dbDefaults = {
     debug = true,
     roles = {}, -- [botGuidLow] = "tank"
     autoDungeon = false,
-    minimap = { hide = false },
 }
 
 -- Forward declarations
@@ -57,17 +41,12 @@ local mainFrame
 local rows = {}
 local activeMembers = {}
 local popupMenu
-local specMenu
-local formationMenu
-local ShowSpecSubmenu
 local ApplyRoleAvailability
 local ShowGuildTaskBoard
 local RefreshTaskBoard
 local UpdateRoleButtonText
 local ShowOrderPicker
-local ShowGearPanel
 local autoDungeonSynced = false
-local currentFormationId = "rolebased"
 
 -- Register prefix for client engines that support it
 if RegisterAddonMessagePrefix then
@@ -125,31 +104,11 @@ local rolesCache = {}
 -- separate from rolesCache (which roles its class *could* hold) and from the player's saved
 -- preference in CoABotUIDB.roles (which might just be "auto").
 local currentRoleCache = {}
--- [botGuidLow] = "Vanguard" etc -- the bot's actual active spec name (ROLES reply's 6th field),
--- empty/nil for a vanilla class (1-11) or an unmapped spec. Shown next to the role so a class
--- with two specs sharing a role (e.g. two DPS specs) doesn't leave the player guessing which one
--- is actually active -- see UpdateRoleButtonText.
-local currentSpecNameCache = {}
 -- [botGuidLow] = { name=, classId=, level=, task=, professions="Tailoring=225,..." }
 local guildRosterCache = {}
 -- [botGuidLow] = true once a GETROLES request has been sent, so a bot row only ever asks once
 -- per session instead of re-asking on every roster scan.
 local rolesRequested = {}
-
--- [botGuidLow] = { {specId=, role=, name=}, ... } from GETSPECS/SPEC -- empty (no entries at
--- all) for a vanilla-class bot (1-11), since ClassSpecRoles::GetAllSpecs only covers Ascension's
--- custom classes (12-32); the spec submenu simply never opens for those.
-local specsCache = {}
--- [botGuidLow] = true once a GETSPECS request has been sent, same one-shot idea as rolesRequested.
-local specsRequested = {}
-
--- [botGuidLow] = { [slotId] = { entry=, name= }, ... } from GETGEAR/GEAR -- re-requested fresh
--- every time the gear panel opens (unlike roles/specs, equipped gear actually changes over a
--- session as bots loot/upgrade, so a one-shot cache would go stale).
-local gearCache = {}
--- [botGuidLow] = { legalArmor={"cloth",...}, legalWeapon={"sword",...}, armorPref=, weaponPref= }
--- from GETGEAR/GEARPREFS.
-local gearPrefsCache = {}
 
 -- [categoryId] = { {entry=, name=}, ... } in server arrival order -- GCAT chunks arrive
 -- RequiredLevel-sorted (low-level materials first, see BotMgr::GetGatherCatalog), RCAT chunks
@@ -167,44 +126,20 @@ local function RequestRoles(botGuidLow)
     SendBotCommand("GETROLES", botGuidLow)
 end
 
-local function RequestSpecs(botGuidLow)
-    if not botGuidLow or specsRequested[botGuidLow] then return end
-    specsRequested[botGuidLow] = true
-    SendBotCommand("GETSPECS", botGuidLow)
-end
-
-local function RequestFormation()
-    SendGroupCommand("GETFORMATION")
-end
-
--- Always re-requested (not one-shot) -- see gearCache's comment on why equipped gear needs a
--- fresh read every time the panel opens, unlike roles/specs.
-local function RequestGear(botGuidLow)
-    gearCache[botGuidLow] = {}
-    SendBotCommand("GETGEAR", botGuidLow)
-end
-
 -- Shows the player's saved preference, plus -- when that preference is "auto" -- the bot's
 -- actual current role in parentheses, e.g. "Auto (Healer)". Previously a bot left on Auto just
 -- showed the bare word "Auto" with no indication of what it was actually playing as; confirmed
 -- live feedback this was confusing. Falls back to just the preference alone until a ROLES
 -- reply has arrived for this bot (see RequestRoles/currentRoleCache).
---
--- Also appends the bot's actual active SPEC name (currentSpecNameCache, from ROLES's 6th field)
--- when known -- a role alone doesn't say which spec is active for a class with two+ specs
--- sharing that role (e.g. two DPS specs), which is exactly what the spec-submenu (see
--- ShowSpecSubmenu) lets the player choose between. Empty/nil for a vanilla class (1-11).
 function UpdateRoleButtonText(row, botGuidLow, defaultRole)
     local savedRole = CoABotUIDB.roles[botGuidLow] or defaultRole or "auto"
     local roleInfo = ROLE_BY_ID[savedRole] or ROLE_BY_ID["auto"]
-    local specName = currentSpecNameCache[botGuidLow]
-    local specSuffix = (specName and specName ~= "") and (" |cFFFFD100[" .. specName .. "]|r") or ""
 
     if savedRole == "auto" and currentRoleCache[botGuidLow] then
         local currentInfo = ROLE_BY_ID[currentRoleCache[botGuidLow]] or roleInfo
-        row.roleBtn:SetText(roleInfo.color .. "Auto|r " .. currentInfo.color .. "(" .. currentInfo.name .. ")|r" .. specSuffix)
+        row.roleBtn:SetText(roleInfo.color .. "Auto|r " .. currentInfo.color .. "(" .. currentInfo.name .. ")|r")
     else
-        row.roleBtn:SetText(roleInfo.color .. roleInfo.name .. "|r" .. specSuffix)
+        row.roleBtn:SetText(roleInfo.color .. roleInfo.name .. "|r")
     end
 end
 
@@ -216,8 +151,6 @@ end
 -- needs to poke the picker's refresh once new catalog rows stream in; the picker itself is only
 -- built lazily the first time it's opened (see ShowOrderPicker).
 local RefreshOrderPicker
--- Same idea for the gear panel -- built lazily the first time it's opened (see ShowGearPanel).
-local RefreshGearPanel
 
 local function RequestOrderCatalogs()
     if not catalogRequested["gather"] then
@@ -267,7 +200,6 @@ local function HandleIncomingMessage(body)
         local botGuidLow = tonumber(parts[2])
         local rolesCsv = parts[3] or ""
         local currentRole = parts[4]
-        local currentSpecName = parts[6]
         if not botGuidLow then return end
 
         local set = {}
@@ -278,7 +210,6 @@ local function HandleIncomingMessage(body)
         if currentRole and currentRole ~= "" then
             currentRoleCache[botGuidLow] = currentRole
         end
-        currentSpecNameCache[botGuidLow] = currentSpecName
 
         -- If the role picker happens to be open for exactly this bot right now, re-apply
         -- greying immediately instead of waiting for the next OpenRoleMenu call.
@@ -304,7 +235,6 @@ local function HandleIncomingMessage(body)
             level = tonumber(parts[5]) or 0,
             task = parts[6] or "idle",
             professions = parts[7] or "",
-            taskItemEntry = tonumber(parts[8]) or 0,
         }
         if RefreshTaskBoard then
             RefreshTaskBoard()
@@ -323,47 +253,6 @@ local function HandleIncomingMessage(body)
         if RefreshOrderPicker then
             RefreshOrderPicker()
         end
-
-    elseif verb == "SPEC" then
-        local botGuidLow = tonumber(parts[2])
-        local specId = tonumber(parts[3])
-        local role = parts[4]
-        local name = parts[5]
-        if not botGuidLow or not specId or not name then return end
-        specsCache[botGuidLow] = specsCache[botGuidLow] or {}
-        table.insert(specsCache[botGuidLow], { specId = specId, role = role, name = name })
-
-    elseif verb == "FORMATION" then
-        -- Server sends FormationToString's display casing (e.g. "RoleBased") -- FORMATION_BY_ID
-        -- keys are lowercase to match the ids this addon sends, so normalize on the way in.
-        currentFormationId = (parts[2] or currentFormationId):lower()
-        if mainFrame and mainFrame.RefreshFormationButton then
-            mainFrame.RefreshFormationButton()
-        end
-
-    elseif verb == "GEAR" then
-        local botGuidLow = tonumber(parts[2])
-        local slot = tonumber(parts[3])
-        local entry = tonumber(parts[4])
-        local name = parts[5]
-        if not botGuidLow or not slot then return end
-        gearCache[botGuidLow] = gearCache[botGuidLow] or {}
-        gearCache[botGuidLow][slot] = { entry = entry, name = name or ("item " .. tostring(entry)) }
-        if RefreshGearPanel then RefreshGearPanel() end
-
-    elseif verb == "GEARPREFS" then
-        local botGuidLow = tonumber(parts[2])
-        if not botGuidLow then return end
-        local legalArmor, legalWeapon = {}, {}
-        for t in (parts[3] or ""):gmatch("[^,]+") do table.insert(legalArmor, t) end
-        for t in (parts[4] or ""):gmatch("[^,]+") do table.insert(legalWeapon, t) end
-        gearPrefsCache[botGuidLow] = {
-            legalArmor = legalArmor,
-            legalWeapon = legalWeapon,
-            armorPref = parts[5] or "auto",
-            weaponPref = parts[6] or "auto",
-        }
-        if RefreshGearPanel then RefreshGearPanel() end
     end
 end
 
@@ -487,10 +376,6 @@ local function CreateRolePopupMenu()
                 if chosenRole == "auto" then
                     rolesRequested[botGuid] = nil
                     RequestRoles(botGuid)
-                else
-                    -- Offer a specific-spec pick if this bot's class has more than one spec for
-                    -- the role just chosen (e.g. two DPS specs) -- see ShowSpecSubmenu.
-                    ShowSpecSubmenu(menu.activeRoleButton, botGuid, chosenRole)
                 end
             end
             menu:Hide()
@@ -509,78 +394,6 @@ local function CreateRolePopupMenu()
     end)
 
     return menu
-end
-
--- Second-level menu opened from a role pick when the bot's class has more than one real spec
--- for that role (e.g. two DPS specs) -- lets the player pick a specific one instead of just
--- accepting whichever FindSpecForRole would default to server-side. Rebuilt fresh each time
--- (unlike the fixed 5-row role menu) since the spec count varies per class/role.
-local function CreateSpecPopupMenu()
-    local menu = CreateFrame("Frame", "CoABotUISpecMenu", UIParent)
-    menu:SetFrameStrata("DIALOG")
-    menu:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
-    })
-    menu:SetBackdropColor(0.08, 0.08, 0.12, 0.95)
-    menu:SetBackdropBorderColor(0.5, 0.5, 0.5, 1.0)
-    menu:Hide()
-    menu:EnableMouse(true)
-    menu.buttons = {}
-    return menu
-end
-
--- Shows every spec `botGuidLow`'s class has for `role` (from the cached GETSPECS reply) next to
--- the role popup. Does nothing (no submenu) when there's zero or one matching spec -- the plain
--- SETROLE-driven default from FindSpecForRole is already correct in that case, and forcing an
--- extra click for a class with only one option would just be annoying.
-function ShowSpecSubmenu(anchorButton, botGuidLow, role)
-    local specs = {}
-    for _, s in ipairs(specsCache[botGuidLow] or {}) do
-        if s.role == role then
-            table.insert(specs, s)
-        end
-    end
-    if #specs < 2 then
-        return
-    end
-
-    if not specMenu then
-        specMenu = CreateSpecPopupMenu()
-    end
-    for _, btn in ipairs(specMenu.buttons) do
-        btn:Hide()
-    end
-    specMenu:SetSize(150, #specs * 24 + 8)
-
-    for i, s in ipairs(specs) do
-        local btn = specMenu.buttons[i]
-        if not btn then
-            btn = CreateFrame("Button", nil, specMenu)
-            btn:SetSize(142, 22)
-            local hl = btn:CreateTexture(nil, "HIGHLIGHT")
-            hl:SetAllPoints()
-            hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
-            hl:SetBlendMode("ADD")
-            btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            btn.text:SetPoint("LEFT", btn, "LEFT", 8, 0)
-            specMenu.buttons[i] = btn
-        end
-        btn:SetPoint("TOPLEFT", specMenu, "TOPLEFT", 4, -4 - (i - 1) * 24)
-        btn.text:SetText(s.name)
-        btn:SetScript("OnClick", function()
-            SendBotCommand("LEARNSPEC", botGuidLow, s.specId)
-            specMenu:Hide()
-            if popupMenu then popupMenu:Hide() end
-        end)
-        btn:Show()
-    end
-
-    specMenu:ClearAllPoints()
-    specMenu:SetPoint("TOPLEFT", anchorButton, "TOPRIGHT", 2, 0)
-    specMenu:Show()
 end
 
 -- Greys out (but doesn't hide -- the row still shows what's not possible) any role button
@@ -608,12 +421,10 @@ local function OpenRoleMenu(parentButton, botGuidLow)
 
     if popupMenu:IsShown() and popupMenu.activeBotGuid == botGuidLow then
         popupMenu:Hide()
-        if specMenu then specMenu:Hide() end
         return
     end
 
     RequestRoles(botGuidLow)
-    RequestSpecs(botGuidLow)
 
     popupMenu.activeBotGuid = botGuidLow
     popupMenu.activeRoleButton = parentButton
@@ -624,75 +435,13 @@ local function OpenRoleMenu(parentButton, botGuidLow)
 end
 
 -------------------------------------------------------------------------------
--- Formation Popup Menu
--------------------------------------------------------------------------------
-
-local function CreateFormationPopupMenu()
-    local menu = CreateFrame("Frame", "CoABotUIFormationMenu", UIParent)
-    menu:SetSize(150, #FORMATIONS * 24 + 8)
-    menu:SetFrameStrata("DIALOG")
-    menu:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
-    })
-    menu:SetBackdropColor(0.08, 0.08, 0.12, 0.95)
-    menu:SetBackdropBorderColor(0.5, 0.5, 0.5, 1.0)
-    menu:Hide()
-    menu:EnableMouse(true)
-
-    menu.buttons = {}
-    for i, f in ipairs(FORMATIONS) do
-        local btn = CreateFrame("Button", nil, menu)
-        btn:SetSize(142, 22)
-        btn:SetPoint("TOPLEFT", menu, "TOPLEFT", 4, -4 - (i - 1) * 24)
-
-        local hl = btn:CreateTexture(nil, "HIGHLIGHT")
-        hl:SetAllPoints()
-        hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
-        hl:SetBlendMode("ADD")
-
-        local text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        text:SetPoint("LEFT", btn, "LEFT", 8, 0)
-        text:SetText(f.name)
-        btn.text = text
-
-        btn:SetScript("OnClick", function()
-            currentFormationId = f.id
-            SendRawBody("FORMATION:0:" .. f.id)
-            if mainFrame and mainFrame.RefreshFormationButton then
-                mainFrame.RefreshFormationButton()
-            end
-            menu:Hide()
-        end)
-        menu.buttons[i] = btn
-    end
-
-    return menu
-end
-
-local function OpenFormationMenu(parentButton)
-    if not formationMenu then
-        formationMenu = CreateFormationPopupMenu()
-    end
-    if formationMenu:IsShown() then
-        formationMenu:Hide()
-        return
-    end
-    formationMenu:ClearAllPoints()
-    formationMenu:SetPoint("TOPLEFT", parentButton, "BOTTOMLEFT", 0, -2)
-    formationMenu:Show()
-end
-
--------------------------------------------------------------------------------
 -- UI Construction
 -------------------------------------------------------------------------------
 
 local function CreateBotRow(parent, index)
     local row = CreateFrame("Frame", nil, parent)
-    row:SetSize(536, 32)
-    row:SetPoint("TOPLEFT", parent, "TOPLEFT", 12, -128 - (index - 1) * 34)
+    row:SetSize(476, 32)
+    row:SetPoint("TOPLEFT", parent, "TOPLEFT", 12, -100 - (index - 1) * 34)
 
     -- Row background highlight on mouseover
     local bg = row:CreateTexture(nil, "BACKGROUND")
@@ -700,15 +449,6 @@ local function CreateBotRow(parent, index)
     bg:SetTexture("Interface\\FriendsFrame\\UI-FriendsFrame-HighlightBar")
     bg:SetAlpha(0.12)
     row.bg = bg
-
-    -- Slim class-colored left edge -- lets a glance down the row list tell classes apart without
-    -- needing to read each name's color, unlike the plain hover-only highlight bar above.
-    local classAccent = row:CreateTexture(nil, "ARTWORK")
-    classAccent:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
-    classAccent:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
-    classAccent:SetWidth(3)
-    classAccent:SetTexture(1, 1, 1, 0.9)
-    row.classAccent = classAccent
 
     -- Name & Low GUID Label
     local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -719,7 +459,7 @@ local function CreateBotRow(parent, index)
 
     -- Role Selector Button
     local roleBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    roleBtn:SetSize(100, 22)
+    roleBtn:SetSize(72, 22)
     roleBtn:SetPoint("LEFT", nameText, "RIGHT", 4, 0)
     roleBtn:SetText("Auto")
     roleBtn:SetScript("OnClick", function(self)
@@ -766,19 +506,6 @@ local function CreateBotRow(parent, index)
     end)
     row.btnStop = btnStop
 
-    -- Gear inspector/preference button -- opens a panel showing what's currently equipped and
-    -- lets the player pick a preferred armor/weapon type (see ShowGearPanel).
-    local btnGear = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    btnGear:SetSize(48, 22)
-    btnGear:SetPoint("LEFT", btnStop, "RIGHT", 4, 0)
-    btnGear:SetText("Gear")
-    btnGear:SetScript("OnClick", function()
-        if row.botGuidLow then
-            ShowGearPanel(row.botGuidLow, row.nameText:GetText())
-        end
-    end)
-    row.btnGear = btnGear
-
     return row
 end
 
@@ -800,20 +527,18 @@ local function RefreshUI()
     local members = ScanRoster()
     local memberCount = #members
 
-    -- Utility Bars (Quick Fill / Guild Tasks / Auto Dungeon / Formation / Bring Bots to Me)
-    -- don't depend on having any bots already in your group/raid -- Quick Fill's whole purpose
-    -- is to work from an empty or partial group.
+    -- Utility Bar (Quick Fill / Guild Tasks) doesn't depend on having any bots already in
+    -- your group/raid -- Quick Fill's whole purpose is to work from an empty or partial group.
     mainFrame.utilityBar:Show()
-    if mainFrame.utilityBar2 then mainFrame.utilityBar2:Show() end
 
     -- Update Window Height dynamically based on row count
     local contentHeight
     if memberCount == 0 then
-        contentHeight = 216
+        contentHeight = 188
         mainFrame.emptyNotice:Show()
         mainFrame.globalBar:Hide()
     else
-        contentHeight = 166 + (memberCount * 34)
+        contentHeight = 138 + (memberCount * 34)
         mainFrame.emptyNotice:Hide()
         mainFrame.globalBar:Show()
     end
@@ -838,7 +563,6 @@ local function RefreshUI()
             local classColor = RAID_CLASS_COLORS[member.class] or { r = 1, g = 1, b = 1 }
             local colorCode = string.format("|cFF%02x%02x%02x", classColor.r * 255, classColor.g * 255, classColor.b * 255)
             row.nameText:SetText(colorCode .. member.name .. "|r")
-            row.classAccent:SetTexture(classColor.r, classColor.g, classColor.b, 0.9)
 
             -- Active role
             UpdateRoleButtonText(row, member.lowGuid, member.defaultRole)
@@ -857,23 +581,21 @@ end
 
 local function CreateMainFrame()
     local frame = CreateFrame("Frame", "CoABotUIMainFrame", UIParent)
-    frame:SetSize(560, 200)
+    frame:SetSize(500, 200)
     frame:SetFrameStrata("MEDIUM")
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
 
-    -- Flat, clean panel skin -- thin tooltip-style border instead of the thick stock stone
-    -- dialog frame, closer to a modern minimalist HUD than the default WotLK grey-panel look.
+    -- Backing dialog texture
     frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 14,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
     })
-    frame:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
-    frame:SetBackdropBorderColor(0.35, 0.35, 0.42, 1.0)
+    frame:SetBackdropColor(0.05, 0.05, 0.08, 0.95)
 
     -- Draggable Header Script
     frame:SetScript("OnDragStart", frame.StartMoving)
@@ -885,14 +607,6 @@ local function CreateMainFrame()
         CoABotUIDB.xOfs = x
         CoABotUIDB.yOfs = y
     end)
-
-    -- Title bar accent strip -- a thin gold underline under the title, cheap visual polish that
-    -- separates the header from the command bars below without needing a second backdrop.
-    local titleAccent = frame:CreateTexture(nil, "ARTWORK")
-    titleAccent:SetPoint("TOPLEFT", frame, "TOPLEFT", 3, -26)
-    titleAccent:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -3, -26)
-    titleAccent:SetHeight(1)
-    titleAccent:SetTexture(0.85, 0.65, 0.13, 0.6)
 
     -- Title Bar Text
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -920,7 +634,6 @@ local function CreateMainFrame()
             frame:SetHeight(32)
             if frame.globalBar then frame.globalBar:Hide() end
             if frame.utilityBar then frame.utilityBar:Hide() end
-            if frame.utilityBar2 then frame.utilityBar2:Hide() end
             if frame.statusBar then frame.statusBar:Hide() end
             if frame.emptyNotice then frame.emptyNotice:Hide() end
             for _, r in ipairs(rows) do r:Hide() end
@@ -934,7 +647,7 @@ local function CreateMainFrame()
 
     -- Global Command Bar (All Bots)
     local globalBar = CreateFrame("Frame", nil, frame)
-    globalBar:SetSize(536, 26)
+    globalBar:SetSize(476, 26)
     globalBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -36)
 
     local lblAll = globalBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -985,7 +698,7 @@ local function CreateMainFrame()
 
     -- Utility Bar: group-wide/guild-wide actions that don't target one specific bot
     local utilityBar = CreateFrame("Frame", nil, frame)
-    utilityBar:SetSize(536, 26)
+    utilityBar:SetSize(476, 26)
     utilityBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -64)
 
     local btnQuickFill = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
@@ -1033,49 +746,6 @@ local function CreateMainFrame()
     frame.RefreshAutoDungeonButton = RefreshAutoDungeonButton
 
     frame.utilityBar = utilityBar
-
-    -- Second utility row: group formation picker + out-of-combat "bring bots to me".
-    local utilityBar2 = CreateFrame("Frame", nil, frame)
-    utilityBar2:SetSize(536, 26)
-    utilityBar2:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -92)
-
-    local btnFormation = CreateFrame("Button", nil, utilityBar2, "UIPanelButtonTemplate")
-    btnFormation:SetSize(150, 20)
-    btnFormation:SetPoint("LEFT", utilityBar2, "LEFT", 4, 0)
-    local function RefreshFormationButton()
-        local f = FORMATION_BY_ID[currentFormationId] or FORMATIONS[1]
-        btnFormation:SetText("Formation: " .. f.name)
-    end
-    RefreshFormationButton()
-    btnFormation:SetScript("OnClick", function(self)
-        OpenFormationMenu(self)
-    end)
-    frame.RefreshFormationButton = RefreshFormationButton
-
-    -- Bring Bots to Me: only usable out of combat (server silently refuses otherwise, see
-    -- BotMgr::TeleportBotsToPlayer) -- greyed out client-side too so the disabled state is
-    -- visible before the player would even try, instead of clicking and wondering why nothing
-    -- happened.
-    local btnTeleport = CreateFrame("Button", nil, utilityBar2, "UIPanelButtonTemplate")
-    btnTeleport:SetSize(150, 20)
-    btnTeleport:SetPoint("LEFT", btnFormation, "RIGHT", 6, 0)
-    btnTeleport:SetText("Bring Bots to Me")
-    btnTeleport:SetScript("OnClick", function()
-        SendGroupCommand("TELEPORT")
-    end)
-    local function RefreshTeleportButton()
-        if UnitAffectingCombat("player") then
-            btnTeleport:Disable()
-            btnTeleport:SetText("|cFF666666Bring Bots to Me|r")
-        else
-            btnTeleport:Enable()
-            btnTeleport:SetText("Bring Bots to Me")
-        end
-    end
-    RefreshTeleportButton()
-    frame.RefreshTeleportButton = RefreshTeleportButton
-
-    frame.utilityBar2 = utilityBar2
 
     -- Target Status Bar (Footer)
     local statusBar = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1169,20 +839,6 @@ local function CreateTaskRow(parent, index)
     taskText:SetJustifyH("RIGHT")
     row.taskText = taskText
 
-    -- Invisible hit-area over taskText -- a FontString itself can't take mouse scripts, so this
-    -- transparent Button stands in to show a real item GameTooltip (icon/stats) when the bot is
-    -- actually crafting/gathering something (see RefreshTaskBoard's row.taskItemEntry).
-    local taskHit = CreateFrame("Button", nil, row)
-    taskHit:SetAllPoints(taskText)
-    taskHit:SetScript("OnEnter", function(self)
-        if not row.taskItemEntry or row.taskItemEntry == 0 then return end
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetItemByID(row.taskItemEntry)
-        GameTooltip:Show()
-    end)
-    taskHit:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    row.taskHit = taskHit
-
     -- Profession icon strip -- a fixed pool of icon buttons reused across refreshes (same
     -- pattern as the bot-row/order-row pools elsewhere in this file), each with its own
     -- OnEnter/OnLeave tooltip showing "Profession (skill)".
@@ -1270,7 +926,6 @@ function RefreshTaskBoard()
             local isIdle = (info.task == "idle")
             local taskColor = isIdle and "|cFF888888" or "|cFF55FF55"
             row.taskText:SetText(taskColor .. info.task .. "|r")
-            row.taskItemEntry = info.taskItemEntry or 0
 
             ApplyProfessionIcons(row, info.professions)
             row:Show()
@@ -1300,13 +955,12 @@ local function CreateGuildTaskBoardFrame()
     frame:Hide()
 
     frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 14,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
     })
-    frame:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
-    frame:SetBackdropBorderColor(0.35, 0.35, 0.42, 1.0)
+    frame:SetBackdropColor(0.05, 0.05, 0.08, 0.95)
 
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -10)
@@ -1533,13 +1187,12 @@ local function CreateOrderPickerFrame()
     frame:Hide()
 
     frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 14,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
     })
-    frame:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
-    frame:SetBackdropBorderColor(0.35, 0.35, 0.42, 1.0)
+    frame:SetBackdropColor(0.05, 0.05, 0.08, 0.95)
 
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -10)
@@ -1610,217 +1263,6 @@ function ShowOrderPicker()
 end
 
 -------------------------------------------------------------------------------
--- Gear Panel (inspect equipped items, set armor/weapon type preference)
--------------------------------------------------------------------------------
-
--- WotLK EquipmentSlots order (see docs/addon-protocol.md's GEAR verb) -- EQUIPMENT_SLOT_BODY (3,
--- the shirt) and EQUIPMENT_SLOT_TABARD (18) are never sent by the server (cosmetic-only, no
--- "type" concept) so they're simply absent from this table's gaps rather than mapped to "?".
-local GEAR_SLOT_NAMES = {
-    [0] = "Head", [1] = "Neck", [2] = "Shoulders", [4] = "Chest", [5] = "Waist",
-    [6] = "Legs", [7] = "Feet", [8] = "Wrist", [9] = "Hands", [10] = "Finger 1",
-    [11] = "Finger 2", [12] = "Trinket 1", [13] = "Trinket 2", [14] = "Back",
-    [15] = "Main Hand", [16] = "Off Hand", [17] = "Ranged",
-}
-local GEAR_SLOT_ORDER = { 0, 2, 4, 14, 5, 6, 8, 9, 7, 1, 10, 11, 12, 13, 15, 16, 17 }
-
-local ARMOR_TYPE_OPTIONS = { "auto", "cloth", "leather", "mail", "plate" }
-local WEAPON_TYPE_OPTIONS = { "auto", "sword", "mace", "axe", "fist", "dagger", "staff" }
-local function Capitalize(s)
-    return s:sub(1, 1):upper() .. s:sub(2)
-end
-
-local gearPanelFrame
-local gearPanelBotGuid
-
-local function CreateGearPreferenceRow(parent, yOffset, label, options)
-    local lbl = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    lbl:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, yOffset)
-    lbl:SetText("|cFFCCCCCC" .. label .. ":|r")
-
-    local row = { buttons = {}, options = options }
-    for i, opt in ipairs(options) do
-        local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-        btn:SetSize(62, 20)
-        if i == 1 then
-            btn:SetPoint("TOPLEFT", lbl, "BOTTOMLEFT", 0, -4)
-        else
-            btn:SetPoint("LEFT", row.buttons[i - 1], "RIGHT", 4, 0)
-        end
-        btn:SetText(Capitalize(opt))
-        btn.optionId = opt
-        row.buttons[i] = btn
-    end
-    return row
-end
-
--- Greys out any option this bot's class can't legally use at all (per GEARPREFS's legal-type
--- list) and highlights whichever one is the current preference -- same "grey out the
--- impossible, highlight the active" idea ApplyRoleAvailability/UpdateRoleButtonText use.
-local function ApplyGearPreferenceRow(row, legalTypes, currentPref, botGuidLow, isWeapon)
-    local legalSet = { auto = true } -- "auto" is always a valid choice
-    for _, t in ipairs(legalTypes or {}) do
-        legalSet[t] = true
-    end
-
-    for _, btn in ipairs(row.buttons) do
-        local legal = legalSet[btn.optionId]
-        local isCurrent = btn.optionId == currentPref
-        if legal then btn:Enable() else btn:Disable() end
-        if isCurrent then
-            btn:SetText("|cFF44FF44" .. Capitalize(btn.optionId) .. "|r")
-        elseif legal then
-            btn:SetText(Capitalize(btn.optionId))
-        else
-            btn:SetText("|cFF555555" .. Capitalize(btn.optionId) .. "|r")
-        end
-        btn:SetScript("OnClick", function()
-            SendBotCommand("SETGEARPREF", botGuidLow, (isWeapon and "weapon" or "armor") .. ":" .. btn.optionId)
-        end)
-    end
-end
-
-local function CreateGearPanelFrame()
-    local frame = CreateFrame("Frame", "CoABotUIGearPanel", UIParent)
-    frame:SetSize(500, 360)
-    frame:SetPoint("CENTER", UIParent, "CENTER", 0, 20)
-    frame:SetFrameStrata("DIALOG")
-    frame:SetClampedToScreen(true)
-    frame:SetMovable(true)
-    frame:EnableMouse(true)
-    frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", frame.StartMoving)
-    frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
-    frame:Hide()
-
-    frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 14,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
-    })
-    frame:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
-    frame:SetBackdropBorderColor(0.35, 0.35, 0.42, 1.0)
-
-    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -10)
-    frame.title = title
-
-    local btnClose = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    btnClose:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
-    btnClose:SetScript("OnClick", function() frame:Hide() end)
-
-    -- Equipped items list -- plain fixed-size FontString pool (at most 17 real slots, see
-    -- GEAR_SLOT_ORDER), two columns to keep the panel a reasonable height.
-    frame.gearLines = {}
-    for i = 1, #GEAR_SLOT_ORDER do
-        local line = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        local col = (i - 1) % 2
-        local row = math.floor((i - 1) / 2)
-        line:SetPoint("TOPLEFT", frame, "TOPLEFT", 14 + col * 250, -36 - row * 16)
-        line:SetWidth(240)
-        line:SetJustifyH("LEFT")
-        frame.gearLines[i] = line
-    end
-
-    local prefY = -36 - math.ceil(#GEAR_SLOT_ORDER / 2) * 16 - 16
-    frame.armorRow = CreateGearPreferenceRow(frame, prefY, "Preferred Armor Type", ARMOR_TYPE_OPTIONS)
-    frame.weaponRow = CreateGearPreferenceRow(frame, prefY - 56, "Preferred Weapon Type", WEAPON_TYPE_OPTIONS)
-
-    local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    hint:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 14, 10)
-    hint:SetText("|cFF888888Greyed = this class can't use that type at all. \"Auto\" greeds/equips whatever's legal.|r")
-    hint:SetWidth(472)
-    hint:SetJustifyH("LEFT")
-
-    return frame
-end
-
-RefreshGearPanel = function()
-    if not gearPanelFrame or not gearPanelFrame:IsShown() or not gearPanelBotGuid then return end
-
-    local gear = gearCache[gearPanelBotGuid] or {}
-    for i, slot in ipairs(GEAR_SLOT_ORDER) do
-        local entry = gear[slot]
-        local line = gearPanelFrame.gearLines[i]
-        if entry then
-            line:SetText("|cFFCCCCCC" .. GEAR_SLOT_NAMES[slot] .. ":|r " .. entry.name)
-        else
-            line:SetText("|cFF666666" .. GEAR_SLOT_NAMES[slot] .. ":|r |cFF444444(empty)|r")
-        end
-    end
-
-    local prefs = gearPrefsCache[gearPanelBotGuid]
-    if prefs then
-        ApplyGearPreferenceRow(gearPanelFrame.armorRow, prefs.legalArmor, prefs.armorPref, gearPanelBotGuid, false)
-        ApplyGearPreferenceRow(gearPanelFrame.weaponRow, prefs.legalWeapon, prefs.weaponPref, gearPanelBotGuid, true)
-    end
-end
-
-ShowGearPanel = function(botGuidLow, botName)
-    if not gearPanelFrame then
-        gearPanelFrame = CreateGearPanelFrame()
-    end
-    gearPanelBotGuid = botGuidLow
-    gearPanelFrame.title:SetText("|cFFFFD100Gear|r -- " .. tostring(botName or "?"))
-
-    -- Clear stale text from whichever bot's gear was shown last, until the fresh GETGEAR replies
-    -- land -- avoids briefly showing a *different* bot's equipment under this one's name.
-    for _, line in ipairs(gearPanelFrame.gearLines) do
-        line:SetText("|cFF666666...|r")
-    end
-
-    gearPanelFrame:Show()
-    RequestGear(botGuidLow)
-    RefreshGearPanel()
-end
-
--------------------------------------------------------------------------------
--- Minimap Button (LibDBIcon-1.0)
--------------------------------------------------------------------------------
-
-local function CreateMinimapButton()
-    local LibStub = _G.LibStub
-    if not LibStub then return end -- Libs missing/failed to load -- fail quiet, slash command still works
-    local ldb = LibStub:GetLibrary("LibDataBroker-1.1", true)
-    local icon = LibStub:GetLibrary("LibDBIcon-1.0", true)
-    if not ldb or not icon then return end
-
-    local launcher = ldb:NewDataObject(ADDON_NAME, {
-        type = "launcher",
-        text = "CoA Bot Companion Control",
-        icon = "Interface\\Icons\\INV_Misc_GroupLooking",
-        OnClick = function(_, button)
-            if button == "RightButton" then
-                -- Quick-menu: toggle Auto Dungeon without opening the full panel.
-                CoABotUIDB.autoDungeon = not CoABotUIDB.autoDungeon
-                SendRawBody("AUTODUNGEON:" .. (CoABotUIDB.autoDungeon and "1" or "0"))
-                if mainFrame and mainFrame.RefreshAutoDungeonButton then
-                    mainFrame.RefreshAutoDungeonButton()
-                end
-                Log("Auto Dungeon Mode " .. (CoABotUIDB.autoDungeon and "|cFF44FF44enabled|r" or "|cFFFF4444disabled|r") .. " (right-click minimap icon).")
-            else
-                if mainFrame:IsShown() then
-                    mainFrame:Hide()
-                    CoABotUIDB.isShown = false
-                else
-                    mainFrame:Show()
-                    CoABotUIDB.isShown = true
-                    RefreshUI()
-                end
-            end
-        end,
-        OnTooltipShow = function(tooltip)
-            tooltip:AddLine("|cFFFFD100CoA Bot Companion Control|r")
-            tooltip:AddLine("|cFFCCCCCCLeft-click|r to toggle the panel", 1, 1, 1)
-            tooltip:AddLine("|cFFCCCCCCRight-click|r to toggle Auto Dungeon", 1, 1, 1)
-        end,
-    })
-
-    icon:Register(ADDON_NAME, launcher, CoABotUIDB.minimap)
-end
-
--------------------------------------------------------------------------------
 -- Event Dispatcher
 -------------------------------------------------------------------------------
 
@@ -1831,8 +1273,6 @@ eventFrame:RegisterEvent("RAID_ROSTER_UPDATE")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("CHAT_MSG_ADDON")
-eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
-eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
@@ -1859,8 +1299,6 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
             mainFrame:Hide()
         end
 
-        CreateMinimapButton()
-
         RefreshUI()
         Log("Loaded v" .. VERSION .. ". Type |cFFFFD100/coabot|r for commands.")
 
@@ -1877,7 +1315,6 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
             if CoABotUIDB.autoDungeon then
                 SendRawBody("AUTODUNGEON:1")
             end
-            RequestFormation()
         end
 
     elseif event == "PLAYER_TARGET_CHANGED" then
@@ -1889,11 +1326,6 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         DebugLog("Recv <- " .. tostring(arg2) .. " from " .. tostring(arg4))
         if arg2 then
             HandleIncomingMessage(arg2)
-        end
-
-    elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
-        if mainFrame and mainFrame.RefreshTeleportButton then
-            mainFrame.RefreshTeleportButton()
         end
     end
 end)
