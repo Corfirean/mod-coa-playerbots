@@ -1887,18 +1887,52 @@ void TryAutoPullInInstance(Player* bot)
 
     if (target)
     {
-        // Round 2 pull readiness pipeline: TankReady, HealerReady, group distance and recovery
-        BotAI::PullReadinessInfo pullInfo = BotAI::SpecStrategyRegistry::EvaluateGroupPullReadiness(bot, group);
         uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
-        if (!pullInfo.IsReady())
+        BotAI::SpecStrategyRuntime& tankRuntime = BotAI::SpecStrategyRegistry::GetRuntime(bot->GetGUID());
+        uint32 now = getMSTime();
+
+        // 1. Tank autonomous PrePull execution
+        BotAI::PrePullResult tankPreRes = BotAI::SpecStrategyRegistry::ExecutePrePullStrategy(bot, group, 100);
+        if (tankPreRes == BotAI::PrePullResult::ActionExecuted || tankPreRes == BotAI::PrePullResult::Waiting)
         {
-            LOG_INFO("module.coa-playerbots", "PullAI: tank='{}' spec={} TankReady={} HealerReady={} PullReady=false reason='{}'",
-                bot->GetName(), activeSpec, pullInfo.tankReady, pullInfo.healerReady, pullInfo.reason);
             return;
         }
 
-        LOG_INFO("module.coa-playerbots", "PullAI: tank='{}' spec={} TankReady=true HealerReady=true PullReady=true target='{}'",
-            bot->GetName(), activeSpec, target->GetName());
+        // 2. Scan group members: Healer PrePull and group member setup
+        for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsAlive())
+                continue;
+
+            BotAI::PrePullResult memPreRes = BotAI::SpecStrategyRegistry::ExecutePrePullStrategy(member, group, 100);
+            if (memPreRes == BotAI::PrePullResult::ActionExecuted)
+            {
+                return;
+            }
+        }
+
+        // 3. Evaluate group pull readiness
+        BotAI::PullReadinessInfo pullInfo = BotAI::SpecStrategyRegistry::EvaluateGroupPullReadiness(bot, group);
+        if (!pullInfo.IsReady())
+        {
+            if (now >= tankRuntime.lastLogTimeMs + 2000 || tankRuntime.lastLoggedPullReason != pullInfo.reason)
+            {
+                tankRuntime.lastLogTimeMs = now;
+                tankRuntime.lastLoggedPullReason = pullInfo.reason;
+                LOG_INFO("module.coa-playerbots", "PullAI: tank='{}' spec={} TankReady={} HealerReady={} PullReady=false reason='{}'",
+                    bot->GetName(), activeSpec, pullInfo.tankReady, pullInfo.healerReady, pullInfo.reason);
+            }
+            return;
+        }
+
+        if (now >= tankRuntime.lastLogTimeMs + 2000 || tankRuntime.lastLoggedPullReason != "Ready")
+        {
+            tankRuntime.lastLogTimeMs = now;
+            tankRuntime.lastLoggedPullReason = "Ready";
+            LOG_INFO("module.coa-playerbots", "PullAI: tank='{}' spec={} TankReady=true HealerReady=true PullReady=true target='{}'",
+                bot->GetName(), activeSpec, target->GetName());
+        }
 
         BotMovement::Release(bot, MoveOwner::AutoDungeon);
         bot->Attack(target, true);
@@ -3798,6 +3832,14 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 
     uint32 spellId = 0;
     uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+
+    BotAI::SpecStrategy const* strategy = BotAI::SpecStrategyRegistry::FindStrategy(bot->getClass(), activeSpec, BotRole::Healer);
+    if (!strategy)
+        strategy = BotAI::SpecStrategyRegistry::FindStrategy(bot->getClass(), activeSpec);
+
+    if (strategy && !strategy->CanUseLegacyFallback(ctx))
+        return;
+
     spellId = BotAI::SelectClassHealRotationSpell(bot, healTarget, bot->getClass(), activeSpec);
     if (!spellId)
         spellId = SelectHealSpell(bot, healTarget);

@@ -41,6 +41,7 @@ public:
             { "guilddepositgold",  HandleBotGuildDepositGoldCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "guildwithdrawgold", HandleBotGuildWithdrawGoldCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "despawn",      HandleBotDespawnCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "purgeall",     HandleBotPurgeAllCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "listauras",    HandleBotListAurasCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "runchat",      HandleBotRunChatCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "hasspells",    HandleBotHasSpellsCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -317,6 +318,16 @@ public:
     static bool HandleBotDespawnCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
         sBotMgr->DespawnBot(charLowGuid, handler);
+        return true;
+    }
+
+    // Despawns every online bot and permanently deletes every bot character (see
+    // BotMgr::PurgeAllBots) -- for clearing out an old population (e.g. one spawned before the
+    // spawnrandom gear-up fix) before respawning a fresh one. Does not create replacement bots
+    // itself; follow up with spawnrandom/spawnleveled.
+    static bool HandleBotPurgeAllCommand(ChatHandler* handler)
+    {
+        sBotMgr->PurgeAllBots(handler);
         return true;
     }
 

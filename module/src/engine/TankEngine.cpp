@@ -77,13 +77,11 @@ namespace BotAI
         }
 
         SpellCastResult result = bot->CastSpell(action.target, action.spellId, false);
+        SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
         if (result == SPELL_CAST_OK)
         {
             if (action.internalThrottleMs > 0 && action.rootSpellId != 0)
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
-
-            SpecStrategyRuntime& runtime = SpecStrategyRegistry::GetRuntime(bot->GetGUID());
-            runtime.successfulCastsCount++;
 
             nextCastAllowedMs = AI_REACTION_GATE_MS;
             LOG_INFO("module.coa-playerbots", "DataDrivenAI [Tank]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",

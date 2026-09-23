@@ -71,6 +71,18 @@ namespace BotAI
     };
 
     // -----------------------------------------------------------------------
+    // PrePullResult -- result of pre-pull preparation execution.
+    // -----------------------------------------------------------------------
+    enum class PrePullResult : uint8
+    {
+        Ready = 0,               // Bot is fully prepared for pull
+        ActionExecuted,          // Pre-pull action was cast (e.g. entered form, summoned pet)
+        Waiting,                 // Bot is resting / drinking / waiting for cooldown
+        Recovering,              // Low HP/power, actively recovering
+        Impossible               // Cannot prepare (e.g. missing reagents, stunned, no spell)
+    };
+
+    // -----------------------------------------------------------------------
     // Combat state status -- evaluates whether the bot is in its required form/stance.
     // -----------------------------------------------------------------------
     enum class CombatStateStatus : uint8
@@ -147,10 +159,19 @@ namespace BotAI
         uint32 combatStartMs = 0;
         uint32 lastFormTransitionMs = 0;
         uint32 lastBaselineStateMs = 0;
+        uint32 lastSuccessfulFormCastMs = 0;
+        uint32 pendingStateSpellId = 0;
+        uint32 pendingStateStartedMs = 0;
         uint32 successfulCastsCount = 0;
+        uint32 successfulCombatCasts = 0;
+        uint32 successfulStateActions = 0;
+        uint32 burstStartedMs = 0;
+        bool burstWindowActive = false;
         bool openerCompleted = false;
         CombatStateStatus lastStateStatus = CombatStateStatus::Ready;
         std::string lastPullFailureReason = "";
+        uint32 lastLogTimeMs = 0;
+        std::string lastLoggedPullReason = "";
     };
 
     // -----------------------------------------------------------------------
@@ -165,6 +186,7 @@ namespace BotAI
 
         // Mandatory form/stance
         RequiredCombatState requiredState;
+        bool allowLegacyInTemporaryState = false;
 
         // Pre-pull readiness check -- returns true when the bot is ready to engage
         std::function<bool(Player* bot, CombatContext const&)> isReadyToPull = nullptr;

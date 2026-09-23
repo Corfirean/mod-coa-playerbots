@@ -60,12 +60,31 @@ namespace BotAI
                 return act;
             };
 
-            // Mechanics cannot pull without its Mechsuit active
+            // ResourcePolicy for Scrap (801816)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 801816 };
+                pol.minToEngage = 0;
+                pol.defensiveReserve = 10; // Keep at least 10 Scrap for Mechsuit rebuilding
+                pol.reserveForDefensive = true;
+                pol.allowDumpDuringBurst = true;
+                s.resourcePolicies.push_back(pol);
+            }
+
+            // Mechanics pull readiness: if Mechsuit missing and Scrap < 10, allow controlled opener pull
             s.isReadyToPull = [](Player* bot, CombatContext const& ctx) -> bool
             {
-                if (!bot->HasAura(801384))
-                    return false;
-                return ctx.botHpPct >= 70.0f;
+                if (bot->HasAura(801384))
+                    return ctx.botHpPct >= 70.0f;
+
+                // Out of combat Scrap generation is impossible in Core.
+                // Allow pull to acquire Scrap upon first damaging hit!
+                Aura const* scrapAura = bot->GetAura(801816);
+                int32 scrap = scrapAura ? scrapAura->GetStackAmount() : 0;
+                if (scrap < 10)
+                    return ctx.botHpPct >= 70.0f;
+
+                return false; // Has 10+ Scrap, should cast Mechsuit before pull
             };
 
             // Phase modifiers
@@ -345,6 +364,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.trackedEntityType = TrackedEntityType::Turret;
+                d.trackedEntityEntry = 500481;
                 d.internalThrottleMs = 30000;
                 d.baseScore = 220.0f;
                 p.abilities.push_back(d);
@@ -443,6 +463,7 @@ namespace BotAI
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
                 d.trackedEntityType = TrackedEntityType::Turret;
+                d.trackedEntityEntry = 50046;
                 d.internalThrottleMs = 45000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);

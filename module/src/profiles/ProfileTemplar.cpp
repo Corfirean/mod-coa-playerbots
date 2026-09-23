@@ -276,6 +276,15 @@ namespace BotAI
                 { AbilityTag::AoEDamage, 2.0f, 60.0f }
             };
 
+            // ResourcePolicy for Oath chain
+            ResourcePolicy pol;
+            pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 704576 };
+            pol.minToEngage = 0;
+            pol.defensiveReserve = 2; // Keep at least 2 Oath stacks for active mitigation / defense
+            pol.reserveForDefensive = true;
+            pol.allowDumpDuringBurst = true;
+            s.resourcePolicies.push_back(pol);
+
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
             {
                 return bot->GetHealthPct() >= 65.0f;

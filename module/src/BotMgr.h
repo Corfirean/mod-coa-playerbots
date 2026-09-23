@@ -157,6 +157,14 @@ public:
     // short of restarting the whole server.
     void DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
 
+    // Despawns every online bot and permanently deletes every bot character row (any account
+    // matching CoaBots.RandomSpawn.AccountPrefix, online or not) via the real
+    // Player::DeleteFromDB, so nothing gets left behind for a name/guid collision on the next
+    // spawn batch. For clearing out an old naked/broken population before respawning fresh
+    // ones with .botcmd spawnrandom or spawnleveled -- does not create any replacement bots
+    // itself.
+    void PurgeAllBots(ChatHandler* handler);
+
     // Diagnostic-only, not bot-specific: dumps every current aura (spell id,
     // name, whether it carries SPELL_AURA_PREVENT_REGENERATE_POWER) on any
     // online player found by low guid -- bot or real client. Added to chase

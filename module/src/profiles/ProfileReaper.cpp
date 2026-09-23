@@ -171,6 +171,17 @@ namespace BotAI
                 { AbilityTag::AoEDamage, 2.0f, 60.0f }
             };
 
+            // ResourcePolicy for Reaped Soul (500363) and Runic Power
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 500363 };
+                pol.minToEngage = 0;
+                pol.defensiveReserve = 1;
+                pol.reserveForDefensive = true;
+                pol.allowDumpDuringBurst = true;
+                s.resourcePolicies.push_back(pol);
+            }
+
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
             {
                 return bot->GetHealthPct() >= 65.0f;

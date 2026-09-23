@@ -94,6 +94,7 @@ namespace BotAI
         }
 
         SpellCastResult result = bot->CastSpell(action.target, action.spellId, false);
+        SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
         if (result == SPELL_CAST_OK)
         {
             // Throttle only the ability that was actually cast, keyed on its root spell id (not
@@ -101,9 +102,6 @@ namespace BotAI
             // combat-engine rework), and only now that the cast has genuinely succeeded.
             if (action.internalThrottleMs > 0 && action.rootSpellId != 0)
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
-
-            SpecStrategyRuntime& runtime = SpecStrategyRegistry::GetRuntime(bot->GetGUID());
-            runtime.successfulCastsCount++;
 
             nextCastAllowedMs = AI_REACTION_GATE_MS;
             LOG_INFO("module.coa-playerbots", "DataDrivenAI [DPS]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",

@@ -27,6 +27,10 @@ namespace BotAI
         // from the SpecStrategy before the normal scoring pipeline.
         static BotAction EvaluateBestAction(CombatContext const& ctx, std::vector<AbilityDescriptor> const& abilities, SpecStrategy const* strategy);
 
+        // Unified action validation pipeline: verifies that any action (Profile, StateTransition, PrePull, Utility, Legacy)
+        // satisfies all cast prerequisites, cooldowns, CombatResourceEvaluator::CanAfford, and state restrictions.
+        static bool ValidateAction(CombatContext const& ctx, BotAction const& action, AbilityDescriptor const* desc = nullptr);
+
         // Validates all cast prerequisites (known, cooldown, failure backoff, power, item, range, auras, form state, entities).
         static bool CanCast(CombatContext const& ctx, AbilityDescriptor const& desc, uint32 resolvedSpellId, Unit* target);
 

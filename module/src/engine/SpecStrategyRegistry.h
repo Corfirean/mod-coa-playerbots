@@ -44,6 +44,12 @@ namespace BotAI
         // State Machine & Form Dancing: evaluates if bot is in baseline, temporary, or needs recovery
         static CombatStateStatus EvaluateCombatState(Player* bot, SpecStrategy const* strategy, CombatContext const& ctx, BotAction* outRecoveryAction = nullptr);
 
+        // Pre-pull autonomous preparation pipeline: shifts into baseline forms, summons pets, prepares out-of-combat
+        static PrePullResult ExecutePrePullStrategy(Player* bot, Group* group, uint32 diff);
+
+        // Action callback for tracking cast successes and state transitions
+        static void OnActionCastResult(Player* bot, BotAction const& action, bool success);
+
         // Pull readiness pipeline (TankReady, HealerReady, group recovery)
         static PullReadinessInfo EvaluatePullReadiness(Player* bot, CombatContext const* ctx = nullptr);
         static PullReadinessInfo EvaluateGroupPullReadiness(Player* tank, Group* group);

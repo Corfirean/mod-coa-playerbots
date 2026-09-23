@@ -1721,6 +1721,71 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
         handler->PSendSysMessage("BotMgr: bot '{}' despawned.", name);
 }
 
+void BotMgr::PurgeAllBots(ChatHandler* handler)
+{
+    // Despawn every online bot first -- every session in _botSessions is one of ours (BotMgr
+    // never tracks a real client's session here), and DeleteFromDB below would otherwise be
+    // deleting a character row still logged in.
+    std::vector<ObjectGuid::LowType> onlineGuids;
+    onlineGuids.reserve(_botSessions.size());
+    for (WorldSession* session : _botSessions)
+        if (Player* bot = session->GetPlayer())
+            onlineGuids.push_back(bot->GetGUID().GetCounter());
+    for (ObjectGuid::LowType guid : onlineGuids)
+        DespawnBot(guid, nullptr);
+
+    // Same account lookup QueueAllBotsForAutoLogin already uses to find every bot-hosting
+    // account, so this catches bots that were never logged in this session too, not just the
+    // ones just despawned above.
+    std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE username LIKE '{}%'", accountPrefix);
+    if (!accounts)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no bot-hosting accounts found, nothing to purge.");
+        return;
+    }
+
+    std::vector<uint32> accountIds;
+    std::ostringstream accountIdList;
+    do
+    {
+        uint32 accountId = (*accounts)[0].Get<uint32>();
+        accountIds.push_back(accountId);
+        accountIdList << accountId << ",";
+    } while (accounts->NextRow());
+    std::string idList = accountIdList.str();
+    idList.pop_back();
+
+    QueryResult chars = CharacterDatabase.Query(
+        "SELECT guid, account FROM characters WHERE account IN ({})", idList);
+    if (!chars)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no bot characters found, nothing to purge.");
+        return;
+    }
+
+    uint32 deleted = 0;
+    do
+    {
+        Field* fields = chars->Fetch();
+        ObjectGuid::LowType guid = fields[0].Get<uint32>();
+        uint32 accountId = fields[1].Get<uint32>();
+        // deleteFinally=true: a hard delete, not the recycle-bin soft delete a real player's
+        // ".character erase" leaves behind -- there's no reason to keep a purged bot's row
+        // around, and leaving it would just block CharacterCreate from reusing its name.
+        Player::DeleteFromDB(guid, accountId, true, true);
+        ++deleted;
+    } while (chars->NextRow());
+
+    LOG_INFO("module.coa-playerbots", "BotMgr: purged {} bot character(s) across {} bot-hosting account(s).",
+        deleted, accountIds.size());
+    if (handler)
+        handler->PSendSysMessage("BotMgr: purged {} bot character(s). Use .botcmd spawnrandom or "
+            ".botcmd spawnleveled to create a fresh population.", deleted);
+}
+
 void BotMgr::ListAuras(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
 {
     Player* target = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(charLowGuid));

@@ -33,6 +33,14 @@ namespace BotAI
         if (!ctx.bot)
             return false;
 
+        SpecStrategyRuntime const& runtime = SpecStrategyRegistry::GetRuntime(ctx.bot->GetGUID());
+        if (runtime.lastStateStatus == CombatStateStatus::NeedEnterBaseline ||
+            runtime.lastStateStatus == CombatStateStatus::SetupRequired ||
+            runtime.lastStateStatus == CombatStateStatus::ReturningToBaseline)
+        {
+            return false;
+        }
+
         // 1. Mandatory form/state global check:
         // If the bot lacks its baseline form and is not currently in an allowed
         // temporary state, legacy fallback rotations MUST NOT execute (they would
@@ -48,6 +56,9 @@ namespace BotAI
                 bool hasBaseline = ctx.bot->HasAura(baselineAura);
                 if (!hasBaseline)
                 {
+                    if (!allowLegacyInTemporaryState)
+                        return false;
+
                     bool inAllowedTemporary = false;
                     for (auto const& rule : requiredState.transitionRules)
                     {
@@ -135,6 +146,42 @@ namespace BotAI
         s_runtimes.clear();
     }
 
+    void SpecStrategyRegistry::OnActionCastResult(Player* bot, BotAction const& action, bool success)
+    {
+        if (!bot)
+            return;
+
+        SpecStrategyRuntime& runtime = GetRuntime(bot->GetGUID());
+        uint32 now = getMSTime();
+
+        if (success)
+        {
+            runtime.successfulCastsCount++;
+            if (bot->IsInCombat())
+                runtime.successfulCombatCasts++;
+
+            // If this was a pending form transition spell, update timestamps and clear pending
+            if (runtime.pendingStateSpellId != 0 &&
+                (action.spellId == runtime.pendingStateSpellId || action.rootSpellId == runtime.pendingStateSpellId))
+            {
+                runtime.lastFormTransitionMs = now;
+                runtime.lastSuccessfulFormCastMs = now;
+                runtime.successfulStateActions++;
+                runtime.pendingStateSpellId = 0;
+                runtime.pendingStateStartedMs = 0;
+            }
+        }
+        else
+        {
+            if (runtime.pendingStateSpellId != 0 &&
+                (action.spellId == runtime.pendingStateSpellId || action.rootSpellId == runtime.pendingStateSpellId))
+            {
+                runtime.pendingStateSpellId = 0;
+                runtime.pendingStateStartedMs = 0;
+            }
+        }
+    }
+
     CombatStateStatus SpecStrategyRegistry::EvaluateCombatState(Player* bot, SpecStrategy const* strategy, CombatContext const& ctx, BotAction* outRecoveryAction)
     {
         if (!bot || !strategy)
@@ -154,11 +201,20 @@ namespace BotAI
         uint32 now = getMSTime();
         SpecStrategyRuntime& runtime = GetRuntime(bot->GetGUID());
 
+        // Check pending transition timeout (2.5 seconds)
+        if (runtime.pendingStateSpellId != 0 && now >= runtime.pendingStateStartedMs + 2500)
+        {
+            runtime.pendingStateSpellId = 0;
+            runtime.pendingStateStartedMs = 0;
+        }
+
         // 1. Check if bot has baseline form active
         bool hasBaseline = bot->HasAura(baselineAura);
         if (hasBaseline)
         {
             runtime.lastBaselineStateMs = now;
+            runtime.pendingStateSpellId = 0;
+            runtime.pendingStateStartedMs = 0;
 
             // Check if any structured transition rule triggers entry into a temporary form
             for (auto const& rule : strategy->requiredState.transitionRules)
@@ -177,7 +233,8 @@ namespace BotAI
                             outRecoveryAction->name = "Enter Temporary State";
                             outRecoveryAction->reason = "transition rule triggered";
                         }
-                        runtime.lastFormTransitionMs = now;
+                        runtime.pendingStateSpellId = rule.targetSpellId;
+                        runtime.pendingStateStartedMs = now;
                         runtime.lastStateStatus = CombatStateStatus::TemporaryAlternate;
                         return CombatStateStatus::TemporaryAlternate;
                     }
@@ -207,7 +264,8 @@ namespace BotAI
                         outRecoveryAction->name = "Return to Baseline Form";
                         outRecoveryAction->reason = "temporary condition ended";
                     }
-                    runtime.lastFormTransitionMs = now;
+                    runtime.pendingStateSpellId = formSpellId;
+                    runtime.pendingStateStartedMs = now;
                     runtime.lastStateStatus = CombatStateStatus::ReturningToBaseline;
                     return CombatStateStatus::ReturningToBaseline;
                 }
@@ -250,9 +308,143 @@ namespace BotAI
             outRecoveryAction->name = "Enter Baseline Form";
             outRecoveryAction->reason = "mandatory baseline state missing";
         }
-        runtime.lastFormTransitionMs = now;
+        runtime.pendingStateSpellId = formSpellId;
+        runtime.pendingStateStartedMs = now;
         runtime.lastStateStatus = CombatStateStatus::NeedEnterBaseline;
         return CombatStateStatus::NeedEnterBaseline;
+    }
+
+    PrePullResult SpecStrategyRegistry::ExecutePrePullStrategy(Player* bot, Group* group, uint32 diff)
+    {
+        if (!bot || !bot->IsAlive() || !bot->IsInWorld())
+            return PrePullResult::Impossible;
+
+        if (bot->IsInCombat())
+            return PrePullResult::Ready;
+
+        // 1. Eating, drinking, or bandaging
+        if (bot->HasAuraWithMechanic(1 << MECHANIC_BANDAGE) ||
+            bot->HasAura(430) || bot->HasAura(433) || bot->HasAura(10258) || bot->HasAura(22734) ||
+            bot->HasAura(27089) || bot->HasAura(34291) || bot->HasAura(43180) || bot->HasAura(43183))
+        {
+            return PrePullResult::Waiting;
+        }
+
+        // 2. Health & resource recovery floor
+        if (bot->GetHealthPct() < 60.0f)
+            return PrePullResult::Recovering;
+
+        uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        BotRole role = BotAI::GetRole(bot->GetGUID());
+        SpecStrategy const* strategy = FindStrategy(bot->getClass(), activeSpec, role);
+        if (!strategy)
+            strategy = FindStrategy(bot->getClass(), activeSpec);
+
+        if (!strategy)
+            return PrePullResult::Ready;
+
+        CombatContext ctx = CombatContext::Build(bot, nullptr);
+        SpecStrategyRuntime& runtime = GetRuntime(bot->GetGUID());
+        uint32 now = getMSTime();
+
+        // 3. Baseline Form / Stance enforcement
+        if (strategy->requiredState.formSpellId != 0 || strategy->requiredState.formAuraId != 0)
+        {
+            uint32 baselineAura = strategy->requiredState.formAuraId ? strategy->requiredState.formAuraId : strategy->requiredState.formSpellId;
+            uint32 formSpellId = strategy->requiredState.formSpellId ? strategy->requiredState.formSpellId : strategy->requiredState.formAuraId;
+
+            if (bot->HasSpell(formSpellId) || SpellResolver::ResolveSpell(bot, formSpellId) != 0)
+            {
+                bool hasBaseline = bot->HasAura(baselineAura);
+                if (!hasBaseline)
+                {
+                    // Special case: Tinker Mechanics (spec 50) Scrap & Mechsuit:
+                    // In core, Scrap is gained on FirstSuccessfulDamagingHit in combat. Out-of-combat Scrap generation is impossible.
+                    // If Scrap < 10 and Mechsuit is not up, bot is ReadyForOpenerPull (will cast Mechsuit immediately upon first hit).
+                    if (bot->getClass() == CLASS_TINKER && activeSpec == 50)
+                    {
+                        CombatResourceSnapshot snap = CombatResourceEvaluator::BuildSnapshot(bot);
+                        CombatResourceState const* scrapState = snap.Find(CombatResourceKey{CombatResourceKind::AuraStack, 0, 801816});
+                        int32 scrapCount = scrapState ? scrapState->current : 0;
+                        if (scrapCount >= 10)
+                        {
+                            // Can build Mechsuit immediately
+                            uint32 resolvedMechsuit = SpellResolver::ResolveSpell(bot, 92141);
+                            if (resolvedMechsuit)
+                            {
+                                BotAction preAction;
+                                preAction.spellId = resolvedMechsuit;
+                                preAction.rootSpellId = 92141;
+                                preAction.target = bot;
+                                preAction.score = 2000.0f;
+                                preAction.name = "Build: Mechsuit (PrePull)";
+                                if (ActionEvaluator::ValidateAction(ctx, preAction))
+                                {
+                                    SpellCastResult res = bot->CastSpell(bot, resolvedMechsuit, false);
+                                    OnActionCastResult(bot, preAction, res == SPELL_CAST_OK);
+                                    if (res == SPELL_CAST_OK)
+                                        return PrePullResult::ActionExecuted;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Scrap < 10: ready for opener pull (controlled pull to get first hit Scrap)
+                        }
+                    }
+                    else
+                    {
+                        // Standard baseline form shift (e.g. Fortitude Beetle Form, Vizier Form, Bear Form, Stance)
+                        uint32 resolvedForm = SpellResolver::ResolveSpell(bot, formSpellId);
+                        if (resolvedForm)
+                        {
+                            BotAction formAction;
+                            formAction.spellId = resolvedForm;
+                            formAction.rootSpellId = formSpellId;
+                            formAction.target = bot;
+                            formAction.score = 2000.0f;
+                            formAction.name = "Baseline Form (PrePull)";
+                            if (ActionEvaluator::ValidateAction(ctx, formAction))
+                            {
+                                SpellCastResult res = bot->CastSpell(bot, resolvedForm, false);
+                                OnActionCastResult(bot, formAction, res == SPELL_CAST_OK);
+                                if (res == SPELL_CAST_OK)
+                                    return PrePullResult::ActionExecuted;
+                            }
+                        }
+                        return PrePullResult::Waiting;
+                    }
+                }
+            }
+        }
+
+        // 4. Pet / minion preparation (e.g. Houndmaster Whistle)
+        if (strategy->isPetReady && !strategy->isPetReady(bot))
+        {
+            if (bot->getClass() == CLASS_WITCH_HUNTER && activeSpec == 11)
+            {
+                uint32 resolvedWhistle = SpellResolver::ResolveSpell(bot, 801343);
+                if (resolvedWhistle)
+                {
+                    BotAction petAction;
+                    petAction.spellId = resolvedWhistle;
+                    petAction.rootSpellId = 801343;
+                    petAction.target = bot;
+                    petAction.score = 1800.0f;
+                    petAction.name = "Call Hound (PrePull)";
+                    if (ActionEvaluator::ValidateAction(ctx, petAction))
+                    {
+                        SpellCastResult res = bot->CastSpell(bot, resolvedWhistle, false);
+                        OnActionCastResult(bot, petAction, res == SPELL_CAST_OK);
+                        if (res == SPELL_CAST_OK)
+                            return PrePullResult::ActionExecuted;
+                    }
+                }
+            }
+            return PrePullResult::Waiting;
+        }
+
+        return PrePullResult::Ready;
     }
 
     PullReadinessInfo SpecStrategyRegistry::EvaluatePullReadiness(Player* bot, CombatContext const* ctx)
@@ -303,9 +495,30 @@ namespace BotAI
                 {
                     if (!bot->HasAura(baselineAura))
                     {
-                        info.result = PullReadinessResult::WaitingForForm;
-                        info.reason = "MissingMandatoryForm";
-                        return info;
+                        // Tinker Mechanics spec 50: if Scrap < 10, Mechsuit cannot be cast out of combat.
+                        // Allow controlled opener pull to get first hit Scrap!
+                        if (bot->getClass() == CLASS_TINKER && activeSpec == 50)
+                        {
+                            CombatResourceSnapshot snap = CombatResourceEvaluator::BuildSnapshot(bot);
+                            CombatResourceState const* scrapState = snap.Find(CombatResourceKey{CombatResourceKind::AuraStack, 0, 801816});
+                            int32 scrapCount = scrapState ? scrapState->current : 0;
+                            if (scrapCount < 10)
+                            {
+                                // Allowed to pull to gain Scrap
+                            }
+                            else
+                            {
+                                info.result = PullReadinessResult::WaitingForForm;
+                                info.reason = "MissingMechsuitWithScrapAvailable";
+                                return info;
+                            }
+                        }
+                        else
+                        {
+                            info.result = PullReadinessResult::WaitingForForm;
+                            info.reason = "MissingMandatoryForm";
+                            return info;
+                        }
                     }
                 }
             }

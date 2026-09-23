@@ -169,6 +169,62 @@ namespace BotAI
         }
     }
 
+    bool ActionEvaluator::ValidateAction(CombatContext const& ctx, BotAction const& action, AbilityDescriptor const* desc)
+    {
+        Player* bot = ctx.bot;
+        if (!bot || !action.target || !action.spellId)
+            return false;
+
+        if (action.rootSpellId && IsThrottled(bot->GetGUID(), action.rootSpellId))
+            return false;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(action.spellId);
+        if (!spellInfo)
+            return false;
+
+        if (IsSpellInFailureCooldown(bot->GetGUID(), action.spellId))
+            return false;
+
+        if (bot->HasSpellCooldown(action.spellId))
+            return false;
+
+        if (WouldAoEHitBreakableCrowdControl(bot, action.target, spellInfo))
+            return false;
+
+        // Resource check through CombatResourceEvaluator
+        if (!CombatResourceEvaluator::CanAfford(ctx.resources, bot, action.spellId))
+            return false;
+
+        // Range check
+        bool positiveRange = spellInfo->IsPositive();
+        if (action.target != bot)
+        {
+            float dist = bot->GetDistance(action.target);
+            float maxRange = spellInfo->GetMaxRange(positiveRange, bot);
+            if (maxRange > 0.0f && dist > maxRange)
+                return false;
+
+            float minRange = spellInfo->GetMinRange(positiveRange);
+            if (minRange > 0.0f && bot->IsWithinRange(action.target, minRange + bot->GetMeleeRange(action.target)))
+                return false;
+        }
+
+        // If descriptor provided, run its specific checks
+        if (desc)
+        {
+            if (desc->stateRequirement == StateRequirement::EmergencyOnly)
+            {
+                if (ctx.botHpPct > 35.0f && (!ctx.lowestAlly || ctx.lowestAllyHpPct > 35.0f))
+                    return false;
+            }
+
+            if (desc->minPowerPct > 0.0f && ctx.botPowerPct < desc->minPowerPct)
+                return false;
+        }
+
+        return true;
+    }
+
     bool ActionEvaluator::CanCast(CombatContext const& ctx, AbilityDescriptor const& desc, uint32 resolvedSpellId, Unit* target)
     {
         Player* bot = ctx.bot;
@@ -199,26 +255,27 @@ namespace BotAI
                 return false;
         }
 
-        // Persistent entity tracking (Pets, Turrets, Wards)
+        // Persistent entity tracking (Pets, Minions, Turrets, Wards)
         if (desc.trackedEntityType == TrackedEntityType::Pet)
         {
             if (bot->GetPet())
                 return false;
         }
-        else if (desc.trackedEntityType == TrackedEntityType::Turret || desc.trackedEntityType == TrackedEntityType::Ward)
+        else if (desc.trackedEntityType == TrackedEntityType::Turret ||
+                 desc.trackedEntityType == TrackedEntityType::Ward ||
+                 desc.trackedEntityType == TrackedEntityType::Minion)
         {
             if (desc.trackedEntityEntry != 0)
             {
-                bool foundLiveEntity = false;
+                uint8 liveCount = 0;
                 for (Unit* controlled : bot->m_Controlled)
                 {
                     if (controlled && controlled->IsAlive() && controlled->GetEntry() == desc.trackedEntityEntry)
                     {
-                        foundLiveEntity = true;
-                        break;
+                        liveCount++;
                     }
                 }
-                if (foundLiveEntity)
+                if (liveCount >= (desc.maxActiveEntities ? desc.maxActiveEntities : 1))
                     return false;
             }
         }
@@ -228,6 +285,17 @@ namespace BotAI
             return false;
         if (desc.missingAuraOnCaster && bot->HasAura(desc.missingAuraOnCaster))
             return false;
+
+        if (desc.casterAuraId)
+        {
+            if (Aura* cAura = bot->GetAura(desc.casterAuraId))
+            {
+                if (desc.refreshCasterBelowMs > 0 && cAura->GetDuration() > static_cast<int32>(desc.refreshCasterBelowMs))
+                    return false;
+                if (desc.refreshCasterBelowStacks > 0 && cAura->GetStackAmount() >= desc.refreshCasterBelowStacks)
+                    return false;
+            }
+        }
 
         if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
             return false;
@@ -390,12 +458,43 @@ namespace BotAI
                     if (pol.reserveForDefensive && pol.defensiveReserve > 0)
                     {
                         CombatResourceState const* st = ctx.resources.Find(pol.key);
-                        if (st && st->current <= pol.defensiveReserve)
+                        if (st)
                         {
-                            score *= 0.1f;
-                            break;
+                            // Calculate projected reserve: have - consumption
+                            int32 consumptionAmount = 0;
+                            uint32 resolvedSpellId = SpellResolver::ResolveSpell(ctx.bot, desc.rootSpellId);
+                            if (resolvedSpellId)
+                            {
+                                for (auto const& req : CombatResourceEvaluator::ResolveRequirements(ctx.bot, resolvedSpellId))
+                                {
+                                    if (req.key == pol.key && req.activeForBot)
+                                    {
+                                        consumptionAmount += req.amount;
+                                    }
+                                }
+                            }
+                            int32 projected = st->current - consumptionAmount;
+                            if (projected < pol.defensiveReserve)
+                            {
+                                score *= 0.1f;
+                                break;
+                            }
                         }
                     }
+                }
+            }
+        }
+
+        // Builder bonus during recovery or when low on resources
+        if (phase == CombatPhase::Recovery || ctx.botPowerPct < 30.0f)
+        {
+            uint32 resolvedSpellId = SpellResolver::ResolveSpell(ctx.bot, desc.rootSpellId);
+            if (resolvedSpellId)
+            {
+                auto const& gains = CombatResourceEvaluator::ResolveGains(ctx.classId, resolvedSpellId);
+                if (!gains.empty())
+                {
+                    score += 100.0f;
                 }
             }
         }
@@ -448,7 +547,10 @@ namespace BotAI
         {
             runtime.combatStartMs = 0;
             runtime.successfulCastsCount = 0;
+            runtime.successfulCombatCasts = 0;
             runtime.openerCompleted = false;
+            runtime.burstWindowActive = false;
+            runtime.burstStartedMs = 0;
         }
 
         // 1. Form / Stance readiness check and form dancing state machine
@@ -469,7 +571,13 @@ namespace BotAI
 
         // 2. Combat Phase Detection
         CombatPhase phase = CombatPhase::SingleTarget;
-        if (ctx.bot->IsInCombat() && runtime.combatStartMs != 0 && (now < runtime.combatStartMs + 4000) && runtime.successfulCastsCount < 3 && !runtime.openerCompleted)
+        // Priority 1: Emergency always preempts normal rotation and opener
+        if (ctx.botHpPct < 25.0f || (ctx.lowestAlly && ctx.lowestAllyHpPct < 25.0f))
+        {
+            phase = CombatPhase::Emergency;
+        }
+        // Priority 2: Opener phase during first 4 seconds or first 3 casts
+        else if (ctx.bot->IsInCombat() && runtime.combatStartMs != 0 && (now < runtime.combatStartMs + 4000) && runtime.successfulCombatCasts < 3 && !runtime.openerCompleted)
         {
             phase = CombatPhase::Opener;
         }
@@ -482,12 +590,21 @@ namespace BotAI
             }
             else
             {
-                if (ctx.botHpPct < 25.0f || (ctx.lowestAlly && ctx.lowestAllyHpPct < 25.0f))
-                    phase = CombatPhase::Emergency;
+                // Burst window management: 15s window when triggered
+                if (ctx.worthOffensiveCooldown && !runtime.burstWindowActive)
+                {
+                    runtime.burstWindowActive = true;
+                    runtime.burstStartedMs = now;
+                }
+                else if (runtime.burstWindowActive && now >= runtime.burstStartedMs + 15000)
+                {
+                    runtime.burstWindowActive = false;
+                }
+
+                if (runtime.burstWindowActive)
+                    phase = CombatPhase::Burst;
                 else if (strategy && strategy->recoveryThreshold > 0.0f && ctx.botPowerPct < strategy->recoveryThreshold)
                     phase = CombatPhase::Recovery;
-                else if (ctx.worthOffensiveCooldown)
-                    phase = CombatPhase::Burst;
                 else if (ctx.targetHpPct < 20.0f)
                     phase = CombatPhase::Execute;
                 else if (ctx.engagedEnemyCount >= 3)

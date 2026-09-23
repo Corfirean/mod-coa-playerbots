@@ -9,6 +9,8 @@
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
 #include "engine/CombatReservations.h"
+#include "engine/CombatResource.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "engine/SpellPredicates.h"
 #include "BotClassRotations.h"
 #include "Group.h"
@@ -154,12 +156,20 @@ namespace BotAI
         if (CastGuard::IsCurrentlyCasting(bot))
             return false; // don't preempt the bot's own in-progress cast for utility work
 
-        // 1. Taunt -- Tank only, only while not currently holding this target's aggro.
-        if (ctx.role == BotRole::Tank && ctx.victim && ctx.victim->IsAlive() && ctx.victim->GetVictim() != bot)
+        SpecStrategyRuntime const& runtime = SpecStrategyRegistry::GetRuntime(bot->GetGUID());
+        bool inBaseline = (runtime.lastStateStatus == CombatStateStatus::Ready);
+
+        // 1. Taunt -- Tank only, only while not currently holding this target's aggro, and only in baseline form!
+        if (ctx.role == BotRole::Tank && inBaseline && ctx.victim && ctx.victim->IsAlive() && ctx.victim->GetVictim() != bot)
         {
             if (uint32 spellId = SelectTauntSpell(bot, ctx.victim))
-                if (TryCast(bot, spellId, ctx.victim, "reflexively taunted", nextCastAllowedMs))
-                    return true;
+            {
+                if (CombatResourceEvaluator::CanAfford(ctx.resources, bot, spellId))
+                {
+                    if (TryCast(bot, spellId, ctx.victim, "reflexively taunted", nextCastAllowedMs))
+                        return true;
+                }
+            }
         }
 
         // 2. Interrupt -- any role, reservation-gated (see engine/CombatReservations.h) so

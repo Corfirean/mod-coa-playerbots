@@ -68,7 +68,8 @@ namespace BotAI
     enum class StateRequirement : uint8
     {
         Any = 0,             // Can be cast in any valid state
-        BaselineOnly,        // Can ONLY be cast in baseline combat state (e.g. normal rotation)
+        Default = 1,         // Default state (alias for BaselineOnly)
+        BaselineOnly = 1,    // Can ONLY be cast in baseline combat state (e.g. normal rotation)
         AllowedInTemporary,  // Permitted in temporary alternate state (e.g. movement, burst form)
         EmergencyOnly,       // Permitted outside baseline form only during extreme emergency
         StateTransition      // Form shift / stance change ability itself
@@ -108,6 +109,9 @@ namespace BotAI
         uint8 refreshBelowStacks = 0;        // Only refresh stackable aura if stacks < count
         uint32 requiredAuraOnCaster = 0;
         uint32 missingAuraOnCaster = 0;
+        uint32 casterAuraId = 0;             // Explicit aura to check on caster for refresh policies
+        uint32 refreshCasterBelowMs = 0;     // Only refresh caster aura if remaining duration < ms
+        uint8 refreshCasterBelowStacks = 0;  // Only refresh stackable caster aura if stacks < count
 
         // Form / state requirement
         StateRequirement stateRequirement = StateRequirement::Any;
@@ -115,6 +119,7 @@ namespace BotAI
         // Entity tracking (Pet / Minion / Turret / Ward)
         TrackedEntityType trackedEntityType = TrackedEntityType::None;
         uint32 trackedEntityEntry = 0;
+        uint8 maxActiveEntities = 1;         // Maximum allowed active entities of this type/entry
 
         // Internal rotation cooldown / throttle (ms) for abilities without native DBC cooldowns
         uint32 internalThrottleMs = 0;

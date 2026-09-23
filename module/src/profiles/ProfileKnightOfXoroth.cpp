@@ -113,6 +113,17 @@ namespace BotAI
             s.role = BotRole::Tank;
             s.strategyName = "Defiance_Tank_Strategy";
 
+            // ResourcePolicy for Demonfire (500906)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 500906 };
+                pol.minToEngage = 0;
+                pol.defensiveReserve = 2; // Keep 2 Demonfire stacks for emergency mitigation
+                pol.reserveForDefensive = true;
+                pol.allowDumpDuringBurst = true;
+                s.resourcePolicies.push_back(pol);
+            }
+
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
             {
                 return bot->GetHealthPct() >= 75.0f;
