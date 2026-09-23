@@ -913,6 +913,7 @@ end
 local function CreateMainFrame()
     local frame = CreateFrame("Frame", "CoABotUIMainFrame", UIParent)
     frame:SetSize(560, 200)
+    frame.expandedWidth = 560 -- restored on un-collapse; kept in sync by the resize grip below
     frame:SetFrameStrata("MEDIUM")
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
@@ -972,12 +973,26 @@ local function CreateMainFrame()
     btnCollapse:SetSize(20, 20)
     btnCollapse:SetPoint("RIGHT", btnClose, "LEFT", -2, 0)
     btnCollapse:SetText("-")
-    local COLLAPSED_HEIGHT = 28
+    local COLLAPSED_HEIGHT = 40
+    local COLLAPSED_WIDTH = 190
+    -- Keeps the frame's top-right corner (where the close/collapse/icon controls all live)
+    -- visually fixed across a width change instead of drifting -- a single-point anchor (e.g.
+    -- the saved "CENTER" position) would otherwise resize symmetrically and visibly shift the
+    -- controls sideways. UIParent's own BOTTOMLEFT corner is screen coordinate (0,0), so
+    -- GetRight()/GetTop() (already in that same coordinate space) reproduce the exact spot.
+    local function KeepTopRightFixed()
+        local right, top = frame:GetRight(), frame:GetTop()
+        if right and top then
+            frame:ClearAllPoints()
+            frame:SetPoint("TOPRIGHT", UIParent, "BOTTOMLEFT", right, top)
+        end
+    end
     btnCollapse:SetScript("OnClick", function(self)
         CoABotUIDB.isCollapsed = not CoABotUIDB.isCollapsed
         if CoABotUIDB.isCollapsed then
             self:SetText("+")
-            frame:SetHeight(COLLAPSED_HEIGHT)
+            KeepTopRightFixed()
+            frame:SetSize(COLLAPSED_WIDTH, COLLAPSED_HEIGHT)
             if frame.globalBar then frame.globalBar:Hide() end
             if frame.utilityBar then frame.utilityBar:Hide() end
             if frame.utilityBar2 then frame.utilityBar2:Hide() end
@@ -985,17 +1000,22 @@ local function CreateMainFrame()
             if frame.emptyNotice then frame.emptyNotice:Hide() end
             for _, r in ipairs(rows) do r:Hide() end
             for _, b in ipairs(frame.compactButtons) do b:Show() end
-            -- The long title/version text and its underline don't fit (or matter) in a 28px
-            -- strip that's mostly command icons -- hidden rather than shrunk, per the user's
-            -- explicit ask to drop the label in compact mode.
+            -- The long title/version text (and the now-pointless empty strip of background it
+            -- left behind once the frame narrows to just the icons) don't fit or matter in a
+            -- compact strip that's just command icons -- hidden rather than shrunk, per the
+            -- user's explicit ask to drop the label and the dead space in compact mode.
             frame.title:Hide()
             frame.titleAccent:Hide()
+            if frame.resizeGrip then frame.resizeGrip:Hide() end
         else
             self:SetText("-")
+            KeepTopRightFixed()
+            frame:SetWidth(frame.expandedWidth or 560)
             if frame.statusBar then frame.statusBar:Show() end
             for _, b in ipairs(frame.compactButtons) do b:Hide() end
             frame.title:Show()
             frame.titleAccent:Show()
+            if frame.resizeGrip then frame.resizeGrip:Show() end
             RefreshUI()
         end
     end)
@@ -1204,7 +1224,9 @@ local function CreateMainFrame()
 
     -- Width-only -- height is auto-managed by RefreshUI (fits the current roster), see
     -- AddResizeGrip's comment for why letting the grip also drag height would just fight that.
-    AddResizeGrip(frame, 460, 32, 900, 32, "width")
+    AddResizeGrip(frame, 460, 32, 900, 32, "width", function(width)
+        frame.expandedWidth = width -- restored when un-collapsing, see btnCollapse's OnClick
+    end)
 
     return frame
 end
