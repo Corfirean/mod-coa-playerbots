@@ -12,11 +12,14 @@
  */
 
 #include "BotAI.h"
+#include "BotFormations.h"
 #include "BotMgr.h"
 #include "Chat.h"
 #include "ClassSpecRoles.h"
 #include "Group.h"
+#include "ItemTemplate.h"
 #include "Log.h"
+#include "MotionMaster.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
@@ -40,6 +43,52 @@ std::vector<std::string> SplitColon(std::string const& body)
     while (std::getline(stream, part, ':'))
         parts.push_back(part);
     return parts;
+}
+
+// Name<->code tables for the gear-preference verbs (GETGEAR/SETGEARPREF) -- wire format uses
+// plain lowercase names, matching every other verb's convention (role/formation names), rather
+// than raw ItemSubclassArmor/ItemSubclassWeapon numbers the addon would have no way to interpret.
+struct GearTypeEntry
+{
+    char const* name;
+    uint32 subclass; // raw ItemSubclassArmor / ItemSubclassWeapon value
+};
+
+constexpr GearTypeEntry ARMOR_TYPES[] = {
+    { "cloth",   ITEM_SUBCLASS_ARMOR_CLOTH },
+    { "leather", ITEM_SUBCLASS_ARMOR_LEATHER },
+    { "mail",    ITEM_SUBCLASS_ARMOR_MAIL },
+    { "plate",   ITEM_SUBCLASS_ARMOR_PLATE },
+};
+
+constexpr GearTypeEntry WEAPON_TYPES[] = {
+    { "sword",  ITEM_SUBCLASS_WEAPON_SWORD },
+    { "mace",   ITEM_SUBCLASS_WEAPON_MACE },
+    { "axe",    ITEM_SUBCLASS_WEAPON_AXE },
+    { "fist",   ITEM_SUBCLASS_WEAPON_FIST },
+    { "dagger", ITEM_SUBCLASS_WEAPON_DAGGER },
+    { "staff",  ITEM_SUBCLASS_WEAPON_STAFF },
+};
+
+bool GearSubclassByName(GearTypeEntry const* table, std::size_t count, std::string const& name, uint32& outSubclass)
+{
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        if (name == table[i].name)
+        {
+            outSubclass = table[i].subclass;
+            return true;
+        }
+    }
+    return false;
+}
+
+char const* GearNameBySubclass(GearTypeEntry const* table, std::size_t count, uint32 subclass)
+{
+    for (std::size_t i = 0; i < count; ++i)
+        if (table[i].subclass == subclass)
+            return table[i].name;
+    return "auto";
 }
 
 // Mandatory per docs/addon-protocol.md's "Server-side authorization" section: the guid must
@@ -108,6 +157,57 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         bool enabled = parts[1] == "1";
         LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> AUTODUNGEON {}.", commander->GetName(), enabled ? "on" : "off");
         sBotMgr->SetAutoDungeonMode(commander->GetGUID(), enabled);
+        return;
+    }
+
+    // FORMATION acts on the commander's whole group, same shape as AUTODUNGEON -- the second
+    // colon-part carries the formation name (see BotFormations.h's ParseFormation for accepted
+    // names/synonyms). Group-wide state, so restrict to the group leader same as the equivalent
+    // .botcmd formation GM command (BotCommand.cpp's HandleBotFormationCommand) -- otherwise any
+    // grouped player could silently override the leader's own formation choice.
+    if (verb == "FORMATION" && parts.size() >= 3)
+    {
+        Group* group = commander->GetGroup();
+        if (!group || group->GetLeaderGUID() != commander->GetGUID())
+        {
+            LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' sent FORMATION but isn't the group leader -- dropped.",
+                commander->GetName());
+            return;
+        }
+
+        BotGroupFormation formation = ParseFormation(parts[2]);
+        sBotMgr->SetGroupFormation(commander->GetGUID(), formation);
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> FORMATION {}.", commander->GetName(), FormationToString(formation));
+
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (member && member != commander && sBotMgr->FindBotPlayer(member->GetGUID().GetCounter()))
+            {
+                if (member->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+                    member->GetMotionMaster()->MoveFollow(commander, BotAI::ComputeFollowDistance(member), BotAI::ComputeFollowAngle(member));
+            }
+        }
+        return;
+    }
+
+    // GETFORMATION: query, no state change -- lets the addon show the group's currently active
+    // formation (e.g. after a UI reload) instead of guessing. Mirrors GETROLES's query shape.
+    if (verb == "GETFORMATION")
+    {
+        Group* group = commander->GetGroup();
+        ObjectGuid leaderGuid = group ? group->GetLeaderGUID() : commander->GetGUID();
+        SendCoaBotReply(commander, std::string("FORMATION:") + FormationToString(sBotMgr->GetGroupFormation(leaderGuid)));
+        return;
+    }
+
+    // TELEPORT: "bring bots to me", group-wide, same "0" placeholder convention as QUICKFILL.
+    // Out-of-combat-only gating and the per-bot in-combat skip both live in
+    // BotMgr::TeleportBotsToPlayer itself.
+    if (verb == "TELEPORT")
+    {
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> TELEPORT.", commander->GetName());
+        sBotMgr->TeleportBotsToPlayer(commander, nullptr);
         return;
     }
 
@@ -227,7 +327,76 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         // label "Auto" with no indication of what it's actually playing as right now.
         BotRole currentRole = BotAI::GetRole(bot->GetGUID());
         char const* currentRoleStr = ROLE_NAMES[currentRole == BotRole::Tank ? 1 : currentRole == BotRole::Healer ? 2 : currentRole == BotRole::Support ? 3 : 0];
-        SendCoaBotReply(commander, "ROLES:" + std::to_string(botGuidLow) + ":" + roles + ":" + currentRoleStr);
+
+        uint32 currentSpecId = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        char const* currentSpecName = BotAI::GetSpecName(bot->getClass(), currentSpecId);
+        SendCoaBotReply(commander, "ROLES:" + std::to_string(botGuidLow) + ":" + roles + ":" + currentRoleStr + ":" +
+            std::to_string(currentSpecId) + ":" + (currentSpecName ? currentSpecName : ""));
+    }
+    else if (verb == "GETSPECS")
+    {
+        static char const* const ROLE_NAMES[] = { "dps", "tank", "healer", "support" };
+        for (BotAI::SpecInfo const& spec : BotAI::GetAllSpecs(bot->getClass()))
+        {
+            SendCoaBotReply(commander, "SPEC:" + std::to_string(botGuidLow) + ":" + std::to_string(spec.specId) + ":" +
+                ROLE_NAMES[uint32(spec.role)] + ":" + spec.name);
+        }
+    }
+    else if (verb == "SETGEARPREF" && parts.size() >= 4)
+    {
+        bool weapon = parts[2] == "weapon";
+        if (parts[2] != "armor" && !weapon)
+            return;
+
+        if (parts[3] == "auto")
+        {
+            sBotMgr->SetGearPreference(bot, weapon, 0);
+            return;
+        }
+
+        uint32 subclass = 0;
+        bool found = weapon
+            ? GearSubclassByName(WEAPON_TYPES, (sizeof(WEAPON_TYPES) / sizeof(WEAPON_TYPES[0])), parts[3], subclass)
+            : GearSubclassByName(ARMOR_TYPES, (sizeof(ARMOR_TYPES) / sizeof(ARMOR_TYPES[0])), parts[3], subclass);
+        if (!found)
+        {
+            LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' sent SETGEARPREF with unrecognized {} type '{}' -- dropped.",
+                commander->GetName(), weapon ? "weapon" : "armor", parts[3]);
+            return;
+        }
+
+        sBotMgr->SetGearPreference(bot, weapon, subclass);
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> SETGEARPREF bot '{}' {} = {}.",
+            commander->GetName(), bot->GetName(), weapon ? "weapon" : "armor", parts[3]);
+    }
+    else if (verb == "GETGEAR")
+    {
+        for (std::string const& line : sBotMgr->GetEquippedGearInfo(bot))
+            SendCoaBotReply(commander, line);
+
+        std::string legalArmor;
+        for (uint32 subclass : sBotMgr->GetLegalArmorSubclasses(bot))
+        {
+            if (!legalArmor.empty())
+                legalArmor += ",";
+            legalArmor += GearNameBySubclass(ARMOR_TYPES, (sizeof(ARMOR_TYPES) / sizeof(ARMOR_TYPES[0])), subclass);
+        }
+
+        std::string legalWeapon;
+        for (uint32 subclass : sBotMgr->GetLegalWeaponSubclasses(bot))
+        {
+            if (!legalWeapon.empty())
+                legalWeapon += ",";
+            legalWeapon += GearNameBySubclass(WEAPON_TYPES, (sizeof(WEAPON_TYPES) / sizeof(WEAPON_TYPES[0])), subclass);
+        }
+
+        uint32 armorPref = sBotMgr->GetGearPreference(bot, false);
+        uint32 weaponPref = sBotMgr->GetGearPreference(bot, true);
+        std::string armorPrefName = armorPref == 0 ? "auto" : GearNameBySubclass(ARMOR_TYPES, (sizeof(ARMOR_TYPES) / sizeof(ARMOR_TYPES[0])), armorPref);
+        std::string weaponPrefName = weaponPref == 0 ? "auto" : GearNameBySubclass(WEAPON_TYPES, (sizeof(WEAPON_TYPES) / sizeof(WEAPON_TYPES[0])), weaponPref - 1);
+
+        SendCoaBotReply(commander, "GEARPREFS:" + std::to_string(botGuidLow) + ":" + legalArmor + ":" + legalWeapon +
+            ":" + armorPrefName + ":" + weaponPrefName);
     }
 }
 
