@@ -849,6 +849,23 @@ namespace BotAI
             }
         }
 
+        // Mandatory baseline vs StateRequirement::Any validation
+        for (CombatProfile const& p : allProfiles)
+        {
+            SpecStrategy const* strat = FindStrategy(p.classId, p.specId, p.role);
+            if (strat && strat->HasMandatoryBaselineState())
+            {
+                for (AbilityDescriptor const& ab : p.abilities)
+                {
+                    if (ab.stateRequirement == StateRequirement::Any)
+                    {
+                        LOG_WARN("module.coa-playerbots", "SpecStrategyRegistry: Profile '{}' ability '{}' has StateRequirement::Any while spec has mandatory baseline form! (Consider StateRequirement::AllowedInTemporary or Default)",
+                            p.profileName, ab.name);
+                    }
+                }
+            }
+        }
+
         LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry Census: Canonical Specs: {} (verified: {}). Breakdown: Tanks: {}, Healers: {}, DPS: {}, Support: {}.",
             totalCanonical, verifiedCanonical, tankSpecs, healerSpecs, dpsSpecs, supportSpecs);
         LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry Census: Registered Profiles: {}, Strategies: {}. Orphans: Profiles: {}, Strategies: {}.",

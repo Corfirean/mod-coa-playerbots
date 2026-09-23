@@ -114,7 +114,7 @@ namespace BotAI
         uint8 refreshCasterBelowStacks = 0;  // Only refresh stackable caster aura if stacks < count
 
         // Form / state requirement
-        StateRequirement stateRequirement = StateRequirement::Any;
+        StateRequirement stateRequirement = StateRequirement::Default;
 
         // Entity tracking (Pet / Minion / Turret / Ward)
         TrackedEntityType trackedEntityType = TrackedEntityType::None;

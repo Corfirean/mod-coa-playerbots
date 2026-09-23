@@ -354,11 +354,11 @@ namespace BotAI
                 { AbilityTag::OffensiveCD, 1.8f, 50.0f }
             };
 
-            // ResourcePolicy for MinionCapacity
+            // ResourcePolicy for MinionCapacity (minToEngage = 0 to prevent pull deadlock: minions require hostile target/combat)
             {
                 ResourcePolicy pol;
                 pol.key = CombatResourceKey{ CombatResourceKind::MinionCapacity, 0, 0 };
-                pol.minToEngage = 2;
+                pol.minToEngage = 0;
                 s.resourcePolicies.push_back(pol);
             }
 

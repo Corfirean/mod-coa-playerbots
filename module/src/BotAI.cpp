@@ -45,6 +45,7 @@
 #include "engine/SpellResolver.h"
 #include "engine/ActionEvaluator.h"
 #include "engine/SpecStrategyRegistry.h"
+#include "profiles/ProfileRegistry.h"
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
 #include "engine/CombatResource.h"
@@ -155,6 +156,7 @@ struct BotAIState
     SoloIntent soloIntent = SoloIntent::None;
     uint32 soloIntentRemainingMs = 0;
     uint32 soloIntentGeneration = 0;
+    std::unordered_map<uint32, uint32> lastBuffCastTimeMs;
 
     // See TryMatchLeaderMountState -- a "mount" spell in this server's account-wide collection
     // is actually a wrapper (mod-ascension-compat's spell_ascension_local_mount script) that
@@ -3087,12 +3089,72 @@ void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
 
     if (uint32 spellId = SelectBuffSpell(bot))
     {
-        if (Aura const* aura = bot->GetAura(spellId))
+        // Buff maintenance safety:
+        // A cast spell ID may not equal the resulting aura ID (e.g. driver/triggered aura or profile descriptor override).
+        Aura const* aura = nullptr;
+        uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        BotAI::CombatProfile const* profile = BotAI::ProfileRegistry::FindProfile(bot->getClass(), activeSpec, state.role);
+        if (profile)
         {
+            for (auto const& desc : profile->abilities)
+            {
+                uint32 resolvedId = BotAI::SpellResolver::ResolveSpell(bot, desc.rootSpellId);
+                if (desc.rootSpellId == spellId || (resolvedId && resolvedId == spellId))
+                {
+                    if (desc.casterAuraId)
+                        aura = bot->GetAura(desc.casterAuraId);
+                    if (!aura && desc.targetAuraId)
+                        aura = bot->GetAura(desc.targetAuraId);
+                    if (aura)
+                        break;
+                }
+            }
+        }
+
+        if (!aura)
+        {
+            if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId))
+            {
+                for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                {
+                    if (spellInfo->Effects[i].TriggerSpell)
+                    {
+                        if (Aura const* trigAura = bot->GetAura(spellInfo->Effects[i].TriggerSpell))
+                        {
+                            aura = trigAura;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!aura)
+            aura = bot->GetAura(spellId);
+
+        if (aura)
+        {
+            // Do not recast/spam if remaining duration > 60s or permanent
             if (aura->GetDuration() > 60000 || aura->IsPermanent())
                 return;
         }
-        LogCastAttempt(bot, spellId, bot, "cast buff");
+        else
+        {
+            // Fallback: If no aura could be matched, avoid spamming by checking last successful cast timestamp
+            uint32 now = getMSTime();
+            auto it = state.lastBuffCastTimeMs.find(spellId);
+            if (it != state.lastBuffCastTimeMs.end())
+            {
+                if (now < it->second + 60000)
+                    return;
+            }
+        }
+
+        SpellCastResult res = LogCastAttempt(bot, spellId, bot, "cast buff");
+        if (res == SPELL_CAST_OK)
+        {
+            state.lastBuffCastTimeMs[spellId] = getMSTime();
+        }
     }
 }
 
@@ -4412,6 +4474,34 @@ void ReportStrategy(Player* bot, ChatHandler* handler)
     handler->PSendSysMessage("  Form State Status: {}", stateStatusStr);
     handler->PSendSysMessage("  Pull Readiness: {} (reason: {})", pullInfo.IsReady() ? "READY" : "NOT READY", pullInfo.reason);
     handler->PSendSysMessage("  TankReady: {} | HealerReady: {}", pullInfo.tankReady ? "Yes" : "No", pullInfo.healerReady ? "Yes" : "No");
+
+    if (strategy && !strategy->resourcePolicies.empty())
+    {
+        handler->PSendSysMessage("  Resource Policies ({}):", strategy->resourcePolicies.size());
+        for (auto const& pol : strategy->resourcePolicies)
+        {
+            char const* kindStr = "Custom";
+            uint32 resourceId = 0;
+            if (pol.key.kind == BotAI::CombatResourceKind::NativePower)
+            {
+                kindStr = "NativePower";
+                resourceId = pol.key.powerType;
+            }
+            else if (pol.key.kind == BotAI::CombatResourceKind::AuraStack)
+            {
+                kindStr = "AuraStack";
+                resourceId = pol.key.auraSpellId;
+            }
+            else if (pol.key.kind == BotAI::CombatResourceKind::MinionCapacity)
+            {
+                kindStr = "MinionCapacity";
+            }
+
+            handler->PSendSysMessage("    [{}] id:{} | minToEngage:{} | defensiveReserve:{} | overcapThresh:{} | reserveForDef:{} | allowDumpBurst:{}",
+                kindStr, resourceId, pol.minToEngage, pol.defensiveReserve, pol.overcapThreshold,
+                pol.reserveForDefensive ? "Yes" : "No", pol.allowDumpDuringBurst ? "Yes" : "No");
+        }
+    }
 }
 
 void SetRole(ObjectGuid botGuid, BotRole role)
