@@ -158,6 +158,14 @@ namespace BotAI
                 { AbilityTag::AoEDamage,   1.6f, 40.0f }
             };
 
+            // ResourcePolicy for Felfury (800058)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 800058 };
+                pol.overcapThreshold = 4;
+                s.resourcePolicies.push_back(pol);
+            }
+
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 

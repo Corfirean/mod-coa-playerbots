@@ -527,6 +527,14 @@ namespace BotAI
                 { AbilityTag::MeleeAttack, 1.4f, 40.0f }
             };
 
+            // ResourcePolicy for Insanity (500706)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 500706 };
+                pol.overcapThreshold = 85;
+                s.resourcePolicies.push_back(pol);
+            }
+
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
     }

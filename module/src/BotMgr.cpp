@@ -5,6 +5,8 @@
 #include "AccountMgr.h"
 #include "AscensionCoATalentData.h"
 #include "BotAI.h"
+#include "engine/SpecStrategyRegistry.h"
+#include "engine/ActionEvaluator.h"
 #include "BotSpawnRandom.h"
 #include "BotTalentBuilds.h"
 #include "BotZoneProgression.h"
@@ -2087,6 +2089,9 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
     char const* specName = BotAI::GetSpecName(bot->getClass(), specId);
     BotRole autoRole = BotAI::GetRoleForClassSpec(bot->getClass(), specId);
     char const* roleStr = RoleToString(autoRole);
+
+    BotAI::SpecStrategyRegistry::ForgetBot(bot->GetGUID());
+    BotAI::ActionEvaluator::ClearThrottles(bot->GetGUID());
 
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' learned {} talent(s) and dropped {} from other specs for specialization {} '{}' (detected role: {}, relog to pick up automatic grants too).",

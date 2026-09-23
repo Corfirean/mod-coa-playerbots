@@ -463,7 +463,7 @@ namespace BotAI
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
                 d.trackedEntityType = TrackedEntityType::Turret;
-                d.trackedEntityEntry = 50046;
+                d.trackedEntityEntry = 50300;
                 d.internalThrottleMs = 45000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);

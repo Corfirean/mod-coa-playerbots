@@ -308,6 +308,14 @@ namespace BotAI
                        (bot->GetHealthPct() >= 50.0f);
             };
 
+            // ResourcePolicy for Heat (807389)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 807389 };
+                pol.overcapThreshold = 85;
+                s.resourcePolicies.push_back(pol);
+            }
+
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 

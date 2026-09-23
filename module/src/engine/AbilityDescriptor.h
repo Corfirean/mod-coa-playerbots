@@ -67,11 +67,11 @@ namespace BotAI
 
     enum class StateRequirement : uint8
     {
-        Any = 0,             // Can be cast in any valid state
-        Default = 1,         // Default state (alias for BaselineOnly)
-        BaselineOnly = 1,    // Can ONLY be cast in baseline combat state (e.g. normal rotation)
-        AllowedInTemporary,  // Permitted in temporary alternate state (e.g. movement, burst form)
-        EmergencyOnly,       // Permitted outside baseline form only during extreme emergency
+        Default = 0,         // Resolves to BaselineOnly if strategy has mandatory baseline, else Any
+        Any,                 // Can be cast in any valid state
+        BaselineOnly,        // Can ONLY be cast in baseline combat state (normal rotation)
+        AllowedInTemporary,  // Permitted in temporary alternate state (movement, burst form)
+        EmergencyOnly,       // Permitted outside baseline form only during extreme emergency (<35% HP)
         StateTransition      // Form shift / stance change ability itself
     };
 

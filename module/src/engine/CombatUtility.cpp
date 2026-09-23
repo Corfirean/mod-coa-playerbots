@@ -23,6 +23,8 @@
 #include <algorithm>
 #include <vector>
 
+#include "engine/ActionEvaluator.h"
+
 namespace BotAI
 {
     namespace
@@ -41,9 +43,18 @@ namespace BotAI
         // for every role, not just Healer).
         constexpr float CLEANSE_SEARCH_RANGE = 40.0f;
 
-        bool TryCast(Player* bot, uint32 spellId, Unit* target, char const* verb, uint32& nextCastAllowedMs)
+        bool TryCast(Player* bot, CombatContext const& ctx, uint32 spellId, Unit* target, char const* verb, uint32& nextCastAllowedMs)
         {
             if (!spellId || !target)
+                return false;
+
+            BotAction action;
+            action.spellId = spellId;
+            action.rootSpellId = spellId;
+            action.target = target;
+            action.score = 100.0f;
+            action.name = verb;
+            if (!ActionEvaluator::ValidateAction(ctx, action))
                 return false;
 
             SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
@@ -54,6 +65,7 @@ namespace BotAI
             }
 
             SpellCastResult result = bot->CastSpell(target, spellId, false);
+            SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
             if (result == SPELL_CAST_OK)
             {
                 nextCastAllowedMs = UTILITY_REACTION_GATE_MS;
@@ -164,11 +176,8 @@ namespace BotAI
         {
             if (uint32 spellId = SelectTauntSpell(bot, ctx.victim))
             {
-                if (CombatResourceEvaluator::CanAfford(ctx.resources, bot, spellId))
-                {
-                    if (TryCast(bot, spellId, ctx.victim, "reflexively taunted", nextCastAllowedMs))
-                        return true;
-                }
+                if (TryCast(bot, ctx, spellId, ctx.victim, "reflexively taunted", nextCastAllowedMs))
+                    return true;
             }
         }
 
@@ -192,7 +201,7 @@ namespace BotAI
                     // already sees it, not just after this cast resolves next tick.
                     CombatReservations::TryReserveInterrupt(enemyGuid, ctx.victimCastingSpellId, bot->GetGUID(), reserveMs);
 
-                    if (TryCast(bot, spellId, ctx.victim, "reserved and used interrupt", nextCastAllowedMs))
+                    if (TryCast(bot, ctx, spellId, ctx.victim, "reserved and used interrupt", nextCastAllowedMs))
                     {
                         CombatReservations::ClearInterruptReservation(enemyGuid);
                         return true;
@@ -213,7 +222,7 @@ namespace BotAI
         CleansePlan cleansePlan = FindCleansePlan(bot);
         if (cleansePlan.target && cleansePlan.spellId)
         {
-            if (TryCast(bot, cleansePlan.spellId, cleansePlan.target, "cleansed", nextCastAllowedMs))
+            if (TryCast(bot, ctx, cleansePlan.spellId, cleansePlan.target, "cleansed", nextCastAllowedMs))
                 return true;
         }
 

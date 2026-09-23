@@ -11,6 +11,7 @@
 #include "engine/SpellResolver.h"
 #include "profiles/ProfileRegistry.h"
 #include "ClassSpecRoles.h"
+#include "Config.h"
 #include "Group.h"
 #include "Log.h"
 #include "Player.h"
@@ -18,6 +19,7 @@
 #include "Timer.h"
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace BotAI
@@ -614,8 +616,8 @@ namespace BotAI
         }
 
         // 2. Scan group members: Healer priority and group readiness
-        bool healerFound = false;
-        bool healerReady = false;
+        uint32 totalHealers = 0;
+        uint32 readyHealers = 0;
 
         for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
         {
@@ -649,49 +651,52 @@ namespace BotAI
                 return info;
             }
 
+            // Strictly BotRole::Healer (canonical Healer only, do not count Support as Healer)
             BotRole memberRole = BotAI::GetRole(member->GetGUID());
             if (memberRole == BotRole::Healer)
             {
-                healerFound = true;
+                totalHealers++;
 
                 // Distance to healer must be within casting range (35 yards)
-                if (dist > 35.0f)
+                // and healer health >= 60%
+                if (dist <= 35.0f && member->GetHealthPct() >= 60.0f)
                 {
-                    info.result = PullReadinessResult::HealerNotReady;
-                    info.reason = "HealerOutOfRange";
-                    return info;
+                    CombatContext healerCtx = CombatContext::Build(member, nullptr);
+                    PullReadinessInfo healerInfo = EvaluatePullReadiness(member, &healerCtx);
+                    if (healerInfo.IsReady())
+                    {
+                        readyHealers++;
+                    }
                 }
-
-                // Healer health floor
-                if (member->GetHealthPct() < 60.0f)
-                {
-                    info.result = PullReadinessResult::HealerNotReady;
-                    info.reason = "HealerHealthBelow60";
-                    return info;
-                }
-
-                CombatContext healerCtx = CombatContext::Build(member, nullptr);
-                PullReadinessInfo healerInfo = EvaluatePullReadiness(member, &healerCtx);
-                if (!healerInfo.IsReady())
-                {
-                    info.result = PullReadinessResult::HealerNotReady;
-                    info.reason = healerInfo.reason;
-                    return info;
-                }
-
-                healerReady = true;
             }
         }
 
-        // If a healer exists in the group, they must be confirmed ready
-        if (healerFound && !healerReady)
+        // Healer readiness policy:
+        if (totalHealers == 0)
+        {
+            bool allowNoHealer = sConfigMgr->GetOption<bool>("CoaBots.AutoDungeon.AllowNoHealer", false);
+            if (!allowNoHealer)
+            {
+                info.result = PullReadinessResult::HealerNotFound;
+                info.reason = "HealerNotFound";
+                info.healerReady = false;
+                return info;
+            }
+            info.healerReady = true;
+        }
+        else if (readyHealers == 0)
         {
             info.result = PullReadinessResult::HealerNotReady;
-            info.reason = "HealerNotReady";
+            info.reason = "NoReadyHealer";
+            info.healerReady = false;
             return info;
         }
+        else
+        {
+            // At least one healer is confirmed ready
+            info.healerReady = true;
+        }
 
-        info.healerReady = healerReady || !healerFound;
         info.result = PullReadinessResult::Ready;
         info.reason = "GroupReady";
         return info;
@@ -700,46 +705,153 @@ namespace BotAI
     void SpecStrategyRegistry::Validate()
     {
         ProfileRegistry::Initialize();
-        LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry: Validating strategies census...");
+        LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry: Validating strategies and profiles census...");
 
+        auto const& allProfiles = ProfileRegistry::GetAllProfiles();
         uint32 strategyCount = static_cast<uint32>(s_strategies.size());
-        LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry: Loaded {} registered spec strategies.", strategyCount);
+        uint32 profileCount = static_cast<uint32>(allProfiles.size());
+        LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry: Loaded {} registered spec strategies, {} registered combat profiles.",
+            strategyCount, profileCount);
 
-        std::unordered_map<uint64, uint32> registeredKeys;
+        std::unordered_map<uint64, uint32> registeredStrategyKeys;
         for (SpecStrategy const& s : s_strategies)
         {
             uint64 key = (static_cast<uint64>(s.classId) << 40) | (static_cast<uint64>(s.specId) << 8) | static_cast<uint64>(s.role);
-            registeredKeys[key]++;
-            if (registeredKeys[key] > 1)
+            registeredStrategyKeys[key]++;
+            if (registeredStrategyKeys[key] > 1)
             {
                 LOG_ERROR("module.coa-playerbots", "SpecStrategyRegistry: DUPLICATE strategy registration: class={}, spec={}, role={}",
                     s.classId, s.specId, static_cast<uint32>(s.role));
             }
         }
 
+        std::unordered_map<uint64, uint32> registeredProfileKeys;
+        for (CombatProfile const& p : allProfiles)
+        {
+            uint64 key = (static_cast<uint64>(p.classId) << 40) | (static_cast<uint64>(p.specId) << 8) | static_cast<uint64>(p.role);
+            registeredProfileKeys[key]++;
+            if (registeredProfileKeys[key] > 1)
+            {
+                LOG_ERROR("module.coa-playerbots", "SpecStrategyRegistry: DUPLICATE profile registration: class={}, spec={}, role={}",
+                    p.classId, p.specId, static_cast<uint32>(p.role));
+            }
+        }
+
         // Census validation across canonical specs (custom classes 12 to 32)
-        uint32 verified = 0;
+        uint32 verifiedCanonical = 0;
         uint32 totalCanonical = 0;
+        uint32 tankSpecs = 0;
+        uint32 healerSpecs = 0;
+        uint32 dpsSpecs = 0;
+        uint32 supportSpecs = 0;
+
+        std::unordered_set<uint64> canonicalKeys;
+
         for (uint8 cId = 12; cId <= 32; ++cId)
         {
             auto specs = GetAllSpecs(cId);
             for (auto const& sp : specs)
             {
                 totalCanonical++;
+                switch (sp.role)
+                {
+                    case BotRole::Tank:    tankSpecs++; break;
+                    case BotRole::Healer:  healerSpecs++; break;
+                    case BotRole::Dps:     dpsSpecs++; break;
+                    case BotRole::Support: supportSpecs++; break;
+                    default: break;
+                }
+
+                uint64 key = (static_cast<uint64>(cId) << 40) | (static_cast<uint64>(sp.specId) << 8) | static_cast<uint64>(sp.role);
+                if (!canonicalKeys.insert(key).second)
+                {
+                    LOG_ERROR("module.coa-playerbots", "SpecStrategyRegistry: DUPLICATE canonical spec: class={}, spec={}, role={}",
+                        cId, sp.specId, static_cast<uint32>(sp.role));
+                }
+
                 SpecStrategy const* strat = FindStrategy(cId, sp.specId, sp.role);
+                CombatProfile const* prof = ProfileRegistry::FindProfile(cId, sp.specId, sp.role);
+
                 if (!strat)
                 {
                     LOG_ERROR("module.coa-playerbots", "SpecStrategyRegistry: MISSING strategy for canonical spec: class={}, spec={}, role={}, name='{}'",
                         cId, sp.specId, static_cast<uint32>(sp.role), sp.name);
                 }
-                else
+                if (!prof)
                 {
-                    verified++;
+                    LOG_ERROR("module.coa-playerbots", "SpecStrategyRegistry: MISSING profile for canonical spec: class={}, spec={}, role={}, name='{}'",
+                        cId, sp.specId, static_cast<uint32>(sp.role), sp.name);
+                }
+
+                if (strat && prof)
+                {
+                    if (strat->role != sp.role || prof->role != sp.role)
+                    {
+                        LOG_ERROR("module.coa-playerbots", "SpecStrategyRegistry: ROLE MISMATCH for canonical spec {}: canon={}, strat={}, prof={}",
+                            sp.specId, static_cast<uint32>(sp.role), static_cast<uint32>(strat->role), static_cast<uint32>(prof->role));
+                    }
+                    else
+                    {
+                        verifiedCanonical++;
+                    }
                 }
             }
         }
 
-        LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry: Census check: verified {} / {} canonical specs.",
-            verified, totalCanonical);
+        // Orphan checks
+        uint32 orphanProfiles = 0;
+        for (CombatProfile const& p : allProfiles)
+        {
+            if (!FindStrategy(p.classId, p.specId, p.role))
+            {
+                orphanProfiles++;
+                LOG_WARN("module.coa-playerbots", "SpecStrategyRegistry: Orphan profile without strategy: class={}, spec={}, role={}, name='{}'",
+                    p.classId, p.specId, static_cast<uint32>(p.role), p.profileName);
+            }
+        }
+
+        uint32 orphanStrategies = 0;
+        for (SpecStrategy const& s : s_strategies)
+        {
+            if (!ProfileRegistry::FindProfile(s.classId, s.specId, s.role))
+            {
+                orphanStrategies++;
+                LOG_WARN("module.coa-playerbots", "SpecStrategyRegistry: Orphan strategy without profile: class={}, spec={}, role={}, name='{}'",
+                    s.classId, s.specId, static_cast<uint32>(s.role), s.strategyName);
+            }
+        }
+
+        // Entity tracking validation
+        for (CombatProfile const& p : allProfiles)
+        {
+            for (AbilityDescriptor const& ab : p.abilities)
+            {
+                if (ab.trackedEntityType != TrackedEntityType::None &&
+                    ab.trackedEntityType != TrackedEntityType::Pet &&
+                    ab.trackedEntityEntry == 0)
+                {
+                    LOG_WARN("module.coa-playerbots", "SpecStrategyRegistry: Profile '{}' ability '{}' has trackedEntityType != None but trackedEntityEntry == 0!",
+                        p.profileName, ab.name);
+                }
+            }
+        }
+
+        // ResourcePolicy sanity check
+        for (SpecStrategy const& s : s_strategies)
+        {
+            for (ResourcePolicy const& pol : s.resourcePolicies)
+            {
+                if (pol.overcapThreshold > 0 && pol.minToEngage > 0 && pol.overcapThreshold < pol.minToEngage)
+                {
+                    LOG_WARN("module.coa-playerbots", "SpecStrategyRegistry: Strategy '{}' has overcapThreshold ({}) < minToEngage ({})!",
+                        s.strategyName, pol.overcapThreshold, pol.minToEngage);
+                }
+            }
+        }
+
+        LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry Census: Canonical Specs: {} (verified: {}). Breakdown: Tanks: {}, Healers: {}, DPS: {}, Support: {}.",
+            totalCanonical, verifiedCanonical, tankSpecs, healerSpecs, dpsSpecs, supportSpecs);
+        LOG_INFO("module.coa-playerbots", "SpecStrategyRegistry Census: Registered Profiles: {}, Strategies: {}. Orphans: Profiles: {}, Strategies: {}.",
+            profileCount, strategyCount, orphanProfiles, orphanStrategies);
     }
 }

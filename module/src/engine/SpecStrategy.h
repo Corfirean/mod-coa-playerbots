@@ -57,7 +57,8 @@ namespace BotAI
         Recovering,
         GroupMemberResting,
         GroupMemberDead,
-        GroupMemberFar
+        GroupMemberFar,
+        HealerNotFound
     };
 
     struct PullReadinessInfo
@@ -167,6 +168,8 @@ namespace BotAI
         uint32 successfulStateActions = 0;
         uint32 burstStartedMs = 0;
         bool burstWindowActive = false;
+        bool burstConsumedThisCombat = false;
+        uint32 lastBurstEndMs = 0;
         bool openerCompleted = false;
         CombatStateStatus lastStateStatus = CombatStateStatus::Ready;
         std::string lastPullFailureReason = "";
@@ -187,6 +190,11 @@ namespace BotAI
         // Mandatory form/stance
         RequiredCombatState requiredState;
         bool allowLegacyInTemporaryState = false;
+
+        bool HasMandatoryBaselineState() const
+        {
+            return requiredState.formSpellId != 0 || requiredState.formAuraId != 0;
+        }
 
         // Pre-pull readiness check -- returns true when the bot is ready to engage
         std::function<bool(Player* bot, CombatContext const&)> isReadyToPull = nullptr;

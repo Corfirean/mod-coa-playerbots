@@ -153,6 +153,14 @@ namespace BotAI
                        (bot->GetHealthPct() >= 50.0f);
             };
 
+            // ResourcePolicy for Static (803102)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 803102 };
+                pol.overcapThreshold = 80;
+                s.resourcePolicies.push_back(pol);
+            }
+
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 

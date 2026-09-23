@@ -206,6 +206,14 @@ namespace BotAI
                 { AbilityTag::AoEDamage,   1.8f,  50.0f }
             };
 
+            // ResourcePolicy for Bloodmage resource (680687)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 680687 };
+                pol.overcapThreshold = 8;
+                s.resourcePolicies.push_back(pol);
+            }
+
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 

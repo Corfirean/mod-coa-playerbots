@@ -3045,7 +3045,20 @@ Player* FindHealTarget(Player* bot)
 
 SpellCastResult LogCastAttempt(Player* bot, uint32 spellId, Unit* target, char const* verb)
 {
-    if (target && target != bot)
+    if (!bot || !target || !spellId)
+        return SPELL_FAILED_NOT_KNOWN;
+
+    BotAI::CombatContext ctx = BotAI::CombatContext::Build(bot, target);
+    BotAI::BotAction action;
+    action.spellId = spellId;
+    action.rootSpellId = spellId;
+    action.target = target;
+    action.score = 100.0f;
+    action.name = verb;
+    if (!BotAI::ActionEvaluator::ValidateAction(ctx, action))
+        return SPELL_FAILED_DONT_REPORT;
+
+    if (target != bot)
     {
         bot->SetInFront(target);
         bot->SetFacingToObject(target);
@@ -3053,6 +3066,7 @@ SpellCastResult LogCastAttempt(Player* bot, uint32 spellId, Unit* target, char c
     SpellCastResult result = bot->CastSpell(target, spellId, false);
     LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' {} spell {} on '{}' (result {}).",
         bot->GetName(), verb, spellId, target->GetName(), uint32(result));
+    BotAI::SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
     if (result != SPELL_CAST_OK)
         BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
     return result;
@@ -3072,7 +3086,14 @@ void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
     state.nextBuffCheckMs = BUFF_CHECK_INTERVAL_MS;
 
     if (uint32 spellId = SelectBuffSpell(bot))
+    {
+        if (Aura const* aura = bot->GetAura(spellId))
+        {
+            if (aura->GetDuration() > 60000 || aura->IsPermanent())
+                return;
+        }
         LogCastAttempt(bot, spellId, bot, "cast buff");
+    }
 }
 
 // Finds whatever the bot's group is currently fighting -- prefers the designated group leader
@@ -4179,6 +4200,7 @@ void Forget(ObjectGuid botGuid)
     DpsEngine::ForgetBot(botGuid);
     TankEngine::ForgetBot(botGuid);
     HealerEngine::ForgetBot(botGuid);
+    SpecStrategyRegistry::ForgetBot(botGuid);
     BotBattlegroundAI::Forget(botGuid);
     BotMovement::Forget(botGuid);
     BotWorldBehavior::Forget(botGuid);
@@ -4397,6 +4419,8 @@ void SetRole(ObjectGuid botGuid, BotRole role)
     BotAIState& state = states[botGuid];
     state.role = role;
     state.manualRoleOverride = true;
+    SpecStrategyRegistry::ForgetBot(botGuid);
+    ActionEvaluator::ClearThrottles(botGuid);
 }
 
 void ClearRoleOverride(ObjectGuid botGuid)
@@ -4410,6 +4434,8 @@ void ClearRoleOverride(ObjectGuid botGuid)
             uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
             itr->second.role = GetRoleForClassSpec(bot->getClass(), activeSpec);
         }
+        SpecStrategyRegistry::ForgetBot(botGuid);
+        ActionEvaluator::ClearThrottles(botGuid);
     }
 }
 

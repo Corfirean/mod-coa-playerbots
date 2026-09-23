@@ -227,13 +227,16 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // Minion Summons (Strict throttles to maintain roster without spam)
+            // Minion Summons (Strict throttles and entity tracking to maintain roster without spam)
             {
                 AbilityDescriptor d;
                 d.name = "Raise: Decaying Colossus";
                 d.rootSpellId = 500989;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.trackedEntityType = TrackedEntityType::Minion;
+                d.trackedEntityEntry = 50115;
+                d.maxActiveEntities = 1;
                 d.internalThrottleMs = 60000;
                 d.baseScore = 280.0f;
                 p.abilities.push_back(d);
@@ -244,6 +247,9 @@ namespace BotAI
                 d.rootSpellId = 500335;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.trackedEntityType = TrackedEntityType::Minion;
+                d.trackedEntityEntry = 50068;
+                d.maxActiveEntities = 1;
                 d.internalThrottleMs = 45000;
                 d.baseScore = 270.0f;
                 p.abilities.push_back(d);
@@ -254,6 +260,9 @@ namespace BotAI
                 d.rootSpellId = 500332;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.trackedEntityType = TrackedEntityType::Minion;
+                d.trackedEntityEntry = 50075;
+                d.maxActiveEntities = 2;
                 d.internalThrottleMs = 30000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
@@ -264,6 +273,9 @@ namespace BotAI
                 d.rootSpellId = 500970;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.trackedEntityType = TrackedEntityType::Minion;
+                d.trackedEntityEntry = 50065;
+                d.maxActiveEntities = 3;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 240.0f;
                 p.abilities.push_back(d);
@@ -341,6 +353,14 @@ namespace BotAI
             s.phaseModifiers[CombatPhase::Burst] = {
                 { AbilityTag::OffensiveCD, 1.8f, 50.0f }
             };
+
+            // ResourcePolicy for MinionCapacity
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::MinionCapacity, 0, 0 };
+                pol.minToEngage = 2;
+                s.resourcePolicies.push_back(pol);
+            }
 
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }

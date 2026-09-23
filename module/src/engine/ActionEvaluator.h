@@ -37,6 +37,9 @@ namespace BotAI
         // Calculates priority score for an ability based on context, tags, phase, and defensive reserves.
         static float ScoreAbility(CombatContext const& ctx, AbilityDescriptor const& desc, Unit* target, SpecStrategy const* strategy = nullptr, CombatPhase phase = CombatPhase::SingleTarget);
 
+        // Helper to compute projected resource amount after ability resolves (handles Fixed, All, None correctly)
+        static int32 ProjectResourceAfterAbility(CombatContext const& ctx, CombatResourceKey const& key, uint32 resolvedSpellId);
+
         // Resolves the destination Unit* based on TargetType.
         static Unit* ResolveTarget(CombatContext const& ctx, TargetType targetType, AbilityDescriptor const& desc, uint32 resolvedSpellId);
 

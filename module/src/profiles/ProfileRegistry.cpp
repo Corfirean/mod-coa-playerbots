@@ -91,4 +91,10 @@ namespace BotAI
     {
         return FindProfile(classId, specId, role) != nullptr;
     }
+
+    std::vector<CombatProfile> const& ProfileRegistry::GetAllProfiles()
+    {
+        Initialize();
+        return s_profiles;
+    }
 }

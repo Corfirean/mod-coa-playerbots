@@ -214,16 +214,32 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // Critical Emergency Direct Heal
+            // Critical Emergency Direct Heal (Usable even in emergency Beetle Form)
             {
                 AbilityDescriptor d;
                 d.name = "Lifeblood";
                 d.rootSpellId = 804963;
                 d.tags = AbilityTag::EmergencyHeal | AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
+                d.stateRequirement = StateRequirement::EmergencyOnly;
                 d.maxTargetHpPct = 40.0f;
                 d.internalThrottleMs = 4000;
                 d.baseScore = 450.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Emergency Beetle Form Defense
+            {
+                AbilityDescriptor d;
+                d.name = "Reinforced Shell (Beetle Defense)";
+                d.rootSpellId = 705966;
+                d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
+                d.targetType = TargetType::Self;
+                d.maxSelfHpPct = 50.0f;
+                d.missingAuraOnCaster = 705966;
+                d.stateRequirement = StateRequirement::AllowedInTemporary;
+                d.internalThrottleMs = 15000;
+                d.baseScore = 350.0f;
                 p.abilities.push_back(d);
             }
 
@@ -374,13 +390,14 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // Gap Closer: Toxic Stride
+            // Gap Closer: Toxic Stride (Usable in Skulk opener)
             {
                 AbilityDescriptor d;
                 d.name = "Toxic Stride";
                 d.rootSpellId = 504347;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.stateRequirement = StateRequirement::AllowedInTemporary;
                 d.baseScore = 250.0f;
                 d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
                 {
@@ -420,6 +437,7 @@ namespace BotAI
                 d.rootSpellId = 800878;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.stateRequirement = StateRequirement::AllowedInTemporary;
                 d.baseScore = 260.0f;
                 p.abilities.push_back(d);
             }
@@ -489,6 +507,14 @@ namespace BotAI
             s.phaseModifiers[CombatPhase::Execute] = {
                 { AbilityTag::MeleeAttack, 1.4f, 40.0f }
             };
+
+            // ResourcePolicy for Brood Mark
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 804972 };
+                pol.overcapThreshold = 4;
+                s.resourcePolicies.push_back(pol);
+            }
 
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
@@ -623,6 +649,14 @@ namespace BotAI
             s.phaseModifiers[CombatPhase::Recovery] = {
                 { AbilityTag::Filler,      0.3f, -30.0f }
             };
+
+            // ResourcePolicy for Brood Mark
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 804972 };
+                pol.overcapThreshold = 4;
+                s.resourcePolicies.push_back(pol);
+            }
 
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }

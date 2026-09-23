@@ -182,6 +182,10 @@ namespace BotAI
         if (!spellInfo)
             return false;
 
+        // GCD validation using native Core API
+        if (bot->GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo))
+            return false;
+
         if (IsSpellInFailureCooldown(bot->GetGUID(), action.spellId))
             return false;
 
@@ -238,6 +242,10 @@ namespace BotAI
         if (!spellInfo)
             return false;
 
+        // Native GCD check
+        if (bot->GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo))
+            return false;
+
         if (IsSpellInFailureCooldown(bot->GetGUID(), resolvedSpellId))
             return false;
 
@@ -272,7 +280,8 @@ namespace BotAI
                 {
                     if (controlled && controlled->IsAlive() && controlled->GetEntry() == desc.trackedEntityEntry)
                     {
-                        liveCount++;
+                        if (controlled->GetCharmerOrOwnerGUID() == bot->GetGUID() || controlled->GetOwnerGUID() == bot->GetGUID())
+                            liveCount++;
                     }
                 }
                 if (liveCount >= (desc.maxActiveEntities ? desc.maxActiveEntities : 1))
@@ -451,32 +460,62 @@ namespace BotAI
         // Defensive reserve protection: prevent offensive spenders from starving active mitigation
         if (strategy && !strategy->resourcePolicies.empty())
         {
-            if (!HasTag(desc.tags, AbilityTag::DefensiveCD) && !HasTag(desc.tags, AbilityTag::EmergencyHeal) && !HasTag(desc.tags, AbilityTag::Taunt))
+            uint32 resolvedSpellId = SpellResolver::ResolveSpell(ctx.bot, desc.rootSpellId);
+            bool isDefensiveOrEmergency = HasTag(desc.tags, AbilityTag::DefensiveCD) || HasTag(desc.tags, AbilityTag::EmergencyHeal) || HasTag(desc.tags, AbilityTag::Taunt);
+
+            for (ResourcePolicy const& pol : strategy->resourcePolicies)
             {
-                for (ResourcePolicy const& pol : strategy->resourcePolicies)
+                CombatResourceState const* st = ctx.resources.Find(pol.key);
+                if (!st)
+                    continue;
+
+                // 1. Defensive reserve check
+                if (!isDefensiveOrEmergency && pol.reserveForDefensive && pol.defensiveReserve > 0)
                 {
-                    if (pol.reserveForDefensive && pol.defensiveReserve > 0)
+                    bool allowDump = (phase == CombatPhase::Burst && pol.allowDumpDuringBurst);
+                    if (!allowDump)
                     {
-                        CombatResourceState const* st = ctx.resources.Find(pol.key);
-                        if (st)
+                        int32 projected = ProjectResourceAfterAbility(ctx, pol.key, resolvedSpellId);
+                        if (projected < pol.defensiveReserve)
                         {
-                            // Calculate projected reserve: have - consumption
-                            int32 consumptionAmount = 0;
-                            uint32 resolvedSpellId = SpellResolver::ResolveSpell(ctx.bot, desc.rootSpellId);
-                            if (resolvedSpellId)
+                            score *= 0.1f;
+                        }
+                    }
+                }
+
+                // 2. Overcap threshold logic: near overcap -> spender bonus (+100) / builder penalty (0.3x)
+                if (pol.overcapThreshold > 0 && st->current >= pol.overcapThreshold)
+                {
+                    int32 projected = ProjectResourceAfterAbility(ctx, pol.key, resolvedSpellId);
+                    if (projected < st->current)
+                    {
+                        score += 100.0f; // spender bonus
+                    }
+                    else
+                    {
+                        // Check if ability gains this resource
+                        for (auto const& gain : CombatResourceEvaluator::ResolveGains(ctx.classId, resolvedSpellId))
+                        {
+                            if (gain.key == pol.key)
                             {
-                                for (auto const& req : CombatResourceEvaluator::ResolveRequirements(ctx.bot, resolvedSpellId))
-                                {
-                                    if (req.key == pol.key && req.activeForBot)
-                                    {
-                                        consumptionAmount += req.amount;
-                                    }
-                                }
+                                score *= 0.3f; // overcap waste penalty
+                                break;
                             }
-                            int32 projected = st->current - consumptionAmount;
-                            if (projected < pol.defensiveReserve)
+                        }
+                    }
+                }
+
+                // 3. Builder bonus specifically for this resource when below minToEngage or defensiveReserve
+                if (pol.minToEngage > 0 || pol.defensiveReserve > 0)
+                {
+                    int32 threshold = std::max(pol.minToEngage, pol.defensiveReserve);
+                    if (st->current < threshold)
+                    {
+                        for (auto const& gain : CombatResourceEvaluator::ResolveGains(ctx.classId, resolvedSpellId))
+                        {
+                            if (gain.key == pol.key)
                             {
-                                score *= 0.1f;
+                                score += 150.0f; // builder bonus specifically for this starving resource
                                 break;
                             }
                         }
@@ -485,7 +524,7 @@ namespace BotAI
             }
         }
 
-        // Builder bonus during recovery or when low on resources
+        // Generic builder bonus during recovery or when low on primary power
         if (phase == CombatPhase::Recovery || ctx.botPowerPct < 30.0f)
         {
             uint32 resolvedSpellId = SpellResolver::ResolveSpell(ctx.bot, desc.rootSpellId);
@@ -525,6 +564,34 @@ namespace BotAI
         return score;
     }
 
+    int32 ActionEvaluator::ProjectResourceAfterAbility(CombatContext const& ctx, CombatResourceKey const& key, uint32 resolvedSpellId)
+    {
+        CombatResourceState const* st = ctx.resources.Find(key);
+        if (!st)
+            return 0;
+
+        int32 current = st->current;
+        if (!resolvedSpellId)
+            return current;
+
+        for (auto const& req : CombatResourceEvaluator::ResolveRequirements(ctx.bot, resolvedSpellId))
+        {
+            if (req.key == key && req.activeForBot)
+            {
+                if (req.consumption == AscensionCompatData::ResourceConsumption::All)
+                {
+                    current = 0;
+                }
+                else if (req.consumption == AscensionCompatData::ResourceConsumption::Fixed)
+                {
+                    current = std::max(0, current - req.amount);
+                }
+                // ResourceConsumption::None: current is unchanged
+            }
+        }
+        return current;
+    }
+
     BotAction ActionEvaluator::EvaluateBestAction(CombatContext const& ctx, std::vector<AbilityDescriptor> const& abilities)
     {
         SpecStrategy const* strategy = SpecStrategyRegistry::FindStrategy(ctx.classId, ctx.activeSpec, ctx.role);
@@ -550,6 +617,7 @@ namespace BotAI
             runtime.successfulCombatCasts = 0;
             runtime.openerCompleted = false;
             runtime.burstWindowActive = false;
+            runtime.burstConsumedThisCombat = false;
             runtime.burstStartedMs = 0;
         }
 
@@ -559,7 +627,8 @@ namespace BotAI
 
         if (stateRecoveryAction.IsValid())
         {
-            return stateRecoveryAction;
+            if (ValidateAction(ctx, stateRecoveryAction))
+                return stateRecoveryAction;
         }
 
         // If missing baseline state or setup is required and no recovery action was generated,
@@ -569,9 +638,22 @@ namespace BotAI
             return bestAction;
         }
 
-        // 2. Combat Phase Detection
+        // 2. Burst window management: single 15s window per combat
+        if (ctx.worthOffensiveCooldown && !runtime.burstWindowActive && !runtime.burstConsumedThisCombat)
+        {
+            runtime.burstWindowActive = true;
+            runtime.burstStartedMs = now;
+        }
+        else if (runtime.burstWindowActive && now >= runtime.burstStartedMs + 15000)
+        {
+            runtime.burstWindowActive = false;
+            runtime.burstConsumedThisCombat = true;
+            runtime.lastBurstEndMs = now;
+        }
+
+        // 3. Combat Phase Detection
         CombatPhase phase = CombatPhase::SingleTarget;
-        // Priority 1: Emergency always preempts normal rotation and opener
+        // Priority 1: Emergency always preempts normal rotation, opener, and burst
         if (ctx.botHpPct < 25.0f || (ctx.lowestAlly && ctx.lowestAllyHpPct < 25.0f))
         {
             phase = CombatPhase::Emergency;
@@ -590,29 +672,45 @@ namespace BotAI
             }
             else
             {
-                // Burst window management: 15s window when triggered
-                if (ctx.worthOffensiveCooldown && !runtime.burstWindowActive)
+                if (ctx.role == BotRole::Tank)
                 {
-                    runtime.burstWindowActive = true;
-                    runtime.burstStartedMs = now;
+                    if (strategy && strategy->recoveryThreshold > 0.0f && ctx.botPowerPct < strategy->recoveryThreshold)
+                        phase = CombatPhase::Recovery;
+                    else if (ctx.engagedEnemyCount >= 3)
+                        phase = CombatPhase::AoE;
+                    else if (ctx.engagedEnemyCount == 2)
+                        phase = CombatPhase::Cleave;
+                    else if (runtime.burstWindowActive)
+                        phase = CombatPhase::Burst;
+                    else
+                        phase = CombatPhase::SingleTarget;
                 }
-                else if (runtime.burstWindowActive && now >= runtime.burstStartedMs + 15000)
+                else if (ctx.role == BotRole::Healer)
                 {
-                    runtime.burstWindowActive = false;
+                    if (ctx.lowestAlly && ctx.lowestAllyHpPct < 50.0f)
+                        phase = CombatPhase::Emergency;
+                    else if (strategy && strategy->recoveryThreshold > 0.0f && ctx.botPowerPct < strategy->recoveryThreshold)
+                        phase = CombatPhase::Recovery;
+                    else if (ctx.engagedEnemyCount >= 3)
+                        phase = CombatPhase::AoE;
+                    else
+                        phase = CombatPhase::SingleTarget;
                 }
-
-                if (runtime.burstWindowActive)
-                    phase = CombatPhase::Burst;
-                else if (strategy && strategy->recoveryThreshold > 0.0f && ctx.botPowerPct < strategy->recoveryThreshold)
-                    phase = CombatPhase::Recovery;
-                else if (ctx.targetHpPct < 20.0f)
-                    phase = CombatPhase::Execute;
-                else if (ctx.engagedEnemyCount >= 3)
-                    phase = CombatPhase::AoE;
-                else if (ctx.engagedEnemyCount == 2)
-                    phase = CombatPhase::Cleave;
-                else
-                    phase = CombatPhase::SingleTarget;
+                else // DPS
+                {
+                    if (ctx.targetHpPct < 20.0f)
+                        phase = CombatPhase::Execute; // Execute outranks generic Burst
+                    else if (strategy && strategy->recoveryThreshold > 0.0f && ctx.botPowerPct < strategy->recoveryThreshold)
+                        phase = CombatPhase::Recovery;
+                    else if (runtime.burstWindowActive)
+                        phase = CombatPhase::Burst;
+                    else if (ctx.engagedEnemyCount >= 3)
+                        phase = CombatPhase::AoE;
+                    else if (ctx.engagedEnemyCount == 2)
+                        phase = CombatPhase::Cleave;
+                    else
+                        phase = CombatPhase::SingleTarget;
+                }
             }
         }
         runtime.phase = phase;
@@ -620,16 +718,22 @@ namespace BotAI
         for (AbilityDescriptor const& desc : abilities)
         {
             // State requirement gating
+            StateRequirement effReq = desc.stateRequirement;
+            if (effReq == StateRequirement::Default)
+            {
+                effReq = (strategy && strategy->HasMandatoryBaselineState()) ? StateRequirement::BaselineOnly : StateRequirement::Any;
+            }
+
             if (stateStatus != CombatStateStatus::Ready)
             {
-                if (desc.stateRequirement == StateRequirement::BaselineOnly)
+                if (effReq == StateRequirement::BaselineOnly)
                     continue;
             }
             if (stateStatus == CombatStateStatus::TemporaryAlternate)
             {
-                if (desc.stateRequirement != StateRequirement::AllowedInTemporary &&
-                    desc.stateRequirement != StateRequirement::EmergencyOnly &&
-                    desc.stateRequirement != StateRequirement::Any)
+                if (effReq != StateRequirement::AllowedInTemporary &&
+                    effReq != StateRequirement::EmergencyOnly &&
+                    effReq != StateRequirement::Any)
                     continue;
             }
 

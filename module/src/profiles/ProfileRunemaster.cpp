@@ -168,6 +168,14 @@ namespace BotAI
                        (bot->GetHealthPct() >= 50.0f);
             };
 
+            // ResourcePolicy for Arcane Sigil (500282)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 500282 };
+                pol.overcapThreshold = 3;
+                s.resourcePolicies.push_back(pol);
+            }
+
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 

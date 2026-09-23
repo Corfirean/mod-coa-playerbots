@@ -192,6 +192,14 @@ namespace BotAI
                 return bot->GetHealthPct() >= 65.0f;
             };
 
+            // ResourcePolicy for Solar Power (500149)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 500149 };
+                pol.overcapThreshold = 18;
+                s.resourcePolicies.push_back(pol);
+            }
+
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
