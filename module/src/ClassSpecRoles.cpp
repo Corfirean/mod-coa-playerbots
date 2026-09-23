@@ -107,13 +107,13 @@ static constexpr SpecRoleEntry SPEC_ROLE_TABLE[] =
 
     // Class 28: Tinker
     { 28, 49,  BotRole::Dps,    "Demolition" },
-    { 28, 50,  BotRole::Dps,    "Mechanics" },
+    { 28, 50,  BotRole::Tank,   "Mechanics" },
     { 28, 51,  BotRole::Healer, "Invention" },
 
     // Class 29: Venomancer
     { 29, 52,  BotRole::Tank,   "Fortitude" },
     { 29, 53,  BotRole::Dps,    "Stalking" },
-    { 29, 54,  BotRole::Dps,    "Venom" },
+    { 29, 54,  BotRole::Dps,    "Rot" },
     { 29, 101, BotRole::Healer, "Vizier" },
 
     // Class 30: Reaper
@@ -122,14 +122,14 @@ static constexpr SpecRoleEntry SPEC_ROLE_TABLE[] =
     { 30, 57,  BotRole::Tank,   "Domination" },
 
     // Class 31: Primalist
-    { 31, 58,  BotRole::Healer, "Life" },
-    { 31, 59,  BotRole::Dps,    "Primal" },
+    { 31, 58,  BotRole::Healer, "Grovekeeper" },
+    { 31, 59,  BotRole::Dps,    "Wildwalker" },
     { 31, 60,  BotRole::Tank,   "Mountain King" },
     { 31, 95,  BotRole::Dps,    "Geomancy" },
 
     // Class 32: Runemaster
-    { 32, 61,  BotRole::Dps,    "Runic" },
-    { 32, 62,  BotRole::Dps,    "Arcane" },
+    { 32, 61,  BotRole::Dps,    "Engravement" },
+    { 32, 62,  BotRole::Dps,    "Glyphic" },
     { 32, 63,  BotRole::Dps,    "Riftblade" },
 };
 
@@ -187,5 +187,14 @@ uint32 FindSpecForRole(uint8 classId, BotRole role, uint32 preferredSpecId)
             return entry.specId;
     }
     return 0;
+}
+
+std::vector<SpecInfo> GetAllSpecs(uint8 classId)
+{
+    std::vector<SpecInfo> specs;
+    for (auto const& entry : SPEC_ROLE_TABLE)
+        if (entry.classId == classId)
+            specs.push_back({ entry.specId, entry.role, entry.name });
+    return specs;
 }
 }

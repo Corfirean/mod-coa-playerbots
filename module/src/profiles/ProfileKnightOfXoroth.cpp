@@ -1,33 +1,42 @@
 /*
  * mod-coa-playerbots
  *
- * Data-Driven Combat AI Framework: Knight of Xoroth Profiles implementation
- * Supports:
+ * Data-Driven Combat AI Framework: Knight of Xoroth Profiles & Spec Strategies
+ *
+ * Specializations:
  *   - Spec 17: Defiance (Chaos & Fire Melee Tank)
  *   - Spec 18: War (2H Chaos Melee DPS)
  *   - Spec 16: Hellfire (Destruction / Fire Hybrid DPS)
- *   - Spec 0: Default Fallback
  */
 
 #include "profiles/ProfileKnightOfXoroth.h"
 #include "profiles/ProfileRegistry.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "engine/CombatContext.h"
+#include "Player.h"
 
 namespace BotAI
 {
     void RegisterKnightOfXorothProfiles()
     {
-        // -------------------------------------------------------------
-        // Profile 1: Knight of Xoroth - Spec 17: Defiance (CHAOS TANK)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 1. SPEC 17: DEFIANCE (CHAOS & FIRE MELEE TANK)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Tank
+        // - Baseline State: Melee
+        // - Resource: Rage + Demonfire + Demon's Blood
+        // - Defensive / Buff: Demon's Blood (throttled to 30s)
+        // - TankReady: HP >= 75%
+        // =========================================================================
         {
             CombatProfile p;
-            p.classId = 17;
-            p.specId = 17; // Defiance
+            p.classId = 17; // Knight of Xoroth
+            p.specId = 17;  // Defiance
             p.role = BotRole::Tank;
             p.profileName = "KnightOfXoroth_Defiance_Tank";
 
-            // 1. Taunt
+            // Primary Taunt
             {
                 AbilityDescriptor d;
                 d.name = "Taunt";
@@ -38,33 +47,35 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 2. Defensive Buff: Demon's Blood (< 80% HP or keep active)
+            // Defensive Buff: Demon's Blood
             {
                 AbilityDescriptor d;
-                d.name = "Demon's Blood (Armor/Healing)";
+                d.name = "Demon's Blood";
                 d.rootSpellId = 800999;
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800999;
-                d.baseScore = 250.0f;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 260.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. AoE Threat / Damage: Flames of Xoroth
+            // AoE Threat: Flames of Xoroth
             {
                 AbilityDescriptor d;
-                d.name = "Flames of Xoroth (AoE Fire Threat)";
+                d.name = "Flames of Xoroth";
                 d.rootSpellId = 801059;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
 
-            // 4. Primary Fire Threat Strike: Infernal Strike
+            // Primary Threat Strike: Infernal Strike
             {
                 AbilityDescriptor d;
-                d.name = "Infernal Strike (Threat Strike)";
+                d.name = "Infernal Strike";
                 d.rootSpellId = 801016;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -72,10 +83,10 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 5. Rage Generator: Sever
+            // Rage Generator: Sever
             {
                 AbilityDescriptor d;
-                d.name = "Sever (Rage Generator)";
+                d.name = "Sever";
                 d.rootSpellId = 500904;
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
@@ -83,10 +94,10 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 6. Ranged Pull: Chaos Bolt
+            // Ranged Pull: Chaos Bolt
             {
                 AbilityDescriptor d;
-                d.name = "Chaos Bolt (Pull)";
+                d.name = "Chaos Bolt";
                 d.rootSpellId = 802057;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -95,11 +106,36 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            SpecStrategy s;
+            s.classId = 17;
+            s.specId = 17;
+            s.role = BotRole::Tank;
+            s.strategyName = "Defiance_Tank_Strategy";
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 75.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Emergency] = {
+                { AbilityTag::DefensiveCD, 2.5f, 100.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage,   1.8f,  50.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
-        // -------------------------------------------------------------
-        // Profile 2: Knight of Xoroth - Spec 18: War (2H CHAOS MELEE DPS)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 2. SPEC 18: WAR (2H CHAOS MELEE DPS)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Dps
+        // - Baseline State: Melee
+        // - Resource: Rage / Demonfire
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 17;
@@ -107,22 +143,23 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "KnightOfXoroth_War_Melee";
 
-            // 1. Buff: Demon's Blood
+            // Buff
             {
                 AbilityDescriptor d;
-                d.name = "Demon's Blood (Buff)";
+                d.name = "Demon's Blood";
                 d.rootSpellId = 800999;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800999;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 170.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Primary Heavy Strike: Infernal Strike
+            // Primary Heavy Strike
             {
                 AbilityDescriptor d;
-                d.name = "Infernal Strike (Heavy Fire Strike)";
+                d.name = "Infernal Strike";
                 d.rootSpellId = 801016;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -130,21 +167,22 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 3. AoE Burst: Flames of Xoroth
+            // AoE Burst
             {
                 AbilityDescriptor d;
-                d.name = "Flames of Xoroth (AoE Burst)";
+                d.name = "Flames of Xoroth";
                 d.rootSpellId = 801059;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
 
-            // 4. Primary Generator: Sever
+            // Generator
             {
                 AbilityDescriptor d;
-                d.name = "Sever (Generator)";
+                d.name = "Sever";
                 d.rootSpellId = 500904;
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
@@ -152,23 +190,49 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 5. Heavy Ranged Nuke / Opener: Chaos Bolt
+            // Opener / Nuke
             {
                 AbilityDescriptor d;
-                d.name = "Chaos Bolt (Burst Nuke)";
+                d.name = "Chaos Bolt";
                 d.rootSpellId = 802057;
                 d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 12000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            SpecStrategy s;
+            s.classId = 17;
+            s.specId = 18;
+            s.role = BotRole::Dps;
+            s.strategyName = "War_Melee_Strategy";
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 70.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD, 1.8f, 50.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage,   1.8f, 50.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
-        // -------------------------------------------------------------
-        // Profile 3: Knight of Xoroth - Spec 16: Hellfire (HYBRID CASTER/MELEE DPS)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 3. SPEC 16: HELLFIRE (HYBRID CASTER / MELEE DPS)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Dps
+        // - Baseline State: Caster/Hybrid
+        // - Resource: Demonfire
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 17;
@@ -176,29 +240,31 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "KnightOfXoroth_Hellfire_Hybrid";
 
-            // 1. Primary Ranged Burst: Chaos Bolt
+            // Primary Ranged Burst
             {
                 AbilityDescriptor d;
-                d.name = "Chaos Bolt (Primary Burst)";
+                d.name = "Chaos Bolt";
                 d.rootSpellId = 802057;
                 d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 10000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. AoE Fire: Flames of Xoroth
+            // AoE Fire
             {
                 AbilityDescriptor d;
                 d.name = "Flames of Xoroth";
                 d.rootSpellId = 801059;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. Melee Fire Strike: Infernal Strike
+            // Melee Strike
             {
                 AbilityDescriptor d;
                 d.name = "Infernal Strike";
@@ -209,7 +275,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 4. Rage Generator: Sever
+            // Generator
             {
                 AbilityDescriptor d;
                 d.name = "Sever";
@@ -220,7 +286,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 5. Buff: Demon's Blood
+            // Buff
             {
                 AbilityDescriptor d;
                 d.name = "Demon's Blood";
@@ -228,13 +294,33 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800999;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
-        }
 
+            SpecStrategy s;
+            s.classId = 17;
+            s.specId = 16;
+            s.role = BotRole::Dps;
+            s.strategyName = "Hellfire_Hybrid_Strategy";
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 70.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD,  1.8f, 50.0f },
+                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage,    1.8f, 50.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
+        }
     }
 }
-

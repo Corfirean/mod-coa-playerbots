@@ -3,15 +3,16 @@
  *
  * Data-Driven Combat AI Framework: Ranger Profiles implementation
  * Supports:
- *   - Spec 29: Farstrider (Support / Ranged DPS) - Guild bot Morenur (GUID 2512)
+ *   - Spec 29: Farstrider (Support / Ranged DPS)
  *   - Spec 28: Archery (Pure Marksman Ranged DPS)
  *   - Spec 30: Brigand (Melee Agility DPS)
- *   - Spec 0: Default Fallback
  */
 
 #include "profiles/ProfileRanger.h"
 #include "profiles/ProfileRegistry.h"
 #include "engine/CombatContext.h"
+#include "engine/SpecStrategyRegistry.h"
+#include "Player.h"
 
 namespace BotAI
 {
@@ -19,7 +20,6 @@ namespace BotAI
     {
         // -------------------------------------------------------------
         // Profile 1: Ranger - Spec 29: Farstrider (SUPPORT / RANGED DPS)
-        // Main support/ranged spec used by guild bot Morenur (GUID 2512).
         // -------------------------------------------------------------
         {
             CombatProfile p;
@@ -28,7 +28,7 @@ namespace BotAI
             p.role = BotRole::Support;
             p.profileName = "Ranger_Farstrider_Support";
 
-            // 1. Emergency Defensive: Elude (root 801345) (< 40% HP)
+            // 1. Emergency Defensive: Elude (< 40% HP)
             {
                 AbilityDescriptor d;
                 d.name = "Elude (Defensive)";
@@ -36,17 +36,20 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 40.0f;
+                d.missingAuraOnCaster = 801345;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 350.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Crowd Control: Blackjack (root 520568) & Dust Toss (root 807820)
+            // 2. Crowd Control: Blackjack & Dust Toss
             {
                 AbilityDescriptor d;
                 d.name = "Blackjack (Stun)";
                 d.rootSpellId = 520568;
                 d.tags = AbilityTag::CrowdControl | AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
@@ -56,6 +59,7 @@ namespace BotAI
                 d.rootSpellId = 807820;
                 d.tags = AbilityTag::CrowdControl;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
@@ -68,6 +72,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800086;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 180.0f;
                 p.abilities.push_back(d);
             }
@@ -78,6 +83,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 806359;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 175.0f;
                 p.abilities.push_back(d);
             }
@@ -88,6 +94,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 806360;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 170.0f;
                 p.abilities.push_back(d);
             }
@@ -98,6 +105,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 524600;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 165.0f;
                 p.abilities.push_back(d);
             }
@@ -110,22 +118,24 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800260;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 160.0f;
                 p.abilities.push_back(d);
             }
 
-            // 5. Burst / Offensive Cooldown: Falconstrike (root 806345)
+            // 5. Burst / Offensive Cooldown: Falconstrike
             {
                 AbilityDescriptor d;
                 d.name = "Falconstrike (Burst)";
                 d.rootSpellId = 806345;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 240.0f;
                 p.abilities.push_back(d);
             }
 
-            // 6. Execute: Skullpiercer (root 802036) (< 35% target HP)
+            // 6. Execute: Skullpiercer (< 35% target HP)
             {
                 AbilityDescriptor d;
                 d.name = "Skullpiercer (Execute)";
@@ -133,6 +143,7 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Execute;
                 d.targetType = TargetType::CurrentTarget;
                 d.maxTargetHpPct = 35.0f;
+                d.internalThrottleMs = 5000;
                 d.baseScore = 260.0f;
                 p.abilities.push_back(d);
             }
@@ -145,6 +156,7 @@ namespace BotAI
                 d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
@@ -156,6 +168,7 @@ namespace BotAI
                 d.rootSpellId = 500073;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 5000;
                 d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
@@ -178,6 +191,7 @@ namespace BotAI
                 d.rootSpellId = 804940;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 170.0f;
                 p.abilities.push_back(d);
             }
@@ -188,6 +202,7 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 160.0f;
                 p.abilities.push_back(d);
             }
@@ -197,6 +212,7 @@ namespace BotAI
                 d.rootSpellId = 705070;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
@@ -211,6 +227,33 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            // SpecStrategy for Farstrider
+            SpecStrategy s;
+            s.classId = 21;
+            s.specId = 29;
+            s.role = BotRole::Support;
+            s.strategyName = "Ranger_Farstrider_Support_Strategy";
+
+            s.phaseModifiers[CombatPhase::Opener] = {
+                { AbilityTag::PeriodicDamage, 1.5f, 40.0f },
+                { AbilityTag::RangedAttack,   1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD,  1.8f, 50.0f },
+                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage, 1.8f, 50.0f }
+            };
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 30) &&
+                       (bot->GetHealthPct() >= 50.0f);
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
         // -------------------------------------------------------------
@@ -231,6 +274,8 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 40.0f;
+                d.missingAuraOnCaster = 801345;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 350.0f;
                 p.abilities.push_back(d);
             }
@@ -243,6 +288,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 524600;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 170.0f;
                 p.abilities.push_back(d);
             }
@@ -253,6 +299,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 500103;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 165.0f;
                 p.abilities.push_back(d);
             }
@@ -263,6 +310,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800260;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 160.0f;
                 p.abilities.push_back(d);
             }
@@ -274,6 +322,7 @@ namespace BotAI
                 d.rootSpellId = 3045;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -283,6 +332,7 @@ namespace BotAI
                 d.rootSpellId = 806345;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
@@ -295,6 +345,7 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Execute;
                 d.targetType = TargetType::CurrentTarget;
                 d.maxTargetHpPct = 35.0f;
+                d.internalThrottleMs = 5000;
                 d.baseScore = 270.0f;
                 p.abilities.push_back(d);
             }
@@ -306,6 +357,7 @@ namespace BotAI
                 d.rootSpellId = 2643;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 205.0f;
                 p.abilities.push_back(d);
             }
@@ -318,6 +370,7 @@ namespace BotAI
                 d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
@@ -327,6 +380,7 @@ namespace BotAI
                 d.rootSpellId = 19434;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 195.0f;
                 p.abilities.push_back(d);
             }
@@ -336,6 +390,7 @@ namespace BotAI
                 d.rootSpellId = 500073;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 5000;
                 d.baseScore = 185.0f;
                 p.abilities.push_back(d);
             }
@@ -345,6 +400,7 @@ namespace BotAI
                 d.rootSpellId = 5116;
                 d.tags = AbilityTag::CrowdControl;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 12000;
                 d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
@@ -365,6 +421,7 @@ namespace BotAI
                 d.rootSpellId = 804940;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 140.0f;
                 p.abilities.push_back(d);
             }
@@ -379,11 +436,37 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            // SpecStrategy for Archery
+            SpecStrategy s;
+            s.classId = 21;
+            s.specId = 28;
+            s.role = BotRole::Dps;
+            s.strategyName = "Ranger_Archery_Marksman_Strategy";
+
+            s.phaseModifiers[CombatPhase::Opener] = {
+                { AbilityTag::PeriodicDamage, 1.5f, 40.0f },
+                { AbilityTag::RangedAttack,   1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD,  1.8f, 50.0f },
+                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage, 2.0f, 60.0f }
+            };
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 25) &&
+                       (bot->GetHealthPct() >= 50.0f);
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
         // -------------------------------------------------------------
         // Profile 3: Ranger - Spec 30: Brigand (MELEE AGILITY DPS)
-        // Close quarters hybrid fighter utilizing dual strikes, bleeds, and stuns.
         // -------------------------------------------------------------
         {
             CombatProfile p;
@@ -400,6 +483,8 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 40.0f;
+                d.missingAuraOnCaster = 801345;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 380.0f;
                 p.abilities.push_back(d);
             }
@@ -411,6 +496,7 @@ namespace BotAI
                 d.rootSpellId = 520568;
                 d.tags = AbilityTag::CrowdControl | AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
@@ -420,6 +506,7 @@ namespace BotAI
                 d.rootSpellId = 807820;
                 d.tags = AbilityTag::CrowdControl;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
@@ -432,6 +519,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800260;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 160.0f;
                 p.abilities.push_back(d);
             }
@@ -442,6 +530,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 524600;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
@@ -454,6 +543,7 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Execute;
                 d.targetType = TargetType::CurrentTarget;
                 d.maxTargetHpPct = 35.0f;
+                d.internalThrottleMs = 5000;
                 d.baseScore = 260.0f;
                 p.abilities.push_back(d);
             }
@@ -465,6 +555,7 @@ namespace BotAI
                 d.rootSpellId = 804940;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
@@ -475,6 +566,7 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
@@ -484,6 +576,7 @@ namespace BotAI
                 d.rootSpellId = 705070;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
@@ -505,6 +598,7 @@ namespace BotAI
                 d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
@@ -519,8 +613,33 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
-        }
 
+            // SpecStrategy for Brigand
+            SpecStrategy s;
+            s.classId = 21;
+            s.specId = 30;
+            s.role = BotRole::Dps;
+            s.strategyName = "Ranger_Brigand_Melee_Strategy";
+
+            s.phaseModifiers[CombatPhase::Opener] = {
+                { AbilityTag::MeleeAttack,    1.5f, 40.0f },
+                { AbilityTag::PeriodicDamage, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::MeleeAttack, 1.6f, 50.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage,   1.8f, 50.0f },
+                { AbilityTag::MeleeAttack, 1.2f, 20.0f }
+            };
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 25) &&
+                       (bot->GetHealthPct() >= 50.0f);
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
+        }
     }
 }
-

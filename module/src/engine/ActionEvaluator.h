@@ -1,4 +1,4 @@
-﻿/*
+/*
  * mod-coa-playerbots
  *
  * Data-Driven Combat AI Framework: ActionEvaluator
@@ -11,6 +11,7 @@
 #include "Define.h"
 #include "engine/AbilityDescriptor.h"
 #include "engine/CombatContext.h"
+#include "engine/SpecStrategy.h"
 #include <vector>
 
 namespace BotAI
@@ -40,6 +41,10 @@ namespace BotAI
     public:
         // Evaluates all abilities in the profile against ctx and returns the single highest scoring action.
         static BotAction EvaluateBestAction(CombatContext const& ctx, std::vector<AbilityDescriptor> const& abilities);
+
+        // Strategy-aware overload: applies form gating and phase-based score modifiers
+        // from the SpecStrategy before the normal scoring pipeline.
+        static BotAction EvaluateBestAction(CombatContext const& ctx, std::vector<AbilityDescriptor> const& abilities, SpecStrategy const* strategy);
 
         // Validates all cast prerequisites (known, cooldown, failure backoff, power, item, range, auras).
         static bool CanCast(CombatContext const& ctx, AbilityDescriptor const& desc, uint32 resolvedSpellId, Unit* target);

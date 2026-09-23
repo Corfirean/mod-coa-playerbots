@@ -1,4 +1,4 @@
-﻿/*
+/*
  * mod-coa-playerbots
  *
  * Data-Driven Combat AI Framework: ActionEvaluator implementation
@@ -8,6 +8,7 @@
 #include "engine/HealEvaluator.h"
 #include "engine/SpellPredicates.h"
 #include "engine/SpellResolver.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "engine/TargetEvaluator.h"
 #include "BotClassRotations.h"
 #include "Group.h"
@@ -430,8 +431,70 @@ namespace BotAI
 
     BotAction ActionEvaluator::EvaluateBestAction(CombatContext const& ctx, std::vector<AbilityDescriptor> const& abilities)
     {
+        SpecStrategy const* strategy = SpecStrategyRegistry::FindStrategy(ctx.classId, ctx.activeSpec, ctx.role);
+        return EvaluateBestAction(ctx, abilities, strategy);
+    }
+
+    BotAction ActionEvaluator::EvaluateBestAction(CombatContext const& ctx, std::vector<AbilityDescriptor> const& abilities, SpecStrategy const* strategy)
+    {
         BotAction bestAction;
         float bestScore = 0.0f;
+
+        // 1. Form / Stance readiness check
+        bool formMissing = false;
+        uint32 formSpellId = 0;
+        if (strategy && (strategy->requiredState.formSpellId != 0 || strategy->requiredState.formAuraId != 0))
+        {
+            uint32 auraId = strategy->requiredState.formAuraId ? strategy->requiredState.formAuraId : strategy->requiredState.formSpellId;
+            formSpellId = strategy->requiredState.formSpellId ? strategy->requiredState.formSpellId : strategy->requiredState.formAuraId;
+
+            bool hasForm = ctx.bot->HasAura(auraId);
+            if (!hasForm)
+            {
+                for (uint32 altAura : strategy->requiredState.alternateFormAuras)
+                {
+                    if (ctx.bot->HasAura(altAura))
+                    {
+                        hasForm = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!hasForm)
+            {
+                // Only enforce if bot actually knows the form spell
+                if (ctx.bot->HasSpell(formSpellId) || SpellResolver::ResolveSpell(ctx.bot, formSpellId) != 0)
+                {
+                    formMissing = true;
+                }
+            }
+        }
+
+        // 2. Combat Phase Detection
+        CombatPhase phase = CombatPhase::SingleTarget;
+        if (strategy)
+        {
+            if (strategy->detectPhase)
+            {
+                phase = strategy->detectPhase(ctx);
+            }
+            else
+            {
+                if (ctx.botHpPct < 25.0f || (ctx.lowestAlly && ctx.lowestAllyHpPct < 25.0f))
+                    phase = CombatPhase::Emergency;
+                else if (strategy->recoveryThreshold > 0.0f && ctx.botPowerPct < strategy->recoveryThreshold)
+                    phase = CombatPhase::Recovery;
+                else if (ctx.targetHpPct < 20.0f)
+                    phase = CombatPhase::Execute;
+                else if (ctx.engagedEnemyCount >= 3)
+                    phase = CombatPhase::AoE;
+                else if (ctx.engagedEnemyCount == 2)
+                    phase = CombatPhase::Cleave;
+                else
+                    phase = CombatPhase::SingleTarget;
+            }
+        }
 
         for (AbilityDescriptor const& desc : abilities)
         {
@@ -443,6 +506,13 @@ namespace BotAI
             if (!resolvedSpellId)
                 continue;
 
+            // Form gating: If required form is missing, ONLY allow casting the form spell
+            if (formMissing)
+            {
+                if (desc.rootSpellId != formSpellId && resolvedSpellId != formSpellId)
+                    continue;
+            }
+
             Unit* target = ResolveTarget(ctx, desc.targetType, desc, resolvedSpellId);
             if (!target || !target->IsAlive())
                 continue;
@@ -453,6 +523,28 @@ namespace BotAI
             float score = ScoreAbility(ctx, desc, target);
             if (score <= 0.0f)
                 continue;
+
+            // Apply phase score modifiers
+            if (strategy)
+            {
+                auto it = strategy->phaseModifiers.find(phase);
+                if (it != strategy->phaseModifiers.end())
+                {
+                    for (PhaseScoreModifier const& mod : it->second)
+                    {
+                        if (HasTag(desc.tags, mod.tag))
+                        {
+                            score = (score * mod.multiplier) + mod.additive;
+                        }
+                    }
+                }
+            }
+
+            // If form was missing and this is the form spell, give it top priority!
+            if (formMissing && (desc.rootSpellId == formSpellId || resolvedSpellId == formSpellId))
+            {
+                score += 1000.0f;
+            }
 
             if (score > bestScore)
             {

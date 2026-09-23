@@ -6,12 +6,12 @@
  *   - Spec 37: Flameweaving (Fire & Cauterize Healer)
  *   - Spec 38: Incineration (Pure Fire Caster DPS)
  *   - Spec 39: Draconic (Dragon Scales / Hybrid Fire DPS)
- *   - Spec 0: Default Fallback
  */
 
 #include "profiles/ProfilePyromancer.h"
 #include "profiles/ProfileRegistry.h"
 #include "engine/CombatContext.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "Player.h"
 
 namespace BotAI
@@ -33,9 +33,10 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Phoenix Blessing";
                 d.rootSpellId = 800196;
-                d.tags = AbilityTag::DirectHeal | AbilityTag::DefensiveCD;
+                d.tags = AbilityTag::DirectHeal | AbilityTag::EmergencyHeal | AbilityTag::DefensiveCD;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 35.0f;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 400.0f;
                 p.abilities.push_back(d);
             }
@@ -48,11 +49,13 @@ namespace BotAI
                 d.tags = AbilityTag::Shield;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 55.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 12000;
                 d.baseScore = 340.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. AoE Heal: Circle of Fire (>= 2 injured allies)
+            // 3. AoE Heal: Circle of Fire (>= 2 injured allies or critical ally)
             {
                 AbilityDescriptor d;
                 d.name = "Circle of Fire";
@@ -61,6 +64,7 @@ namespace BotAI
                 d.targetType = TargetType::Self;
                 d.minInjuredAllies = 2;
                 d.injuredAllyHpPctThreshold = 80.0f;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 310.0f;
                 p.abilities.push_back(d);
             }
@@ -73,6 +77,7 @@ namespace BotAI
                 d.tags = AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 80.0f;
+                d.internalThrottleMs = 2500;
                 d.baseScore = 280.0f;
                 p.abilities.push_back(d);
             }
@@ -86,6 +91,7 @@ namespace BotAI
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 90.0f;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -95,10 +101,15 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Ignite (Fire DoT)";
                 d.rootSpellId = 800791;
-                d.tags = AbilityTag::RangedAttack;
+                d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 160.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return (ctx.lowestAllyHpPct > 80.0f) ? 0.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
             {
@@ -108,10 +119,42 @@ namespace BotAI
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 140.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return (ctx.lowestAllyHpPct > 85.0f) ? 0.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            // SpecStrategy for Flameweaving
+            SpecStrategy s;
+            s.classId = 24;
+            s.specId = 37;
+            s.role = BotRole::Healer;
+            s.strategyName = "Pyromancer_Flameweaving_Healer_Strategy";
+
+            s.phaseModifiers[CombatPhase::Opener] = {
+                { AbilityTag::PeriodicHeal, 1.5f, 40.0f },
+                { AbilityTag::DirectHeal,   1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::EmergencyHeal, 2.0f, 80.0f },
+                { AbilityTag::DirectHeal,    1.5f, 40.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEHeal,    2.0f, 60.0f },
+                { AbilityTag::DirectHeal, 1.2f, 20.0f }
+            };
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 40) &&
+                       (bot->GetHealthPct() >= 50.0f);
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
         // -------------------------------------------------------------
@@ -132,6 +175,8 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 40.0f;
+                d.missingAuraOnCaster = 504380;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 350.0f;
                 p.abilities.push_back(d);
             }
@@ -144,6 +189,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 804300;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 240.0f;
                 p.abilities.push_back(d);
             }
@@ -153,8 +199,9 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Infernus";
                 d.rootSpellId = 92124;
-                d.tags = AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::OffensiveCD | AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 280.0f;
                 p.abilities.push_back(d);
             }
@@ -162,8 +209,9 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Cataclysm";
                 d.rootSpellId = 520218;
-                d.tags = AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::OffensiveCD | AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 270.0f;
                 p.abilities.push_back(d);
             }
@@ -173,6 +221,7 @@ namespace BotAI
                 d.rootSpellId = 500135;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -182,9 +231,10 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Ignite";
                 d.rootSpellId = 800791;
-                d.tags = AbilityTag::RangedAttack;
+                d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 240.0f;
                 p.abilities.push_back(d);
             }
@@ -196,6 +246,7 @@ namespace BotAI
                 d.rootSpellId = 805483;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 8000;
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
@@ -214,6 +265,7 @@ namespace BotAI
                 d.rootSpellId = 800408;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
@@ -230,6 +282,33 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            // SpecStrategy for Incineration
+            SpecStrategy s;
+            s.classId = 24;
+            s.specId = 38;
+            s.role = BotRole::Dps;
+            s.strategyName = "Pyromancer_Incineration_Dps_Strategy";
+
+            s.phaseModifiers[CombatPhase::Opener] = {
+                { AbilityTag::PeriodicDamage, 1.5f, 40.0f },
+                { AbilityTag::RangedAttack,   1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD, 1.8f, 50.0f },
+                { AbilityTag::AoEDamage,   1.5f, 40.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage, 2.0f, 60.0f }
+            };
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 30) &&
+                       (bot->GetHealthPct() >= 50.0f);
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
         // -------------------------------------------------------------
@@ -250,6 +329,7 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 524818;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -261,6 +341,7 @@ namespace BotAI
                 d.rootSpellId = 806611;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 12000;
                 d.baseScore = 240.0f;
                 d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
                 {
@@ -278,6 +359,7 @@ namespace BotAI
                 d.rootSpellId = 300755;
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 10000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -287,6 +369,7 @@ namespace BotAI
                 d.rootSpellId = 680369;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 240.0f;
                 p.abilities.push_back(d);
             }
@@ -296,9 +379,10 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Ignite";
                 d.rootSpellId = 800791;
-                d.tags = AbilityTag::RangedAttack;
+                d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
@@ -324,8 +408,35 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
-        }
 
+            // SpecStrategy for Draconic
+            SpecStrategy s;
+            s.classId = 24;
+            s.specId = 39;
+            s.role = BotRole::Dps;
+            s.strategyName = "Pyromancer_Draconic_Dps_Strategy";
+            s.requiredState = RequiredCombatState{ 524818, 524818, {} };
+
+            s.phaseModifiers[CombatPhase::Opener] = {
+                { AbilityTag::MeleeAttack,    1.5f, 40.0f },
+                { AbilityTag::PeriodicDamage, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD, 1.8f, 50.0f },
+                { AbilityTag::MeleeAttack, 1.5f, 40.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage,   1.8f, 50.0f },
+                { AbilityTag::MeleeAttack, 1.3f, 30.0f }
+            };
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 25) &&
+                       (bot->GetHealthPct() >= 50.0f);
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
+        }
     }
 }
-

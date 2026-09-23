@@ -42,6 +42,18 @@ namespace BotAI
     // without it needing its own copy of the spec/role table -- see docs/addon-protocol.md's
     // GETROLES verb.
     uint32 GetAvailableRolesMask(uint8 classId);
+
+    // One entry per real spec this ClassId has (specId, its BotRole, its display name), table
+    // order. Empty for vanilla classes (1-11) and any unmapped/unknown classId, since
+    // SPEC_ROLE_TABLE only carries Ascension's custom classes (12-32) -- see
+    // docs/addon-protocol.md's GETSPECS verb, the addon-facing spec picker this backs.
+    struct SpecInfo
+    {
+        uint32 specId;
+        BotRole role;
+        char const* name;
+    };
+    std::vector<SpecInfo> GetAllSpecs(uint8 classId);
 }
 
 #endif // COA_PLAYERBOTS_CLASS_SPEC_ROLES_H
