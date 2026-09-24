@@ -134,16 +134,13 @@ namespace QuestInteraction
             reason = "costs money";
             return false;
         }
+        if (!TakeableByThisBuild(*info))
+        {
+            reason = "an objective this build cannot do";
+            return false;
+        }
         for (ObjectiveDef const& def : info->objectives)
         {
-            // Handed out on accept: nothing to do for it.
-            if (def.providedByQuest)
-                continue;
-            if (!def.supported || !ObjectiveHandlers::CanExecute(def))
-            {
-                reason = "an objective this build cannot do";
-                return false;
-            }
             if (!WorldPlanner::ObjectiveReachable(bot, state, *info, def))
             {
                 reason = "objective out of reach";
@@ -154,6 +151,21 @@ namespace QuestInteraction
         {
             reason = "handed in elsewhere";
             return false;
+        }
+        return true;
+    }
+
+    bool TakeableByThisBuild(QuestKnowledge const& info)
+    {
+        if (!info.supported)
+            return false;
+        for (ObjectiveDef const& def : info.objectives)
+        {
+            // Handed out on accept: nothing to do for it.
+            if (def.providedByQuest)
+                continue;
+            if (!def.supported || !ObjectiveHandlers::CanExecute(def))
+                return false;
         }
         return true;
     }

@@ -3083,7 +3083,11 @@ now accepts most ordinary quest shapes, not only kill/collect:
   (scripted, phased) marks the objective unsupported for that bot.
 - **Talk**: talk-to credit comes from gossip scripts with no general way to pick the right
   option, so such quests are never accepted. The handler only exists for ones already in a log:
-  one `CMSG_GOSSIP_HELLO`, and if that gave no credit the quest is dropped instead of retried.
+  one `CMSG_GOSSIP_HELLO`. (After the PR #5 review round, merged into this branch: a talk that
+  gave no credit, like an explore trigger that gave nothing or a quest item that is gone, marks
+  the quest `FailKind::Unworkable` for that bot for 6 h -- no work on it, and the log cleanup
+  treats it as a dead end, abandoned only when the log is full. The talk handler is the one handler
+  that takes KB-unsupported objectives; every other handler requires `def.supported`.)
 
 Live checks: a lever/crate quest (goober) and a "use item on X" quest in a starting zone should
 complete; an exploration quest (e.g. Westfall/Barrens scouting quests with an area trigger)
@@ -3137,6 +3141,15 @@ Live checks: a herbalist bot questing in Elwynn should step off the path for Pea
 next to it and then carry on with the same task (`.botcmd brain` "back on the task after a
 detour"); with `sessionMinMs`/`sessionMaxMs` temporarily lowered in `WorldBrainConfig.h` (they
 are not in the conf file), a bot should drop into ambient errands between tasks and come back.
+
+**After the PR #5 review round was merged in (same day)**: the detour goes through the same pause
+as an ambient errand (`WorldExecutor::PauseTask`/`ResumeTask`) instead of flipping `task.paused`
+by hand. The task's clocks stop for the detour and move on by its length afterwards, and its
+target and heatmap "incoming" are let go. An errand, a suspension (group, command) or a death
+now ends a detour. Before, a death on a detour left the task paused for good.
+`WorldTask::ShiftPhaseClock` does nothing while the task is paused, because the pause already
+covers that time. Without that, a detour whose gathering cast kept the brain from ticking gave
+the interrupted phase its time back twice. There is a unit test for this in `TestTaskClocks`.
 
 ## 2026-09-24: Open-world AI rework, Phase 9 -- social: tag-safe help, resurrection, temporary parties (compiled + linked, not live-tested)
 

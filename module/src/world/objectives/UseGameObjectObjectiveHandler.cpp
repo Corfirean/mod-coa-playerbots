@@ -27,7 +27,7 @@ namespace
 
         bool CanHandle(ObjectiveDef const& def) const override
         {
-            return def.type == ObjectiveType::UseGameObject || def.type == ObjectiveType::UseItemSource;
+            return (def.type == ObjectiveType::UseGameObject || def.type == ObjectiveType::UseItemSource) && def.supported;
         }
 
     protected:

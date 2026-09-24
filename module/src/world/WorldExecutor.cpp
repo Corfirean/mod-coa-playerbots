@@ -176,6 +176,8 @@ namespace WorldExecutor
             case WorldTaskType::QuestAccept:
             case WorldTaskType::QuestTurnIn:
                 return QuestInteraction::PhaseBudgetMs(state);
+            case WorldTaskType::Travel:
+                return state.task.phase == TaskPhase::TravelToArea ? WorldBrainSettings::Get().travelTimeoutMs : 0;
             default:
                 return 0;
         }

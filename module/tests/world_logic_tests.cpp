@@ -392,6 +392,19 @@ static void TestTaskClocks()
     CHECK(died.ClockNow(80000) == 80000);
     CHECK(died.deadlineMs - 80000 == 1800000 - 1500);
 
+    // A gap in brain ticks while paused (a gathering detour's cast) is already covered by the
+    // pause: it must not also be taken off the phase clock, or the phase gets its time back twice.
+    WorldTask detour;
+    detour.type = WorldTaskType::QuestObjective;
+    detour.phase = TaskPhase::Search;
+    detour.phaseStartedMs = 1000;
+    detour.deadlineMs = 1000 + 1800000;
+    detour.Pause(6000);                 // 5 s into the search
+    detour.ShiftPhaseClock(8000);       // the brain did not tick for 8 s during the detour
+    CHECK(detour.phaseStartedMs == 1000);
+    detour.Resume(26000);               // a 20 s detour
+    CHECK(26000 - detour.phaseStartedMs == 5000);
+
     // Incoming is exactly "travelling to the task's destination".
     WorldTask travel;
     travel.type = WorldTaskType::QuestObjective;

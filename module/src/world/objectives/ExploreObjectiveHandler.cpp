@@ -34,7 +34,7 @@ namespace
 
         bool CanHandle(ObjectiveDef const& def) const override
         {
-            return def.type == ObjectiveType::Explore;
+            return def.type == ObjectiveType::Explore && def.supported;
         }
 
         ObjectiveResult Update(ObjectiveContext& ctx) override

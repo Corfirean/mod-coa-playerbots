@@ -37,6 +37,8 @@ enum class FailKind : uint8
     Hub,        // a quest hub id
     TurnIn,     // a quest id whose reward could not be taken (bags full): hand-in retried later
     DeadEnd,    // a quest id noted as a dead end (logging / debug only; planning asks Workable)
+    Unworkable, // a quest id a handler tried and found this bot cannot do (talk gave no credit,
+                // trigger gave nothing, the quest item is gone): no work on it, a dead end
     Count,
 };
 
@@ -144,6 +146,7 @@ inline char const* FailKindName(FailKind kind)
         case FailKind::Hub:        return "hub";
         case FailKind::TurnIn:     return "turn-in";
         case FailKind::DeadEnd:    return "dead end";
+        case FailKind::Unworkable: return "unworkable";
         default:                   return "?";
     }
 }

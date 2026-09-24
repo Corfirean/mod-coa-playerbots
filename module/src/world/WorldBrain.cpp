@@ -37,6 +37,10 @@ namespace
     // rather than resumed: the world has moved on.
     constexpr uint32 SUSPEND_DROP_MS = 5 * MINUTE * IN_MILLISECONDS;
 
+    // Opportunity detours (a herb next to the path).
+    constexpr uint32 OPPORTUNITY_MAX_MS = 30000;
+    constexpr uint32 OPPORTUNITY_START_GRACE_MS = 4500;
+
     // The brain normally ticks every world update while the bot is idle. A longer gap means the
     // bot was busy with the task's own business somewhere else in BotAI (a fight, resting,
     // looting, a corpse run): that time is taken off the current phase's budget.
@@ -52,6 +56,10 @@ namespace
     // Opportunity detours (a herb next to the path).
     constexpr uint32 OPPORTUNITY_MAX_MS = 30000;
     constexpr uint32 OPPORTUNITY_START_GRACE_MS = 4500;
+
+    // A quest a handler tried and found this bot cannot do is left alone this long before one more
+    // try (the quest item may come back, a script may behave differently next time).
+    constexpr uint32 UNWORKABLE_MEMORY_MS = 6 * HOUR * IN_MILLISECONDS;
 
     // A fallback activity that keeps finding nothing hands over to ambient life after this.
     constexpr uint32 ACTIVITY_IDLE_SWITCH_MS = 15000;
@@ -175,6 +183,8 @@ namespace
             char const* why = nullptr;
             if (status == QUEST_STATUS_FAILED)
                 why = "the quest has failed";
+            else if (status == QUEST_STATUS_INCOMPLETE && state.failures.Has(FailKind::Unworkable, questId, now))
+                why = "a handler tried and this bot cannot do it";
             else if (status == QUEST_STATUS_INCOMPLETE && !bot->CanCompleteQuest(questId))
             {
                 QuestKnowledge const* info = QuestKB::Get(questId);
@@ -260,9 +270,13 @@ namespace
                             SuspendQuest(bot, state, task.quest.questId, reason);
                             break;
                         case FailureReason::Unsupported:
-                            // Nothing to execute after all: set aside like any failure, and let the
-                            // log cleanup look at what the quest is on the next planner pass.
-                            SuspendQuest(bot, state, task.quest.questId, reason);
+                            // The handler tried and this bot cannot do it (a talk that gave no
+                            // credit, a trigger that gave nothing, a quest item that is gone). Not a
+                            // transient failure: no work on it for a long while, and the log cleanup
+                            // treats it as a dead end from its next pass.
+                            state.failures.Remember(FailKind::Unworkable, task.quest.questId, now, UNWORKABLE_MEMORY_MS,
+                                uint8(reason));
+                            NoteEvent(state, Acore::StringFormat("quest {} cannot be done by this bot", task.quest.questId));
                             state.nextLogCleanupMs = now;
                             break;
                         default:
@@ -383,17 +397,19 @@ namespace
         return chosen;
     }
 
-    void EndOpportunity(BrainState& state, BrainExtra& extra, char const* why)
+    // The detour is over: the task's pause ends and its clocks move on by the detour's length, so
+    // picking the herb is not time spent travelling or searching.
+    void EndOpportunity(Player* bot, BrainState& state, BrainExtra& extra, char const* why)
     {
         state.opportunityActive = false;
-        state.task.paused = false;
         extra.opportunityStarted = false;
+        WorldExecutor::ResumeTask(bot, state);
         state.nextOpportunityCheckMs = NowMs() + RollRange(state, 0x0dd1, 20000, 45000);
         NoteEvent(state, Acore::StringFormat("back on the task after a detour ({})", why));
     }
 
     // A gathering node right next to the path: step off, pick it, step back on. The primary task
-    // stays as it was; only its movement is paused.
+    // stays as it was, paused (clocks stopped, legs and target let go) for the detour.
     bool TryOpportunity(Player* bot, BrainState& state, BrainExtra& extra)
     {
         WorldBrainConfig const& cfg = WorldBrainSettings::Get();
@@ -429,9 +445,7 @@ namespace
         state.opportunityUntilMs = now + OPPORTUNITY_MAX_MS;
         extra.opportunityBeganMs = now;
         extra.opportunityStarted = false;
-        state.task.paused = true;
-        BotMovement::Release(bot, MoveOwner::Quest);
-        BotMovement::Release(bot, MoveOwner::Travel);
+        WorldExecutor::PauseTask(bot, state, "detour to a gathering node");
         Count(state.metrics, &WorldMetrics::opportunities);
         NoteEvent(state, "detour: gathering node next to the path");
         return true;
@@ -566,9 +580,10 @@ namespace WorldBrain
             DropTask(bot, state, FailureReason::MapChanged);
             state.lastMapId = bot->GetMapId();
         }
-        else if (state.task.IsValid() && state.lastUpdateMs &&
+        else if (state.task.IsValid() && !state.task.taxiRequested && state.lastUpdateMs &&
             std::hypot(bot->GetPositionX() - state.lastX, bot->GetPositionY() - state.lastY) > RELOCATION_JUMP_YARDS)
-            // Teleported or flown somewhere while doing something else: planned from elsewhere.
+            // Teleported or flown somewhere while doing something else: planned from elsewhere. (A
+            // flight the task asked for itself is expected, and the task carries on from the landing.)
             DropTask(bot, state, FailureReason::Relocated);
 
         // Time the task's own business took while the brain was not ticking -- a fight with an
@@ -590,7 +605,7 @@ namespace WorldBrain
         if (state.opportunityActive)
         {
             if (now >= state.opportunityUntilMs)
-                EndOpportunity(state, extra, "took too long");
+                EndOpportunity(bot, state, extra, "took too long");
             else
                 return state.opportunity;
         }
@@ -699,9 +714,9 @@ namespace WorldBrain
             if (started)
                 extra.opportunityStarted = true;
             else if (extra.opportunityStarted)
-                EndOpportunity(state, extra, "node gathered");
+                EndOpportunity(bot, state, extra, "node gathered");
             else if (now - extra.opportunityBeganMs > OPPORTUNITY_START_GRACE_MS)
-                EndOpportunity(state, extra, "node out of reach");
+                EndOpportunity(bot, state, extra, "node out of reach");
             return;
         }
 
@@ -736,6 +751,10 @@ namespace WorldBrain
         BrainExtra& extra = _extra[bot->GetGUID()];
         if (extra.pausedByAmbient)
             return;
+        // The errand takes the legs from a detour too: the detour is given up and the task is paused
+        // for the errand instead.
+        if (itr->second.opportunityActive)
+            EndOpportunity(bot, itr->second, extra, "an errand came up");
         extra.pausedByAmbient = true;
         // Let the errand (a repair, a vendor, a flight) have the legs; the task's clocks stop
         // until it is back (the errand is not the task's failure), and it walks on from there.
@@ -759,7 +778,9 @@ namespace WorldBrain
         state.nextPresenceMs = 0;
         state.suspended = true;
         state.suspendReason = reason;
+        // A detour in progress is given up; the task was already paused for it and stays paused.
         state.opportunityActive = false;
+        extra.opportunityStarted = false;
         extra.suspendedAtMs = NowMs();
         LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' brain suspended ({}), task #{} kept with its clocks stopped.",
             bot->GetName(), SuspendReasonName(reason), state.task.id);
@@ -777,7 +798,11 @@ namespace WorldBrain
         extra.deathHandled = true;
 
         BrainState& state = itr->second;
-        state.opportunityActive = false;
+        // Dying on a detour ends the detour; the task is resumed (not left paused) and recovers
+        // like any other death. The corpse run itself is the task's own business (the brain-gap
+        // rule takes it off the phase clock).
+        if (state.opportunityActive)
+            EndOpportunity(bot, state, extra, "died");
         if (!state.task.IsValid())
             return;
 
