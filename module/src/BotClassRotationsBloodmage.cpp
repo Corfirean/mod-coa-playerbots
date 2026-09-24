@@ -53,7 +53,12 @@ bool CanAfford(Player* bot, SpellInfo const* spellInfo)
     // Unit::GetPower(Powers) safely, so it's checked directly against GetHealth() instead.
     if (spellInfo->PowerType == POWER_HEALTH)
     {
-        int32 cost = spellInfo->CalcPowerCost(nullptr, spellInfo->GetSchoolMask());
+        // Real caster, not nullptr: CalcPowerCost unconditionally dereferences it (caster->IsPlayer(),
+        // school/aura modifiers, ...) -- confirmed live, nullptr here crashed the whole worldserver
+        // the moment a Bloodmage bot evaluated a health-costed spell in combat. The comment this
+        // replaces was about Unit::GetPower(POWER_HEALTH) being unsafe, not about CalcPowerCost's
+        // caster argument -- GetHealth() below is still used instead of GetPower for that reason.
+        int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
         return cost <= 0 || bot->GetHealth() > uint32(cost); // strictly greater: don't suicide-cast
     }
     int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());

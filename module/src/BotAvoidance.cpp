@@ -1,4 +1,5 @@
 ﻿#include "BotAvoidance.h"
+#include "BotMovement.h"
 #include "Player.h"
 #include "Creature.h"
 #include "DynamicObject.h"
@@ -7,7 +8,6 @@
 #include "CellImpl.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
-#include "MotionMaster.h"
 #include <cmath>
 
 class HostileGroundHazardCheck
@@ -72,10 +72,14 @@ bool BotAvoidance::TryAvoidGroundHazards(Player* bot)
     float escapeDist = hazard->GetRadius() + 4.0f;
     float safeX = hazard->GetPositionX() + (dx / dist) * escapeDist;
     float safeY = hazard->GetPositionY() + (dy / dist) * escapeDist;
+    // safeZ is only a starting guess (the bot's own height) -- MoveTo re-grounds it against the
+    // actual terrain under (safeX, safeY) before issuing the move. Without that, a hazard escape
+    // point on a different floor/ledge/slope than the bot currently stands on hands the
+    // pathfinder a destination whose Z doesn't match its X/Y, which routinely fails the navmesh
+    // poly lookup and falls back to a straight-line "shortcut" through walls/floors.
     float safeZ = bot->GetPositionZ();
 
-    bot->GetMotionMaster()->MovePoint(0, safeX, safeY, safeZ);
-    return true;
+    return BotMovement::MoveTo(bot, MoveOwner::Avoidance, safeX, safeY, safeZ);
 }
 
 bool BotAvoidance::TryAvoidBossTelegraphedAttacks(Player* bot, Unit* target)
@@ -118,8 +122,11 @@ bool BotAvoidance::TryAvoidBossTelegraphedAttacks(Player* bot, Unit* target)
 
                             float retreatX = boss->GetPositionX() + (dx / dist) * 16.0f;
                             float retreatY = boss->GetPositionY() + (dy / dist) * 16.0f;
-                            bot->GetMotionMaster()->MovePoint(0, retreatX, retreatY, boss->GetPositionZ());
-                            return true;
+                            // boss->GetPositionZ() is only a seed value; MoveTo re-grounds it
+                            // against the real terrain 16yd away, which is routinely a different
+                            // floor height in raid/dungeon rooms (stairs, pillars, pits).
+                            if (BotMovement::MoveTo(bot, MoveOwner::Avoidance, retreatX, retreatY, boss->GetPositionZ()))
+                                return true;
                         }
                     }
                 }
@@ -135,8 +142,7 @@ bool BotAvoidance::TryAvoidBossTelegraphedAttacks(Player* bot, Unit* target)
             float behindAngle = boss->GetOrientation() + static_cast<float>(M_PI);
             float behindX = boss->GetPositionX() + 3.5f * std::cos(behindAngle);
             float behindY = boss->GetPositionY() + 3.5f * std::sin(behindAngle);
-            bot->GetMotionMaster()->MovePoint(0, behindX, behindY, boss->GetPositionZ());
-            return true;
+            return BotMovement::MoveTo(bot, MoveOwner::Avoidance, behindX, behindY, boss->GetPositionZ());
         }
     }
 
