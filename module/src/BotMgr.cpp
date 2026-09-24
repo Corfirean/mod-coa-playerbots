@@ -3,6 +3,7 @@
 #include <array>
 #include <cctype>
 #include "AccountMgr.h"
+#include "AscensionClassServiceBridge.h"
 #include "AscensionCoATalentData.h"
 #include "BotAI.h"
 #include "BotSpawnRandom.h"
@@ -1963,33 +1964,45 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
         return;
     }
 
-    // Strip every talent spell belonging to any OTHER spec first -- both paid and automatic.
-    // mod-ascension-compat's own player-facing switch (AscensionClassService::SwitchSpecialization)
-    // does the same unconditionally, because its later SynchronizeProgression only ever ADDS
-    // missing automatic grants for the *current* spec; nothing else ever prunes an automatic
-    // grant left over from a spec that's no longer active. A cost-based skip here (as an earlier
-    // version of this function had, deferring automatic cleanup to "next relog") never actually
-    // happens: relog only calls SynchronizeProgression, so a bot that switched specs twice would
-    // permanently accumulate free passives from every spec it had ever held.
-    uint32 removed = 0;
-    for (AscensionCompatData::CoATalentEntry const& entry : AscensionCompatData::CoATalentEntries)
+    // Real spec switch -- AscensionClassService::SwitchSpecialization() itself already
+    // strips every talent spell belonging to whichever spec was previously active (both
+    // paid and automatic) and updates the in-memory active-spec map GetActiveSpecialization()
+    // reads, not just the "core.ascension_active_spec" PlayerSetting a raw write here used to
+    // leave as the only record of the change. See docs/core-patches.md's "Patch 3".
+    // specId == 0 ("shared tree only, no spec chosen yet") is deliberately NOT passed to
+    // SwitchSpecialization -- the real function rejects 0 outright (it means "no spec"),
+    // and shared-tree (SpecId == 0) entries below don't need an active spec at all to be set.
+    if (specId != 0)
     {
-        if (entry.ClassId != bot->getClass() || entry.SpecId == 0 || entry.SpecId == specId)
-            continue;
-        for (uint8 i = 0; i < entry.SpellCount; ++i)
+        if (!AscensionClassServiceBridge::SwitchSpecialization(bot, specId))
         {
-            uint32 spellId = entry.SpellIds[i];
-            if (spellId && bot->HasSpell(spellId))
-            {
-                bot->removeSpell(spellId, SPEC_MASK_ALL, false);
-                ++removed;
-            }
+            if (handler)
+                handler->PSendSysMessage("BotMgr: specialization {} is not valid for bot '{}' (class {}).",
+                    specId, bot->GetName(), uint32(bot->getClass()));
+            LOG_ERROR("module.coa-playerbots", "BotMgr: SwitchSpecialization rejected spec {} for bot '{}' (class {}).",
+                specId, bot->GetName(), uint32(bot->getClass()));
+            return;
+        }
+    }
+    else
+    {
+        // specId == 0 has no real SwitchSpecialization equivalent (the real function
+        // rejects 0 outright -- it means "no spec"), so drop any spec-specific talent this
+        // bot currently knows by hand here, the same way SwitchSpecialization would for a
+        // real respec, and leave the shared tree (handled by SetTalentRank below, which
+        // doesn't require an active spec for SpecId == 0 entries) untouched.
+        for (AscensionCompatData::CoATalentEntry const& entry : AscensionCompatData::CoATalentEntries)
+        {
+            if (entry.ClassId != bot->getClass() || entry.SpecId == 0)
+                continue;
+            for (uint32 spellId : entry.SpellIds)
+                if (spellId && bot->HasSpell(spellId))
+                    bot->removeSpell(spellId, SPEC_MASK_ALL, false);
         }
     }
 
-    bot->UpdatePlayerSetting("core.ascension_active_spec", 0, specId);
-
     uint32 learned = 0;
+    uint32 skipped = 0;
     if (BotTalentBuilds::GetBuild(bot->getClass(), specId))
     {
         BotTalentBuilds::ApplyBuildForLevel(bot, bot->GetLevel());
@@ -2003,19 +2016,23 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
             if (entry.SpecId != 0 && entry.SpecId != specId)
                 continue;
             // AECost==0 && TECost==0 entries are "automatic" -- mod-ascension-compat's own
-            // SynchronizeProgression grants those itself once the PlayerSetting below is in
-            // place and the bot next logs in. We only need to reach the paid ones here.
+            // SynchronizeProgression grants those itself now that the spec switch above has
+            // gone through the real path. We only need to reach the paid ones here.
             if (entry.AECost == 0 && entry.TECost == 0)
                 continue;
             if (entry.RequiredLevel > bot->GetLevel() || !entry.SpellCount)
                 continue;
 
-            uint32 spellId = entry.SpellIds[entry.SpellCount - 1];
-            if (spellId && sSpellMgr->GetSpellInfo(spellId) && !bot->HasSpell(spellId))
-            {
-                bot->learnSpell(spellId, false);
+            // Set to the entry's highest rank through the real budget-checked path instead
+            // of learnSpell()-ing it directly -- a failure here (most commonly: the
+            // class/spec talent-point budget is already spent at this level) is expected
+            // and just means this bot can't afford every paid entry in the spec yet,
+            // exactly like a real player at the same level.
+            std::string error;
+            if (AscensionClassServiceBridge::SetTalentRank(bot, entry, entry.SpellCount, error))
                 ++learned;
-            }
+            else
+                ++skipped;
         }
     }
 
@@ -2024,10 +2041,10 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
     char const* roleStr = RoleToString(autoRole);
 
     if (handler)
-        handler->PSendSysMessage("BotMgr: bot '{}' learned {} talent(s) and dropped {} from other specs for specialization {} '{}' (detected role: {}, relog to pick up automatic grants too).",
-            bot->GetName(), learned, removed, specId, specName ? specName : "unknown", roleStr);
-    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' (class {}) learned {} talent(s), dropped {} from other specs, for spec {} '{}' (role: {}).",
-        bot->GetName(), uint32(bot->getClass()), learned, removed, specId, specName ? specName : "unknown", roleStr);
+        handler->PSendSysMessage("BotMgr: bot '{}' spent {} talent(s) ({} skipped, budget or other limit) for specialization {} '{}' (detected role: {}).",
+            bot->GetName(), learned, skipped, specId, specName ? specName : "unknown", roleStr);
+    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' (class {}) spent {} talent(s), skipped {}, for spec {} '{}' (role: {}).",
+        bot->GetName(), uint32(bot->getClass()), learned, skipped, specId, specName ? specName : "unknown", roleStr);
 }
 
 void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
