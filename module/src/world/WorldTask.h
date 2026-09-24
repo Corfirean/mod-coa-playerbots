@@ -96,6 +96,7 @@ enum class FailureReason : uint8
     Replaced,
     Suspended,
     NoProgress,
+    Relocated,
 };
 
 enum class SuspendReason : uint8
@@ -184,17 +185,84 @@ struct WorldTask
 
     // A flight was requested for this trip (asked once; the ambient layer flies it).
     bool taxiRequested = false;
-    // Paused for an opportunity or a need; travel resumes from scratch.
+    // Stopped by something outside the task (an ambient errand, a group, a manual command). The
+    // task's clocks stand still from pausedAtMs until Resume(): an interruption that is not the
+    // task's own failure must never look like time spent searching, approaching or travelling.
     bool paused = false;
+    uint32 pausedAtMs = 0;
 
     float utility = 0.0f;
     char const* why = "";         // short planner reason, for .botcmd brain
 
     bool IsValid() const { return type != WorldTaskType::None; }
 
+    // Moves every armed clock forward by `ms`: the task carries on as if those milliseconds never
+    // happened. For external interruptions (see Pause/Resume).
+    void ShiftClocks(uint32 ms)
+    {
+        ShiftArmed(startedMs, ms);
+        ShiftArmed(phaseStartedMs, ms);
+        ShiftArmed(deadlineMs, ms);
+        ShiftArmed(nextScanMs, ms);
+        ShiftArmed(waitUntilMs, ms);
+    }
+
+    // Time the bot spent on the task's own business while the brain was not ticking -- a fight,
+    // resting, looting, a corpse run -- counts toward the task as a whole (the deadline is an
+    // anti-loop guard) but never toward the phase it interrupted: a 40-second fight with an add is
+    // not 40 seconds of failed searching.
+    // While paused it does nothing: the pause already accounts for all of that time (a gathering
+    // detour whose cast kept the brain from ticking would otherwise be taken off the phase twice).
+    void ShiftPhaseClock(uint32 ms)
+    {
+        if (!paused)
+            ShiftArmed(phaseStartedMs, ms);
+    }
+
+    // The task's own notion of "now": the real time, or the moment it was paused while it is.
+    uint32 ClockNow(uint32 now) const
+    {
+        return paused ? pausedAtMs : now;
+    }
+
+    void Pause(uint32 now)
+    {
+        if (paused)
+            return;
+        paused = true;
+        pausedAtMs = now;
+    }
+
+    // Ends a pause, shifting the clocks by its length. Returns that length (0 when not paused).
+    uint32 Resume(uint32 now)
+    {
+        if (!paused)
+            return 0;
+        uint32 length = now - pausedAtMs;
+        paused = false;
+        pausedAtMs = 0;
+        ShiftClocks(length);
+        return length;
+    }
+
+    // "Incoming" in the population heatmap means exactly this: the bot is on its way to the task's
+    // destination. Once it is there (searching, fighting, talking) it is resident, counted by its
+    // presence; while paused it is not heading anywhere for the task at all.
+    bool CountsAsIncoming() const
+    {
+        return IsValid() && !paused && phase == TaskPhase::TravelToArea;
+    }
+
     // Movement goal ids: one per kind of destination so a new target is a new goal (and a new
     // stuck budget), while chasing the same target across ticks stays the same goal.
     uint64 GoalId(uint8 sub) const { return (uint64(id) << 8) | sub; }
+
+private:
+    static void ShiftArmed(uint32& clock, uint32 ms)
+    {
+        if (clock)
+            clock += ms;
+    }
 };
 
 // Goal-id sub-keys for WorldTask::GoalId.
@@ -242,5 +310,6 @@ char const* TaskPhaseName(TaskPhase phase);
 char const* ObjectiveTypeName(ObjectiveType type);
 char const* FailureReasonName(FailureReason reason);
 char const* WorldDirectiveName(WorldDirective directive);
+char const* SuspendReasonName(SuspendReason reason);
 
 #endif // COA_PLAYERBOTS_WORLD_TASK_H

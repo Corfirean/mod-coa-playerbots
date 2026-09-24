@@ -9,6 +9,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "WorldExecutor.h"
+#include "WorldReservations.h"
 #include <algorithm>
 #include <cmath>
 
@@ -107,9 +108,16 @@ ObjectiveResult CreatureTargetHandler::ExecuteItemUse(ObjectiveContext& ctx, Cre
 ObjectiveResult CreatureTargetHandler::AfterExecute(ObjectiveContext& ctx)
 {
     Creature* target = CurrentTarget(ctx);
+    if (target && !target->IsAlive() && target->hasLootRecipient() && !target->isTappedBy(ctx.bot))
+    {
+        // Somebody else's kill: no credit was ever possible, so it is not a failed attempt of the
+        // bot's -- just a target gone.
+        ObjectiveCommon::BeginSearch(ctx, "someone else got the kill");
+        return ObjectiveResult::Running;
+    }
     if (!target || !target->IsAlive())
     {
-        // The kill happened (by the bot, or someone else got there first -- Verify tells).
+        // The kill happened (Verify reads the counter to see whether it paid).
         ctx.task.waitUntilMs = ctx.now + RollRange(ctx.state, 0x100d, ctx.cfg.reactionMinMs, ctx.cfg.reactionMaxMs);
         SetPhase(ctx.bot, ctx.state, TaskPhase::Loot, "target down");
         return ObjectiveResult::Running;
@@ -194,10 +202,7 @@ ObjectiveResult CreatureTargetHandler::Update(ObjectiveContext& ctx)
             }
 
             bool respawnComing = task.corpsesSeen > 0;
-            uint32 timeout = ctx.cfg.searchTimeoutMs * (50 + ctx.state.persona.patience) / 100;
-            if (respawnComing)
-                timeout = timeout * 3 / 2;
-            if (PhaseElapsed(ctx.state) > timeout)
+            if (PhaseElapsed(ctx.state) > ObjectiveCommon::SearchBudgetMs(ctx.state, ctx.cfg))
                 return ObjectiveCommon::FailArea(ctx, FailureReason::NoTargets);
 
             // Fresh corpses mean the camp respawns soon: hang around instead of roaming off.
@@ -212,6 +217,14 @@ ObjectiveResult CreatureTargetHandler::Update(ObjectiveContext& ctx)
             bool valid = target && target->IsAlive() != WantDead(ctx);
             if (valid && HostileOnly(ctx))
                 valid = ctx.bot->IsValidAttackTarget(target) && !(target->hasLootRecipient() && !target->isTappedBy(ctx.bot));
+            // The claim is re-confirmed every step of the approach: it may have lapsed while the
+            // bot fought an add or rested, and someone else may hold it now.
+            if (valid && !WorldReservations::TryReserve(ReservationKind::Creature, target->GetGUID().GetRawValue(),
+                    ctx.bot->GetGUID(), ctx.cfg.targetReserveMs))
+            {
+                Count(ctx.state.metrics, &WorldMetrics::reservationConflicts);
+                valid = false;
+            }
             if (!valid)
             {
                 ObjectiveCommon::BeginSearch(ctx, "target lost");
@@ -252,6 +265,9 @@ ObjectiveResult CreatureTargetHandler::Update(ObjectiveContext& ctx)
                 ObjectiveCommon::BeginSearch(ctx, "target lost before acting");
                 return ObjectiveResult::Running;
             }
+            // Off the mount through the brain, so its remount cooldown knows (the combat engine
+            // would dismount on engage anyway).
+            WorldExecutor::Dismount(ctx.bot, ctx.state);
             return Execute(ctx, target);
         }
 

@@ -6,11 +6,13 @@
 #include "ItemTemplate.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "ObjectiveCommon.h"
 #include "Opcodes.h"
 #include "Player.h"
 #include "QuestDef.h"
 #include "QuestKnowledgeBase.h"
 #include "QuestPackets.h"
+#include "QuestPolicy.h"
 #include "WorldPacket.h"
 #include "WorldPlanner.h"
 #include "WorldSession.h"
@@ -132,13 +134,13 @@ namespace QuestInteraction
             reason = "costs money";
             return false;
         }
+        if (!TakeableByThisBuild(*info))
+        {
+            reason = "an objective this build cannot do";
+            return false;
+        }
         for (ObjectiveDef const& def : info->objectives)
         {
-            if (!def.providedByQuest && !ObjectiveHandlers::For(def))
-            {
-                reason = "no handler for an objective";
-                return false;
-            }
             if (!WorldPlanner::ObjectiveReachable(bot, state, *info, def))
             {
                 reason = "objective out of reach";
@@ -151,6 +153,40 @@ namespace QuestInteraction
             return false;
         }
         return true;
+    }
+
+    bool TakeableByThisBuild(QuestKnowledge const& info)
+    {
+        if (!info.supported)
+            return false;
+        for (ObjectiveDef const& def : info.objectives)
+        {
+            // Handed out on accept: nothing to do for it.
+            if (def.providedByQuest)
+                continue;
+            if (!def.supported || !ObjectiveHandlers::CanExecute(def))
+                return false;
+        }
+        return true;
+    }
+
+    bool Workable(Player* bot, uint32 questId, QuestKnowledge const& info, char const** why)
+    {
+        uint32 open = 0;
+        uint32 executable = 0;
+        for (ObjectiveDef const& def : info.objectives)
+        {
+            if (ObjectiveCommon::IsDone(bot, questId, def))
+                continue;
+            ++open;
+            if (ObjectiveHandlers::CanExecute(def))
+                ++executable;
+        }
+        bool workable = QuestPolicy::Workable(info.completable, open, executable);
+        if (!workable && why)
+            *why = !info.completable ? info.completionBlocker
+                 : "an open objective this build cannot do (no handler, or a quest-provided item that is gone)";
+        return workable;
     }
 
     uint32 PickRewardIndex(Player* bot, Quest const* quest)
@@ -272,6 +308,18 @@ namespace QuestInteraction
         LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' abandoned quest {}.", bot->GetName(), questId);
     }
 
+    uint32 PhaseBudgetMs(BrainState const& state)
+    {
+        WorldBrainConfig const& cfg = WorldBrainSettings::Get();
+        switch (state.task.phase)
+        {
+            case TaskPhase::TravelToArea: return cfg.travelTimeoutMs;
+            case TaskPhase::Search:       return NPC_SEARCH_MS;
+            case TaskPhase::Approach:     return cfg.approachTimeoutMs;
+            default:                      return 0;
+        }
+    }
+
     ExecResult UpdateNpcTask(Player* bot, BrainState& state)
     {
         WorldTask& task = state.task;
@@ -380,7 +428,7 @@ namespace QuestInteraction
                 if (!result.turnedIn && !result.accepted)
                 {
                     if (result.rewardBlocked && task.quest.questId)
-                        state.failures.Remember(FailKind::Quest, task.quest.questId, now, 120000, uint8(FailureReason::InteractFailed));
+                        state.failures.Remember(FailKind::TurnIn, task.quest.questId, now, 120000, uint8(FailureReason::InteractFailed));
                     return FailNpc(bot, state, FailureReason::InteractFailed);
                 }
 

@@ -36,4 +36,9 @@ namespace PopulationHeatmap
     {
         return _grid;
     }
+
+    PopulationGrid::BotStatus StatusOf(ObjectGuid bot)
+    {
+        return _grid.StatusOf(bot.GetRawValue());
+    }
 }

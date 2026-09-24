@@ -28,7 +28,7 @@ namespace
 
         bool CanHandle(ObjectiveDef const& def) const override
         {
-            return def.type == ObjectiveType::CastOnCreature && def.castSpellId;
+            return def.type == ObjectiveType::CastOnCreature && def.supported && def.castSpellId;
         }
 
     protected:
@@ -68,7 +68,7 @@ namespace
 
         bool CanHandle(ObjectiveDef const& def) const override
         {
-            return def.type == ObjectiveType::CastOnGameObject && def.castSpellId;
+            return def.type == ObjectiveType::CastOnGameObject && def.supported && def.castSpellId;
         }
 
     protected:

@@ -34,9 +34,8 @@ namespace
     // truncates, and a leg is the unit the stuck detector judges.
     constexpr float LEG_YARDS = 120.0f;
 
-    // No real progress (PROGRESS_YARDS closer to the goal) for STUCK_MS starts the recovery ladder.
-    constexpr float PROGRESS_YARDS = 2.5f;
-    constexpr uint32 STUCK_MS = 9000;
+    // What counts as progress and when the recovery ladder climbs or resets (BotNavProgress.h).
+    NavProgressRules const PROGRESS_RULES;
 
     // A goal that moved farther than this (a mob wandering) gets a fresh leg immediately.
     constexpr float GOAL_MOVED_YARDS = 4.0f;
@@ -204,6 +203,7 @@ namespace BotMovement
         float bx = bot->GetPositionX();
         float by = bot->GetPositionY();
         float dist = Dist2d(bx, by, x, y);
+        float dz = std::fabs(bot->GetPositionZ() - z);
 
         bool fresh = req.owner != owner || req.goalId != goalId;
         bool goalMoved = false;
@@ -213,21 +213,18 @@ namespace BotMovement
             req.owner = owner;
             req.goalId = goalId;
             req.startedAt = now;
-            req.lastProgressAt = now;
-            req.bestDistance = dist;
+            req.progress.Start(dist, dz, now);
         }
         else if (Dist2d(req.x, req.y, x, y) > GOAL_MOVED_YARDS)
         {
             // Same goal, new position (a mob walking): measure progress against where it is now.
             goalMoved = true;
-            req.bestDistance = dist;
-            req.lastProgressAt = now;
+            req.progress.Rebase(dist, dz, now);
         }
 
         if (!fresh && now - req.lastCallAt > RESUME_GAP_MS)
         {
-            req.lastProgressAt = now;
-            req.bestDistance = dist;
+            req.progress.Rebase(dist, dz, now);
             req.detour = false;
         }
 
@@ -237,7 +234,6 @@ namespace BotMovement
         req.acceptRadius = acceptRadius;
         req.lastCallAt = now;
 
-        float dz = std::fabs(bot->GetPositionZ() - z);
         if (dist <= acceptRadius && dz <= std::max(6.0f, acceptRadius))
         {
             Release(bot, owner);
@@ -247,57 +243,52 @@ namespace BotMovement
 
         if (!CanClaim(bot, owner))
         {
-            req.lastProgressAt = now;
+            req.progress.Hold(now);
             return NavStatus::Blocked;
         }
 
         bool forceReissue = goalMoved;
 
-        if (dist < req.bestDistance - PROGRESS_YARDS)
+        switch (req.progress.Update(dist, dz, now, PROGRESS_RULES))
         {
-            req.bestDistance = dist;
-            req.lastProgressAt = now;
-            req.retries = 0;
-        }
-        else if (now - req.lastProgressAt > STUCK_MS)
-        {
-            ++_stats.stuckEvents;
-            ++req.retries;
-            req.lastProgressAt = now;
-
-            if (req.retries == 1)
-            {
+            case NavRecovery::None:
+                break;
+            case NavRecovery::Repath:
                 // Recovery 1: repath from where the bot actually is.
+                ++_stats.stuckEvents;
                 ++_stats.repaths;
                 req.detour = false;
                 forceReissue = true;
-                LOG_DEBUG("module.coa-playerbots.navigation", "Bot '{}' made no progress toward goal {} ({:.0f} yd left) -- repathing.",
-                    bot->GetName(), goalId, dist);
-            }
-            else if (req.retries <= 3)
+                LOG_DEBUG("module.coa-playerbots.navigation", "Bot '{}' made no progress toward goal {} ({:.0f} yd, {:.0f} yd height "
+                    "left) -- repathing.", bot->GetName(), goalId, dist, dz);
+                break;
+            case NavRecovery::DetourLeft:
+            case NavRecovery::DetourRight:
             {
                 // Recovery 2 and 3: step around whatever is in the way, one side then the other.
+                ++_stats.stuckEvents;
                 ++_stats.detours;
                 float len = std::max(0.001f, dist);
                 float dirX = (x - bx) / len;
                 float dirY = (y - by) / len;
-                float side = req.retries == 2 ? 1.0f : -1.0f;
+                float side = req.progress.stage == 2 ? 1.0f : -1.0f;
                 req.detour = true;
                 req.detourX = bx + dirX * DETOUR_FORWARD_YARDS - dirY * side * DETOUR_SIDE_YARDS;
                 req.detourY = by + dirY * DETOUR_FORWARD_YARDS + dirX * side * DETOUR_SIDE_YARDS;
                 req.detourZ = bot->GetPositionZ();
                 forceReissue = true;
-                LOG_DEBUG("module.coa-playerbots.navigation", "Bot '{}' still stuck toward goal {} -- detour {} ({}).",
-                    bot->GetName(), goalId, req.retries == 2 ? "left" : "right", uint32(req.retries));
+                LOG_DEBUG("module.coa-playerbots.navigation", "Bot '{}' still stuck toward goal {} -- detour {} (stage {}).",
+                    bot->GetName(), goalId, req.progress.stage == 2 ? "left" : "right", uint32(req.progress.stage));
+                break;
             }
-            else
-            {
+            case NavRecovery::GiveUp:
+            default:
+                ++_stats.stuckEvents;
                 ++_stats.gaveUp;
-                LOG_DEBUG("module.coa-playerbots.navigation", "Bot '{}' gave up on goal {} after {} recoveries ({:.0f} yd left).",
-                    bot->GetName(), goalId, uint32(req.retries - 1), dist);
+                LOG_DEBUG("module.coa-playerbots.navigation", "Bot '{}' gave up on goal {} after 3 recoveries ({:.0f} yd, {:.0f} yd "
+                    "height left).", bot->GetName(), goalId, dist, dz);
                 Release(bot, owner);
                 return NavStatus::Stuck;
-            }
         }
 
         if (req.detour && Dist2d(bx, by, req.detourX, req.detourY) <= 3.0f)
@@ -389,11 +380,13 @@ namespace BotMovement
             return Acore::StringFormat("movement: owner {} (no goal-directed request)", OwnerName(owner));
 
         uint32 now = NowMs();
-        return Acore::StringFormat("movement: owner {}, request {} goal {} -> ({:.0f}, {:.0f}, {:.0f}) {:.0f} yd left, "
-            "best {:.0f}, last progress {:.1f}s ago, legs {}, recoveries {}{}",
+        NavProgress const& p = req->progress;
+        return Acore::StringFormat("movement: owner {}, request {} goal {} -> ({:.0f}, {:.0f}, {:.0f}) {:.0f} yd / {:.0f} yd height "
+            "left, best {:.0f} / {:.0f}, last progress {:.1f}s ago, legs {}, recovery: {}{}",
             OwnerName(owner), OwnerName(req->owner), req->goalId, req->x, req->y, req->z,
-            Dist2d(bot->GetPositionX(), bot->GetPositionY(), req->x, req->y), req->bestDistance,
-            float(now - req->lastProgressAt) / 1000.0f, req->legs, uint32(req->retries), req->detour ? ", detouring" : "");
+            Dist2d(bot->GetPositionX(), bot->GetPositionY(), req->x, req->y), std::fabs(bot->GetPositionZ() - req->z),
+            p.best2d, p.bestDz, float(now - p.lastProgressAt) / 1000.0f, req->legs, NavRecoveryStageName(p.stage),
+            req->detour ? ", detouring" : "");
     }
 
     MovementStats const& Stats()
