@@ -174,13 +174,52 @@ Variety comes from bias, never from deliberately bad play:
 
 Both switch off in config (`GatherDetours`, `SessionBreaks`).
 
+## Social (`WorldSocial`, `WorldParties`)
+
+The hard rule: helping never takes anything from the person helped.
+
+- **Helping in a fight.** A bot that is walking somewhere or searching an area (never mid-fight or
+  mid-conversation) scans for players nearby every 2.5–5 s. If a friendly player (bot or real) is
+  below `HelpHealthPct` (40%) against a creature **that player or their group has tagged**, the
+  bot steps in with `Attack()` and the combat engine fights. The loot, credit and experience stay
+  with the tagger. PvP, the other faction, world bosses, mobs more than 3 levels above the bot,
+  and elites the bot doesn't out-level by 5 are all left alone. Sociability decides whether a
+  given bot bothers, and whoever it decided about is not reconsidered for a minute.
+- **Resurrecting.** A bot that knows a resurrection spell (found by effect in its own spellbook,
+  highest level, cached for 10 minutes) resurrects a friendly corpse within 30 yd that nobody
+  has offered to resurrect yet. The brain holds the bot still until the cast finishes. A real
+  player gets the normal accept prompt. A dead bot accepts during its own 15 s resurrect grace
+  period.
+- **Temporary parties** (`TemporaryParties`, **off by default** until watched live).
+  - *Who and when:* when a sociable bot starts a kill or collect-from-kills objective, it may pull
+    1–4 bots into a real `Group`. Candidates must be within `PartyRadius`, within 3 levels, on the
+    same side, free, and have the same quest open with that objective unfinished. Healers and
+    tanks rank higher if the party lacks one, and each candidate's own sociability gets a say.
+  - *How it plays:* group kill credit is shared. The leader keeps its brain running while grouped;
+    members are ordinary grouped bots that follow and fight alongside.
+  - *How it ends:* when the leader's task ends, after 5–20 minutes, when the leader is gone, busy
+    (manual command, instance) or dead for more than 45 s, or when no members are left. A member
+    that falls more than 200 yd behind, leaves the map or stays dead for more than 90 s just
+    leaves. Afterwards everyone keeps to themselves for 5–12 minutes.
+  - *No teleports, no leftovers:* the group is built with `Group::Create`/`AddMember` (no invite
+    packets), so nobody is teleported. The core persists every group, so the party's database rows
+    are deleted as soon as it forms and again 10 s later. A temporary party never comes back after
+    a restart.
+  - *Scripts still apply:* the server's own group-invite/accept script hooks are respected, so
+    challenge modes keep their rules. Parties are never formed in cluster mode, where the core's
+    local `Disband()` does nothing.
+  - *Not done:* while in a party, bots don't take elite quests together, and nobody buffs
+    strangers. Both are natural follow-ups.
+
 ## Debugging
 
 - `.botcmd brain <guid>` — goal, task, phase and time in phase, quest + knowledge-base verdict,
   objective + handler + progress, area (spawns, distance, crowd, assigned bots), reserved target,
   movement request (owner, goal, distance, last progress, recoveries), route, live failure memory,
-  next planner pass, detour/session/break state, last event, per-bot counters.
+  next planner pass, detour/session/break state, temporary party, last event, per-bot counters
+  (including fights helped, resurrections, parties).
 - `.botcmd worldstats` — knowledge base size, brains by task/phase, quest/objective/task counters,
+  social counters (fights helped, resurrections, parties formed/active/ended),
   movement stats (MovePoints issued vs redundant skipped, stalls, recoveries), reservations, heatmap.
 - Logs (DEBUG): `module.coa-playerbots.world` (TaskSelected, PhaseChanged, TaskCompleted/Failed,
   Replan), `.quest` (QuestAccepted, TargetSelected, ObjectiveProgress, ObjectiveCompleted,
@@ -196,9 +235,10 @@ reservations swept every 30 s, failure memory pruned on write. Bot AI runs on th
 ## Verification status
 
 Compiled against the upstream CoA core (`jealous-sound/azerothcore-wotlk-coa`) with this module's
-documented core patches stubbed in; the pure logic (failure memory, reservations, heatmap,
-clustering, utility scoring) is unit-tested standalone (`module/tests/`, also under ASan/UBSan).
-**Not yet run on a live server** — see `AGENTS.md` for the live test checklist.
+documented core patches stubbed in, and the full `worldserver` binary links with it. The pure logic
+(failure memory, reservations, heatmap, clustering, utility scoring, social rules) is unit-tested
+standalone (`module/tests/`, also under ASan/UBSan). **Not yet run on a live server** — see
+`AGENTS.md` for the live test checklist.
 
 ## Delivery phases
 
@@ -212,3 +252,4 @@ clustering, utility scoring) is unit-tested standalone (`module/tests/`, also un
 | 6 | Use-object / explore / use-item-on / talk handlers | in code |
 | 7 | Quest-driven hub travel, flights for quest trips, zone-progression guard | in code |
 | 8 | Humanisation: opportunity detours, session breaks | in code |
+| 9 | Social: helping in fights (tag-safe), resurrecting, temporary bot-only parties (off by default) | in code |

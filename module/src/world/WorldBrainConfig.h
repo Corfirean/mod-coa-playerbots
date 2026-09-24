@@ -78,6 +78,17 @@ struct WorldBrainConfig
     bool gatherDetours = true;
     float detourRadius = 15.0f;
 
+    // Social: helping others, and temporary bot-only parties.
+    bool helpOthers = true;           // step into a fight a nearby player/bot is losing (their tagged mob only)
+    float helpRadius = 30.0f;
+    float helpHealthPct = 40.0f;
+    bool resurrectOthers = true;      // resurrect a friendly corpse nearby, if the bot knows how
+    bool temporaryParties = false;    // off until live-tested: bots with a shared quest team up for a while
+    uint32 partyMaxSize = 3;          // including the leader, 2-5
+    float partyRadius = 60.0f;
+    uint32 partyMinMs = 5 * 60 * 1000;
+    uint32 partyMaxMs = 20 * 60 * 1000;
+
     UtilityWeights utility;
     TargetWeights target;
     ClusterWeights cluster;

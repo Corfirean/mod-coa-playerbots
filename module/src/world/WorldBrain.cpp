@@ -17,8 +17,10 @@
 #include "QuestKnowledgeBase.h"
 #include "WorldBrainState.h"
 #include "WorldExecutor.h"
+#include "WorldParties.h"
 #include "WorldPlanner.h"
 #include "WorldReservations.h"
+#include "WorldSocial.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -179,6 +181,7 @@ namespace
         WorldTask& task = state.task;
 
         WorldExecutor::ReleaseTask(bot, state);
+        WorldParties::OnLeaderTaskEnded(bot->GetGUID());
         Count(state.metrics, &WorldMetrics::replans);
 
         if (result == ExecResult::Completed)
@@ -238,6 +241,7 @@ namespace
         LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' Replan: dropping {} #{} ({}).", bot->GetName(),
             WorldTaskTypeName(state.task.type), state.task.id, FailureReasonName(reason));
         WorldExecutor::ReleaseTask(bot, state);
+        WorldParties::OnLeaderTaskEnded(bot->GetGUID());
         Count(state.metrics, &WorldMetrics::replans);
         state.task = WorldTask();
         state.nextPlanMs = NowMs() + RollRange(state, 0x2e0f, 500, 2500);
@@ -272,6 +276,9 @@ namespace
             "area {} at {:.0f} yd, {} bundled.", bot->GetName(), WorldTaskTypeName(t.type), t.id, t.quest.questId,
             uint32(t.quest.objectiveIndex), t.utility, t.why, t.quest.selectedClusterId, dist, t.quest.bundle.size());
         NoteEvent(state, Acore::StringFormat("started {} (quest {}): {}", WorldTaskTypeName(t.type), t.quest.questId, t.why));
+
+        // Company for a kill quest, if there is a like-minded bot around.
+        WorldParties::TryForm(bot, state);
     }
 
     bool HasGatherSkill(Player* bot)
@@ -433,6 +440,12 @@ namespace WorldBrainInternal
     {
         return NowMs() - state.task.phaseStartedMs;
     }
+
+    BrainState* FindState(ObjectGuid guid)
+    {
+        auto itr = _states.find(guid);
+        return itr == _states.end() ? nullptr : &itr->second;
+    }
 }
 
 namespace WorldBrain
@@ -446,6 +459,7 @@ namespace WorldBrain
     void GlobalUpdate(uint32 diff)
     {
         WorldReservations::Update(diff);
+        WorldParties::Update(diff);
     }
 
     WorldDirective Update(Player* bot, uint32 diff, WorldPersona const& persona)
@@ -507,6 +521,10 @@ namespace WorldBrain
             else
                 return state.opportunity;
         }
+
+        // Someone nearby needs a hand (a fight they are losing, a corpse to resurrect).
+        if (WorldSocial::IsHelping(bot, state) || WorldSocial::TryHelp(bot, state))
+            return WorldDirective::Busy;
 
         if (state.task.IsValid())
         {
@@ -824,15 +842,20 @@ namespace WorldBrain
             state.sessionStartMs ? SecondsText(now - state.sessionStartMs) : std::string("-"),
             state.breakUntilMs > now ? Acore::StringFormat(", on a break for {}", SecondsText(state.breakUntilMs - now)) : std::string());
 
+        std::string party = WorldParties::Describe(bot->GetGUID());
+        if (!party.empty())
+            handler->PSendSysMessage("  {}", party);
+
         if (!state.lastEvent.empty())
             handler->PSendSysMessage("  Last event ({} ago): {}", SecondsText(now - state.lastEventMs), state.lastEvent);
 
         WorldMetrics const& m = state.metrics;
         handler->PSendSysMessage("  Metrics: quests accepted {}, completed {}, turned in {}, suspended {}, abandoned {}; objectives {}; "
-            "kill targets {}; tasks {}/{} ok/failed; stuck {}; reservation conflicts {}; area switches {}; detours {}.",
+            "kill targets {}; tasks {}/{} ok/failed; stuck {}; reservation conflicts {}; area switches {}; detours {}; "
+            "helped {}, resurrected {}, parties {}.",
             m.questsAccepted, m.questsCompleted, m.questsTurnedIn, m.questsSuspended, m.questsAbandoned, m.objectivesCompleted,
             m.killTargetsSelected, m.tasksCompleted, m.tasksFailed, m.movementStuck, m.reservationConflicts, m.areaSwitches,
-            m.opportunities);
+            m.opportunities, m.assists, m.resurrections, m.partiesFormed);
     }
 
     void DescribeGlobal(ChatHandler* handler)
@@ -874,6 +897,9 @@ namespace WorldBrain
             "Area switches {}. Detours {}. Breaks {}.", m.tasksStarted, m.tasksCompleted, m.tasksFailed, m.replans,
             m.killTargetsSelected, m.travels, m.areaSwitches, m.opportunities, m.breaks);
 
+        handler->PSendSysMessage("Social: {} fights helped, {} resurrections, {} temporary parties formed ({} active), {} ended.",
+            m.assists, m.resurrections, m.partiesFormed, WorldParties::Count(), m.partiesEnded);
+
         MovementStats const& mv = BotMovement::Stats();
         double avgRetries = m.tasksStarted ? double(m.travelRetries) / double(m.tasksStarted) : 0.0;
         handler->PSendSysMessage("Movement: {} MovePoints issued, {} redundant requests skipped, {} stalls ({} repaths, {} detours, {} gave up), "
@@ -888,6 +914,7 @@ namespace WorldBrain
 
     void Forget(ObjectGuid botGuid)
     {
+        WorldParties::Forget(botGuid);
         WorldReservations::ReleaseAll(botGuid);
         PopulationHeatmap::Remove(botGuid);
         _states.erase(botGuid);
