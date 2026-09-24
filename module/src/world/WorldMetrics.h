@@ -34,6 +34,8 @@ struct WorldMetrics
     uint64 movementStuck = 0;
     uint64 reservationConflicts = 0;
     uint64 areaSwitches = 0;
+    uint64 opportunities = 0;
+    uint64 breaks = 0;
 };
 
 namespace WorldMetricsGlobal

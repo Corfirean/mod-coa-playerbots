@@ -206,14 +206,31 @@ What a failed task does to its quest (`QuestPolicy.h`):
 A kill by someone else is not a failed attempt (no credit was possible); a claimed target is
 re-confirmed on every approach step, since the claim can lapse while the bot fights an add.
 
+## Humanisation
+
+Variety comes from bias, never from deliberately bad play:
+
+- each bot's persona (from BotAI's personality: patience, gathering, current lean) biases
+  activity choice, session length and detours; scores get deterministic per-bot jitter, and every
+  timer is staggered per bot (no shared RNG, so thousands of bots never act in lock-step);
+- short reaction delays after a kill or a finished task, and reading pauses at quest NPCs;
+- **opportunity detours**: while travelling to or searching an area, a bot with Herbalism or Mining
+  that passes a node it can pick within `DetourRadius` (15 yd) — always if gathering is in its
+  nature, sometimes otherwise — pauses the task, gathers, and resumes it where it was. The detour
+  gives up after 30 s, or after 4.5 s if gathering never starts (node unreachable, taken);
+- **session rhythm**: after 20–45 minutes of questing (scaled by patience) a bot takes a 3–8
+  minute break to ambient life (errands, repairs, wandering in town), then plans afresh.
+
+Both switch off in config (`GatherDetours`, `SessionBreaks`).
+
 ## Debugging
 
 - `.botcmd brain <guid>` — goal (and suspension reason), task, phase and time in phase (PAUSED and
   for how long), remaining phase budget and task deadline, heatmap state (present / incoming),
   quest + knowledge-base verdict + workable, objective + handler + progress + dry attempts of the
   limit, area (spawns, distance, crowd, assigned bots), reserved target, movement request (ground
-  and height left, best so far, last progress, recovery stage), route, live failure memory, next
-  planner pass, last event, per-bot counters.
+  and height left, best so far, last progress, recovery stage), route, live failure memory,
+  detour/session/break state, next planner pass, last event, per-bot counters.
 - `.botcmd worldstats` — knowledge base size, brains by task/phase, quest/objective/task counters,
   movement stats (MovePoints issued vs redundant skipped, stalls, recoveries), reservations, heatmap.
 - Logs (DEBUG): `module.coa-playerbots.world` (TaskSelected, PhaseChanged, TaskCompleted/Failed,
@@ -247,4 +264,4 @@ progress, quest policy) is unit-tested standalone (`module/tests/`, also under A
 | 5 | Multi-quest routing: overlap, bundling, route plan | in code |
 | 6 | Use-object / explore / use-item-on / talk handlers | in code |
 | 7 | Quest-driven hub travel, flights for quest trips, zone-progression guard | in code |
-| 8 | Humanisation: opportunity detours, session breaks | planned |
+| 8 | Humanisation: opportunity detours, session breaks | in code |
