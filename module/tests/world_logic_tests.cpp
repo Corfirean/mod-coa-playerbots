@@ -1,20 +1,26 @@
 /*
  * mod-coa-playerbots -- standalone tests for the open-world layer's pure logic:
- * FailureMemory, ReservationTable, PopulationGrid, SpawnClustering, WorldUtility.
+ * FailureMemory, ReservationTable, PopulationGrid, SpawnClustering, WorldUtility, plus the task
+ * lifecycle rules: task clocks across pauses (WorldTask), navigation progress and the recovery
+ * ladder (BotNavProgress), and the quest set-aside / abandon policy (QuestPolicy).
  *
  * These are the pieces that decide "don't retry that", "that mob is taken", "that camp is
- * crowded", "these spawns are one place" and "this is worth doing" -- exactly the kind of logic
- * that is easy to get subtly wrong and impossible to observe directly on a live server.
+ * crowded", "these spawns are one place", "this is worth doing", "is this bot stuck" and "has this
+ * task run out of time" -- exactly the kind of logic that is easy to get subtly wrong and
+ * impossible to observe directly on a live server.
  *
  * Build and run (no core checkout needed):
- *   g++ -std=c++20 -O1 -Wall -Wextra -I module/tests/stub -I module/src/world \
+ *   g++ -std=c++20 -O1 -Wall -Wextra -I module/tests/stub -I module/src/world -I module/src \
  *       module/tests/world_logic_tests.cpp -o /tmp/world_logic_tests && /tmp/world_logic_tests
  */
 
+#include "BotNavProgress.h"
 #include "FailureMemory.h"
 #include "PopulationGrid.h"
+#include "QuestPolicy.h"
 #include "ReservationTable.h"
 #include "SpawnClustering.h"
+#include "WorldTask.h"
 #include "WorldUtility.h"
 #include <cstdio>
 #include <set>
@@ -328,6 +334,306 @@ static void TestUtility()
     CHECK(buckets.size() >= 8);
 }
 
+// Regression: a quest task paused for an ambient errand kept ageing, so a 10-second Search that
+// resumed after a 90-second vendor trip looked like 100 seconds of searching and failed at once.
+static void TestTaskClocks()
+{
+    WorldTask task;
+    task.type = WorldTaskType::QuestObjective;
+    task.phase = TaskPhase::Search;
+    task.startedMs = 1000;
+    task.phaseStartedMs = 1000;
+    task.deadlineMs = 1000 + 1800000;
+    task.nextScanMs = 12000;       // armed: a scan was due 1 s after the pause started
+    task.waitUntilMs = 0;          // never armed
+
+    uint32 const pauseAt = 11000;
+    task.Pause(pauseAt);
+    CHECK(task.paused);
+    CHECK(!task.CountsAsIncoming());
+    task.Pause(pauseAt + 5000);    // a second pause request does not move the pause start
+    CHECK(task.pausedAtMs == pauseAt);
+
+    uint32 const resumeAt = pauseAt + 90000;
+    CHECK(task.Resume(resumeAt) == 90000);
+    CHECK(!task.paused);
+    CHECK(resumeAt - task.phaseStartedMs == 10000);           // still 10 s into the search
+    CHECK(task.deadlineMs - resumeAt == 1800000 - 10000);     // deadline budget untouched too
+    CHECK(task.nextScanMs - resumeAt == 1000);                // the scan is still due in 1 s
+    CHECK(task.waitUntilMs == 0);                             // an unarmed clock stays unarmed
+    CHECK(task.startedMs == 1000 + 90000);
+
+    // Resuming something that is not paused changes nothing.
+    uint32 phaseBefore = task.phaseStartedMs;
+    CHECK(task.Resume(resumeAt + 100) == 0);
+    CHECK(task.phaseStartedMs == phaseBefore);
+
+    // The task's own business away from the brain (a fight with an add) shifts the phase clock
+    // only: the whole-task deadline is an anti-loop guard and keeps counting.
+    uint32 deadlineBefore = task.deadlineMs;
+    task.ShiftPhaseClock(40000);
+    CHECK(task.phaseStartedMs == phaseBefore + 40000);
+    CHECK(task.deadlineMs == deadlineBefore);
+
+    // A phase entered during the pause (the bot died on its errand, the pause released a target)
+    // starts at the frozen clock; after the resume it has used none of its budget -- in particular
+    // it must not have started "in the future", which made the elapsed time underflow.
+    WorldTask died;
+    died.type = WorldTaskType::QuestObjective;
+    died.phaseStartedMs = 500;
+    died.deadlineMs = 500 + 1800000;
+    died.Pause(2000);
+    CHECK(died.ClockNow(50000) == 2000);
+    died.phase = TaskPhase::Recover;
+    died.phaseStartedMs = died.ClockNow(50000);        // what SetPhase does
+    died.Resume(80000);
+    CHECK(died.phaseStartedMs == 80000);
+    CHECK(died.ClockNow(80000) == 80000);
+    CHECK(died.deadlineMs - 80000 == 1800000 - 1500);
+
+    // Incoming is exactly "travelling to the task's destination".
+    WorldTask travel;
+    travel.type = WorldTaskType::QuestObjective;
+    travel.phase = TaskPhase::TravelToArea;
+    CHECK(travel.CountsAsIncoming());
+    travel.phase = TaskPhase::Search;
+    CHECK(!travel.CountsAsIncoming());
+    travel.phase = TaskPhase::Approach;
+    CHECK(!travel.CountsAsIncoming());      // walking up to a mob inside the area is not incoming
+    travel.phase = TaskPhase::TravelToArea;
+    travel.Pause(5);
+    CHECK(!travel.CountsAsIncoming());
+    WorldTask none;
+    none.phase = TaskPhase::TravelToArea;
+    CHECK(!none.CountsAsIncoming());
+}
+
+// Regression: a bot that arrived in its objective area was counted both as present there and as
+// still incoming, so 20 bots farming a camp looked like almost 40.
+static void TestHeatmapIncomingLifecycle()
+{
+    PopulationGrid grid(100.0f);
+    uint64 const bot = 7;
+    float const ax = 1050.0f, ay = 2050.0f;   // area A
+
+    WorldTask task;
+    task.type = WorldTaskType::QuestObjective;
+    task.phase = TaskPhase::TravelToArea;
+    task.mapId = 0;
+    task.x = ax;
+    task.y = ay;
+
+    // The same rule WorldExecutor::SyncIncoming applies after every executor step.
+    auto sync = [&]()
+    {
+        if (task.CountsAsIncoming())
+            grid.SetIncoming(bot, task.mapId, task.x, task.y);
+        else
+            grid.ClearIncoming(bot);
+    };
+
+    grid.UpdatePresence(bot, 0, 150.0f, 150.0f, PopulationActivity::Questing);   // far away
+    sync();
+    CHECK(grid.At(0, ax, ay).incomingBots == 1);
+    CHECK(grid.StatusOf(bot).incoming);
+
+    // Arrives: presence moves into A's cell, the task leaves TravelToArea.
+    grid.UpdatePresence(bot, 0, ax + 3.0f, ay - 2.0f, PopulationActivity::Questing);
+    task.phase = TaskPhase::Search;
+    sync();
+    PopulationCell cell = grid.At(0, ax, ay);
+    CHECK(cell.activeBots == 1);
+    CHECK(cell.incomingBots == 0);
+    CHECK(cell.Crowd() == 1);
+    CHECK(grid.Around(0, ax, ay, 1).Crowd() == 1);
+    CHECK(grid.StatusOf(bot).present && !grid.StatusOf(bot).incoming);
+
+    // Walking 15 yards to a mob inside the area does not make it incoming again.
+    task.phase = TaskPhase::Approach;
+    sync();
+    CHECK(grid.At(0, ax, ay).incomingBots == 0);
+
+    // Twenty bots working the camp count as twenty.
+    for (uint64 other = 100; other < 119; ++other)
+        grid.UpdatePresence(other, 0, ax + float(other % 7), ay + float(other % 5), PopulationActivity::Questing);
+    CHECK(grid.Around(0, ax, ay, 1).Crowd() == 20);
+
+    // Pausing mid-trip drops incoming; the task being released drops it too.
+    task.phase = TaskPhase::TravelToArea;
+    task.x = 5050.0f;
+    sync();
+    CHECK(grid.At(0, 5050.0f, ay).incomingBots == 1);
+    task.Pause(1);
+    sync();
+    CHECK(grid.At(0, 5050.0f, ay).incomingBots == 0);
+    grid.ClearIncoming(bot);                  // idempotent
+    grid.Remove(bot);
+    CHECK(!grid.StatusOf(bot).present && !grid.StatusOf(bot).incoming);
+}
+
+// Task switch / release / pause leave no stale claims behind.
+static void TestReservationTaskLifecycle()
+{
+    ReservationTable table;
+    uint64 const bot = 1, other = 2;
+    uint64 const mob = 0xF130000000001234ull, area = 42;
+
+    CHECK(table.TryReserve(ReservationKind::Creature, mob, bot, 0, 90000));
+    table.Join(ReservationKind::QuestCluster, area, bot, 0, 120000);
+
+    // Pause: the mob is let go, the area claim stays (the bot is coming back).
+    table.Release(ReservationKind::Creature, mob, bot);
+    CHECK(table.TryReserve(ReservationKind::Creature, mob, other, 10, 90000));
+    CHECK(table.Occupancy(ReservationKind::QuestCluster, area, 10) == 1);
+    table.Release(ReservationKind::Creature, mob, other);
+
+    // Task end (switch, failure, suspension, death, logout): everything goes.
+    CHECK(table.TryReserve(ReservationKind::Creature, mob, bot, 20, 90000));
+    table.ReleaseAll(bot);
+    CHECK(table.ExclusiveCount() == 0);
+    CHECK(table.SharedCount() == 0);
+    CHECK(table.HeldBy(bot, ReservationKind::Creature, 20).empty());
+    CHECK(table.Occupancy(ReservationKind::QuestCluster, area, 20) == 0);
+    CHECK(!table.IsHeldByOther(ReservationKind::Creature, mob, other, 20));
+    table.ReleaseAll(bot);                    // releasing twice is harmless
+
+    // Re-confirming a held target during a long approach keeps it; a lapsed one can be lost.
+    CHECK(table.TryReserve(ReservationKind::Creature, mob, bot, 100, 90000));
+    CHECK(table.TryReserve(ReservationKind::Creature, mob, bot, 80000, 90000));    // refreshed
+    CHECK(!table.TryReserve(ReservationKind::Creature, mob, other, 150000, 90000)); // still ours
+    CHECK(table.TryReserve(ReservationKind::Creature, mob, other, 170001, 90000));  // lapsed
+    CHECK(!table.TryReserve(ReservationKind::Creature, mob, bot, 170002, 90000));   // someone else's now
+}
+
+// Regression: the stuck detector judged ground distance only (bots on stairs were "stuck"), and
+// any 2.5 yards of progress reset the whole recovery ladder (a bot could repath forever).
+static void TestNavProgress()
+{
+    NavProgressRules rules;
+    NavProgress p;
+
+    // Flat ground, steady progress: never a recovery.
+    p.Start(100.0f, 0.0f, 0);
+    for (uint32 t = 1; t <= 20; ++t)
+        CHECK(p.Update(100.0f - float(t) * 4.0f, 0.0f, t * 1000, rules) == NavRecovery::None);
+    CHECK(p.stage == 0);
+
+    // A staircase: the goal is 8 yards away on the ground but 24 yards up. The bot circles the
+    // stairwell -- ground distance wobbles around 8 -- and climbs steadily. No recovery.
+    p.Start(8.0f, 24.0f, 0);
+    for (uint32 t = 1; t <= 30; ++t)
+    {
+        float ground = 8.0f + float(t % 3);           // 8, 9, 10, 8, ...
+        float height = std::max(0.0f, 24.0f - float(t) * 0.8f);
+        CHECK(p.Update(ground, height, t * 1000, rules) == NavRecovery::None);
+    }
+    CHECK(p.stage == 0);
+
+    // A real wall: nothing moves. The ladder climbs one stage per stall...
+    p.Start(60.0f, 0.0f, 0);
+    CHECK(p.Update(60.0f, 0.0f, 5000, rules) == NavRecovery::None);
+    CHECK(p.Update(60.0f, 0.0f, 9001, rules) == NavRecovery::Repath);
+    // ...a repath that wriggles 3 yards counts as progress (the stall timer restarts)...
+    CHECK(p.Update(57.0f, 0.0f, 10000, rules) == NavRecovery::None);
+    CHECK(p.stage == 1);
+    // ...but does not reset the ladder: the next stall detours instead of repathing again.
+    CHECK(p.Update(57.0f, 0.0f, 19001, rules) == NavRecovery::DetourLeft);
+    CHECK(p.Update(54.0f, 0.0f, 20000, rules) == NavRecovery::None);        // another wriggle
+    CHECK(p.Update(54.0f, 0.0f, 29001, rules) == NavRecovery::DetourRight);
+    CHECK(p.Update(51.0f, 0.0f, 30000, rules) == NavRecovery::None);
+    CHECK(p.Update(51.0f, 0.0f, 39001, rules) == NavRecovery::GiveUp);      // escalates to Stuck
+
+    // A recovery that actually works -- 20+ yards closer than where the first stall happened --
+    // resets the ladder, so a later, unrelated obstacle starts from a repath again.
+    p.Start(80.0f, 0.0f, 0);
+    CHECK(p.Update(80.0f, 0.0f, 9001, rules) == NavRecovery::Repath);
+    CHECK(p.Update(70.0f, 0.0f, 10000, rules) == NavRecovery::None);
+    CHECK(p.stage == 1);                                                     // 10 yd: not yet
+    CHECK(p.Update(59.0f, 0.0f, 11000, rules) == NavRecovery::None);
+    CHECK(p.stage == 0);                                                     // 21 yd: recovered
+    CHECK(p.Update(59.0f, 0.0f, 20001, rules) == NavRecovery::Repath);
+
+    // Climbing out of a mine counts as recovery too.
+    p.Start(10.0f, 30.0f, 0);
+    CHECK(p.Update(10.0f, 30.0f, 9001, rules) == NavRecovery::Repath);
+    CHECK(p.Update(10.0f, 21.0f, 10000, rules) == NavRecovery::None);
+    CHECK(p.stage == 0);
+
+    // A new baseline (the mob walked, or the bot was busy elsewhere) keeps the stage and does
+    // not stall immediately.
+    p.Start(40.0f, 0.0f, 0);
+    CHECK(p.Update(40.0f, 0.0f, 9001, rules) == NavRecovery::Repath);
+    p.Rebase(55.0f, 0.0f, 30000);
+    CHECK(p.stage == 1);
+    CHECK(p.Update(55.0f, 0.0f, 35000, rules) == NavRecovery::None);
+    CHECK(p.Update(55.0f, 0.0f, 39001, rules) == NavRecovery::DetourLeft);
+
+    // Time spent blocked by a higher-priority owner never counts toward a stall.
+    p.Start(40.0f, 0.0f, 0);
+    p.Hold(8000);
+    CHECK(p.Update(40.0f, 0.0f, 16000, rules) == NavRecovery::None);
+    CHECK(p.Update(40.0f, 0.0f, 17001, rules) == NavRecovery::Repath);
+
+    CHECK(std::string(NavRecoveryStageName(0)) == "none");
+}
+
+// Regression: an objective area's phase was the union of its members', so a phase-1 bot could be
+// sent to a phase-2 anchor or wander point.
+static void TestPhaseSeparatedClustering()
+{
+    std::vector<ClusterInputPoint> points =
+    {
+        { 0.0f, 0.0f, 0.0f, 1 },
+        { 5.0f, 0.0f, 0.0f, 2 },    // right next to it, other phase
+        { 10.0f, 3.0f, 0.0f, 1 },
+        { 14.0f, -2.0f, 0.0f, 1 },
+        { 7.0f, 6.0f, 0.0f, 2 },
+    };
+    auto groups = SpawnClustering::Cluster(points, 45.0f, 14.0f, 120.0f);
+    CHECK(groups.size() == 2);
+    for (auto const& group : groups)
+    {
+        uint32 mask = points[group.front()].phaseMask;
+        for (uint32 i : group)
+            CHECK(points[i].phaseMask == mask);
+        // Anchor is one of the group's own members, so it shares the phase too.
+        ClusterShape shape = SpawnClustering::Shape(points, group);
+        CHECK(points[shape.anchor].phaseMask == mask);
+    }
+    CHECK(groups[0].size() == 3 && points[groups[0].front()].phaseMask == 1);
+
+    // Same phase everywhere: one place, as before.
+    for (ClusterInputPoint& point : points)
+        point.phaseMask = 1;
+    CHECK(SpawnClustering::Cluster(points, 45.0f, 14.0f, 120.0f).size() == 1);
+}
+
+// Regression: three transient failures (no targets, a path problem, a death) abandoned the quest.
+static void TestQuestPolicy()
+{
+    uint32 const base = 600000, cap = 7200000;
+    CHECK(QuestPolicy::SuspendMs(base, 1, cap) == 600000);
+    CHECK(QuestPolicy::SuspendMs(base, 2, cap) == 1200000);
+    CHECK(QuestPolicy::SuspendMs(base, 3, cap) == 2400000);
+    CHECK(QuestPolicy::SuspendMs(base, 4, cap) == 4800000);
+    CHECK(QuestPolicy::SuspendMs(base, 5, cap) == cap);
+    CHECK(QuestPolicy::SuspendMs(base, 60, cap) == cap);       // no overflow, no abandon
+    CHECK(QuestPolicy::SuspendMs(base, 0, cap) == base);
+    CHECK(QuestPolicy::SuspendMs(base, 3, 1000) == base);      // a cap below the base is ignored
+
+    // Dead ends only leave the log when it is full.
+    CHECK(!QuestPolicy::ShouldAbandonDeadEnd(3, 15));
+    CHECK(!QuestPolicy::ShouldAbandonDeadEnd(14, 15));
+    CHECK(QuestPolicy::ShouldAbandonDeadEnd(15, 15));
+    CHECK(QuestPolicy::ShouldAbandonDeadEnd(25, 15));
+
+    // Workable: completable and every open objective executable.
+    CHECK(QuestPolicy::Workable(true, 2, 2));
+    CHECK(QuestPolicy::Workable(true, 0, 0));                   // all done / report quest
+    CHECK(!QuestPolicy::Workable(true, 2, 1));                  // e.g. kill + use-object, no handler
+    CHECK(!QuestPolicy::Workable(false, 1, 1));                 // player kills / no ender
+}
+
 int main()
 {
     TestFailureMemory();
@@ -335,6 +641,12 @@ int main()
     TestPopulationGrid();
     TestClustering();
     TestUtility();
+    TestTaskClocks();
+    TestHeatmapIncomingLifecycle();
+    TestReservationTaskLifecycle();
+    TestNavProgress();
+    TestPhaseSeparatedClustering();
+    TestQuestPolicy();
 
     std::printf("%d checks, %d failures\n", _checks, _failures);
     return _failures ? 1 : 0;

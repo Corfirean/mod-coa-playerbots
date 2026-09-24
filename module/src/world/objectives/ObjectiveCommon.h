@@ -74,6 +74,14 @@ namespace ObjectiveCommon
     // How many dry attempts are reasonable for this objective before calling it broken: a 15%
     // drop needs more kills than a 100% one.
     uint32 DryAttemptLimit(ObjectiveDef const& def);
+
+    // How long the Search phase may run in the current area: the configured budget scaled by the
+    // bot's patience, half as long again while corpses around promise a respawn.
+    uint32 SearchBudgetMs(BrainState const& state, WorldBrainConfig const& cfg);
+
+    // The time budget of the task's current phase (0: the phase has none), the same numbers the
+    // handlers enforce. For `.botcmd brain`.
+    uint32 PhaseBudgetMs(BrainState const& state, WorldBrainConfig const& cfg);
 }
 
 #endif // COA_PLAYERBOTS_OBJECTIVE_COMMON_H

@@ -24,6 +24,7 @@
 class Object;
 class Player;
 class Quest;
+struct QuestKnowledge;
 
 namespace QuestInteraction
 {
@@ -37,21 +38,32 @@ namespace QuestInteraction
     // Hands in everything finished at this giver, then accepts what the bot would do.
     GiverResult ProcessGiver(Player* bot, BrainState& state, Object* giver);
 
-    // Would the bot take this quest from this spot? `reason` explains a refusal.
+    // Would the bot take this quest from this spot? `reason` explains a refusal. Every objective
+    // must be one the knowledge base supports *and* this build executes.
     bool WouldAccept(Player* bot, BrainState& state, Quest const* quest, char const*& reason);
+
+    // Can the bot still finish this quest it has: completable at all, and every objective still
+    // open is one this build executes (ObjectiveHandlers::CanExecute). The planner only works on
+    // workable quests, HasQuestWork only counts them, and the log cleanup treats every other
+    // incomplete quest as a dead end (QuestPolicy.h). `why` names the reason when it is not.
+    bool Workable(Player* bot, uint32 questId, QuestKnowledge const& info, char const** why = nullptr);
 
     // Best reward choice: an upgrade the bot can use, else the most valuable to sell.
     uint32 PickRewardIndex(Player* bot, Quest const* quest);
 
     uint32 ActiveQuestCount(Player* bot);
 
-    // Removes a quest the bot gave up on, through the same handler the quest log's Abandon button
-    // uses.
+    // Removes a quest from the log, through the same handler the quest log's Abandon button uses.
+    // Only the log cleanup calls it, only for dead ends, and only when the log is full (see
+    // QuestPolicy.h): a transient failure never abandons anything.
     void Abandon(Player* bot, uint32 questId);
 
     // Executes QuestAccept / QuestTurnIn tasks: travel to the giver's spawn, find the live NPC,
     // walk up, interact.
     ExecResult UpdateNpcTask(Player* bot, BrainState& state);
+
+    // The time budget of an NPC task's current phase, as UpdateNpcTask enforces it (0: none).
+    uint32 PhaseBudgetMs(BrainState const& state);
 }
 
 #endif // COA_PLAYERBOTS_QUEST_INTERACTION_H
