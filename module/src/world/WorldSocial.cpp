@@ -23,6 +23,9 @@ namespace
     constexpr uint32 REZ_SPELL_RECHECK_MS = 10 * MINUTE * IN_MILLISECONDS;
     // A resurrection cast owns the bot at most this long (cast times are well under it).
     constexpr uint32 REZ_CAST_MAX_MS = 15000;
+    // An assist fight owns the bot at most this long -- a generous cap for a real fight, but still
+    // a bound so an evaded/stuck/unkillable target can't pin the brain off its task forever.
+    constexpr uint32 ASSIST_MAX_MS = 60000;
     // Someone the bot decided about (helped, resurrected, or chose not to) is not reconsidered
     // for this long -- no flip-flopping over the same fight every few seconds.
     constexpr uint32 DECIDED_MEMORY_MS = 60000;
@@ -182,6 +185,8 @@ namespace
                 if (!bot->Attack(creature, true))
                     break;
 
+                state.socialActive = true;
+                state.socialUntilMs = now + ASSIST_MAX_MS;
                 Count(state.metrics, &WorldMetrics::assists);
                 NoteEvent(state, Acore::StringFormat("helping {} ({:.0f}% health) against {}", other->GetName(),
                     other->GetHealthPct(), creature->GetName()));
@@ -226,11 +231,19 @@ namespace WorldSocial
     {
         if (!state.socialActive)
             return false;
-        if (NowMs() >= state.socialUntilMs || !bot->IsNonMeleeSpellCast(false))
+        if (NowMs() >= state.socialUntilMs)
         {
             state.socialActive = false;
             return false;
         }
-        return true;
+        // A resurrection is still owned by its cast; an assist has no cast of its own -- it is
+        // owned by the fight TryAssist started (Attack()), which IsInCombat() tracks for as long
+        // as it runs. Without checking combat here too, the very next brain tick after Attack()
+        // saw IsHelping() go false immediately (no cast in flight) and resumed the paused task
+        // while the bot was still mid-fight for someone else.
+        if (bot->IsNonMeleeSpellCast(false) || bot->IsInCombat())
+            return true;
+        state.socialActive = false;
+        return false;
     }
 }
