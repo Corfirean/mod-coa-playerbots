@@ -43,8 +43,15 @@ namespace
     constexpr float HUB_LINK_YARDS = 90.0f;
     constexpr float HUB_MAX_RADIUS = 220.0f;
 
-    // Unknown drop chances ("equal chance within its group" rows, chance 0) are assumed to be this.
-    constexpr float UNKNOWN_DROP_CHANCE = 0.2f;
+    // Loot templates use Chance == 0 to mean "equal chance among this group's zero-chance rows",
+    // not "no chance" or some fixed percentage -- the real per-row probability depends on how many
+    // siblings share the group, which this reverse index doesn't track. Treating it as a guessed
+    // ~20% (as an earlier version of this code did) made dry-attempt accounting actively dangerous:
+    // DryAttemptLimit() derives its patience from this value, so a confident-but-wrong guess could
+    // exhaust the limit on ordinary bad luck and get a perfectly good source blacklisted. Use a
+    // conservative floor instead -- low enough that DryAttemptLimit() clamps to its maximum, i.e.
+    // "don't know the odds, so be as patient as we ever are" rather than asserting a false one.
+    constexpr float UNKNOWN_DROP_CHANCE = 0.02f;
 
     int32 GiverCellOf(float v)
     {
@@ -205,13 +212,34 @@ namespace
         if (items.empty())
             return;
 
-        // Reference templates holding a wanted item, followed one level deep -- quest items almost
-        // never sit deeper than that.
+        // Reference templates holding a wanted item, resolved to a fixed point: the game's own
+        // loot roller (LootTemplate::Process) follows a Reference to another Reference just as
+        // readily as it follows one straight to an Item, and reference_loot_template has the same
+        // Entry/Reference/Chance shape as every other loot table, so a chain (A -> B -> wanted item)
+        // is real, not hypothetical. Each round below finds the reference_loot_template rows that
+        // point *at* a reference already known to lead to a wanted item, one level further out from
+        // the wanted items than the previous round. A reference already present in itemsByReference
+        // is skipped rather than re-expanded, which both dedups repeat discovery and makes a cycle
+        // (A -> B -> A) terminate harmlessly instead of growing forever. MAX_REFERENCE_DEPTH is a
+        // sanity cap, not a modeled limit -- real chains here are expected to be shallow.
+        constexpr int MAX_REFERENCE_DEPTH = 8;
         std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> itemsByReference;
+        ReadLootTable("reference_loot_template", items, {}, itemsByReference);
+        for (int depth = 0; depth < MAX_REFERENCE_DEPTH; ++depth)
         {
-            std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> refRows;
-            ReadLootTable("reference_loot_template", items, {}, refRows);
-            itemsByReference = std::move(refRows);
+            std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> nextLevel;
+            ReadLootTable("reference_loot_template", {}, itemsByReference, nextLevel);
+
+            bool grew = false;
+            for (auto& [entry, list] : nextLevel)
+            {
+                if (itemsByReference.count(entry))
+                    continue;
+                itemsByReference.emplace(entry, std::move(list));
+                grew = true;
+            }
+            if (!grew)
+                break;
         }
 
         std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> creatureLoot;
@@ -533,6 +561,18 @@ namespace
         {
             if (!HasSpawns(source.gameObject, source.entry))
                 continue;
+            // A gameobject only counts as a usable source if a handler actually exists for its
+            // real interaction type: goober (click, credited via its use-spell) or chest (open via
+            // the lock's Opening spell, see LootGameObjectObjectiveHandler). Anything else -- a
+            // fishing hole, a door, a generic goober with no CREATE_ITEM effect that still carries a
+            // loot table, etc. -- is indexed by IndexLoot() but no bot code can ever open it, so
+            // advertising it here would accept a quest the bot can never actually complete.
+            if (source.gameObject)
+            {
+                GameObjectTemplate const* go = sObjectMgr->GetGameObjectTemplate(source.entry);
+                if (!go || (go->type != GAMEOBJECT_TYPE_CHEST && go->type != GAMEOBJECT_TYPE_GOOBER))
+                    continue;
+            }
             (source.gameObject ? objects : creatures).push_back(source);
         }
 

@@ -4126,11 +4126,10 @@ void TakeAllLoot(Player* bot, Loot& loot)
     // client reaches them through slots numbered after the regular items, one per entry of this
     // player's own quest item list (Loot::LootItemInSlot). Looting only loot.items -- what every
     // loot path here did before -- silently left every "collect N" quest drop on the corpse.
-    uint32 slots = uint32(loot.items.size());
-    QuestItemMap const& questItems = loot.GetPlayerQuestItems();
-    auto own = questItems.find(bot->GetGUID());
-    if (own != questItems.end() && own->second)
-        slots += uint32(own->second->size());
+    // Loot::GetMaxSlotInLootFor is the same per-player slot count the core itself uses (see its
+    // callers in Player.cpp/Group.cpp) -- use it instead of re-deriving the same items+quest_items
+    // sum here, so this stays correct if the core ever changes how conditional/FFA items factor in.
+    uint32 slots = loot.GetMaxSlotInLootFor(bot);
 
     for (uint32 slot = 0; slot < slots; ++slot)
     {
