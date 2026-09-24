@@ -1,9 +1,13 @@
 #include "CreatureTargetHandler.h"
 #include "BotAI.h"
 #include "Creature.h"
+#include "GameObject.h"
+#include "Item.h"
 #include "ObjectAccessor.h"
 #include "ObjectiveCommon.h"
 #include "Player.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "WorldExecutor.h"
 #include "WorldReservations.h"
 #include <algorithm>
@@ -60,6 +64,45 @@ void CreatureTargetHandler::StartApproach(ObjectiveContext& ctx, Creature* targe
         ctx.bot->GetName(), target->GetName(), target->GetGUID().ToString(), ctx.task.quest.questId,
         uint32(ctx.task.quest.objectiveIndex), ctx.bot->GetDistance(target));
     SetPhase(ctx.bot, ctx.state, TaskPhase::Approach, "target reserved");
+}
+
+ObjectiveResult CreatureTargetHandler::ExecuteItemUse(ObjectiveContext& ctx, Creature* target)
+{
+    switch (ItemUse::CastQuestItem(ctx, target))
+    {
+        case ItemUse::CastOutcome::Casting:
+        {
+            ++ctx.task.quest.attempts;
+            SpellInfo const* spell = sSpellMgr->GetSpellInfo(ctx.def.castSpellId);
+            uint32 castMs = spell ? spell->CalcCastTime(ctx.bot) : 0;
+            ctx.task.waitUntilMs = ctx.now + castMs + 400;
+            SetPhase(ctx.bot, ctx.state, TaskPhase::Loot, "quest item used");
+            return ObjectiveResult::Running;
+        }
+        case ItemUse::CastOutcome::Settling:
+            return ObjectiveResult::Running;
+        case ItemUse::CastOutcome::NeedsDeadTarget:
+            ctx.task.quest.requireDeadTarget = true;
+            ObjectiveCommon::BeginSearch(ctx, "item needs a corpse");
+            return ObjectiveResult::Running;
+        case ItemUse::CastOutcome::NeedsLiveTarget:
+            ctx.task.quest.requireDeadTarget = false;
+            ObjectiveCommon::BeginSearch(ctx, "item needs a live target");
+            return ObjectiveResult::Running;
+        case ItemUse::CastOutcome::NoItem:
+            ctx.task.quest.lastFailure = FailureReason::Unsupported;
+            return ObjectiveResult::Failed;
+        case ItemUse::CastOutcome::Refused:
+        default:
+            ObjectiveCommon::ForgetTarget(ctx, FailureReason::CastFailed);
+            if (ctx.task.quest.retryCount >= TARGET_FAILURE_LIMIT)
+            {
+                ctx.task.quest.lastFailure = FailureReason::CastFailed;
+                return ObjectiveResult::Failed;
+            }
+            ObjectiveCommon::BeginSearch(ctx, "item use refused");
+            return ObjectiveResult::Running;
+    }
 }
 
 ObjectiveResult CreatureTargetHandler::AfterExecute(ObjectiveContext& ctx)
@@ -261,5 +304,54 @@ ObjectiveResult CreatureTargetHandler::Update(ObjectiveContext& ctx)
 
         default:
             return ObjectiveResult::Failed;
+    }
+}
+
+namespace ItemUse
+{
+    float ItemRange(ObjectiveDef const& def)
+    {
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(def.castSpellId);
+        float range = spell ? spell->GetMaxRange(spell->IsPositive()) : 0.0f;
+        if (range <= 0.0f)
+            range = 20.0f;
+        return std::clamp(range * 0.8f, 3.0f, 30.0f);
+    }
+
+    CastOutcome CastQuestItem(ObjectiveContext& ctx, WorldObject* target)
+    {
+        Player* bot = ctx.bot;
+        Item* item = bot->GetItemByEntry(ctx.def.castItemId);
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(ctx.def.castSpellId);
+        if (!item || !spell)
+            return CastOutcome::NoItem;
+
+        if (!ObjectiveCommon::Settle(bot, ctx.state))
+            return CastOutcome::Settling;
+
+        bot->SetFacingToObject(target);
+
+        SpellCastResult result;
+        if (Unit* unit = target->ToUnit())
+            result = bot->CastSpell(unit, spell, TRIGGERED_NONE, item);
+        else if (GameObject* go = target->ToGameObject())
+            result = bot->CastSpell(go, spell->Id, false, item);
+        else
+            return CastOutcome::Refused;
+
+        LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' used quest item {} (spell {}) on '{}' (result {}).", bot->GetName(),
+            ctx.def.castItemId, spell->Id, target->GetName(), uint32(result));
+
+        switch (result)
+        {
+            case SPELL_CAST_OK:
+                return CastOutcome::Casting;
+            case SPELL_FAILED_TARGET_NOT_DEAD:
+                return CastOutcome::NeedsDeadTarget;
+            case SPELL_FAILED_TARGETS_DEAD:
+                return CastOutcome::NeedsLiveTarget;
+            default:
+                return CastOutcome::Refused;
+        }
     }
 }
