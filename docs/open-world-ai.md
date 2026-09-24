@@ -42,7 +42,8 @@ answer per kind of interruption:
 | Group, manual Stay, `.botcmd` AI suspend, guild gather order, battleground, dungeon | suspended, every claim released; kept ≤ 5 min, then re-planned | **stopped**; on return the task re-enters through `Recover` |
 | Its own business away from the brain: a fight with an add, resting, looting, a corpse run | kept | the **phase** clock does not count it; the task **deadline** does (anti-loop) |
 | Death | target dropped, `Recover`; twice killed in one area writes the area off | as above |
-| Map change, or a jump of 400+ yd between two brain ticks (teleport, flight) | re-planned | — |
+| Map change, or a jump of 400+ yd between two brain ticks (a teleport, a flight the task did not ask for) | re-planned | — |
+| A flight the task asked for itself (`taxiRequested`) | kept, carries on from the landing | like its own business: the **phase** clock does not count the flight, the **deadline** does |
 
 `WorldTask::Pause/Resume/ShiftClocks/ShiftPhaseClock/ClockNow` implement it; a phase entered while
 paused starts at the frozen clock so a resume can never put it in the future.
