@@ -80,6 +80,7 @@
 #include "BotWorldBehavior.h"
 #include "BotZoneProgression.h"
 #include "WorldBrain.h"
+#include "WorldParties.h"
 #include "GameTime.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -2972,7 +2973,10 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             // otherwise a fresh scan runs in the order the user asked for these features
             // (quests, then gathering, then fishing) before falling back to looking for
             // something to kill.
-            if (!bot->GetGroup() && state.manualCommand != BotManualCommand::Stay)
+            // The leader of a temporary bot-only party (WorldParties) keeps living its own open-world
+            // life while grouped; the other members are ordinary grouped bots that follow it.
+            bool worldPartyLeader = bot->GetGroup() && WorldParties::IsLeader(bot->GetGUID());
+            if ((!bot->GetGroup() || worldPartyLeader) && state.manualCommand != BotManualCommand::Stay)
             {
                 // An in-flight gathering or fishing action finishes before anything else is
                 // decided; everything else goes through the open-world layer (UpdateSoloWorld).

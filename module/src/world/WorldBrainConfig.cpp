@@ -49,6 +49,16 @@ namespace WorldBrainSettings
         c.sessionBreaks = Opt<bool>("SessionBreaks", c.sessionBreaks);
         c.gatherDetours = Opt<bool>("GatherDetours", c.gatherDetours);
 
+        c.helpOthers = Opt<bool>("HelpOthers", c.helpOthers);
+        c.helpRadius = std::clamp(Opt<float>("HelpRadius", c.helpRadius), 5.0f, 60.0f);
+        c.helpHealthPct = std::clamp(Opt<float>("HelpHealthPct", c.helpHealthPct), 5.0f, 90.0f);
+        c.resurrectOthers = Opt<bool>("ResurrectOthers", c.resurrectOthers);
+        c.temporaryParties = Opt<bool>("TemporaryParties", c.temporaryParties);
+        c.partyMaxSize = std::clamp<uint32>(Opt<uint32>("PartyMaxSize", c.partyMaxSize), 2, 5);
+        c.partyRadius = std::clamp(Opt<float>("PartyRadius", c.partyRadius), 10.0f, 150.0f);
+        c.partyMinMs = Opt<uint32>("PartyMinMinutes", c.partyMinMs / 60000) * 60000;
+        c.partyMaxMs = std::max(c.partyMinMs, Opt<uint32>("PartyMaxMinutes", c.partyMaxMs / 60000) * 60000);
+
         c.utility.travelPer100Yards = Opt<float>("Weight.TravelPer100Yards", c.utility.travelPer100Yards);
         c.utility.crowdPerBot = Opt<float>("Weight.CrowdPerBot", c.utility.crowdPerBot);
         c.utility.overlapBonus = Opt<float>("Weight.Overlap", c.utility.overlapBonus);

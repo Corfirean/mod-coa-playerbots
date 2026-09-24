@@ -188,6 +188,23 @@ CoaBots.WorldBrain.TaxiMinDistance = 900
 CoaBots.WorldBrain.SessionBreaks = 1
 CoaBots.WorldBrain.GatherDetours = 1
 
+# Cooperation: a bot passing by steps into a fight a friendly player (bot or real) is losing --
+# only against a mob that player has tagged, so loot, credit and experience stay theirs -- and
+# resurrects friendly corpses if it knows a resurrection spell. Sociability decides how often.
+CoaBots.WorldBrain.HelpOthers = 1
+CoaBots.WorldBrain.HelpRadius = 30
+CoaBots.WorldBrain.HelpHealthPct = 40
+CoaBots.WorldBrain.ResurrectOthers = 1
+
+# Temporary bot-only parties: sociable bots of about the same level with the same kill quest open
+# team up for one objective area or PartyMinMinutes-PartyMaxMinutes, then go their own ways.
+# Off by default until watched on a live server. Never used in cluster mode.
+CoaBots.WorldBrain.TemporaryParties = 0
+CoaBots.WorldBrain.PartyMaxSize = 3
+CoaBots.WorldBrain.PartyRadius = 60
+CoaBots.WorldBrain.PartyMinMinutes = 5
+CoaBots.WorldBrain.PartyMaxMinutes = 20
+
 # Utility weights (see src/world/WorldUtility.h for all of them and what they mean).
 CoaBots.WorldBrain.Weight.TravelPer100Yards = 7
 CoaBots.WorldBrain.Weight.CrowdPerBot = 6

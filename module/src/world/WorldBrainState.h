@@ -11,6 +11,7 @@
 
 #include "FailureMemory.h"
 #include "Log.h"
+#include "ObjectGuid.h"
 #include "StringFormat.h"
 #include "WorldBrainConfig.h"
 #include "WorldMetrics.h"
@@ -67,6 +68,14 @@ struct BrainState
     uint32 opportunityUntilMs = 0;
     uint32 nextOpportunityCheckMs = 0;
 
+    // Social layer (WorldSocial, WorldParties).
+    uint32 nextSocialCheckMs = 0;
+    bool socialActive = false;        // a help action (a resurrection cast) owns the bot
+    uint32 socialUntilMs = 0;
+    uint32 rezSpellId = 0;            // best resurrection spell the bot knows, 0 = none
+    uint32 rezSpellCheckedMs = 0;
+    uint32 nextPartyAttemptMs = 0;
+
     // Session rhythm: quest for a while, then take a break in town.
     uint32 sessionStartMs = 0;
     uint32 sessionLengthMs = 0;
@@ -109,6 +118,9 @@ namespace WorldBrainInternal
 
     // Ms spent in the current phase.
     uint32 PhaseElapsed(BrainState const& state);
+
+    // Another bot's brain, for the social layer (nullptr when it has none yet).
+    BrainState* FindState(ObjectGuid guid);
 }
 
 #endif // COA_PLAYERBOTS_WORLD_BRAIN_STATE_H

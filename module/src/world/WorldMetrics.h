@@ -36,6 +36,10 @@ struct WorldMetrics
     uint64 areaSwitches = 0;
     uint64 opportunities = 0;
     uint64 breaks = 0;
+    uint64 assists = 0;
+    uint64 resurrections = 0;
+    uint64 partiesFormed = 0;
+    uint64 partiesEnded = 0;
 };
 
 namespace WorldMetricsGlobal

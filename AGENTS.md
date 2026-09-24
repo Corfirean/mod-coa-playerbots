@@ -3137,3 +3137,58 @@ Live checks: a herbalist bot questing in Elwynn should step off the path for Pea
 next to it and then carry on with the same task (`.botcmd brain` "back on the task after a
 detour"); with `sessionMinMs`/`sessionMaxMs` temporarily lowered in `WorldBrainConfig.h` (they
 are not in the conf file), a bot should drop into ambient errands between tasks and come back.
+
+## 2026-09-24: Open-world AI rework, Phase 9 -- social: tag-safe help, resurrection, temporary parties (compiled + linked, not live-tested)
+
+Stacked on Phase 8. The original spec's §32-33 (social open-world AI, helping others) and its
+"PHASE 9 -- Social: temporary parties / cooperation". §54 of the same spec called bot-only world
+parties "a separate future feature", so they are implemented but **off by default**
+(`CoaBots.WorldBrain.TemporaryParties = 0`) until someone watches them on a live server; the
+cooperation half is on by default.
+
+- **`SocialRules.h`** (pure, unit-tested): when to step into someone's fight, how to rank party
+  candidates, party lifetime, when a party ends, when a member drops out. The hard rule: helping
+  never takes anything from the person helped -- a bot only attacks a creature the player it
+  helps (or that player's group) has already tagged (`Creature::isTappedBy`), so loot, quest
+  credit and experience stay theirs. Never PvP, never the other faction, never world bosses,
+  nothing more than 3 levels above the bot, elites only when out-levelled by 5.
+- **`WorldSocial`** (on by default, `HelpOthers`, `ResurrectOthers`): while walking somewhere or
+  searching an area (never mid-fight, mid-loot or at a quest NPC), a bot scans players within
+  30 yd every 2.5-5 s. It resurrects a friendly corpse nobody has offered to resurrect yet with
+  the best resurrection spell in its own spellbook (found by `SPELL_EFFECT_RESURRECT`/
+  `_RESURRECT_NEW`, cached 10 min); the brain returns Busy until the cast ends so no walk breaks
+  it. Otherwise it helps a friendly player below 40% health against their own tagged mob with
+  `Attack()` and hands the fight to the combat engine. Sociability decides whether it bothers;
+  whoever it decided about is not reconsidered for a minute.
+- **`WorldParties`** (off by default): when a sociable bot starts a kill / collect-from-kills
+  objective, it may pull 1-4 bots into a real `Group` (`Group::Create` + `AddMember`, no invite
+  packets, so `DoAcceptInvite`'s teleport-to-leader never fires). Candidates: bots only (only bots
+  have a `BrainState`), within 60 yd, level within 3, same team, free, with the same quest open and
+  the objective unfinished; healers/tanks the party lacks rank higher; each candidate's own
+  sociability gets a roll. The **leader keeps its brain while grouped** (`BotAI.cpp` now asks
+  `WorldParties::IsLeader` before suspending a grouped bot); members are ordinary grouped bots
+  (follow, assist, group kill credit). Ends when the leader's task ends, after 5-20 min, when the
+  leader is gone / suspended / dead more than 45 s, or when nobody else is left; a member more
+  than 200 yd behind, off the map, or dead more than 90 s just leaves. 5-12 min cooldown after.
+  **The core persists every group to `groups`/`group_member`**; a party must never outlive a
+  restart (the bots would come back in a leaderless bot-only group with suspended brains), so the
+  rows are deleted right after forming and again 10 s later. The only way to leave one behind is a
+  crash in that 10 s window with more than one character-database worker thread -- if that ever
+  happens, disband the group by hand. The server's own `OnPlayerCanGroupInvite`/`Accept` hooks
+  are respected (challenge modes); never used in cluster mode (`sToCloud9Sidecar`), where the
+  core's local `Disband()` is a no-op.
+- `Roll` is also the name of the core's loot-roll class (`Group.h`): world/ files that include
+  `Group.h` must call `WorldBrainInternal::Roll(...)` qualified, or the build breaks with
+  "reference to 'Roll' is ambiguous".
+
+**Verification**: all module sources compile against the upstream core with the patch stubs, the
+full `worldserver` links, and 333 unit checks pass (42 new for `SocialRules`), also under
+ASan/UBSan. **Not run on a live server.** Live checks:
+1. Let a low-level player fight a same-level mob down to ~30% health with a questing bot within
+   30 yd: the bot should join (`.botcmd brain` "helping X against Y"), and the player keeps the loot.
+2. Kill a player (or `.botcmd kill` a bot) next to a bot with a resurrection spell: it should
+   cast it within a few seconds; a real player should see the prompt.
+3. With `TemporaryParties = 1`, spawn 3-4 same-level bots on the same kill quest in one spot:
+   within minutes some should group up (`.botcmd brain` "Temporary party", `worldstats` "Social"),
+   walk together, share kill credit, and disband when the leader's objective completes. Restart
+   the server during a party and confirm nobody comes back grouped.
