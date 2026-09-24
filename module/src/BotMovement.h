@@ -28,6 +28,7 @@
 #ifndef COA_PLAYERBOTS_BOT_MOVEMENT_H
 #define COA_PLAYERBOTS_BOT_MOVEMENT_H
 
+#include "BotNavProgress.h"
 #include "Define.h"
 #include "ObjectGuid.h"
 #include <string>
@@ -71,10 +72,8 @@ struct MovementRequest
     float z = 0.0f;
     float acceptRadius = 0.0f;
     uint32 startedAt = 0;
-    uint32 lastProgressAt = 0;
     uint32 lastCallAt = 0;
-    float bestDistance = 0.0f;
-    uint8 retries = 0;
+    NavProgress progress;         // best distances, last progress, recovery stage (BotNavProgress.h)
     uint32 legs = 0;
     uint32 lastIssueAt = 0;
     float legX = 0.0f;
@@ -113,13 +112,17 @@ namespace BotMovement
     // moved point (a mob that walked off) updates the destination without resetting the stuck
     // budget; a new id starts a fresh request.
     //
-    // Recovery ladder when the bot stops closing on the goal: repath, detour to one side, detour
-    // to the other side, then NavStatus::Stuck -- at which point the caller escalates (another
-    // spawn, another area, blacklist, replan). Time spent not calling Navigate (combat, resting,
-    // looting) never counts as being stuck.
+    // Progress counts on the ground or in height (stairs, ramps, mine shafts), and the recovery
+    // ladder -- repath, detour to one side, detour to the other side, then NavStatus::Stuck, at
+    // which point the caller escalates (another spawn, another area, blacklist, replan) -- only
+    // resets after the bot got materially closer, never after a few accidental yards (see
+    // BotNavProgress.h). Time spent not calling Navigate (combat, resting, looting) never counts
+    // as being stuck.
     NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius);
 
-    // Drops the Navigate() request (not the claim) so the next call starts fresh.
+    // Drops the Navigate() request so the next call starts fresh, but leaves the movement claim
+    // and any running walk alone: for a caller that keeps moving the bot itself (a new area, a new
+    // goal). A caller giving up the legs uses Release(), which drops both.
     void ResetRequest(ObjectGuid botGuid);
 
     MovementRequest const* GetRequest(ObjectGuid botGuid);

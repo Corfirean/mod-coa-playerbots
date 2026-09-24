@@ -4,6 +4,7 @@
 #include "ObjectiveCommon.h"
 #include "Player.h"
 #include "WorldExecutor.h"
+#include "WorldReservations.h"
 #include <cmath>
 
 using namespace WorldBrainInternal;
@@ -98,8 +99,7 @@ ObjectiveResult ObjectTargetHandler::Update(ObjectiveContext& ctx)
                     return ObjectiveResult::Running;
                 }
             }
-            uint32 timeout = ctx.cfg.searchTimeoutMs * (50 + ctx.state.persona.patience) / 100;
-            if (PhaseElapsed(ctx.state) > timeout)
+            if (PhaseElapsed(ctx.state) > ObjectiveCommon::SearchBudgetMs(ctx.state, ctx.cfg))
                 return ObjectiveCommon::FailArea(ctx, FailureReason::NoTargets);
             ObjectiveCommon::Wander(ctx);
             return ObjectiveResult::Running;
@@ -111,6 +111,15 @@ ObjectiveResult ObjectTargetHandler::Update(ObjectiveContext& ctx)
             if (!go || !IsUsable(ctx, go))
             {
                 ObjectiveCommon::BeginSearch(ctx, "object gone or in use");
+                return ObjectiveResult::Running;
+            }
+            // The claim is re-confirmed every step of the approach (it can lapse while the bot
+            // fights something on the way, and someone else may hold it now).
+            if (!WorldReservations::TryReserve(ReservationKind::GameObject, go->GetGUID().GetRawValue(), ctx.bot->GetGUID(),
+                    ctx.cfg.objectReserveMs))
+            {
+                Count(ctx.state.metrics, &WorldMetrics::reservationConflicts);
+                ObjectiveCommon::BeginSearch(ctx, "object taken");
                 return ObjectiveResult::Running;
             }
             if (PhaseElapsed(ctx.state) > ctx.cfg.approachTimeoutMs)

@@ -2740,6 +2740,9 @@ void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
     BotMgr::GuildGatherOrder const* gatherOrder = sBotMgr->GetGuildGatherOrder(bot->GetGUID());
     if (gatherOrder && gatherOrder->remainingCount > 0)
     {
+        // An explicit instruction owns the bot: the open-world task steps back with its clocks
+        // stopped, exactly as for any other manual command.
+        WorldBrain::Suspend(bot, SuspendReason::ManualCommand);
         if (gatherOrder->hasTargetLocation)
         {
             if (bot->GetMapId() != gatherOrder->targetMapId)
@@ -3848,7 +3851,12 @@ void SetSuspended(ObjectGuid botGuid, bool suspended)
     if (suspended)
     {
         if (Player* bot = ObjectAccessor::FindPlayer(botGuid))
+        {
             bot->AttackStop();
+            // The open-world task lets go of everything and stops its clocks, like for any other
+            // manual command; it resumes (or re-plans, after a long hold) on the next idle tick.
+            WorldBrain::Suspend(bot, SuspendReason::ManualCommand);
+        }
     }
 }
 

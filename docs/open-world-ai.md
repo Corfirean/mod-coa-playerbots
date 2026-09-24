@@ -30,17 +30,28 @@ still live where they were, but only run when the brain names them in its `World
 Combat is not the brain's business: a task engages with `Attack()` and the combat engine fights;
 the brain picks the task up again once the bot is out of combat and has looted.
 
-Suspension: a group, a manual Stay, a battleground or a dungeon suspends the brain
-(`WorldBrain::Suspend`) — every claim is released, the task is kept for up to five minutes and
-re-evaluated (`Recover`) on return. Death keeps the task, drops the target, and re-evaluates the
-area after the corpse run (twice killed in one area writes the area off).
+### Time: what counts toward a task's budgets
+
+Every phase has a budget and every task a deadline, so the question "whose time was that?" has one
+answer per kind of interruption:
+
+| Interruption | Task | Clocks |
+| --- | --- | --- |
+| Ambient errand (repair, vendor, flight) | paused, target let go | **stopped** (phase, deadline, scan/wait timers move on by the pause) |
+| Group, manual Stay, `.botcmd` AI suspend, guild gather order, battleground, dungeon | suspended, every claim released; kept ≤ 5 min, then re-planned | **stopped**; on return the task re-enters through `Recover` |
+| Its own business away from the brain: a fight with an add, resting, looting, a corpse run | kept | the **phase** clock does not count it; the task **deadline** does (anti-loop) |
+| Death | target dropped, `Recover`; twice killed in one area writes the area off | as above |
+| Map change, or a jump of 400+ yd between two brain ticks (teleport, flight) | re-planned | — |
+
+`WorldTask::Pause/Resume/ShiftClocks/ShiftPhaseClock/ClockNow` implement it; a phase entered while
+paused starts at the frozen clock so a resume can never put it in the future.
 
 ## The task model (`WorldTask.h`)
 
 A `WorldTask` persists across ticks: type (`QuestObjective`, `QuestAccept`, `QuestTurnIn`), phase,
 the area (map, anchor, radius, `ObjectiveArea` id), the quest/objective with its type, target
 entry, item, required/current count, the claimed live target guid, retry/dry-attempt/bad-area
-counters, deaths, last failure reason, deadline.
+counters, deaths, last failure reason, deadline, pause state.
 
 Phases for a creature objective:
 
@@ -66,12 +77,23 @@ Built once at startup from the data the world was loaded from (plus one read of 
   which nothing uses yet — hub travel is Phase 7);
 - generic "Opening" spells per lock type (chests are opened by spell, not `GameObject::Use()`).
 
-Quests a bot cannot reliably finish are never accepted: escorts/scripted events, talk-to-NPC
-credit, PvP, reputation, timed, daily/seasonal, no giver/ender, no loot source, elite (unless
-`AcceptEliteQuests`) — and any quest with an objective kind that has no handler yet. Handled so
-far: **kill**, **collect** (kill the creatures that drop the item and loot it), **open-and-loot**
-(a chest-type object holding the item) and plain delivery quests (no objectives, just a turn-in).
-Use-object, explore, use-item-on and talk objectives arrive in Phase 6.
+Three questions, kept apart and each answered in exactly one place:
+
+- **Would a bot take it?** (`QuestKnowledge::supported`) — acceptance policy plus what the data
+  says: no escorts/scripted events, talk-to-NPC credit, PvP, reputation, timed, daily/seasonal,
+  item-started, no loot source, elite (unless `AcceptEliteQuests`).
+- **Can a bot ever complete it?** (`QuestKnowledge::completable`) — false only for player kills,
+  reputation targets, no ender. A daily or item-started quest already in the log is completable.
+- **Can this build execute this objective?** (`ObjectiveHandlers::CanExecute`) — there is
+  something to do (a quest-provided *source* item is not an action) and a handler takes it.
+
+`QuestInteraction::Workable` combines the last two for a quest in the log (completable, and every
+open objective executable). Acceptance requires all three for every objective; the planner,
+`HasQuestWork` and the log cleanup all ask `Workable`/`CanExecute`, so no part of the brain can
+think a quest is doable while another can never create a task for it. Handled so far: **kill**,
+**collect** (kill the creatures that drop the item and loot it), **open-and-loot** (a chest-type
+object holding the item) and plain delivery quests (no objectives, just a turn-in). Use-object,
+explore, use-item-on and talk objectives arrive in Phase 6.
 
 **Quest drops.** Quest-only drops live in `Loot::quest_items`, in loot slots numbered after the
 regular items, and only for players who need them. The old loot code only ever took
@@ -79,8 +101,9 @@ regular items, and only for players who need them. The old loot code only ever t
 now used by the post-kill loot queue and by gathering.
 
 **Objective areas**: an entry's static spawns are clustered into places (single-link 45 yd, 14 yd
-vertical gap so mine levels stay apart, split above 120 yd radius) lazily per entry and cached
-forever. Static spawns are world knowledge only; everything a bot acts on is a live object found
+vertical gap so mine levels stay apart, split above 120 yd radius, never mixing phases — so a bot
+that sees an area sees its anchor, every member and every wander point) lazily per entry and
+cached forever. Static spawns are world knowledge only; everything a bot acts on is a live object found
 by scanning around it inside the area.
 
 ## Planning (`WorldPlanner`)
@@ -105,40 +128,61 @@ pause) when a task ends; a pass that finds nothing backs off exponentially up to
 - `WorldReservations`: exclusive TTL claims on live creatures/objects (two bots never go for the
   same mob), shared occupancy counts on objective areas. Released on task end, death, suspension,
   logout; expire on their own regardless.
-- `PopulationHeatmap`: 100-yard cells counting bots present (by activity) and heading there;
-  updated only on cell change / new destination.
+- `PopulationHeatmap`: 100-yard cells counting bots present (by activity) and heading there.
+  *Incoming* means exactly "travelling to the task's destination" (`WorldTask::CountsAsIncoming`:
+  phase `TravelToArea`, not paused): it is set and cleared from the task's phase after every
+  executor step (`WorldExecutor::SyncIncoming`), so a bot already working in an area is counted
+  once, by its presence — never also as incoming, and never for a 15-yard walk to a mob.
 - Area scoring subtracts occupancy and crowd, target scoring skips claimed/tagged/engaged mobs.
 
 ## Movement (`BotMovement`)
 
 - `MoveTo` is idempotent: asking for the walk already running is a no-op.
-- `Navigate` keeps a persistent request per bot (goal id, destination, best distance, last
-  progress), walks long trips in 120 yd legs, and runs a recovery ladder when progress stops for
-  9 s: repath → detour left → detour right → `Stuck` (the caller escalates: next target, next
-  area, blacklist, fail the task). Time spent fighting/looting/resting never counts as stuck.
+- `Navigate` keeps a persistent request per bot (goal id, destination, progress state), walks long
+  trips in 120 yd legs, and runs a recovery ladder when progress stops for 9 s: repath → detour
+  left → detour right → `Stuck` (the caller escalates: next target, next area, blacklist, fail the
+  task). Progress counts on the ground (2.5 yd) **or in height** (1.5 yd) — stairs, ramps, towers
+  and mine shafts are progress — and small accidental progress restarts the stall timer without
+  resetting the ladder: it only resets once the goal is 20 yd (or 8 yd of height) closer than at
+  the first stall (`BotNavProgress.h`). Time spent fighting/looting/resting never counts as stuck.
 - Mounting per bot beyond its own 60–95 yd threshold, never in combat, never within 10 s of a
   dismount.
 
 ## Failure memory and anti-loop
 
 Per-bot TTL memory (`FailureMemory.h`) of targets (60 s), objects (120 s), areas and quest NPC
-spawns (5 min), and suspended quests (10 min); repeat failures stretch the ttl. Budgets:
-search 35 s per area (×patience, ×1.5 with corpses around), approach 25 s, travel 6 min, whole task
-30 min, 4+ dry attempts (scaled by drop chance), 3 bad areas per objective → quest suspended; three
-suspensions → abandoned. Quests that can never be finished (unsupported, lost quest item) are
-abandoned by a periodic log cleanup instead of clogging the log.
+spawns (5 min), set-aside quests, and blocked turn-ins (kept apart: a finished quest is handed in
+even while its objective work was set aside); repeat failures stretch the ttl. Budgets: search
+35 s per area (×patience, ×1.5 with corpses around), approach 25 s, travel 6 min, whole task
+30 min, 4+ dry attempts (scaled by drop chance), 3 bad areas per objective → task fails.
+
+What a failed task does to its quest (`QuestPolicy.h`):
+
+- **Transient** (no targets, no path, no progress, a death, a failed cast or interaction): the quest
+  is set aside for `QuestSuspendMs` (10 min), doubling each time in a row up to
+  `QuestSuspendMaxMs` (2 h), and retried. **Never abandoned** — a pathing defect or a busy camp
+  must not cost a quest chain. A completed objective resets the back-off.
+- **Dead end** (the quest has failed, can never be completed, or has an open objective this build
+  cannot execute): the planner never works on it; the log cleanup notes it and abandons one per
+  pass **only when the log is full** (`MaxActiveQuests`), preferring failed quests.
+
+A kill by someone else is not a failed attempt (no credit was possible); a claimed target is
+re-confirmed on every approach step, since the claim can lapse while the bot fights an add.
 
 ## Debugging
 
-- `.botcmd brain <guid>` — goal, task, phase and time in phase, quest + knowledge-base verdict,
-  objective + handler + progress, area (spawns, distance, crowd, assigned bots), reserved target,
-  movement request (owner, goal, distance, last progress, recoveries), live failure memory,
-  next planner pass, last event, per-bot counters.
+- `.botcmd brain <guid>` — goal (and suspension reason), task, phase and time in phase (PAUSED and
+  for how long), remaining phase budget and task deadline, heatmap state (present / incoming),
+  quest + knowledge-base verdict + workable, objective + handler + progress + dry attempts of the
+  limit, area (spawns, distance, crowd, assigned bots), reserved target, movement request (ground
+  and height left, best so far, last progress, recovery stage), live failure memory, next planner
+  pass, last event, per-bot counters.
 - `.botcmd worldstats` — knowledge base size, brains by task/phase, quest/objective/task counters,
   movement stats (MovePoints issued vs redundant skipped, stalls, recoveries), reservations, heatmap.
 - Logs (DEBUG): `module.coa-playerbots.world` (TaskSelected, PhaseChanged, TaskCompleted/Failed,
   Replan), `.quest` (QuestAccepted, TargetSelected, ObjectiveProgress, ObjectiveCompleted,
-  QuestCompleted, QuestTurnedIn), `.navigation` (stalls, recoveries).
+  QuestCompleted, QuestTurnedIn, set-aside and dead-end decisions), `.navigation` (stalls,
+  recoveries), plus task pause/resume lines under `.world`.
 
 ## Performance notes (3000+ bots)
 
@@ -150,9 +194,10 @@ reservations swept every 30 s, failure memory pruned on write. Bot AI runs on th
 ## Verification status
 
 Compiled against the upstream CoA core (`jealous-sound/azerothcore-wotlk-coa`) with this module's
-documented core patches stubbed in; the pure logic (failure memory, reservations, heatmap,
-clustering, utility scoring) is unit-tested standalone (`module/tests/`, also under ASan/UBSan).
-**Not yet run on a live server** — see `AGENTS.md` for the live test checklist.
+documented core patches stubbed in, and the full `worldserver` binary links. The pure logic
+(failure memory, reservations, heatmap, clustering, utility scoring, task clocks, navigation
+progress, quest policy) is unit-tested standalone (`module/tests/`, also under ASan/UBSan).
+**Not yet run on a live server** — see `AGENTS.md` for the live test checklist (tests A–E).
 
 ## Delivery phases
 
