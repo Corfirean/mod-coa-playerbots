@@ -3031,3 +3031,25 @@ Live checks: a bot that finishes every quest in Northshire should travel to Gold
 (`.botcmd brain` shows a `Travel` task with "heading to a new quest hub"), mounted; a bot with a
 known flight path and a far quest area should fly instead of walking across the continent; and
 a bot mid-quest should not be yanked away by the zone-progression relocation timer.
+
+## 2026-09-24: Open-world AI rework, Phase 8 -- opportunity detours, session breaks (compiled, not live-tested)
+
+Stacked on Phase 7. Only `WorldBrain.cpp` plus config/state/metrics fields. With this phase the
+stacked branches add up to the complete implementation.
+
+- **Opportunity detours**: while a task is in TravelToArea or Search, a bot with Herbalism or
+  Mining checks every 4-8 s (per-bot) for a node it can pick within `DetourRadius` (15 yd, via
+  `BotWorldPoi`); a gatherer by persona always stops, others sometimes. The task pauses (its
+  movement claims released), the brain returns `WorldDirective::Gather` so the existing gathering
+  code does the work, and the task resumes where it was. `ReportActivity` ends the detour when the
+  node is gathered, after 4.5 s if gathering never started, or after 30 s regardless.
+- **Session rhythm**: 20-45 minutes of questing (scaled by the persona's patience), then a 3-8
+  minute break during which the brain hands the tick to ambient life, then a fresh plan. Only
+  taken between tasks, never mid-objective.
+- `CoaBots.WorldBrain.GatherDetours` / `SessionBreaks` switch both off. `.botcmd brain` shows the
+  detour/session/break state; `worldstats` counts detours and breaks.
+
+Live checks: a herbalist bot questing in Elwynn should step off the path for Peacebloom/Silverleaf
+next to it and then carry on with the same task (`.botcmd brain` "back on the task after a
+detour"); with `sessionMinMs`/`sessionMaxMs` temporarily lowered in `WorldBrainConfig.h` (they
+are not in the conf file), a bot should drop into ambient errands between tasks and come back.

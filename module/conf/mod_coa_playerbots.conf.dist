@@ -178,6 +178,11 @@ CoaBots.WorldBrain.MountDistanceMin = 60
 CoaBots.WorldBrain.MountDistanceMax = 95
 CoaBots.WorldBrain.TaxiMinDistance = 900
 
+# Human rhythm: stretches of questing (20-45 minutes, scaled by patience) followed by a few minutes
+# of town life; herbalists/miners stepping off the path for a node next to it.
+CoaBots.WorldBrain.SessionBreaks = 1
+CoaBots.WorldBrain.GatherDetours = 1
+
 # Utility weights (see src/world/WorldUtility.h for all of them and what they mean).
 CoaBots.WorldBrain.Weight.TravelPer100Yards = 7
 CoaBots.WorldBrain.Weight.CrowdPerBot = 6

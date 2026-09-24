@@ -1,6 +1,7 @@
 #include "WorldBrain.h"
 #include "BotMovement.h"
 #include "BotZoneProgression.h"
+#include "BotWorldPoi.h"
 #include "Chat.h"
 #include "GameTime.h"
 #include "Map.h"
@@ -33,6 +34,10 @@ namespace
     // rather than resumed: the world has moved on.
     constexpr uint32 SUSPEND_DROP_MS = 5 * MINUTE * IN_MILLISECONDS;
 
+    // Opportunity detours (a herb next to the path).
+    constexpr uint32 OPPORTUNITY_MAX_MS = 30000;
+    constexpr uint32 OPPORTUNITY_START_GRACE_MS = 4500;
+
     // A fallback activity that keeps finding nothing hands over to ambient life after this.
     constexpr uint32 ACTIVITY_IDLE_SWITCH_MS = 15000;
 
@@ -58,6 +63,8 @@ namespace
     struct BrainExtra
     {
         uint32 suspendedAtMs = 0;
+        uint32 opportunityBeganMs = 0;
+        bool opportunityStarted = false;
         bool deathHandled = false;
         bool pausedByAmbient = false;
     };
@@ -102,6 +109,13 @@ namespace
             case WorldGoal::None:      return PopulationActivity::Idle;
             default:                   return PopulationActivity::Other;
         }
+    }
+
+    void StartSession(BrainState& state, uint32 now)
+    {
+        WorldBrainConfig const& cfg = WorldBrainSettings::Get();
+        state.sessionStartMs = now;
+        state.sessionLengthMs = RollRange(state, 0x5e55, cfg.sessionMinMs, cfg.sessionMaxMs) / 100 * (50 + state.persona.patience);
     }
 
     void SuspendQuest(Player* bot, BrainState& state, uint32 questId, FailureReason reason)
@@ -245,6 +259,8 @@ namespace
 
         state.goal = t.type == WorldTaskType::Travel ? WorldGoal::Traveling : WorldGoal::Questing;
         state.activity = WorldDirective::Idle;
+        if (!state.sessionStartMs)
+            StartSession(state, now);
 
         if (t.quest.selectedClusterId)
             WorldReservations::Join(ReservationKind::QuestCluster, t.quest.selectedClusterId, bot->GetGUID(), cfg.clusterJoinMs);
@@ -311,6 +327,60 @@ namespace
         LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' has no quest work here; activity {} for {}s.", bot->GetName(),
             WorldDirectiveName(chosen), (state.activityUntilMs - now) / IN_MILLISECONDS);
         return chosen;
+    }
+
+    void EndOpportunity(BrainState& state, BrainExtra& extra, char const* why)
+    {
+        state.opportunityActive = false;
+        state.task.paused = false;
+        extra.opportunityStarted = false;
+        state.nextOpportunityCheckMs = NowMs() + RollRange(state, 0x0dd1, 20000, 45000);
+        NoteEvent(state, Acore::StringFormat("back on the task after a detour ({})", why));
+    }
+
+    // A gathering node right next to the path: step off, pick it, step back on. The primary task
+    // stays as it was; only its movement is paused.
+    bool TryOpportunity(Player* bot, BrainState& state, BrainExtra& extra)
+    {
+        WorldBrainConfig const& cfg = WorldBrainSettings::Get();
+        uint32 now = NowMs();
+        if (!cfg.gatherDetours || now < state.nextOpportunityCheckMs)
+            return false;
+        state.nextOpportunityCheckMs = now + RollRange(state, 0x0dd2, 4000, 8000);
+
+        TaskPhase phase = state.task.phase;
+        if (phase != TaskPhase::TravelToArea && phase != TaskPhase::Search)
+            return false;
+        if (bot->IsInCombat() || !HasGatherSkill(bot))
+            return false;
+        // Gatherers can't walk past a herb; everyone else only sometimes stops.
+        if (Roll(state, 0x0dd3) % 100 >= state.persona.gathering)
+            return false;
+
+        uint16 herb = bot->GetSkillValue(SKILL_HERBALISM);
+        uint16 ore = bot->GetSkillValue(SKILL_MINING);
+        std::vector<Poi const*> nodes;
+        if (herb)
+            BotWorldPoi::Query(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), cfg.detourRadius, PoiKind::Herb, nodes);
+        if (ore)
+            BotWorldPoi::Query(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), cfg.detourRadius, PoiKind::Ore, nodes);
+
+        bool any = std::any_of(nodes.begin(), nodes.end(), [herb, ore](Poi const* poi)
+            { return poi->requiredSkill <= (poi->kind == PoiKind::Herb ? herb : ore); });
+        if (!any)
+            return false;
+
+        state.opportunityActive = true;
+        state.opportunity = WorldDirective::Gather;
+        state.opportunityUntilMs = now + OPPORTUNITY_MAX_MS;
+        extra.opportunityBeganMs = now;
+        extra.opportunityStarted = false;
+        state.task.paused = true;
+        BotMovement::Release(bot, MoveOwner::Quest);
+        BotMovement::Release(bot, MoveOwner::Travel);
+        Count(state.metrics, &WorldMetrics::opportunities);
+        NoteEvent(state, "detour: gathering node next to the path");
+        return true;
     }
 
     std::string SecondsText(uint32 ms)
@@ -430,6 +500,14 @@ namespace WorldBrain
             state.nextPresenceMs = now + RollRange(state, 0x9e5e, cfg.presenceMinMs, cfg.presenceMaxMs);
         }
 
+        if (state.opportunityActive)
+        {
+            if (now >= state.opportunityUntilMs)
+                EndOpportunity(state, extra, "took too long");
+            else
+                return state.opportunity;
+        }
+
         if (state.task.IsValid())
         {
             if (now >= state.task.deadlineMs)
@@ -438,10 +516,36 @@ namespace WorldBrain
                 EndTask(bot, state, ExecResult::Failed);
                 return WorldDirective::Busy;
             }
+            if (TryOpportunity(bot, state, extra))
+                return state.opportunity;
+
             ExecResult result = WorldExecutor::Update(bot, state, diff);
             if (result != ExecResult::Running)
                 EndTask(bot, state, result);
             return WorldDirective::Busy;
+        }
+
+        // Between tasks: the session rhythm -- a stretch of questing, then a break in town.
+        if (cfg.sessionBreaks)
+        {
+            if (!state.sessionStartMs)
+                StartSession(state, now);
+            if (state.breakUntilMs)
+            {
+                if (now < state.breakUntilMs)
+                    return WorldDirective::Ambient;
+                state.breakUntilMs = 0;
+                StartSession(state, now);
+                NoteEvent(state, "break over");
+            }
+            else if (state.goal == WorldGoal::Questing && now - state.sessionStartMs > state.sessionLengthMs)
+            {
+                state.breakUntilMs = now + RollRange(state, 0xb4ea, cfg.breakMinMs, cfg.breakMaxMs);
+                state.goal = WorldGoal::Break;
+                Count(state.metrics, &WorldMetrics::breaks);
+                NoteEvent(state, Acore::StringFormat("taking a break for {}", SecondsText(state.breakUntilMs - now)));
+                return WorldDirective::Ambient;
+            }
         }
 
         if (now >= state.nextPlanMs)
@@ -494,7 +598,19 @@ namespace WorldBrain
         if (itr == _states.end())
             return;
         BrainState& state = itr->second;
+        BrainExtra& extra = _extra[bot->GetGUID()];
         uint32 now = NowMs();
+
+        if (state.opportunityActive && directive == state.opportunity)
+        {
+            if (started)
+                extra.opportunityStarted = true;
+            else if (extra.opportunityStarted)
+                EndOpportunity(state, extra, "node gathered");
+            else if (now - extra.opportunityBeganMs > OPPORTUNITY_START_GRACE_MS)
+                EndOpportunity(state, extra, "node out of reach");
+            return;
+        }
 
         if (directive != state.activity)
             return;
@@ -547,6 +663,7 @@ namespace WorldBrain
         state.nextPresenceMs = 0;
         state.suspended = true;
         state.suspendReason = reason;
+        state.opportunityActive = false;
         extra.suspendedAtMs = NowMs();
         LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' brain suspended ({}), task #{} kept.", bot->GetName(), uint32(reason),
             state.task.id);
@@ -564,6 +681,7 @@ namespace WorldBrain
         extra.deathHandled = true;
 
         BrainState& state = itr->second;
+        state.opportunityActive = false;
         if (!state.task.IsValid())
             return;
 
@@ -701,16 +819,20 @@ namespace WorldBrain
         });
         handler->PSendSysMessage("  Failures:{}", failures.empty() ? std::string(" none") : failures);
 
-        handler->PSendSysMessage("  Next planner evaluation: {}.", SecondsText(state.nextPlanMs > now ? state.nextPlanMs - now : 0));
+        handler->PSendSysMessage("  Next planner evaluation: {}; opportunity: {}; session: {}{}.",
+            SecondsText(state.nextPlanMs > now ? state.nextPlanMs - now : 0), state.opportunityActive ? "detour in progress" : "none",
+            state.sessionStartMs ? SecondsText(now - state.sessionStartMs) : std::string("-"),
+            state.breakUntilMs > now ? Acore::StringFormat(", on a break for {}", SecondsText(state.breakUntilMs - now)) : std::string());
 
         if (!state.lastEvent.empty())
             handler->PSendSysMessage("  Last event ({} ago): {}", SecondsText(now - state.lastEventMs), state.lastEvent);
 
         WorldMetrics const& m = state.metrics;
         handler->PSendSysMessage("  Metrics: quests accepted {}, completed {}, turned in {}, suspended {}, abandoned {}; objectives {}; "
-            "kill targets {}; tasks {}/{} ok/failed; stuck {}; reservation conflicts {}; area switches {}.",
+            "kill targets {}; tasks {}/{} ok/failed; stuck {}; reservation conflicts {}; area switches {}; detours {}.",
             m.questsAccepted, m.questsCompleted, m.questsTurnedIn, m.questsSuspended, m.questsAbandoned, m.objectivesCompleted,
-            m.killTargetsSelected, m.tasksCompleted, m.tasksFailed, m.movementStuck, m.reservationConflicts, m.areaSwitches);
+            m.killTargetsSelected, m.tasksCompleted, m.tasksFailed, m.movementStuck, m.reservationConflicts, m.areaSwitches,
+            m.opportunities);
     }
 
     void DescribeGlobal(ChatHandler* handler)
@@ -749,8 +871,8 @@ namespace WorldBrain
             m.questsSuspended, m.questsAbandoned, m.objectivesCompleted, m.lootObjectivesCompleted, m.useObjectivesCompleted,
             m.exploreObjectivesCompleted, m.failedObjectives, m.objectiveProgress);
         handler->PSendSysMessage("Tasks: started {}, completed {}, failed {}, replans {}. Kill targets selected {}. Flights {}. "
-            "Area switches {}.", m.tasksStarted, m.tasksCompleted, m.tasksFailed, m.replans,
-            m.killTargetsSelected, m.travels, m.areaSwitches);
+            "Area switches {}. Detours {}. Breaks {}.", m.tasksStarted, m.tasksCompleted, m.tasksFailed, m.replans,
+            m.killTargetsSelected, m.travels, m.areaSwitches, m.opportunities, m.breaks);
 
         MovementStats const& mv = BotMovement::Stats();
         double avgRetries = m.tasksStarted ? double(m.travelRetries) / double(m.tasksStarted) : 0.0;

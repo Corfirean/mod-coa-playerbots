@@ -59,6 +59,17 @@ struct BrainState
     uint32 activityUntilMs = 0;
     uint32 activityIdleSinceMs = 0;
 
+    // Opportunity interrupt (a herb next to the road): the primary task pauses while it runs.
+    bool opportunityActive = false;
+    WorldDirective opportunity = WorldDirective::Idle;
+    uint32 opportunityUntilMs = 0;
+    uint32 nextOpportunityCheckMs = 0;
+
+    // Session rhythm: quest for a while, then take a break in town.
+    uint32 sessionStartMs = 0;
+    uint32 sessionLengthMs = 0;
+    uint32 breakUntilMs = 0;
+
     // Planner passes in a row that found nothing: the next pass waits exponentially longer, so a
     // bot with nothing to do does not re-evaluate the whole neighbourhood every few seconds.
     uint32 emptyPlans = 0;

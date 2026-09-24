@@ -70,6 +70,13 @@ struct WorldBrainConfig
     // Humanisation.
     uint32 reactionMinMs = 300;
     uint32 reactionMaxMs = 1400;
+    bool sessionBreaks = true;
+    uint32 sessionMinMs = 20 * 60 * 1000;
+    uint32 sessionMaxMs = 45 * 60 * 1000;
+    uint32 breakMinMs = 3 * 60 * 1000;
+    uint32 breakMaxMs = 8 * 60 * 1000;
+    bool gatherDetours = true;
+    float detourRadius = 15.0f;
 
     UtilityWeights utility;
     TargetWeights target;
