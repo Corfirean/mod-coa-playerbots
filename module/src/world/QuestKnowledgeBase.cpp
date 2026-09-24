@@ -510,9 +510,10 @@ namespace
         def.requiredCount = quest->RequiredItemCount[slot];
         def.type = ObjectiveType::CollectItem;
 
-        // Delivery quests: the quest hands the item out itself.
-        if (def.itemId == quest->GetSrcItemId() ||
-            std::find(std::begin(quest->ItemDrop), std::end(quest->ItemDrop), def.itemId) != std::end(quest->ItemDrop))
+        // Delivery quests: the quest hands the item out itself. Only the source item is handed out
+        // on accept (Player::GiveQuestSourceItem); ItemDrop lists items that drop *during* the
+        // quest, which still have to be collected like any other.
+        if (def.itemId == quest->GetSrcItemId())
         {
             def.providedByQuest = true;
             def.supported = true;
@@ -577,10 +578,20 @@ namespace
         info.unsupportedReason = reason;
     }
 
+    // Not only never taken: never finishable by a bot, whoever put it in the log.
+    void MarkUncompletable(QuestKnowledge& info, char const* reason)
+    {
+        MarkQuest(info, reason);
+        info.completable = false;
+        info.completionBlocker = reason;
+    }
+
     void ClassifyQuest(Quest const* quest, QuestKnowledge& info, std::vector<uint32> const* triggers)
     {
         info.supported = true;
         info.unsupportedReason = "";
+        info.completable = true;
+        info.completionBlocker = "";
 
         std::vector<QuestItemSpell> itemSpells = QuestItemSpells(quest);
 
@@ -624,18 +635,21 @@ namespace
                 info.elite = true;
         }
 
+        // Acceptance policy and completability are different things: a daily or an item-started
+        // quest a bot already has is perfectly finishable, it is just not one a bot picks up on its
+        // own. Player kills, reputation targets and a missing ender can never be finished here.
         if (quest->GetPlayersSlain())
-            MarkQuest(info, "player kills");
+            MarkUncompletable(info, "player kills");
         else if (quest->GetRepObjectiveFaction() || quest->GetRepObjectiveFaction2())
-            MarkQuest(info, "reputation objective");
+            MarkUncompletable(info, "reputation objective");
+        else if (info.enderCreatures.empty() && info.enderObjects.empty())
+            MarkUncompletable(info, "no quest ender");
         else if (quest->GetTimeAllowed())
             MarkQuest(info, "timed");
         else if (quest->IsDailyOrWeekly() || quest->IsMonthly() || quest->IsSeasonal())
             MarkQuest(info, "daily/weekly/seasonal");
         else if (info.giverCreatures.empty() && info.giverObjects.empty())
             MarkQuest(info, "no quest giver (item or script started)");
-        else if (info.enderCreatures.empty() && info.enderObjects.empty())
-            MarkQuest(info, "no quest ender");
     }
 
     void IndexQuests(std::unordered_map<uint32, std::vector<uint32>> const& triggers)
@@ -904,7 +918,9 @@ namespace QuestKB
         if (!info)
             return "unknown quest";
 
-        std::string out = info->supported ? "supported" : Acore::StringFormat("unsupported: {}", info->unsupportedReason);
+        std::string out = info->supported ? "supported" : Acore::StringFormat("not taken: {}", info->unsupportedReason);
+        if (!info->completable)
+            out += Acore::StringFormat(", can never be completed ({})", info->completionBlocker);
         if (info->elite)
             out += ", elite";
         for (ObjectiveDef const& def : info->objectives)

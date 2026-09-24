@@ -26,7 +26,8 @@ namespace
     constexpr size_t ROUTE_STEPS = 4;
     // Quest givers considered per planning pass, nearest first.
     constexpr size_t MAX_GIVERS_EVALUATED = 8;
-    // Trying a talk-to objective is a last resort: it usually cannot work.
+    // A talk-to objective (only ever one already in the log -- they are never accepted) is a last
+    // resort: one gossip hello rarely gives the credit.
     constexpr float TALK_PENALTY = 80.0f;
 
     struct Candidate
@@ -265,23 +266,28 @@ namespace WorldPlanner
         for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
         {
             uint32 questId = bot->GetQuestSlotQuestId(slot);
-            if (!questId || state.failures.Has(FailKind::Quest, questId, now))
+            if (!questId)
                 continue;
             QuestKnowledge const* quest = QuestKB::Get(questId);
             if (!quest)
                 continue;
 
+            // Exactly the questions ChooseTask asks, so "has work here" never disagrees with
+            // "the planner would find work here".
             QuestStatus status = bot->GetQuestStatus(questId);
             if (status == QUEST_STATUS_COMPLETE || (status == QUEST_STATUS_INCOMPLETE && bot->CanCompleteQuest(questId)))
             {
-                if (EnderReachable(bot, *quest))
+                if (!state.failures.Has(FailKind::TurnIn, questId, now) && EnderReachable(bot, *quest))
                     return true;
                 continue;
             }
-            if (status != QUEST_STATUS_INCOMPLETE || !quest->supported)
+            if (status != QUEST_STATUS_INCOMPLETE || state.failures.Has(FailKind::Quest, questId, now) ||
+                state.failures.Has(FailKind::Unworkable, questId, now) ||
+                !QuestInteraction::Workable(bot, questId, *quest))
                 continue;
             for (ObjectiveDef const& def : quest->objectives)
-                if (!def.providedByQuest && !ObjectiveCommon::IsDone(bot, questId, def) && ObjectiveReachable(bot, state, *quest, def))
+                if (!ObjectiveCommon::IsDone(bot, questId, def) && ObjectiveHandlers::CanExecute(def) &&
+                    ObjectiveReachable(bot, state, *quest, def))
                     return true;
         }
         return false;
@@ -313,7 +319,7 @@ namespace WorldPlanner
         for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
         {
             uint32 questId = bot->GetQuestSlotQuestId(slot);
-            if (!questId || state.failures.Has(FailKind::Quest, questId, now))
+            if (!questId)
                 continue;
             Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
             QuestKnowledge const* info = QuestKB::Get(questId);
@@ -323,6 +329,10 @@ namespace WorldPlanner
             QuestStatus status = bot->GetQuestStatus(questId);
             if (status == QUEST_STATUS_COMPLETE || (status == QUEST_STATUS_INCOMPLETE && bot->CanCompleteQuest(questId)))
             {
+                // A finished quest is handed in even while its objective work was set aside; only
+                // a reward that could not be taken (bags full) holds the hand-in back for a while.
+                if (state.failures.Has(FailKind::TurnIn, questId, now))
+                    continue;
                 EnderSpot spot;
                 if (!NearestEnder(bot, state, *info, spot))
                     continue;
@@ -337,17 +347,19 @@ namespace WorldPlanner
                 group->xp += XpShare(bot, quest);
                 continue;
             }
-            if (status != QUEST_STATUS_INCOMPLETE)
+            if (status != QUEST_STATUS_INCOMPLETE || state.failures.Has(FailKind::Quest, questId, now) ||
+                state.failures.Has(FailKind::Unworkable, questId, now))
+                continue;
+            // A quest with an open objective nothing can do (or that can never be completed) is a
+            // dead end: working on its other objectives would be wasted. The log cleanup deals
+            // with it (QuestPolicy.h).
+            if (!QuestInteraction::Workable(bot, questId, *info))
                 continue;
 
             for (uint8 index = 0; index < info->objectives.size(); ++index)
             {
                 ObjectiveDef const& def = info->objectives[index];
-                if (def.providedByQuest || ObjectiveCommon::IsDone(bot, questId, def))
-                    continue;
-                if (!def.supported && def.type != ObjectiveType::TalkTo)
-                    continue;
-                if (!ObjectiveHandlers::For(def))
+                if (ObjectiveCommon::IsDone(bot, questId, def) || !ObjectiveHandlers::CanExecute(def))
                     continue;
 
                 Candidate c;
