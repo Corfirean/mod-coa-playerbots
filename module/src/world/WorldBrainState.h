@@ -49,7 +49,7 @@ struct BrainState
     SuspendReason suspendReason = SuspendReason::None;
 
     FailureMemory failures;
-    // How many times each quest has been suspended; past a limit it is abandoned outright.
+    // Transient failures in a row per quest; sets the back-off (QuestPolicy::SuspendMs). Never abandons.
     std::unordered_map<uint32, uint32> questSuspensions;
 
     WorldMetrics metrics;

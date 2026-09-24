@@ -42,6 +42,10 @@ namespace QuestInteraction
     // must be one the knowledge base supports *and* this build executes.
     bool WouldAccept(Player* bot, BrainState& state, Quest const* quest, char const*& reason);
 
+    // The bot-independent half of WouldAccept: the quest is one bots take, and every objective
+    // is KB-supported and executable by this build. Hub selection counts quests with it.
+    bool TakeableByThisBuild(QuestKnowledge const& info);
+
     // Can the bot still finish this quest it has: completable at all, and every objective still
     // open is one this build executes (ObjectiveHandlers::CanExecute). The planner only works on
     // workable quests, HasQuestWork only counts them, and the log cleanup treats every other

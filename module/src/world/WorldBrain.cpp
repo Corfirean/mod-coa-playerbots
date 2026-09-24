@@ -492,9 +492,10 @@ namespace WorldBrain
             DropTask(bot, state, FailureReason::MapChanged);
             state.lastMapId = bot->GetMapId();
         }
-        else if (state.task.IsValid() && state.lastUpdateMs &&
+        else if (state.task.IsValid() && !state.task.taxiRequested && state.lastUpdateMs &&
             std::hypot(bot->GetPositionX() - state.lastX, bot->GetPositionY() - state.lastY) > RELOCATION_JUMP_YARDS)
-            // Teleported or flown somewhere while doing something else: planned from elsewhere.
+            // Teleported or flown somewhere while doing something else: planned from elsewhere. (A
+            // flight the task asked for itself is expected, and the task carries on from the landing.)
             DropTask(bot, state, FailureReason::Relocated);
 
         // Time the task's own business took while the brain was not ticking -- a fight with an

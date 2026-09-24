@@ -345,7 +345,9 @@ namespace WorldPlanner
                         continue;
                     QuestKnowledge const* info = QuestKB::Get(questId);
                     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-                    if (!info || !quest || !info->supported || (info->elite && !cfg.acceptElite))
+                    // The same test acceptance applies, so a hub is never chosen for quests the bot
+                    // would then refuse on arrival.
+                    if (!info || !quest || !QuestInteraction::TakeableByThisBuild(*info) || (info->elite && !cfg.acceptElite))
                         continue;
                     if (bot->GetQuestStatus(questId) != QUEST_STATUS_NONE)
                         continue;
