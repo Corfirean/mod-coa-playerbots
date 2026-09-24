@@ -1,11 +1,11 @@
 /*
  * mod-coa-playerbots
  *
- * One handler per kind of quest objective (kill, collect, loot so far; use, explore, cast and talk
- * arrive in later phases). The quest executor picks the handler for the task's objective and lets
- * it drive the phases; the handler keeps no state of its own -- everything lives in the WorldTask
- * -- so one instance serves every bot. Adding a new objective kind (escort, say) is a new handler
- * plus a line in the registry, not another branch in a thousand-line switch.
+ * One handler per kind of quest objective (kill, collect, use, loot, explore, cast, talk). The
+ * quest executor picks the handler for the task's objective and lets it drive the phases; the
+ * handler keeps no state of its own -- everything lives in the WorldTask -- so one instance serves
+ * every bot. Adding a new objective kind (escort, say) is a new handler plus a line in the
+ * registry, not another branch in a thousand-line switch.
  */
 
 #ifndef COA_PLAYERBOTS_I_QUEST_OBJECTIVE_HANDLER_H

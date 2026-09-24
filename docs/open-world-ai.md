@@ -68,10 +68,26 @@ Built once at startup from the data the world was loaded from (plus one read of 
 
 Quests a bot cannot reliably finish are never accepted: escorts/scripted events, talk-to-NPC
 credit, PvP, reputation, timed, daily/seasonal, no giver/ender, no loot source, elite (unless
-`AcceptEliteQuests`) — and any quest with an objective kind that has no handler yet. Handled so
-far: **kill**, **collect** (kill the creatures that drop the item and loot it), **open-and-loot**
-(a chest-type object holding the item) and plain delivery quests (no objectives, just a turn-in).
-Use-object, explore, use-item-on and talk objectives arrive in Phase 6.
+`AcceptEliteQuests`) — and any quest with an objective kind that has no handler. Handlers
+(`objectives/`, one per kind, stateless, picked through a registry):
+
+- **kill** (including kill-credit proxies) and **collect** (kill the creatures that drop the
+  item, loot it) — `Attack()` and the combat engine;
+- **use object** (levers, crates, notes — goober objects) through `HandleGameObjectUseOpcode`,
+  whose goober case hands out the credit or casts the item-creating spell;
+- **open and loot** (chest-type objects) with the lock's Opening spell;
+- **use the quest item on a creature / an object** through the item's own spell. AzerothCore
+  gives *every* creature/object objective the internal KILL|CAST|SPEAKTO flags, so the flag
+  can't tell these apart from kills; the knowledge base recognises them by a quest item whose
+  spell has a kill-credit effect for that entry, and the kill handler falls back to the item
+  when kills give no credit;
+- **explore**: walk into the area trigger's volume (as the core's `IsInAreaTriggerRadius` judges
+  it), then send `CMSG_AREATRIGGER` through the real handler — the server never notices a player
+  entering a trigger by itself, the client reports it;
+- **talk**: talk-to credit comes from gossip scripts and is never accepted; the handler only
+  tries a gossip hello for such quests already in a log, and drops the quest if that gives no
+  credit;
+- plain delivery quests (no objectives) are just an accept and a turn-in.
 
 **Quest drops.** Quest-only drops live in `Loot::quest_items`, in loot slots numbered after the
 regular items, and only for players who need them. The old loot code only ever took
@@ -168,6 +184,6 @@ clustering, utility scoring) is unit-tested standalone (`module/tests/`, also un
 | 3 | Anti-crowding: live-target reservations, spawn clustering into objective areas, population heatmap | in code |
 | 4 | Collect quests: reverse loot index, quest-drop looting, chests | in code |
 | 5 | Multi-quest routing: overlap, bundling, route plan | in code |
-| 6 | Use-object / explore / use-item-on / talk handlers | planned |
+| 6 | Use-object / explore / use-item-on / talk handlers | in code |
 | 7 | Quest-driven hub travel, flights for quest trips, zone-progression guard | planned |
 | 8 | Humanisation: opportunity detours, session breaks | planned |

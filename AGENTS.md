@@ -2971,3 +2971,34 @@ longer does them one at a time in whatever order the scores happen to fall:
 Live check: give a bot a kill quest and a collect quest on the same creature (any "kill N X" +
 "bring M items that X drops" pair in one zone) and confirm `.botcmd brain` shows the second
 objective under "bundled" and both counters climbing on one trip.
+
+## 2026-09-24: Open-world AI rework, Phase 6 -- use-object, explore, use-item-on and talk objectives (compiled, not live-tested)
+
+Stacked on Phase 5. Five more objective handlers under `module/src/world/objectives/`, so a bot
+now accepts most ordinary quest shapes, not only kill/collect:
+
+- **UseGameObject** (levers, crates, scattered notes -- goober objects): walk up, click through
+  `WorldSession::HandleGameObjectUseOpcode` (the real right-click path, distance check included);
+  `GameObject::Use`'s goober case hands out `KillCreditGO` or casts the object's item-creating
+  spell by itself.
+- **Cast on creature / Cast on object** ("use the Soothing Balm on 6 wounded soldiers"):
+  **AzerothCore sets `QUEST_SPECIAL_FLAGS_KILL | CAST | SPEAKTO` on every quest that has any
+  `RequiredNpcOrGo`** (`ObjectMgr::LoadQuests`), so the CAST flag cannot tell an item-use
+  objective from a kill -- don't try. The knowledge base instead looks for a quest item (the
+  quest's source item or one of its `ItemDrop` items) whose on-use spell has
+  `SPELL_EFFECT_KILL_CREDIT`/`KILL_CREDIT2` with that entry as MiscValue. The handler uses the item through its own spell (charges and all), and
+  follows the spell's feedback when it wants a corpse. The kill handler also switches to the item
+  on its own when several kills in a row gave no credit.
+- **Explore**: the server never notices a player entering an area trigger -- the client detects
+  it and sends `CMSG_AREATRIGGER`. The handler walks into the trigger's volume (radius or box,
+  judged by the core's own `IsInAreaTriggerRadius`) and sends that message through
+  `HandleAreaTriggerOpcode`, which runs the real checks and `AreaExploredOrEventHappens`.
+  Triggers come from `areatrigger_involvedrelation`. A trigger that gives nothing from inside
+  (scripted, phased) marks the objective unsupported for that bot.
+- **Talk**: talk-to credit comes from gossip scripts with no general way to pick the right
+  option, so such quests are never accepted. The handler only exists for ones already in a log:
+  one `CMSG_GOSSIP_HELLO`, and if that gave no credit the quest is dropped instead of retried.
+
+Live checks: a lever/crate quest (goober) and a "use item on X" quest in a starting zone should
+complete; an exploration quest (e.g. Westfall/Barrens scouting quests with an area trigger)
+should complete once the bot walks in.

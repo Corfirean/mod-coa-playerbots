@@ -6,11 +6,16 @@ namespace ObjectiveHandlers
 {
     IQuestObjectiveHandler* For(ObjectiveDef const& def)
     {
-        static std::array<IQuestObjectiveHandler*, 3> const handlers =
+        static std::array<IQuestObjectiveHandler*, 8> const handlers =
         {
             &KillObjectiveHandlerInstance(),
             &LootItemObjectiveHandlerInstance(),
+            &CastObjectiveHandlerInstance(),
+            &UseGameObjectObjectiveHandlerInstance(),
             &LootGameObjectObjectiveHandlerInstance(),
+            &CastOnObjectObjectiveHandlerInstance(),
+            &ExploreObjectiveHandlerInstance(),
+            &TalkObjectiveHandlerInstance(),
         };
 
         for (IQuestObjectiveHandler* handler : handlers)
