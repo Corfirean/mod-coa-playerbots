@@ -55,6 +55,129 @@ Needed so a bot can see the group's pending loot rolls at all (to auto-Greed
 them in `BotMgr::DoRollGreed`) — `Group` had no existing way to read `RollId`
 from outside the class.
 
+### Patch 3 — spending Ascension talent points through the real budget-checked path
+
+Not committed yet (2026-09-24) — apply against `src/server/coa/` in
+`azerothcore-wotlk-coa`, build/test locally, then commit following the same
+pattern as Patch 1/2.
+
+**The bug this fixes**: `BotMgr::LearnSpecialization` and
+`BotTalentBuilds::ApplyBuildForLevel` (this repo, `module/src/BotMgr.cpp` and
+`module/src/BotTalentBuilds.cpp`) grant paid talent spells to bots via a plain
+`bot->learnSpell(spellId, false)`, and set the active spec via a raw
+`bot->UpdatePlayerSetting("core.ascension_active_spec", 0, specId)`. Neither
+ever calls the real `AscensionClassService::SetTalentRank()` /
+`SwitchSpecialization()` — because that class is defined entirely inside a
+file-local anonymous namespace in `AscensionCompat.cpp` (lines ~590–2145 as of
+this fork's current `main`), with no header and no external linkage, so no
+other module can reach it at all. This was a known, deliberate tradeoff (see
+AGENTS.md's 2026-09-13 "Healer/Tank casting live-validated" entry), but it has
+two real consequences, not just one:
+
+1. **No talent-point budget enforcement.** `SetTalentRank` checks a real
+   per-level class/spec `AE`/`TE` point budget
+   (`AscensionCompatData::GetCoATalentBudget`) computed live from the
+   spellbook before granting a rank. The bot module's direct `learnSpell`
+   path enforces none of this, so a bot can end up over- or
+   under-invested relative to what a real player at the same level could
+   actually afford.
+2. **`GetActiveSpecialization()` never sees a bot's spec at all.**
+   `AscensionClassService::GetActiveSpecialization()` reads an **in-memory**
+   `_activeSpecializations` map keyed by player guid, populated only by the
+   real `SwitchSpecialization()` (and by login, from the same PlayerSetting
+   this module also writes). A raw `UpdatePlayerSetting` write never touches
+   that map, so from the core's own point of view every bot's active spec is
+   stuck at `0` — which silently blocks every spec-gated *automatic* talent
+   grant (`SynchronizeAutomaticTalents`) and any tuning that keys off active
+   spec (`AscensionClassTuning::Synchronize`), independent of the paid-talent
+   problem above.
+
+**The fix**: expose `SwitchSpecialization()` and `SetTalentRank()` as two
+thin free-function forwarders with real external linkage, so
+`mod-coa-playerbots` can call the actual gated logic instead of reimplementing
+a subset of it.
+
+New file: `src/server/coa/AscensionClassServiceBridge.h`
+
+```cpp
+#pragma once
+
+#include "AscensionCoATalentData.h"
+#include <string>
+
+class Player;
+
+// Minimal, deliberately narrow bridge into AscensionClassService, which is entirely
+// private to AscensionCompat.cpp (defined inside a file-local anonymous namespace, no
+// other public header). mod-coa-playerbots needs to actually switch spec and spend a
+// bot's paid (AECost/TECost > 0) Ascension talent points through the same
+// budget-checked, mutually-exclusive-group-aware path a real player's
+// `.localspec`/`.localtalent` commands use, instead of writing PlayerSettings and
+// learnSpell()-ing spells directly and silently bypassing the budget check and the
+// in-memory active-spec bookkeeping GetActiveSpecialization() depends on.
+namespace AscensionClassServiceBridge
+{
+    // Mirrors AscensionClassService::SwitchSpecialization(player, specializationId)
+    // exactly. Returns false if specializationId isn't valid for player's class.
+    bool SwitchSpecialization(Player* player, uint32 specializationId);
+
+    // Mirrors AscensionClassService::SetTalentRank(player, entry, rank, error) exactly --
+    // same validation order, same budget accounting, same free-choice-group mutual
+    // exclusion. Returns false and fills `error` with a human-readable reason on failure
+    // (wrong class, spec mismatch, level too low, over budget, etc.); on success the
+    // player's spellbook and specialization bookkeeping are already updated, no further
+    // action needed by the caller.
+    bool SetTalentRank(Player* player, AscensionCompatData::CoATalentEntry const& entry, uint32 rank, std::string& error);
+}
+```
+
+In `src/server/coa/AscensionCompat.cpp`:
+
+- Add `#include "AscensionClassServiceBridge.h"` to the top of the file's
+  include block.
+- Append these two forwarders just before `void AddAscensionCompatScripts()`
+  (they must be textually *after* the anonymous namespace containing
+  `AscensionClassService`, but do not need to be inside it — an anonymous
+  namespace's names stay visible via unqualified lookup for the rest of the
+  translation unit):
+
+```cpp
+bool AscensionClassServiceBridge::SwitchSpecialization(Player* player, uint32 specializationId)
+{
+    return AscensionClassService::Instance().SwitchSpecialization(player, specializationId);
+}
+
+bool AscensionClassServiceBridge::SetTalentRank(Player* player, AscensionCompatData::CoATalentEntry const& entry, uint32 rank, std::string& error)
+{
+    return AscensionClassService::Instance().SetTalentRank(player, entry, rank, error);
+}
+```
+
+Both `SwitchSpecialization` and `SetTalentRank` are `public` members of
+`AscensionClassService` already (confirmed by reading the class body directly
+— its one `private:` label comes much later, at the data-member block), so
+no visibility change inside that class is needed at all — this patch only
+adds two new file-scope functions with external linkage next to it.
+
+**Module-side changes this enables** (already committed in this repo):
+`BotMgr::LearnSpecialization` now calls `AscensionClassServiceBridge::
+SwitchSpecialization()` once per spec change and `AscensionClassServiceBridge::
+SetTalentRank()` per paid entry instead of `learnSpell`/`removeSpell`/
+`UpdatePlayerSetting` directly; `BotTalentBuilds::ApplyBuildForLevel()` does
+the same per curated pick. A `SetTalentRank` failure (most commonly: the
+class/spec point budget is already spent at the bot's level) is logged and
+skipped rather than forced through.
+
+**Not yet built or tested** — this cloud session has no access to the
+Windows dev box or a live CoA-Repack instance. Apply this patch to the real
+`azerothcore-wotlk-coa` checkout, mirror the already-committed module changes
+in this repo per the "Building after a change" section below, rebuild, and
+verify live (a `.botcmd learnspec`/`.botcmd checkrole` round-trip, checking
+that a bot at a low level now correctly gets *fewer* paid talents than the
+full curated build lists, and that `SynchronizeAutomaticTalents`-granted
+spec-specific automatic entries actually appear post-fix where they didn't
+before) before trusting it the way Patch 1/2 are trusted.
+
 ### Applying these to a fresh core checkout
 
 These are ordinary commits against `azerothcore-wotlk-coa` — `git log --oneline -- src/server/game/Handlers/CharacterHandler.cpp src/server/game/Server/WorldSession.h` (etc.) will find them by hash if you need to `git cherry-pick` them onto a different branch, or diff them out as a standalone patch file. They're small and mechanical enough (29 + 4 lines) to reapply by hand if a merge conflict ever makes cherry-picking painful — see the "surviving an upstream merge" note below.

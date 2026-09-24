@@ -215,18 +215,29 @@ public:
     // a class's numeric Ascension SpecId to a real role empirically).
     void CheckRole(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
 
-    // Gives a bot a real Ascension specialization: persists the same
-    // "core.ascension_active_spec" PlayerSetting mod-ascension-compat's own login hook reads,
-    // and directly learns every non-automatic ("paid") talent entry in that spec plus the
-    // shared class tree at its highest rank -- the ones AECost/TECost-gated behind
-    // `.localtalent`, a SEC_PLAYER chat command that (like all of them) doesn't work on a
-    // null-socket bot session (see RunChatCommand's doc comment). This is a companion, not a
-    // stripped-down pet substitute (docs/architecture.md's scope decision) -- a real player's
-    // group companion has their talents spent, so a bot should too. Automatic (free) entries
-    // are left to mod-ascension-compat's own SynchronizeProgression, triggered by the
-    // PlayerSetting write on next login; this only handles the paid ones it can't reach.
-    // specId 0 grants only the shared tree (no spec chosen). See docs/roles.md for known
-    // class -> SpecId -> role mappings.
+    // Gives a bot a real Ascension specialization: switches spec and spends every
+    // non-automatic ("paid") talent entry in that spec plus the shared class tree at its
+    // highest affordable rank -- the ones AECost/TECost-gated behind `.localtalent`, a
+    // SEC_PLAYER chat command that (like all of them) doesn't work on a null-socket bot
+    // session (see RunChatCommand's doc comment). This is a companion, not a stripped-down
+    // pet substitute (docs/architecture.md's scope decision) -- a real player's group
+    // companion has their talents spent, so a bot should too.
+    //
+    // Both the spec switch and each entry's rank are set through
+    // AscensionClassServiceBridge::SwitchSpecialization()/SetTalentRank() (see
+    // docs/core-patches.md's "Patch 3") -- the same budget-checked, mutual-exclusion-aware
+    // path a real player's `.localspec`/`.localtalent` commands use. Earlier versions of
+    // this function wrote the "core.ascension_active_spec" PlayerSetting directly and
+    // learnSpell()'d every paid entry unconditionally: that bypassed
+    // AscensionClassService's per-level class/spec point budget entirely (so a bot could
+    // end up over-invested) and never touched the in-memory active-spec map
+    // GetActiveSpecialization() actually reads, which silently blocked every spec-gated
+    // automatic talent grant regardless of what the PlayerSetting said. A SetTalentRank
+    // failure (most commonly: the budget is already spent at this level) is logged and
+    // skipped rather than forced through. Automatic (free) entries are still left to
+    // mod-ascension-compat's own SynchronizeProgression, now correctly triggered by the
+    // real spec switch. specId 0 grants only the shared tree (no spec chosen). See
+    // docs/roles.md for known class -> SpecId -> role mappings.
     void LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId, ChatHandler* handler);
 
     // One-button dungeon group fill: brings `commander`'s group up to 5 (tank + healer + 3
