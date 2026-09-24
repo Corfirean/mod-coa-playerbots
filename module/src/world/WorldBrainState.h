@@ -42,13 +42,15 @@ struct BrainState
     uint32 nextTaskId = 1;
 
     uint32 nextPlanMs = 0;
-    uint32 lastUpdateMs = 0;
+    uint32 lastUpdateMs = 0;          // last brain tick: a longer gap means the bot was busy elsewhere
     uint32 lastMapId = 0xFFFFFFFF;
+    float lastX = 0.0f;               // position at the last brain tick (teleport detection)
+    float lastY = 0.0f;
     bool suspended = false;
     SuspendReason suspendReason = SuspendReason::None;
 
     FailureMemory failures;
-    // How many times each quest has been suspended; past a limit it is abandoned outright.
+    // Transient failures in a row per quest; sets the back-off (QuestPolicy::SuspendMs). Never abandons.
     std::unordered_map<uint32, uint32> questSuspensions;
 
     WorldMetrics metrics;
@@ -70,6 +72,7 @@ struct BrainState
     uint32 nextSocialCheckMs = 0;
     bool socialActive = false;        // a help action (a resurrection cast) owns the bot
     uint32 socialUntilMs = 0;
+    bool pausedBySocial = false;      // the task is paused while the bot helps someone
     uint32 rezSpellId = 0;            // best resurrection spell the bot knows, 0 = none
     uint32 rezSpellCheckedMs = 0;
     uint32 nextPartyAttemptMs = 0;

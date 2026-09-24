@@ -80,15 +80,16 @@ namespace
         return state.rezSpellId;
     }
 
-    // Anything the task was walking toward or holding is let go: the bot will pick its task up
-    // again from a fresh search once it is done helping.
+    // Helping is an interruption from outside the task, like an ambient errand: the task is paused
+    // (its clocks stop, its legs, target and heatmap "incoming" are let go) and the brain resumes
+    // it once the help is over (WorldBrain::Update), with its clocks moved on by as much. An
+    // objective that was walking up to its target looks for one again.
     void StepAwayFromTask(Player* bot, BrainState& state, char const* why)
     {
         if (!state.task.IsValid())
             return;
-        WorldExecutor::ReleaseTask(bot, state);
-        if (state.task.type == WorldTaskType::QuestObjective && state.task.phase == TaskPhase::Approach)
-            SetPhase(bot, state, TaskPhase::Search, why);
+        WorldExecutor::PauseTask(bot, state, why);
+        state.pausedBySocial = true;
     }
 
     bool TryResurrect(Player* bot, BrainState& state, std::vector<Player*> const& players, uint32 now)

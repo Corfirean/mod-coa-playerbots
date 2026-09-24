@@ -151,7 +151,7 @@ namespace ObjectiveCommon
     {
         auto add = [&](ObjectiveDef const& def, uint32 questId)
         {
-            if (!def.supported || def.targetsAreGameObjects != gameObjects || IsDone(ctx.bot, questId, def))
+            if (!ObjectiveHandlers::CanExecute(def) || def.targetsAreGameObjects != gameObjects || IsDone(ctx.bot, questId, def))
                 return;
             for (uint32 target : def.targets)
             {
@@ -496,6 +496,26 @@ namespace ObjectiveCommon
             return ObjectiveResult::Failed;
         }
         return ObjectiveResult::Running;
+    }
+
+    uint32 SearchBudgetMs(BrainState const& state, WorldBrainConfig const& cfg)
+    {
+        uint32 budget = cfg.searchTimeoutMs * (50 + state.persona.patience) / 100;
+        if (state.task.corpsesSeen > 0)
+            budget = budget * 3 / 2;
+        return budget;
+    }
+
+    uint32 PhaseBudgetMs(BrainState const& state, WorldBrainConfig const& cfg)
+    {
+        switch (state.task.phase)
+        {
+            case TaskPhase::TravelToArea: return cfg.travelTimeoutMs;
+            case TaskPhase::Search:       return SearchBudgetMs(state, cfg);
+            case TaskPhase::Approach:     return cfg.approachTimeoutMs;
+            case TaskPhase::Loot:         return cfg.lootTimeoutMs;
+            default:                      return 0;
+        }
     }
 
     uint32 DryAttemptLimit(ObjectiveDef const& def)

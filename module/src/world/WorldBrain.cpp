@@ -15,6 +15,7 @@
 #include "QuestExecutor.h"
 #include "QuestInteraction.h"
 #include "QuestKnowledgeBase.h"
+#include "QuestPolicy.h"
 #include "WorldBrainState.h"
 #include "WorldExecutor.h"
 #include "WorldParties.h"
@@ -39,6 +40,22 @@ namespace
     // Opportunity detours (a herb next to the path).
     constexpr uint32 OPPORTUNITY_MAX_MS = 30000;
     constexpr uint32 OPPORTUNITY_START_GRACE_MS = 4500;
+
+    // The brain normally ticks every world update while the bot is idle. A longer gap means the
+    // bot was busy with the task's own business somewhere else in BotAI (a fight, resting,
+    // looting, a corpse run): that time is taken off the current phase's budget.
+    constexpr uint32 BRAIN_GAP_MS = 2000;
+
+    // Farther than this from where the last brain tick saw the bot means it was moved (a
+    // teleport, a flight): the task was planned from somewhere else and is re-planned.
+    constexpr float RELOCATION_JUMP_YARDS = 400.0f;
+
+    // A dead-end quest is remembered (and logged) once per this long.
+    constexpr uint32 DEAD_END_MEMORY_MS = HOUR * IN_MILLISECONDS;
+
+    // A quest a handler tried and found this bot cannot do is left alone this long before one more
+    // try (the quest item may come back, a script may behave differently next time).
+    constexpr uint32 UNWORKABLE_MEMORY_MS = 6 * HOUR * IN_MILLISECONDS;
 
     // A fallback activity that keeps finding nothing hands over to ambient life after this.
     constexpr uint32 ACTIVITY_IDLE_SWITCH_MS = 15000;
@@ -120,57 +137,85 @@ namespace
         state.sessionLengthMs = RollRange(state, 0x5e55, cfg.sessionMinMs, cfg.sessionMaxMs) / 100 * (50 + state.persona.patience);
     }
 
+    // A transient failure (no targets, no path, no progress, a death...): the quest is set aside,
+    // longer each time in a row, and retried later. Never abandoned from here -- whether a quest
+    // is a dead end is decided from what it is (CleanupQuestLog), not from how one run went.
     void SuspendQuest(Player* bot, BrainState& state, uint32 questId, FailureReason reason)
     {
         WorldBrainConfig const& cfg = WorldBrainSettings::Get();
         uint32 now = NowMs();
-        state.failures.Remember(FailKind::Quest, questId, now, cfg.questSuspendMs, uint8(reason));
         uint32 suspensions = ++state.questSuspensions[questId];
+        uint32 ms = QuestPolicy::SuspendMs(cfg.questSuspendMs, suspensions, cfg.questSuspendMaxMs);
+        state.failures.Forget(FailKind::Quest, questId);
+        state.failures.Remember(FailKind::Quest, questId, now, ms, uint8(reason));
         Count(state.metrics, &WorldMetrics::questsSuspended);
-
-        QuestKnowledge const* info = QuestKB::Get(questId);
-        bool hopeless = reason == FailureReason::Unsupported || suspensions >= cfg.abandonAfterSuspensions ||
-            (info && !info->supported);
-        if (hopeless)
-        {
-            QuestInteraction::Abandon(bot, questId);
-            state.failures.Remember(FailKind::Quest, questId, now, ABANDONED_QUEST_MEMORY_MS, uint8(reason));
-            state.questSuspensions.erase(questId);
-            Count(state.metrics, &WorldMetrics::questsAbandoned);
-            NoteEvent(state, Acore::StringFormat("abandoned quest {} ({})", questId, FailureReasonName(reason)));
-        }
-        else
-            NoteEvent(state, Acore::StringFormat("set quest {} aside for a while ({})", questId, FailureReasonName(reason)));
+        LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' sets quest {} aside for {}s ({}, {} in a row).", bot->GetName(), questId,
+            ms / IN_MILLISECONDS, FailureReasonName(reason), suspensions);
+        NoteEvent(state, Acore::StringFormat("set quest {} aside for {}s ({}, {} in a row)", questId, ms / IN_MILLISECONDS,
+            FailureReasonName(reason), suspensions));
     }
 
-    // Quests in the log that no bot can ever finish: unsupported ones (typically taken before this
-    // layer existed) and ones whose quest-provided item is gone. A player abandons those; leaving
-    // them in the log blocks it from ever taking new work.
+    // Dead ends in the log (QuestPolicy.h): quests that have failed, can never be completed, or
+    // have an open objective this build cannot execute -- typically taken before this layer
+    // existed, or added by hand. The planner already leaves every one of them alone (the same
+    // Workable() question); here they are noted once, and one is abandoned per pass only when the
+    // log is so full it blocks new work. Quests the knowledge base does not know are never touched.
     void CleanupQuestLog(Player* bot, BrainState& state)
     {
+        WorldBrainConfig const& cfg = WorldBrainSettings::Get();
+        uint32 now = NowMs();
+        uint32 inLog = 0;
+        uint32 victim = 0;
+        bool victimFailed = false;
+
         for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
         {
             uint32 questId = bot->GetQuestSlotQuestId(slot);
-            if (!questId || bot->GetQuestStatus(questId) != QUEST_STATUS_INCOMPLETE || bot->CanCompleteQuest(questId))
+            if (!questId)
                 continue;
-            QuestKnowledge const* info = QuestKB::Get(questId);
-            if (!info)
+            ++inLog;
+
+            QuestStatus status = bot->GetQuestStatus(questId);
+            char const* why = nullptr;
+            if (status == QUEST_STATUS_FAILED)
+                why = "the quest has failed";
+            else if (status == QUEST_STATUS_INCOMPLETE && state.failures.Has(FailKind::Unworkable, questId, now))
+                why = "a handler tried and this bot cannot do it";
+            else if (status == QUEST_STATUS_INCOMPLETE && !bot->CanCompleteQuest(questId))
+            {
+                QuestKnowledge const* info = QuestKB::Get(questId);
+                if (!info || QuestInteraction::Workable(bot, questId, *info, &why))
+                    continue;
+            }
+            if (!why)
                 continue;
 
-            bool doable = false;
-            bool anyOpen = false;
-            for (ObjectiveDef const& def : info->objectives)
+            // Noted once an hour. Only a note: the planner skips the quest because Workable() says
+            // so, not because of this, so a quest that becomes workable again is picked up at once.
+            if (!state.failures.Has(FailKind::DeadEnd, questId, now))
             {
-                if (ObjectiveCommon::IsDone(bot, questId, def))
-                    continue;
-                anyOpen = true;
-                // A talk-to objective gets one honest try (TalkObjectiveHandler) before anything
-                // is abandoned; a lost quest-provided item cannot come back.
-                if ((def.supported && !def.providedByQuest) || def.type == ObjectiveType::TalkTo)
-                    doable = true;
+                state.failures.Remember(FailKind::DeadEnd, questId, now, DEAD_END_MEMORY_MS, uint8(FailureReason::Unsupported));
+                LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' leaves quest {} alone: {}.", bot->GetName(), questId, why);
+                NoteEvent(state, Acore::StringFormat("quest {} is a dead end ({})", questId, why));
             }
-            if (anyOpen && !doable)
-                SuspendQuest(bot, state, questId, FailureReason::Unsupported);
+
+            bool failed = status == QUEST_STATUS_FAILED;
+            if (!victim || (failed && !victimFailed))
+            {
+                victim = questId;
+                victimFailed = failed;
+            }
+        }
+
+        if (victim && QuestPolicy::ShouldAbandonDeadEnd(inLog, cfg.maxActiveQuests))
+        {
+            QuestInteraction::Abandon(bot, victim);
+            state.failures.Remember(FailKind::Quest, victim, now, ABANDONED_QUEST_MEMORY_MS, uint8(FailureReason::Unsupported));
+            state.questSuspensions.erase(victim);
+            Count(state.metrics, &WorldMetrics::questsAbandoned);
+            LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' abandons dead-end quest {} to make room ({} quests in the log).",
+                bot->GetName(), victim, inLog);
+            NoteEvent(state, Acore::StringFormat("abandoned dead-end quest {} to make room in the log", victim));
         }
     }
 
@@ -186,6 +231,9 @@ namespace
 
         if (result == ExecResult::Completed)
         {
+            // Work on the quest succeeded: its next failure starts the back-off from scratch.
+            if (task.type == WorldTaskType::QuestObjective)
+                state.questSuspensions.erase(task.quest.questId);
             Count(state.metrics, &WorldMetrics::tasksCompleted);
             LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' TaskCompleted {} #{} (quest {}) after {}s.", bot->GetName(),
                 WorldTaskTypeName(task.type), task.id, task.quest.questId, (now - task.startedMs) / IN_MILLISECONDS);
@@ -210,12 +258,22 @@ namespace
                     {
                         case FailureReason::NoProgress:
                         case FailureReason::NoTargets:
-                        case FailureReason::Unsupported:
                         case FailureReason::Unreachable:
                         case FailureReason::Timeout:
                         case FailureReason::CastFailed:
+                        case FailureReason::InteractFailed:
                         case FailureReason::Died:
                             SuspendQuest(bot, state, task.quest.questId, reason);
+                            break;
+                        case FailureReason::Unsupported:
+                            // The handler tried and this bot cannot do it (a talk that gave no
+                            // credit, a trigger that gave nothing, a quest item that is gone). Not a
+                            // transient failure: no work on it for a long while, and the log cleanup
+                            // treats it as a dead end from its next pass.
+                            state.failures.Remember(FailKind::Unworkable, task.quest.questId, now, UNWORKABLE_MEMORY_MS,
+                                uint8(reason));
+                            NoteEvent(state, Acore::StringFormat("quest {} cannot be done by this bot", task.quest.questId));
+                            state.nextLogCleanupMs = now;
                             break;
                         default:
                             break;
@@ -268,7 +326,6 @@ namespace
 
         if (t.quest.selectedClusterId)
             WorldReservations::Join(ReservationKind::QuestCluster, t.quest.selectedClusterId, bot->GetGUID(), cfg.clusterJoinMs);
-        PopulationHeatmap::SetIncoming(bot->GetGUID(), t.mapId, t.x, t.y);
         Count(state.metrics, &WorldMetrics::tasksStarted);
 
         float dist = std::hypot(bot->GetPositionX() - t.x, bot->GetPositionY() - t.y);
@@ -336,17 +393,19 @@ namespace
         return chosen;
     }
 
-    void EndOpportunity(BrainState& state, BrainExtra& extra, char const* why)
+    // The detour is over: the task's pause ends and its clocks move on by the detour's length, so
+    // picking the herb is not time spent travelling or searching.
+    void EndOpportunity(Player* bot, BrainState& state, BrainExtra& extra, char const* why)
     {
         state.opportunityActive = false;
-        state.task.paused = false;
         extra.opportunityStarted = false;
+        WorldExecutor::ResumeTask(bot, state);
         state.nextOpportunityCheckMs = NowMs() + RollRange(state, 0x0dd1, 20000, 45000);
         NoteEvent(state, Acore::StringFormat("back on the task after a detour ({})", why));
     }
 
     // A gathering node right next to the path: step off, pick it, step back on. The primary task
-    // stays as it was; only its movement is paused.
+    // stays as it was, paused (clocks stopped, legs and target let go) for the detour.
     bool TryOpportunity(Player* bot, BrainState& state, BrainExtra& extra)
     {
         WorldBrainConfig const& cfg = WorldBrainSettings::Get();
@@ -382,9 +441,7 @@ namespace
         state.opportunityUntilMs = now + OPPORTUNITY_MAX_MS;
         extra.opportunityBeganMs = now;
         extra.opportunityStarted = false;
-        state.task.paused = true;
-        BotMovement::Release(bot, MoveOwner::Quest);
-        BotMovement::Release(bot, MoveOwner::Travel);
+        WorldExecutor::PauseTask(bot, state, "detour to a gathering node");
         Count(state.metrics, &WorldMetrics::opportunities);
         NoteEvent(state, "detour: gathering node next to the path");
         return true;
@@ -427,7 +484,10 @@ namespace WorldBrainInternal
         LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' PhaseChanged {} -> {} ({}) task #{} quest {}.", bot->GetName(),
             TaskPhaseName(state.task.phase), TaskPhaseName(phase), why, state.task.id, state.task.quest.questId);
         state.task.phase = phase;
-        state.task.phaseStartedMs = NowMs();
+        // A phase entered while the task is paused (a death on an errand, the pause itself
+        // releasing a target) starts at the frozen clock, so Resume() moves it to the resume time
+        // like every other clock of the task -- never into the future.
+        state.task.phaseStartedMs = state.task.ClockNow(NowMs());
     }
 
     void NoteEvent(BrainState& state, std::string text)
@@ -438,7 +498,8 @@ namespace WorldBrainInternal
 
     uint32 PhaseElapsed(BrainState const& state)
     {
-        return NowMs() - state.task.phaseStartedMs;
+        uint32 clock = state.task.ClockNow(NowMs());
+        return clock > state.task.phaseStartedMs ? clock - state.task.phaseStartedMs : 0;
     }
 
     BrainState* FindState(ObjectGuid guid)
@@ -480,18 +541,35 @@ namespace WorldBrain
             return WorldDirective::Idle;
         }
 
+        // Back from something outside the task (a group, a manual command, an errand): the pause
+        // ends and the task's clocks move on by its length, so none of it counts as searching,
+        // approaching or travelling. A long suspension drops the task instead: the world has
+        // moved on.
+        bool resumed = false;
         if (state.suspended)
         {
             state.suspended = false;
+            extra.pausedByAmbient = false;
+            state.pausedBySocial = false;
             if (state.task.IsValid())
             {
                 if (now - extra.suspendedAtMs > SUSPEND_DROP_MS)
                     DropTask(bot, state, FailureReason::Suspended);
                 else
+                {
+                    WorldExecutor::ResumeTask(bot, state);
                     SetPhase(bot, state, TaskPhase::Recover, "resumed");
+                }
             }
             NoteEvent(state, "resumed after a suspension");
             state.nextPlanMs = std::min(state.nextPlanMs, now + RollRange(state, 0x7e5a, 500, 2500));
+            resumed = true;
+        }
+        else if (extra.pausedByAmbient)
+        {
+            extra.pausedByAmbient = false;
+            WorldExecutor::ResumeTask(bot, state);
+            resumed = true;
         }
 
         if (bot->GetMapId() != state.lastMapId)
@@ -499,13 +577,20 @@ namespace WorldBrain
             DropTask(bot, state, FailureReason::MapChanged);
             state.lastMapId = bot->GetMapId();
         }
+        else if (state.task.IsValid() && !state.task.taxiRequested && state.lastUpdateMs &&
+            std::hypot(bot->GetPositionX() - state.lastX, bot->GetPositionY() - state.lastY) > RELOCATION_JUMP_YARDS)
+            // Teleported or flown somewhere while doing something else: planned from elsewhere. (A
+            // flight the task asked for itself is expected, and the task carries on from the landing.)
+            DropTask(bot, state, FailureReason::Relocated);
 
-        if (extra.pausedByAmbient)
-        {
-            extra.pausedByAmbient = false;
-            state.task.paused = false;
-        }
+        // Time the task's own business took while the brain was not ticking -- a fight with an
+        // add, resting, looting, a corpse run -- is not time spent in the phase it interrupted.
+        if (!resumed && state.task.IsValid() && state.lastUpdateMs && now - state.lastUpdateMs > BRAIN_GAP_MS)
+            state.task.ShiftPhaseClock(now - state.lastUpdateMs);
+
         state.lastUpdateMs = now;
+        state.lastX = bot->GetPositionX();
+        state.lastY = bot->GetPositionY();
 
         if (now >= state.nextPresenceMs)
         {
@@ -517,7 +602,7 @@ namespace WorldBrain
         if (state.opportunityActive)
         {
             if (now >= state.opportunityUntilMs)
-                EndOpportunity(state, extra, "took too long");
+                EndOpportunity(bot, state, extra, "took too long");
             else
                 return state.opportunity;
         }
@@ -525,6 +610,13 @@ namespace WorldBrain
         // Someone nearby needs a hand (a fight they are losing, a corpse to resurrect).
         if (WorldSocial::IsHelping(bot, state) || WorldSocial::TryHelp(bot, state))
             return WorldDirective::Busy;
+        if (state.pausedBySocial)
+        {
+            // Done helping (the resurrection cast ended, the fight is over): the task picks up
+            // where it was, its clocks moved on by the interruption.
+            state.pausedBySocial = false;
+            WorldExecutor::ResumeTask(bot, state);
+        }
 
         if (state.task.IsValid())
         {
@@ -540,6 +632,7 @@ namespace WorldBrain
             ExecResult result = WorldExecutor::Update(bot, state, diff);
             if (result != ExecResult::Running)
                 EndTask(bot, state, result);
+            WorldExecutor::SyncIncoming(bot, state);
             return WorldDirective::Busy;
         }
 
@@ -603,6 +696,7 @@ namespace WorldBrain
                 ExecResult result = WorldExecutor::Update(bot, state, diff);
                 if (result != ExecResult::Running)
                     EndTask(bot, state, result);
+                WorldExecutor::SyncIncoming(bot, state);
                 return WorldDirective::Busy;
             }
         }
@@ -624,9 +718,9 @@ namespace WorldBrain
             if (started)
                 extra.opportunityStarted = true;
             else if (extra.opportunityStarted)
-                EndOpportunity(state, extra, "node gathered");
+                EndOpportunity(bot, state, extra, "node gathered");
             else if (now - extra.opportunityBeganMs > OPPORTUNITY_START_GRACE_MS)
-                EndOpportunity(state, extra, "node out of reach");
+                EndOpportunity(bot, state, extra, "node out of reach");
             return;
         }
 
@@ -656,16 +750,19 @@ namespace WorldBrain
     void NotifyAmbientBusy(Player* bot)
     {
         auto itr = _states.find(bot->GetGUID());
-        if (itr == _states.end() || !itr->second.task.IsValid())
+        if (itr == _states.end() || !itr->second.task.IsValid() || itr->second.suspended)
             return;
         BrainExtra& extra = _extra[bot->GetGUID()];
         if (extra.pausedByAmbient)
             return;
+        // The errand takes the legs from a detour too: the detour is given up and the task is paused
+        // for the errand instead.
+        if (itr->second.opportunityActive)
+            EndOpportunity(bot, itr->second, extra, "an errand came up");
         extra.pausedByAmbient = true;
-        itr->second.task.paused = true;
-        // Let the errand (a repair, a flight) have the legs; the task walks on when it's done.
-        BotMovement::Release(bot, MoveOwner::Quest);
-        BotMovement::Release(bot, MoveOwner::Travel);
+        // Let the errand (a repair, a vendor) have the legs; the task's clocks stop until it is
+        // back (the errand is not the task's failure), and it walks on from there.
+        WorldExecutor::PauseTask(bot, itr->second, "ambient errand");
     }
 
     void Suspend(Player* bot, SuspendReason reason)
@@ -676,15 +773,21 @@ namespace WorldBrain
         BrainState& state = itr->second;
         BrainExtra& extra = _extra[bot->GetGUID()];
 
+        // Everything the task holds is let go (the group or the command owns the bot now); the
+        // task itself is kept with its clocks stopped, in case the bot is back soon.
         WorldExecutor::ReleaseTask(bot, state);
+        if (state.task.IsValid())
+            state.task.Pause(NowMs());
         PopulationHeatmap::Remove(bot->GetGUID());
         state.nextPresenceMs = 0;
         state.suspended = true;
         state.suspendReason = reason;
+        // A detour in progress is given up; the task was already paused for it and stays paused.
         state.opportunityActive = false;
+        extra.opportunityStarted = false;
         extra.suspendedAtMs = NowMs();
-        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' brain suspended ({}), task #{} kept.", bot->GetName(), uint32(reason),
-            state.task.id);
+        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' brain suspended ({}), task #{} kept with its clocks stopped.",
+            bot->GetName(), SuspendReasonName(reason), state.task.id);
         NoteEvent(state, "suspended");
     }
 
@@ -699,7 +802,11 @@ namespace WorldBrain
         extra.deathHandled = true;
 
         BrainState& state = itr->second;
-        state.opportunityActive = false;
+        // Dying on a detour ends the detour; the task is resumed (not left paused) and recovers
+        // like any other death. The corpse run itself is the task's own business (the brain-gap
+        // rule takes it off the phase clock).
+        if (state.opportunityActive)
+            EndOpportunity(bot, state, extra, "died");
         if (!state.task.IsValid())
             return;
 
@@ -745,19 +852,38 @@ namespace WorldBrain
         BrainState const& state = itr->second;
         uint32 now = NowMs();
         handler->PSendSysMessage("  WorldGoal: {}{}", WorldGoalName(state.goal),
-            state.suspended ? Acore::StringFormat(" (suspended, reason {})", uint32(state.suspendReason)) : std::string());
+            state.suspended ? Acore::StringFormat(" (suspended: {})", SuspendReasonName(state.suspendReason)) : std::string());
 
         WorldTask const& task = state.task;
         if (task.IsValid())
         {
+            // While paused the clocks stand still at pausedAtMs; show them as they will be on resume.
+            uint32 clockNow = task.ClockNow(now);
+            uint32 inPhase = PhaseElapsed(state);
             handler->PSendSysMessage("  Task #{}: {} -- phase {} for {}, utility {:.0f} ({}){}", task.id, WorldTaskTypeName(task.type),
-                TaskPhaseName(task.phase), SecondsText(now - task.phaseStartedMs), task.utility, task.why, task.paused ? ", paused" : "");
+                TaskPhaseName(task.phase), SecondsText(inPhase), task.utility, task.why,
+                task.paused ? Acore::StringFormat(", PAUSED for {} (clocks stopped)", SecondsText(now - task.pausedAtMs)) : std::string());
+
+            uint32 budget = WorldExecutor::PhaseBudgetMs(state);
+            PopulationGrid::BotStatus heat = PopulationHeatmap::StatusOf(bot->GetGUID());
+            handler->PSendSysMessage("  Clocks: phase budget {}; task deadline in {}. Heatmap: {}, {}.",
+                budget ? Acore::StringFormat("{} of {} left", SecondsText(budget > inPhase ? budget - inPhase : 0), SecondsText(budget))
+                       : std::string("none"),
+                SecondsText(task.deadlineMs > clockNow ? task.deadlineMs - clockNow : 0),
+                heat.present ? "present" : "not present", heat.incoming ? "incoming to the task's destination" : "not incoming");
 
             if (task.quest.questId)
             {
                 Quest const* quest = sObjectMgr->GetQuestTemplate(task.quest.questId);
-                handler->PSendSysMessage("  Quest: {} - {} [{}]", task.quest.questId, quest ? quest->GetTitle() : "?",
-                    QuestKB::DescribeQuest(task.quest.questId));
+                std::string workable;
+                if (QuestKnowledge const* info = QuestKB::Get(task.quest.questId); info && task.type == WorldTaskType::QuestObjective)
+                {
+                    char const* why = nullptr;
+                    workable = QuestInteraction::Workable(bot, task.quest.questId, *info, &why) ? "; workable"
+                        : Acore::StringFormat("; NOT workable: {}", why ? why : "?");
+                }
+                handler->PSendSysMessage("  Quest: {} - {} [{}{}]", task.quest.questId, quest ? quest->GetTitle() : "?",
+                    QuestKB::DescribeQuest(task.quest.questId), workable);
             }
 
             if (task.type == WorldTaskType::QuestObjective)
@@ -766,11 +892,12 @@ namespace WorldBrain
                 if (info && task.quest.objectiveIndex < info->objectives.size())
                 {
                     ObjectiveDef const& def = info->objectives[task.quest.objectiveIndex];
-                    handler->PSendSysMessage("  Objective {}: {} via '{}' -- progress {}/{} (target entry {}, item {}), {} attempts, {} dry, "
-                        "{} target failures, {} bad areas{}", uint32(task.quest.objectiveIndex), ObjectiveTypeName(def.type),
+                    handler->PSendSysMessage("  Objective {}: {} via '{}' -- progress {}/{} (target entry {}, item {}), {} attempts, {} dry "
+                        "of {}, {} target failures, {} bad areas{}", uint32(task.quest.objectiveIndex), ObjectiveTypeName(def.type),
                         QuestExecutor::HandlerName(task), ObjectiveCommon::CurrentCount(bot, task.quest.questId, def),
                         def.requiredCount, def.targetEntry, def.itemId, task.quest.attempts, task.quest.dryAttempts,
-                        task.quest.retryCount, task.quest.badClusters, task.quest.useItemMode ? ", using quest item" : "");
+                        ObjectiveCommon::DryAttemptLimit(def), task.quest.retryCount, task.quest.badClusters,
+                        task.quest.useItemMode ? ", using quest item" : "");
                 }
 
                 if (ObjectiveArea const* area = ObjectiveAreas::Get(task.quest.selectedClusterId))

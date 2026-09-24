@@ -2883,8 +2883,9 @@ What changed, in short:
   already assigned, a 100 yd population heatmap and recent failures. Live creatures are
   reserved with a TTL so two bots never chase the same mob.
 - **Anti-loop.** Every phase has a budget; failures go into per-bot TTL memory (target 60 s,
-  area/NPC 5 min, quest 10 min, stretching on repeats); 3 bad areas suspend a quest, 3
-  suspensions abandon it; a periodic log cleanup abandons quests that can never finish.
+  area/NPC 5 min, quest 10 min, stretching on repeats); 3 bad areas suspend a quest.
+  (Superseded the same day by the review round below: transient failures never abandon a quest
+  any more, and pauses no longer eat phase budgets.)
 - **Suspension.** Groups, manual Stay, battlegrounds and dungeons suspend the brain (every
   claim released, task kept up to 5 minutes and re-validated on return); death keeps the task,
   drops the target, re-evaluates the area after the corpse run.
@@ -2903,7 +2904,7 @@ stubbed in (`AscensionClassServiceBridge.h`, the petition hook, `LFGMgr::GetProp
 `BotTalentBuilds.cpp` that only shows up with that environment's boost 1.83. The pure logic
 (failure memory, reservations, heatmap, clustering, utility scoring) has 291 standalone unit
 checks in `module/tests/` (`g++ -std=c++20 -I module/tests/stub -I module/src/world
-module/tests/world_logic_tests.cpp`), also clean under ASan/UBSan. **Nothing here has run on a
+-I module/src module/tests/world_logic_tests.cpp`), also clean under ASan/UBSan. **Nothing here has run on a
 live server yet.**
 
 **Live test checklist** (do this before trusting it):
@@ -2923,6 +2924,89 @@ live server yet.**
 5. Invite a questing bot to a group: brain shows suspended, claims released; leave the group:
    the task resumes (or re-plans if older than 5 minutes).
 6. Kill a questing bot: after the corpse run it resumes the same task.
+
+## 2026-09-24: PR #5 review round -- lifecycle and consistency fixes before live testing (compiled + linked, not live-tested)
+
+A correctness review of the Phases 1-3 PR (Corfirean/mod-coa-playerbots#5, head `1764f01`)
+listed ten suspected integration defects. Every one was confirmed against the code; the fixes
+change semantics, not architecture. `docs/open-world-ai.md` is updated to match -- its "Time" table
+is now the reference for which interruptions count toward which budget.
+
+1. **Paused tasks kept ageing (blocker).** `NotifyAmbientBusy` only flipped a flag; a 10 s
+   Search resumed after a 90 s repair trip looked like 100 s of searching and failed on the spot.
+   Worse than reported: the brain also stops ticking during combat with adds, resting, looting,
+   a guild gather order, and `.botcmd`'s AI suspend, and every phase budget kept running through
+   all of it. Now `WorldTask::Pause/Resume` stop and shift *every* task clock for external
+   interruptions (ambient errand, group, manual Stay, guild order, `.botcmd` suspend, BG,
+   dungeon), and a gap of more than 2 s between brain ticks (the task's own fight/rest/loot/corpse
+   run) shifts the *phase* clock only -- the deadline stays an anti-loop guard. A phase entered
+   while paused starts at the frozen clock (`ClockNow`), or a resume would put it in the future
+   and `PhaseElapsed` would underflow into an instant timeout. The guild gather order and
+   `BotAI::SetSuspended` now suspend the brain properly. A jump of 400+ yd between two brain
+   ticks (teleport, flight) re-plans the task like a map change.
+2. **`supported` was not `executable`.** In Phases 1-3 only kill objectives have a handler, yet
+   use-object/explore/cast objectives are KB-supported: the log cleanup called such quests
+   doable, `HasQuestWork` called them reachable, the planner had a stale `TalkTo` special case.
+   One predicate now: `ObjectiveHandlers::CanExecute` (a handler takes it, and it is not a
+   quest-provided item), and `QuestInteraction::Workable` (completable + every open objective
+   executable) used by acceptance, planner, `HasQuestWork` and cleanup alike. The KB gained
+   `completable` (false only for player kills, reputation, no ender) separate from `supported`
+   (acceptance policy -- a daily or item-started quest already in the log is completable).
+   Also fixed: an item listed in `Quest::ItemDrop` was treated as "provided by the quest", but
+   only `SrcItemId` is handed out on accept.
+3. **Heatmap double-counted residents.** `TravelTo` set incoming on every walk, including 15 yd
+   to a mob, and nothing cleared it before task end. Incoming is now a property of the task:
+   `WorldTask::CountsAsIncoming` (phase TravelToArea, not paused), applied by
+   `WorldExecutor::SyncIncoming` after every executor step.
+4. **Stairs looked like stuck.** Progress was ground distance only. `BotNavProgress.h` (pure,
+   tested) counts 2.5 yd on the ground *or* 1.5 yd of height.
+5. **The recovery ladder could never escalate.** Any 2.5 yd reset `retries` to 0, so a bot
+   could repath forever. Small progress now restarts the stall timer only; the stage resets once
+   the goal is 20 yd (or 8 yd of height) closer than at the first stall.
+6. **Objective areas mixed phases.** The area's phase was the union of its members'. Clustering
+   now never links spawns of different phase masks, so anchor, count and wander points are all
+   visible to any bot that sees the area.
+7. **Transient failures abandoned quests.** Three suspensions (no targets, a path problem, a
+   death) called `Abandon()`. Now (`QuestPolicy.h`): transient failures set the quest aside for
+   10 min, doubling up to 2 h (`QuestSuspendMs`/`QuestSuspendMaxMs`; `AbandonAfterSuspensions`
+   is gone), reset by a completed objective, never abandoned. Only dead ends (failed, can never be
+   completed, an open objective no handler executes) are abandoned, one per cleanup pass, and
+   only when the log has reached `MaxActiveQuests`. Also: a work suspension no longer blocks the
+   quest's turn-in (separate `FailKind::TurnIn` for "bags full"), and dead-end notes use their own
+   `FailKind::DeadEnd` (logging only), so a quest that becomes workable again is planned at once.
+8. KB/handler contract pass: every objective type now gets the same answer from every subsystem
+   (kill: executable; use/explore/cast/talk/escort/other/collect-without-source: not, so never
+   accepted, never planned, parked if already in the log).
+9. Movement/reservation lifetime: pause releases movement claim, request, target claim and
+   incoming (area occupancy stays -- the bot comes back); `ResetRequest` vs `Release` documented.
+10. Combat handoff kept as is (`Attack()` + wait); added: a kill tagged by someone else is not a
+   dry attempt, the target claim is re-confirmed on every approach step (it can lapse while the
+   bot fights an add), and the brain dismounts before `Execute` so its remount cooldown knows.
+
+New debug output in `.botcmd brain`: PAUSED and for how long, remaining phase budget and task
+deadline, heatmap present/incoming, quest workable (and why not), dry attempts of the limit,
+movement ground/height left, best so far, recovery stage.
+
+**Verification**: all module sources compile against the upstream core, the full `worldserver`
+links, and 443 unit checks pass (152 new since the PR opened: task clocks, heatmap incoming
+lifecycle, reservation lifecycle, navigation progress/ladder, phase clustering, quest policy),
+also under ASan/UBSan. **Not run on a live server.**
+
+**Live tests for the next session** (enable DEBUG for `module.coa-playerbots.world/.quest/.navigation`):
+- **A -- one bot.** Northshire quest 7 (kill 10 Kobold Vermin) or Valley of Trials quest 788:
+  accept -> TravelToArea (heatmap "incoming") -> Search ("present", not incoming) -> Approach ->
+  Combat -> Loot -> Verify (counter up) -> ... -> turn-in.
+- **B -- five bots, same quest.** Different reserved targets, no two on one mob, `worldstats`
+  "MovePoints issued" growing slowly, not per tick.
+- **C -- twenty bots.** Spread across the quest's areas; per-area crowd in `.botcmd brain`
+  roughly the number of bots actually there, not double.
+- **D -- stairs or a cave.** An objective area with height (a mine, a tower); `.botcmd brain`
+  movement line should show height left shrinking and "recovery: none" while the bot climbs;
+  `worldstats` stalls should stay rare.
+- **E -- interrupt.** Mid-Search, make the bot need repair/vendor (break its gear, fill its
+  bags): `.botcmd brain` shows "PAUSED for Ns (clocks stopped)" with the phase budget unchanged;
+  afterwards the task resumes where it was with no timeout. A trip of 400+ yd (a flight)
+  re-plans instead, by design.
 
 ## 2026-09-24: Open-world AI rework, Phase 4 -- collect quests, quest-drop looting, chests (compiled, not live-tested)
 
@@ -2999,7 +3083,11 @@ now accepts most ordinary quest shapes, not only kill/collect:
   (scripted, phased) marks the objective unsupported for that bot.
 - **Talk**: talk-to credit comes from gossip scripts with no general way to pick the right
   option, so such quests are never accepted. The handler only exists for ones already in a log:
-  one `CMSG_GOSSIP_HELLO`, and if that gave no credit the quest is dropped instead of retried.
+  one `CMSG_GOSSIP_HELLO`. (After the PR #5 review round, merged into this branch: a talk that
+  gave no credit, like an explore trigger that gave nothing or a quest item that is gone, marks
+  the quest `FailKind::Unworkable` for that bot for 6 h -- no work on it, and the log cleanup
+  treats it as a dead end, abandoned only when the log is full. The talk handler is the one handler
+  that takes KB-unsupported objectives; every other handler requires `def.supported`.)
 
 Live checks: a lever/crate quest (goober) and a "use item on X" quest in a starting zone should
 complete; an exploration quest (e.g. Westfall/Barrens scouting quests with an area trigger)
@@ -3053,6 +3141,15 @@ Live checks: a herbalist bot questing in Elwynn should step off the path for Pea
 next to it and then carry on with the same task (`.botcmd brain` "back on the task after a
 detour"); with `sessionMinMs`/`sessionMaxMs` temporarily lowered in `WorldBrainConfig.h` (they
 are not in the conf file), a bot should drop into ambient errands between tasks and come back.
+
+**After the PR #5 review round was merged in (same day)**: the detour goes through the same pause
+as an ambient errand (`WorldExecutor::PauseTask`/`ResumeTask`) instead of flipping `task.paused`
+by hand. The task's clocks stop for the detour and move on by its length afterwards, and its
+target and heatmap "incoming" are let go. An errand, a suspension (group, command) or a death
+now ends a detour. Before, a death on a detour left the task paused for good.
+`WorldTask::ShiftPhaseClock` does nothing while the task is paused, because the pause already
+covers that time. Without that, a detour whose gathering cast kept the brain from ticking gave
+the interrupted phase its time back twice. There is a unit test for this in `TestTaskClocks`.
 
 ## 2026-09-24: Open-world AI rework, Phase 9 -- social: tag-safe help, resurrection, temporary parties (compiled + linked, not live-tested)
 
@@ -3108,3 +3205,14 @@ ASan/UBSan. **Not run on a live server.** Live checks:
    within minutes some should group up (`.botcmd brain` "Temporary party", `worldstats` "Social"),
    walk together, share kill credit, and disband when the leader's objective completes. Restart
    the server during a party and confirm nobody comes back grouped.
+
+**After the PR #5 review round was merged in (same day)**: helping someone is now an external
+interruption, the same as an ambient errand or a gathering detour. `WorldSocial::StepAwayFromTask`
+used to release the task's claims and leave its clocks running. It now pauses the task through
+`WorldExecutor::PauseTask` and sets `BrainState::pausedBySocial`. `WorldBrain::Update` resumes the
+task (`ResumeTask`, clocks moved on by the help's length) on the first tick after the help is
+over. A resurrection cast or a fight for someone else therefore no longer eats the phase budget or
+the task deadline. A bot whose task is paused (errand, detour, helping) is no longer a temporary
+party candidate. The unit tests are now 487 checks (SocialRules plus the review-round lifecycle
+tests); the "333" above predates the merge. Live check 1 above should also show `.botcmd brain`
+"PAUSED" while the bot helps, then the same task carrying on.

@@ -284,7 +284,9 @@ namespace WorldParties
             if (!otherState || otherState->suspended || otherState->opportunityActive || otherState->breakUntilMs > now ||
                 otherState->nextPartyAttemptMs > now)
                 continue;
-            if (otherState->task.IsValid() && (otherState->task.phase == TaskPhase::Execute ||
+            // Busy with its own task's hands-on part, or away from its task altogether (an errand,
+            // a detour, helping someone: the task is paused).
+            if (otherState->task.IsValid() && (otherState->task.paused || otherState->task.phase == TaskPhase::Execute ||
                 otherState->task.phase == TaskPhase::Combat || otherState->task.phase == TaskPhase::Loot))
                 continue;
 

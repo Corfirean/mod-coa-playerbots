@@ -11,7 +11,10 @@
  *     the ground and within `maxVerticalGap` in height (so a mine's upper and lower levels, or a
  *     cliff-top camp above a valley camp, stay separate places);
  *  2. any group wider than `maxRadius` is cut into grid-sized pieces, because a creature spawned
- *     along an entire river is not one destination.
+ *     along an entire river is not one destination;
+ *  3. spawns in different phases are never linked: a bot sees a place only if it sees every spawn
+ *     in it, so its anchor, its spawn count and its wander points are all real for that bot. (An
+ *     area whose phase was the union of its members' let a phase-1 bot walk to a phase-2 anchor.)
  * Runs once per entry, lazily, over at most a few thousand points -- no library needed.
  *
  * Pure: plain points in, index groups out. Unit-tested standalone in module/tests.
@@ -32,6 +35,7 @@ struct ClusterInputPoint
     float x;
     float y;
     float z;
+    uint32 phaseMask = 0; // only points with the same mask are linked
 };
 
 struct ClusterShape
@@ -134,6 +138,8 @@ namespace SpawnClustering
                         if (ddx * ddx + ddy * ddy > linkSq)
                             continue;
                         if (std::fabs(points[i].z - points[j].z) > maxVerticalGap)
+                            continue;
+                        if (points[i].phaseMask != points[j].phaseMask)
                             continue;
                         uint32 a = find(i);
                         uint32 b = find(j);
