@@ -300,6 +300,13 @@ namespace WorldPlanner
             return nullptr;
 
         WorldBrainConfig const& cfg = WorldBrainSettings::Get();
+        // Every other place that answers "can this bot pick up a new quest" (the ordinary giver
+        // scan above, WouldAccept itself) gates on log room first. Without the same gate here, a
+        // hub can still score well on "quests the bot could take" while the log has no room for
+        // any of them, sending the bot (possibly by flight) on a trip that finds nothing to accept
+        // on arrival.
+        if (QuestInteraction::ActiveQuestCount(bot) >= cfg.maxActiveQuests)
+            return nullptr;
         uint32 now = NowMs();
         int32 level = int32(bot->GetLevel());
 
