@@ -31,6 +31,7 @@ namespace
     std::unordered_map<uint32, std::vector<SpawnPoint>> _objectSpawns;
     std::unordered_map<uint32, std::vector<LootSource>> _itemSources;
     std::unordered_map<uint32, std::vector<uint32>> _killCreditSources;
+    std::unordered_map<uint32, uint32> _openingSpellByLockType;
 
     // Giver spawns live in a deque so the pointers handed out by the grid and the hubs stay valid.
     std::deque<GiverSpot> _giverSpots;
@@ -41,6 +42,9 @@ namespace
     // Quest givers this close together are one hub; a town wider than this is split.
     constexpr float HUB_LINK_YARDS = 90.0f;
     constexpr float HUB_MAX_RADIUS = 220.0f;
+
+    // Unknown drop chances ("equal chance within its group" rows, chance 0) are assumed to be this.
+    constexpr float UNKNOWN_DROP_CHANCE = 0.2f;
 
     int32 GiverCellOf(float v)
     {
@@ -83,6 +87,190 @@ namespace
             for (uint32 credit : tmpl.KillCredit)
                 if (credit && credit != entry)
                     _killCreditSources[credit].push_back(entry);
+    }
+
+    // The generic, profession-free "Opening" spells a player casts on locked objects, indexed by
+    // the lock type they open. Picked from the spell store rather than hard-coded ids so custom
+    // realm data can't silently break it.
+    void IndexOpeningSpells()
+    {
+        for (uint32 id = 1; id < sSpellMgr->GetSpellInfoStoreSize(); ++id)
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+            if (!info || info->IsPassive() || info->ManaCost || info->RequiresSpellFocus || info->EquippedItemClass >= 0)
+                continue;
+            if (info->Reagent[0] > 0 || info->Totem[0] || info->SpellFamilyName)
+                continue;
+
+            for (uint8 eff = 0; eff < MAX_SPELL_EFFECTS; ++eff)
+            {
+                if (info->Effects[eff].Effect != SPELL_EFFECT_OPEN_LOCK)
+                    continue;
+                uint32 lockType = uint32(info->Effects[eff].MiscValue);
+                if (SkillByLockType(LockType(lockType)) != SKILL_NONE)
+                    continue;
+                auto itr = _openingSpellByLockType.find(lockType);
+                if (itr == _openingSpellByLockType.end() || id < itr->second)
+                    _openingSpellByLockType[lockType] = id;
+            }
+        }
+    }
+
+    // Every item some quest asks the player to bring: the only items worth a reverse loot lookup.
+    std::unordered_set<uint32> CollectWantedItems()
+    {
+        std::unordered_set<uint32> items;
+        for (auto const& [questId, quest] : sObjectMgr->GetQuestTemplates())
+            for (uint32 item : quest->RequiredItemId)
+                if (item)
+                    items.insert(item);
+        return items;
+    }
+
+    float NormaliseChance(float chance)
+    {
+        if (chance <= 0.0f)
+            return UNKNOWN_DROP_CHANCE;
+        return std::min(1.0f, chance / 100.0f);
+    }
+
+    std::string JoinIds(std::vector<uint32> const& ids, size_t begin, size_t end)
+    {
+        std::string out;
+        out.reserve((end - begin) * 7);
+        for (size_t i = begin; i < end; ++i)
+        {
+            if (i != begin)
+                out += ',';
+            out += std::to_string(ids[i]);
+        }
+        return out;
+    }
+
+    // One loot table, restricted to the rows that can produce a wanted item, directly or through a
+    // reference template. Fills lootId -> (item, chance).
+    void ReadLootTable(char const* table, std::vector<uint32> const& items,
+        std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> const& itemsByReference,
+        std::unordered_map<uint32, std::vector<std::pair<uint32, float>>>& out)
+    {
+        constexpr size_t CHUNK = 800;
+        for (size_t begin = 0; begin < items.size(); begin += CHUNK)
+        {
+            size_t end = std::min(items.size(), begin + CHUNK);
+            QueryResult result = WorldDatabase.Query(Acore::StringFormat(
+                "SELECT Entry, Item, Chance FROM {} WHERE Reference = 0 AND Item IN ({})", table, JoinIds(items, begin, end)));
+            if (!result)
+                continue;
+            do
+            {
+                Field* fields = result->Fetch();
+                out[fields[0].Get<uint32>()].emplace_back(fields[1].Get<uint32>(), NormaliseChance(fields[2].Get<float>()));
+            } while (result->NextRow());
+        }
+
+        if (itemsByReference.empty())
+            return;
+
+        std::vector<uint32> refs;
+        refs.reserve(itemsByReference.size());
+        for (auto const& [ref, list] : itemsByReference)
+            refs.push_back(ref);
+
+        for (size_t begin = 0; begin < refs.size(); begin += CHUNK)
+        {
+            size_t end = std::min(refs.size(), begin + CHUNK);
+            QueryResult result = WorldDatabase.Query(Acore::StringFormat(
+                "SELECT Entry, Reference, Chance FROM {} WHERE Reference IN ({})", table, JoinIds(refs, begin, end)));
+            if (!result)
+                continue;
+            do
+            {
+                Field* fields = result->Fetch();
+                uint32 lootId = fields[0].Get<uint32>();
+                uint32 ref = uint32(std::abs(fields[1].Get<int32>()));
+                float refChance = NormaliseChance(fields[2].Get<float>());
+                auto itr = itemsByReference.find(ref);
+                if (itr == itemsByReference.end())
+                    continue;
+                for (auto const& [item, chance] : itr->second)
+                    out[lootId].emplace_back(item, refChance * chance);
+            } while (result->NextRow());
+        }
+    }
+
+    void IndexLoot(std::unordered_set<uint32> const& wanted)
+    {
+        std::vector<uint32> items(wanted.begin(), wanted.end());
+        std::sort(items.begin(), items.end());
+        if (items.empty())
+            return;
+
+        // Reference templates holding a wanted item, followed one level deep -- quest items almost
+        // never sit deeper than that.
+        std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> itemsByReference;
+        {
+            std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> refRows;
+            ReadLootTable("reference_loot_template", items, {}, refRows);
+            itemsByReference = std::move(refRows);
+        }
+
+        std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> creatureLoot;
+        std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> objectLoot;
+        ReadLootTable("creature_loot_template", items, itemsByReference, creatureLoot);
+        ReadLootTable("gameobject_loot_template", items, itemsByReference, objectLoot);
+
+        auto addSource = [](uint32 item, uint32 entry, bool gameObject, float chance)
+        {
+            auto& sources = _itemSources[item];
+            for (LootSource& source : sources)
+            {
+                if (source.entry == entry && source.gameObject == gameObject)
+                {
+                    source.chance = std::max(source.chance, chance);
+                    return;
+                }
+            }
+            sources.push_back(LootSource{ entry, gameObject, chance });
+        };
+
+        for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
+        {
+            if (!tmpl.lootid)
+                continue;
+            auto itr = creatureLoot.find(tmpl.lootid);
+            if (itr == creatureLoot.end())
+                continue;
+            for (auto const& [item, chance] : itr->second)
+                addSource(item, entry, false, chance);
+        }
+
+        for (auto const& [entry, tmpl] : *sObjectMgr->GetGameObjectTemplates())
+        {
+            uint32 lootId = tmpl.GetLootId();
+            if (!lootId)
+                continue;
+            auto itr = objectLoot.find(lootId);
+            if (itr == objectLoot.end())
+                continue;
+            for (auto const& [item, chance] : itr->second)
+                addSource(item, entry, true, chance);
+        }
+
+        // Objects whose use spell creates a wanted item (a pile you click to pick up a crate):
+        // recorded as game-object sources with chance 1, the use handler deals with them.
+        for (auto const& [entry, tmpl] : *sObjectMgr->GetGameObjectTemplates())
+        {
+            if (tmpl.type != GAMEOBJECT_TYPE_GOOBER || !tmpl.goober.spellId)
+                continue;
+            SpellInfo const* spell = sSpellMgr->GetSpellInfo(tmpl.goober.spellId);
+            if (!spell)
+                continue;
+            for (uint8 eff = 0; eff < MAX_SPELL_EFFECTS; ++eff)
+                if (spell->Effects[eff].Effect == SPELL_EFFECT_CREATE_ITEM && wanted.count(spell->Effects[eff].ItemType))
+                    addSource(spell->Effects[eff].ItemType, entry, true, 1.0f);
+        }
+
+        _stats.lootItems = uint32(_itemSources.size());
     }
 
     std::unordered_map<uint32, std::vector<uint32>> ReadQuestAreaTriggers()
@@ -600,6 +788,8 @@ namespace QuestKB
 
         IndexSpawns();
         IndexKillCredits();
+        IndexOpeningSpells();
+        IndexLoot(CollectWantedItems());
         IndexQuests(ReadQuestAreaTriggers());
         IndexGivers();
         IndexHubs();
@@ -608,9 +798,9 @@ namespace QuestKB
         _ready = true;
 
         LOG_INFO("module.coa-playerbots.quest", ">> QuestKB: {} quests ({} supported), {} creature and {} object entries spawned, "
-            "{} giver spawns in {} hubs, {} quest area triggers ({} ms).",
-            _stats.quests, _stats.supported, _stats.creatureEntries, _stats.objectEntries,
-            _stats.giverSpots, _stats.hubs, _stats.areaTriggers, _stats.buildMs);
+            "{} quest items with loot sources, {} giver spawns in {} hubs, {} quest area triggers, {} opening spells ({} ms).",
+            _stats.quests, _stats.supported, _stats.creatureEntries, _stats.objectEntries, _stats.lootItems,
+            _stats.giverSpots, _stats.hubs, _stats.areaTriggers, _openingSpellByLockType.size(), _stats.buildMs);
     }
 
     bool IsReady()
@@ -671,6 +861,36 @@ namespace QuestKB
     {
         auto itr = _hubs.find(mapId);
         return itr == _hubs.end() ? nullptr : &itr->second;
+    }
+
+    uint32 OpeningSpellFor(GameObjectTemplate const* go)
+    {
+        if (!go)
+            return 0;
+
+        uint32 lockId = go->GetLockId();
+        if (!lockId)
+        {
+            // An unlocked chest opens with any opening spell (Spell::CanOpenLock accepts lock 0).
+            auto itr = _openingSpellByLockType.find(LOCKTYPE_OPEN);
+            if (itr != _openingSpellByLockType.end())
+                return itr->second;
+            return _openingSpellByLockType.empty() ? 0 : _openingSpellByLockType.begin()->second;
+        }
+
+        LockEntry const* lock = sLockStore.LookupEntry(lockId);
+        if (!lock)
+            return 0;
+
+        for (uint8 i = 0; i < MAX_LOCK_CASE; ++i)
+        {
+            if (lock->Type[i] != LOCK_KEY_SKILL)
+                continue;
+            auto itr = _openingSpellByLockType.find(lock->Index[i]);
+            if (itr != _openingSpellByLockType.end())
+                return itr->second;
+        }
+        return 0;
     }
 
     KnowledgeStats const& Stats()

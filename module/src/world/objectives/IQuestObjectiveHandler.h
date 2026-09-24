@@ -1,7 +1,7 @@
 /*
  * mod-coa-playerbots
  *
- * One handler per kind of quest objective (kill so far; collect, use, loot, explore, cast and talk
+ * One handler per kind of quest objective (kill, collect, loot so far; use, explore, cast and talk
  * arrive in later phases). The quest executor picks the handler for the task's objective and lets
  * it drive the phases; the handler keeps no state of its own -- everything lives in the WorldTask
  * -- so one instance serves every bot. Adding a new objective kind (escort, say) is a new handler

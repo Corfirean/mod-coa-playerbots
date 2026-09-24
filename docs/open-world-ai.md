@@ -53,21 +53,30 @@ Every phase has a budget; nothing can run forever (see "Anti-loop" below).
 
 ## Knowledge (`QuestKnowledgeBase`, `ObjectiveAreas`)
 
-Built once at startup from the data the world was loaded from (plus one read of
+Built once at startup from the data the world was loaded from (plus one read of the loot tables and
 `areatrigger_involvedrelation`), so runtime decisions are lookups:
 
 - quest → givers/enders (creatures and objects), objectives classified as Kill, UseObject,
   CollectItem, LootObject, UseObjectForItem, Explore, UseItemOnCreature/Object, TalkTo,
   Escort/Event — with a supported flag and reason;
+- **reverse loot**: item → creatures/objects that drop it (reference loot one level deep), with
+  drop chance; objects whose use spell creates the item;
 - kill-credit proxies: entry → creatures whose `KillCredit` names it;
 - quest giver spawns in a spatial grid (also clustered into quest hubs with their level range,
-  which nothing uses yet — hub travel is Phase 7).
+  which nothing uses yet — hub travel is Phase 7);
+- generic "Opening" spells per lock type (chests are opened by spell, not `GameObject::Use()`).
 
 Quests a bot cannot reliably finish are never accepted: escorts/scripted events, talk-to-NPC
-credit, PvP, reputation, timed, daily/seasonal, no giver/ender, elite (unless
-`AcceptEliteQuests`) — and any quest with an objective kind that has no handler yet. In this
-phase that means **kill quests and plain delivery quests** (no objectives, just a turn-in);
-collect quests arrive in Phase 4 together with the reverse loot index they need.
+credit, PvP, reputation, timed, daily/seasonal, no giver/ender, no loot source, elite (unless
+`AcceptEliteQuests`) — and any quest with an objective kind that has no handler yet. Handled so
+far: **kill**, **collect** (kill the creatures that drop the item and loot it), **open-and-loot**
+(a chest-type object holding the item) and plain delivery quests (no objectives, just a turn-in).
+Use-object, explore, use-item-on and talk objectives arrive in Phase 6.
+
+**Quest drops.** Quest-only drops live in `Loot::quest_items`, in loot slots numbered after the
+regular items, and only for players who need them. The old loot code only ever took
+`Loot::items`, so a bot never picked up a single quest drop. `BotAI::TakeAllLoot` takes both and is
+now used by the post-kill loot queue and by gathering.
 
 **Objective areas**: an entry's static spawns are clustered into places (single-link 45 yd, 14 yd
 vertical gap so mine levels stay apart, split above 120 yd radius) lazily per entry and cached
@@ -152,7 +161,7 @@ clustering, utility scoring) is unit-tested standalone (`module/tests/`, also un
 | 1 | WorldTask/WorldBrain/WorldPlanner/WorldExecutor skeleton, idempotent movement + stuck ladder, failure memory, `.botcmd brain`/`worldstats`, config, removal of the old quest walkers | in code |
 | 2 | Kill-quest vertical slice: knowledge base, live target search, accept/turn-in, verify | in code |
 | 3 | Anti-crowding: live-target reservations, spawn clustering into objective areas, population heatmap | in code |
-| 4 | Collect quests: reverse loot index, quest-drop looting, chests | planned |
+| 4 | Collect quests: reverse loot index, quest-drop looting, chests | in code |
 | 5 | Multi-quest routing: overlap, bundling, route plan | planned |
 | 6 | Use-object / explore / use-item-on / talk handlers | planned |
 | 7 | Quest-driven hub travel, flights for quest trips, zone-progression guard | planned |

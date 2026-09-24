@@ -2921,3 +2921,33 @@ live server yet.**
 5. Invite a questing bot to a group: brain shows suspended, claims released; leave the group:
    the task resumes (or re-plans if older than 5 minutes).
 6. Kill a questing bot: after the corpse run it resumes the same task.
+
+## 2026-09-24: Open-world AI rework, Phase 4 -- collect quests, quest-drop looting, chests (compiled, not live-tested)
+
+Stacked on the Phases 1-3 PR. Bots now accept and finish "bring me N items" quests, which Phase
+1-3 deliberately refused.
+
+- **A real bug found while building this, affecting the old code too**: quest-only drops live
+  in `Loot::quest_items` (loot slots numbered after `Loot::items`, visible only to players who
+  need them), and every loot path in this module only ever took `Loot::items`. A bot had
+  **never** picked up a quest drop -- the old quest tracker could walk to the right mobs forever
+  without the quest ever advancing. New `BotAI::TakeAllLoot` takes both lists through the real
+  `HandleAutostoreLootItemOpcode`; the post-kill loot queue and gathering both use it now.
+- **Reverse loot index** (`QuestKnowledgeBase`): item -> the creatures and objects that drop it,
+  read once at startup from `creature_loot_template`/`gameobject_loot_template` (following
+  reference rows one level deep), with the drop chance. A collect objective with no source is
+  unsupported and never accepted.
+- **Collect handler** (`LootItemObjectiveHandler`): the kill flow against the drop sources; Verify
+  counts the item in the bags, and the budget of empty kills scales with the drop chance.
+- **Chests** (`LootGameObjectObjectiveHandler` on a new `ObjectTargetHandler` base):
+  `GameObject::Use()` has no case for chests, so the handler casts the generic "Opening" spell
+  for the object's lock type (`QuestKB::OpeningSpellFor`, picked from the spell store at startup)
+  -- `Spell::EffectOpenLock` opens the loot window like it does for a player -- takes the items,
+  and releases the loot so the chest despawns for its respawn.
+
+**Verification**: same method as Phases 1-3 (all module sources compiled against the upstream
+core with the patch stubs, 291 unit checks green). **Not run on a live server.** Live checks to
+add to the Phases 1-3 list: Northshire quest 5261 "Eagan Peltskinner" is a delivery, 33 "Wolves
+Across the Border" is a collect (Tough Wolf Meat from Timber Wolves / Young Wolves) -- the bot
+should accept it, kill wolves, actually loot the meat (the old code never did) and turn it in.
+Watch for a chest quest in the same zones to exercise the Opening spell path.

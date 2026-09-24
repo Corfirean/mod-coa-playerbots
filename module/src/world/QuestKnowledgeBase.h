@@ -12,8 +12,11 @@
  *    quest item on something -- and whether a bot can do it at all;
  *  - where the objective's targets live.
  *
- * And kill-credit proxies, so "kill 8 Defias" counts every creature whose KillCredit is that entry.
- * (Item sources -- reverse loot resolution for collect quests -- arrive with the loot-quest phase.)
+ * And the indices that make collect quests work:
+ *  - item -> the creatures and objects that drop it (reverse loot resolution, reference loot
+ *    followed one level deep), so "bring 10 Candles" knows it means "kill Kobolds";
+ *  - kill-credit proxies, so "kill 8 Defias" counts every creature whose KillCredit is that entry;
+ *  - objects whose use spell creates the item.
  *
  * Classification is deliberately conservative: a quest a bot cannot reliably finish (escorts,
  * scripted events, talk-to-NPC credit, PvP, reputation, timed) is marked unsupported and never
@@ -27,6 +30,8 @@
 #include "WorldTask.h"
 #include <string>
 #include <vector>
+
+struct GameObjectTemplate;
 
 struct SpawnPoint
 {
@@ -170,6 +175,10 @@ namespace QuestKB
     void GiversNear(uint32 mapId, float x, float y, float radius, std::vector<GiverSpot const*>& out);
 
     std::vector<QuestHub> const* Hubs(uint32 mapId);
+
+    // The generic "Opening" spell a player uses on an object with this lock (0 when the object
+    // needs a profession, a key, or nothing a bot can cast).
+    uint32 OpeningSpellFor(GameObjectTemplate const* go);
 
     KnowledgeStats const& Stats();
 

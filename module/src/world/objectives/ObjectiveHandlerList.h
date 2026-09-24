@@ -10,5 +10,7 @@
 class IQuestObjectiveHandler;
 
 IQuestObjectiveHandler& KillObjectiveHandlerInstance();
+IQuestObjectiveHandler& LootItemObjectiveHandlerInstance();
+IQuestObjectiveHandler& LootGameObjectObjectiveHandlerInstance();
 
 #endif // COA_PLAYERBOTS_OBJECTIVE_HANDLER_LIST_H

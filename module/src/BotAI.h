@@ -16,6 +16,7 @@
 class ChatHandler;
 class Player;
 struct ItemTemplate;
+struct Loot;
 
 // Bot role (Dps/Tank/Healer) that changes which target-selection and spell-selection
 // path BotAI::Update() takes. By default, auto-detected from the bot's active Ascension
@@ -174,6 +175,10 @@ namespace BotAI
 
     // Enqueues a killed creature into the bot's (and its bot groupmates') pending loot queue.
     void EnqueuePendingLoot(Player* player, ObjectGuid creatureGuid);
+
+    // Takes everything in a loot window the bot has open -- regular items and this bot's
+    // quest-only drops -- through the same autostore handler a client's loot clicks reach.
+    void TakeAllLoot(Player* bot, Loot& loot);
 }
 
 #endif // COA_PLAYERBOTS_BOT_AI_H

@@ -45,6 +45,23 @@ namespace
         float _range;
     };
 
+    class WantedObjectCheck
+    {
+    public:
+        WantedObjectCheck(Player const* bot, std::unordered_set<uint32> const& wanted, float range)
+            : _bot(bot), _wanted(wanted), _range(range) { }
+
+        bool operator()(GameObject* go) const
+        {
+            return _wanted.count(go->GetEntry()) && go->isSpawned() && _bot->IsWithinDistInMap(go, _range);
+        }
+
+    private:
+        Player const* _bot;
+        std::unordered_set<uint32> const& _wanted;
+        float _range;
+    };
+
     float Dist2d(Player const* bot, float x, float y)
     {
         return std::hypot(bot->GetPositionX() - x, bot->GetPositionY() - y);
@@ -295,6 +312,48 @@ namespace ObjectiveCommon
             if (WorldReservations::TryReserve(ReservationKind::Creature, candidate.creature->GetGUID().GetRawValue(), botGuid,
                     ctx.cfg.targetReserveMs))
                 return candidate.creature;
+            Count(ctx.state.metrics, &WorldMetrics::reservationConflicts);
+        }
+        return nullptr;
+    }
+
+    GameObject* FindObject(ObjectiveContext& ctx, std::unordered_set<uint32> const& wanted,
+        std::function<bool(GameObject*)> const& usable)
+    {
+        RefreshAreaClaim(ctx);
+        if (wanted.empty())
+            return nullptr;
+
+        Player* bot = ctx.bot;
+        float radius = ctx.cfg.searchRadius;
+        std::list<GameObject*> found;
+        WantedObjectCheck check(bot, wanted, radius);
+        Acore::GameObjectListSearcher<WantedObjectCheck> searcher(bot, found, check);
+        Cell::VisitObjects(bot, searcher, radius);
+
+        ObjectGuid botGuid = bot->GetGUID();
+        std::vector<std::pair<GameObject*, float>> candidates;
+        for (GameObject* go : found)
+        {
+            uint64 raw = go->GetGUID().GetRawValue();
+            if (ctx.state.failures.Has(FailKind::GameObject, raw, ctx.now))
+                continue;
+            if (WorldReservations::IsHeldByOther(ReservationKind::GameObject, raw, botGuid))
+                continue;
+            if (usable && !usable(go))
+                continue;
+
+            float d = bot->GetDistance(go);
+            float score = 100.0f - d - std::fabs(go->GetPositionZ() - bot->GetPositionZ()) * 1.5f
+                + 8.0f * WorldUtility::Jitter(botGuid.GetRawValue(), raw);
+            candidates.emplace_back(go, score);
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+        for (auto const& [go, score] : candidates)
+        {
+            if (WorldReservations::TryReserve(ReservationKind::GameObject, go->GetGUID().GetRawValue(), botGuid, ctx.cfg.objectReserveMs))
+                return go;
             Count(ctx.state.metrics, &WorldMetrics::reservationConflicts);
         }
         return nullptr;

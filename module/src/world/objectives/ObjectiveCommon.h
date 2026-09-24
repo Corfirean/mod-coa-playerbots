@@ -12,10 +12,12 @@
 
 #include "BotMovement.h"
 #include "IQuestObjectiveHandler.h"
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
 class Creature;
+class GameObject;
 class WorldObject;
 
 namespace ObjectiveCommon
@@ -48,6 +50,10 @@ namespace ObjectiveCommon
     // `corpses` returns how many dead wanted creatures lie around (respawn is coming).
     Creature* FindCreature(ObjectiveContext& ctx, std::unordered_set<uint32> const& wanted,
         std::unordered_map<uint32, uint32> const& served, bool acceptHostileOnly, bool wantDead, uint32& corpses);
+
+    // Same for objects; `usable` adds the handler's own readiness test.
+    GameObject* FindObject(ObjectiveContext& ctx, std::unordered_set<uint32> const& wanted,
+        std::function<bool(GameObject*)> const& usable);
 
     // Walks toward a live target until within `range` (and, for creatures, in line of sight).
     NavStatus Approach(ObjectiveContext& ctx, WorldObject* target, float range);

@@ -1539,12 +1539,7 @@ bool TryProcessPendingLoot(Player* bot, uint32 /*diff*/, BotAIState& state)
             if (bot->GetLootGUID() == creature->GetGUID())
             {
                 Loot& loot = creature->loot;
-                for (uint8 slot = 0; slot < loot.items.size(); ++slot)
-                {
-                    WorldPacket storePacket;
-                    storePacket << slot;
-                    bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
-                }
+                BotAI::TakeAllLoot(bot, loot);
                 if (loot.gold)
                 {
                     WorldPacket moneyPacket;
@@ -2005,15 +2000,7 @@ void TryFinishGathering(Player* bot, BotAIState& state)
 
     bool wasAlreadyLooted = node->loot.isLooted();
     if (!wasAlreadyLooted)
-    {
-        Loot& loot = node->loot;
-        for (uint8 slot = 0; slot < loot.items.size(); ++slot)
-        {
-            WorldPacket storePacket;
-            storePacket << slot;
-            bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
-        }
-    }
+        BotAI::TakeAllLoot(bot, node->loot);
 
     // Always close the loot window once it opened, empty or not, exactly as a real client does.
     // WorldSession::DoLootRelease is the only place a fully looted chest-type node is moved to
@@ -4123,6 +4110,26 @@ float ComputeFollowDistance(Player* bot)
 
     float jitter = (float(bot->GetGUID().GetCounter() % 15) - 7.0f) * 0.15f;
     return std::max(1.5f, baseDist + jitter);
+}
+
+void TakeAllLoot(Player* bot, Loot& loot)
+{
+    // Quest-only drops are not in loot.items: Loot::AddItem files them under quest_items, and a
+    // client reaches them through slots numbered after the regular items, one per entry of this
+    // player's own quest item list (Loot::LootItemInSlot). Looting only loot.items -- what every
+    // loot path here did before -- silently left every "collect N" quest drop on the corpse.
+    uint32 slots = uint32(loot.items.size());
+    QuestItemMap const& questItems = loot.GetPlayerQuestItems();
+    auto own = questItems.find(bot->GetGUID());
+    if (own != questItems.end() && own->second)
+        slots += uint32(own->second->size());
+
+    for (uint32 slot = 0; slot < slots; ++slot)
+    {
+        WorldPacket storePacket;
+        storePacket << uint8(slot);
+        bot->GetSession()->HandleAutostoreLootItemOpcode(storePacket);
+    }
 }
 
 void EnqueuePendingLoot(Player* player, ObjectGuid creatureGuid)
