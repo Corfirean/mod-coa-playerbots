@@ -15,6 +15,10 @@
 namespace PopulationHeatmap
 {
     void UpdatePresence(ObjectGuid bot, uint32 mapId, float x, float y, PopulationActivity activity);
+    // Incoming means "on the way to this destination" and nothing else: set while a task travels
+    // to its area or quest npc, cleared the moment it arrives, pauses, or ends (WorldTask::
+    // CountsAsIncoming decides, WorldExecutor::SyncIncoming applies it). A bot already working in
+    // an area is counted once, by its presence -- never also as incoming there.
     void SetIncoming(ObjectGuid bot, uint32 mapId, float x, float y);
     void ClearIncoming(ObjectGuid bot);
     void Remove(ObjectGuid bot);
@@ -23,6 +27,8 @@ namespace PopulationHeatmap
     PopulationCell Around(uint32 mapId, float x, float y);
 
     PopulationGrid const& Grid();
+
+    PopulationGrid::BotStatus StatusOf(ObjectGuid bot);
 }
 
 #endif // COA_PLAYERBOTS_POPULATION_HEATMAP_H

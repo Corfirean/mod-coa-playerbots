@@ -34,7 +34,7 @@ namespace
 
         bool CanHandle(ObjectiveDef const& def) const override
         {
-            return def.type == ObjectiveType::LootGameObject;
+            return def.type == ObjectiveType::LootGameObject && def.supported;
         }
 
     protected:

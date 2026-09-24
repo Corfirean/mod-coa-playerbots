@@ -91,6 +91,7 @@ char const* FailureReasonName(FailureReason reason)
         case FailureReason::Replaced:       return "replaced";
         case FailureReason::Suspended:      return "suspended";
         case FailureReason::NoProgress:     return "no progress";
+        case FailureReason::Relocated:      return "moved far away";
         default:                            return "none";
     }
 }
@@ -114,5 +115,18 @@ namespace WorldMetricsGlobal
     {
         static WorldMetrics metrics;
         return metrics;
+    }
+}
+
+char const* SuspendReasonName(SuspendReason reason)
+{
+    switch (reason)
+    {
+        case SuspendReason::Grouped:       return "grouped";
+        case SuspendReason::ManualCommand: return "manual command";
+        case SuspendReason::Battleground:  return "battleground";
+        case SuspendReason::Instance:      return "instance";
+        case SuspendReason::Disabled:      return "disabled";
+        default:                           return "none";
     }
 }

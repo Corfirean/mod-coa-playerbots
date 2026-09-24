@@ -31,7 +31,7 @@ struct ObjectiveArea
     float cy = 0.0f;
     float radius = 0.0f;
     uint32 spawnCount = 0;
-    uint32 phaseMask = 0;     // union of the members' phases
+    uint32 phaseMask = 0;     // the phase every member spawns in (areas never mix phases)
     std::vector<SpawnPoint> points; // members to wander between while searching (capped)
 };
 

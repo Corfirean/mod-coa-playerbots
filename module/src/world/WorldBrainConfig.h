@@ -48,8 +48,8 @@ struct WorldBrainConfig
     uint32 maxLevelAbove = 3;    // mobs this far above the bot are not engaged
     bool acceptElite = false;    // solo bots leave elite quests alone
     uint32 maxBadClusters = 3;   // areas given up per objective before the quest is suspended
-    uint32 questSuspendMs = 600000;
-    uint32 abandonAfterSuspensions = 3;
+    uint32 questSuspendMs = 600000;          // first time a quest is set aside; doubles per repeat
+    uint32 questSuspendMaxMs = 2 * 60 * 60 * 1000;
 
     // Failure-memory ttls.
     uint32 targetFailMs = 60000;

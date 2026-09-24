@@ -97,7 +97,7 @@ struct ObjectiveDef
     uint32 castItemId = 0;
     float bestChance = 1.0f;             // collect objectives: best drop chance among sources
     bool elite = false;                  // every creature target is elite
-    bool providedByQuest = false;        // the quest itself hands the item out
+    bool providedByQuest = false;        // the quest hands the item out on accept (its source item)
     bool supported = false;
     char const* unsupportedReason = "";
 };
@@ -111,8 +111,14 @@ struct QuestKnowledge
     std::vector<uint32> enderObjects;
     std::vector<ObjectiveDef> objectives;
     std::vector<uint32> areaTriggers;
+    // Would a bot take this quest (acceptance policy + what the data says bots can do)?
     bool supported = false;
     char const* unsupportedReason = "";
+    // Can a bot ever finish it, whoever put it in the log? False for player kills, reputation
+    // targets, no ender. (Whether each open objective has a handler is asked separately:
+    // ObjectiveHandlers::CanExecute.)
+    bool completable = true;
+    char const* completionBlocker = "";
     bool elite = false;
     bool hasObjectives = false;          // false: a deliver / report-to quest
 };
