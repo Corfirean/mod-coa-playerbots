@@ -2241,7 +2241,9 @@ but a bot-initiated test join does, since nothing else was watching it.
   (`EnsureBotHasMount`/`TryMaintainProgression`) specifically as a prerequisite for this, but
   actually riding it for travel isn't wired to anything yet. Assigned to the parallel Gemini
   session (2026-09-15) alongside guild bank orders -- still in progress as of this note (guild
-  bank orders shipped first, see below).
+  bank orders shipped first, see below). **Update 2026-09-24**: addressed by the open-world AI
+  rework's Phase 7 (quest-hub travel, flights for quest trips, riding the mount) -- see that dated
+  entry at the end of this file; the old walkers named here no longer exist.
 - **Addon client-side work for points 1-3** (user request, 2026-09-15): **done** -- see the
   2026-09-15 "CoABotUI: role-gating, Quick Fill, and the Guild Task Board" entry below. The
   user asked Claude to build this directly once it became clear Gemini's combat-AI task
@@ -2842,3 +2844,387 @@ confirmed clean boots throughout. **Not yet independently re-confirmed live** af
 mount-duration-filter build specifically (the round of testing that found it ended with the BG
 crash) -- next session should confirm a bot actually stays mounted for more than one tick before
 considering this one fully closed.
+
+## 2026-09-24: Open-world AI rework, Phases 1-3 -- WorldBrain, kill-quest vertical slice, anti-crowding (compiled, not live-tested)
+
+The user asked for a full rework of what an ungrouped bot does in the open world (quests, travel,
+target finding, spreading out) so it behaves like a real player instead of a set of competing
+scripts. Audit first (`docs/research/open-world-ai-audit.md` -- the ownership map of every old
+walker plus 11 confirmed problems with file references), then a new layer under
+`module/src/world/`, delivered as one PR per phase at the user's request. Architecture and the
+phase table: `docs/open-world-ai.md` -- read it before touching anything under `src/world/`.
+
+What changed, in short:
+
+- **One owner per decision.** `WorldBrain::Update` returns a `WorldDirective`
+  (Busy/Gather/Fish/Grind/Ambient/Idle) and only that activity runs this tick. SoloIntent, the
+  old quest scans, `BotQuestTracker` and the grind anchor no longer each issue their own
+  `MovePoint`. `BotQuestTracker.cpp/.h`, `TryStartQuesting`, `TryContinueQuestWalk`/
+  `TrackingWalk`/`ObjectiveWalk`, `ProcessQuestGiver`, `CollectQuestObjectiveEntries` and the
+  quest-priority pass in `TryGrindWhenSolo` are **gone** -- older entries in this file that
+  mention them (2026-09-14 "Quest-aware targeting", the TODO backlog) describe the old code.
+- **Persistent tasks, not per-tick guesses.** `WorldTask` carries type, phase (Travel -> Search
+  -> Approach -> Execute -> Combat -> Loot -> Verify), area, claimed target, counters, deadline.
+  `BotMovement::Navigate` keeps a persistent request per bot (idempotent: asking for the walk
+  already running is a no-op), walks long trips in 120 yd legs and runs a stuck ladder
+  (repath -> detour left -> detour right -> Stuck) when progress stops for 9 s.
+- **Kill quests end to end.** `QuestKnowledgeBase` (built once at startup) classifies every
+  quest's objectives and refuses what a bot can't finish (escorts, PvP, reputation, timed,
+  dailies, talk-to credit, anything without a handler yet). `QuestInteraction` accepts
+  (`CanTakeQuest`/`CanAddQuest`/`AddQuestAndCheckCompletion`, level window, log cap) and turns
+  in (`CanRewardQuest`/`RewardQuest`, reward picked by upgrade score then vendor price) through
+  the real engine calls. The kill handler finds a **live** target in the objective area,
+  reserves it, approaches (LOS), calls `Attack()` and hands the fight to the combat engine --
+  combat AI was deliberately not touched -- then verifies progress from the quest counter.
+  Plain delivery quests (no objectives) work too. **Collect quests are not accepted in this
+  phase** (they need the reverse loot index and quest-drop looting of Phase 4).
+- **Anti-crowding.** Static spawns are clustered into objective areas (45 yd single-link, 14 yd
+  vertical gap, split above 120 yd); areas are scored against spawn count, distance, bots
+  already assigned, a 100 yd population heatmap and recent failures. Live creatures are
+  reserved with a TTL so two bots never chase the same mob.
+- **Anti-loop.** Every phase has a budget; failures go into per-bot TTL memory (target 60 s,
+  area/NPC 5 min, quest 10 min, stretching on repeats); 3 bad areas suspend a quest.
+  (Superseded the same day by the review round below: transient failures never abandon a quest
+  any more, and pauses no longer eat phase budgets.)
+- **Suspension.** Groups, manual Stay, battlegrounds and dungeons suspend the brain (every
+  claim released, task kept up to 5 minutes and re-validated on return); death keeps the task,
+  drops the target, re-evaluates the area after the corpse run.
+- **Debugging.** `.botcmd brain <guid>` (goal, task, phase, quest verdict, handler, area,
+  reserved target, movement request, failure memory, counters) and `.botcmd worldstats`
+  (knowledge base, brains by task/phase, movement/reservation/heatmap stats). Log categories
+  `module.coa-playerbots.world` / `.quest` / `.navigation`, frequent lines at DEBUG.
+- Config: `CoaBots.WorldBrain.*` in `mod_coa_playerbots.conf.dist` (enable switch, planner
+  timing, quest policy, level window, mount distances, utility weights).
+
+**Verification so far**: this session had no Windows dev box and no CoA-Repack, only this repo.
+Every module source was compiled (`-fsyntax-only`, the core build's own flags) against a fresh
+clone of `jealous-sound/azerothcore-wotlk-coa` with this module's documented core patches
+stubbed in (`AscensionClassServiceBridge.h`, the petition hook, `LFGMgr::GetProposalIdForPlayer`,
+`friend class BotMgr` on `Guild`) -- clean, except the pre-existing boost `placeholders` error in
+`BotTalentBuilds.cpp` that only shows up with that environment's boost 1.83. The pure logic
+(failure memory, reservations, heatmap, clustering, utility scoring) has 291 standalone unit
+checks in `module/tests/` (`g++ -std=c++20 -I module/tests/stub -I module/src/world
+-I module/src module/tests/world_logic_tests.cpp`), also clean under ASan/UBSan. **Nothing here has run on a
+live server yet.**
+
+**Live test checklist** (do this before trusting it):
+
+1. Boot: `>> QuestKB: N quests (M supported), ...` in the log; `.botcmd worldstats` shows the
+   same counts and no errors.
+2. Enable DEBUG for the three categories (see the conf.dist comment). Spawn one level 1-5 bot
+   in Northshire (Alliance: Marshal McBride, quest 7 "Kobold Camp Cleanup", kill 10 Kobold
+   Vermin) or the Valley of Trials (Horde: quest 788 "Cutting Teeth", kill 10 Mottled Boar).
+   `.botcmd brain <guid>` should walk QuestAccept -> QuestObjective (kill) -> Search/Approach/
+   Combat/Verify with the counter climbing -> QuestTurnIn, and the bot should get the reward.
+3. Spawn 3-5 bots on the same quest: `.botcmd brain` should show different reserved targets,
+   `worldstats` should show reservations and few conflicts, and the bots should not stack on
+   one spawn point.
+4. Watch `worldstats`' movement line: "MovePoints issued" should grow by a handful per task
+   (legs, new targets), not by one per bot per tick as before; stalls/recoveries should be rare.
+5. Invite a questing bot to a group: brain shows suspended, claims released; leave the group:
+   the task resumes (or re-plans if older than 5 minutes).
+6. Kill a questing bot: after the corpse run it resumes the same task.
+
+## 2026-09-24: PR #5 review round -- lifecycle and consistency fixes before live testing (compiled + linked, not live-tested)
+
+A correctness review of the Phases 1-3 PR (Corfirean/mod-coa-playerbots#5, head `1764f01`)
+listed ten suspected integration defects. Every one was confirmed against the code; the fixes
+change semantics, not architecture. `docs/open-world-ai.md` is updated to match -- its "Time" table
+is now the reference for which interruptions count toward which budget.
+
+1. **Paused tasks kept ageing (blocker).** `NotifyAmbientBusy` only flipped a flag; a 10 s
+   Search resumed after a 90 s repair trip looked like 100 s of searching and failed on the spot.
+   Worse than reported: the brain also stops ticking during combat with adds, resting, looting,
+   a guild gather order, and `.botcmd`'s AI suspend, and every phase budget kept running through
+   all of it. Now `WorldTask::Pause/Resume` stop and shift *every* task clock for external
+   interruptions (ambient errand, group, manual Stay, guild order, `.botcmd` suspend, BG,
+   dungeon), and a gap of more than 2 s between brain ticks (the task's own fight/rest/loot/corpse
+   run) shifts the *phase* clock only -- the deadline stays an anti-loop guard. A phase entered
+   while paused starts at the frozen clock (`ClockNow`), or a resume would put it in the future
+   and `PhaseElapsed` would underflow into an instant timeout. The guild gather order and
+   `BotAI::SetSuspended` now suspend the brain properly. A jump of 400+ yd between two brain
+   ticks (teleport, flight) re-plans the task like a map change.
+2. **`supported` was not `executable`.** In Phases 1-3 only kill objectives have a handler, yet
+   use-object/explore/cast objectives are KB-supported: the log cleanup called such quests
+   doable, `HasQuestWork` called them reachable, the planner had a stale `TalkTo` special case.
+   One predicate now: `ObjectiveHandlers::CanExecute` (a handler takes it, and it is not a
+   quest-provided item), and `QuestInteraction::Workable` (completable + every open objective
+   executable) used by acceptance, planner, `HasQuestWork` and cleanup alike. The KB gained
+   `completable` (false only for player kills, reputation, no ender) separate from `supported`
+   (acceptance policy -- a daily or item-started quest already in the log is completable).
+   Also fixed: an item listed in `Quest::ItemDrop` was treated as "provided by the quest", but
+   only `SrcItemId` is handed out on accept.
+3. **Heatmap double-counted residents.** `TravelTo` set incoming on every walk, including 15 yd
+   to a mob, and nothing cleared it before task end. Incoming is now a property of the task:
+   `WorldTask::CountsAsIncoming` (phase TravelToArea, not paused), applied by
+   `WorldExecutor::SyncIncoming` after every executor step.
+4. **Stairs looked like stuck.** Progress was ground distance only. `BotNavProgress.h` (pure,
+   tested) counts 2.5 yd on the ground *or* 1.5 yd of height.
+5. **The recovery ladder could never escalate.** Any 2.5 yd reset `retries` to 0, so a bot
+   could repath forever. Small progress now restarts the stall timer only; the stage resets once
+   the goal is 20 yd (or 8 yd of height) closer than at the first stall.
+6. **Objective areas mixed phases.** The area's phase was the union of its members'. Clustering
+   now never links spawns of different phase masks, so anchor, count and wander points are all
+   visible to any bot that sees the area.
+7. **Transient failures abandoned quests.** Three suspensions (no targets, a path problem, a
+   death) called `Abandon()`. Now (`QuestPolicy.h`): transient failures set the quest aside for
+   10 min, doubling up to 2 h (`QuestSuspendMs`/`QuestSuspendMaxMs`; `AbandonAfterSuspensions`
+   is gone), reset by a completed objective, never abandoned. Only dead ends (failed, can never be
+   completed, an open objective no handler executes) are abandoned, one per cleanup pass, and
+   only when the log has reached `MaxActiveQuests`. Also: a work suspension no longer blocks the
+   quest's turn-in (separate `FailKind::TurnIn` for "bags full"), and dead-end notes use their own
+   `FailKind::DeadEnd` (logging only), so a quest that becomes workable again is planned at once.
+8. KB/handler contract pass: every objective type now gets the same answer from every subsystem
+   (kill: executable; use/explore/cast/talk/escort/other/collect-without-source: not, so never
+   accepted, never planned, parked if already in the log).
+9. Movement/reservation lifetime: pause releases movement claim, request, target claim and
+   incoming (area occupancy stays -- the bot comes back); `ResetRequest` vs `Release` documented.
+10. Combat handoff kept as is (`Attack()` + wait); added: a kill tagged by someone else is not a
+   dry attempt, the target claim is re-confirmed on every approach step (it can lapse while the
+   bot fights an add), and the brain dismounts before `Execute` so its remount cooldown knows.
+
+New debug output in `.botcmd brain`: PAUSED and for how long, remaining phase budget and task
+deadline, heatmap present/incoming, quest workable (and why not), dry attempts of the limit,
+movement ground/height left, best so far, recovery stage.
+
+**Verification**: all module sources compile against the upstream core, the full `worldserver`
+links, and 443 unit checks pass (152 new since the PR opened: task clocks, heatmap incoming
+lifecycle, reservation lifecycle, navigation progress/ladder, phase clustering, quest policy),
+also under ASan/UBSan. **Not run on a live server.**
+
+**Live tests for the next session** (enable DEBUG for `module.coa-playerbots.world/.quest/.navigation`):
+- **A -- one bot.** Northshire quest 7 (kill 10 Kobold Vermin) or Valley of Trials quest 788:
+  accept -> TravelToArea (heatmap "incoming") -> Search ("present", not incoming) -> Approach ->
+  Combat -> Loot -> Verify (counter up) -> ... -> turn-in.
+- **B -- five bots, same quest.** Different reserved targets, no two on one mob, `worldstats`
+  "MovePoints issued" growing slowly, not per tick.
+- **C -- twenty bots.** Spread across the quest's areas; per-area crowd in `.botcmd brain`
+  roughly the number of bots actually there, not double.
+- **D -- stairs or a cave.** An objective area with height (a mine, a tower); `.botcmd brain`
+  movement line should show height left shrinking and "recovery: none" while the bot climbs;
+  `worldstats` stalls should stay rare.
+- **E -- interrupt.** Mid-Search, make the bot need repair/vendor (break its gear, fill its
+  bags): `.botcmd brain` shows "PAUSED for Ns (clocks stopped)" with the phase budget unchanged;
+  afterwards the task resumes where it was with no timeout. A trip of 400+ yd (a flight)
+  re-plans instead, by design.
+
+## 2026-09-24: Open-world AI rework, Phase 4 -- collect quests, quest-drop looting, chests (compiled, not live-tested)
+
+Stacked on the Phases 1-3 PR. Bots now accept and finish "bring me N items" quests, which Phase
+1-3 deliberately refused.
+
+- **A real bug found while building this, affecting the old code too**: quest-only drops live
+  in `Loot::quest_items` (loot slots numbered after `Loot::items`, visible only to players who
+  need them), and every loot path in this module only ever took `Loot::items`. A bot had
+  **never** picked up a quest drop -- the old quest tracker could walk to the right mobs forever
+  without the quest ever advancing. New `BotAI::TakeAllLoot` takes both lists through the real
+  `HandleAutostoreLootItemOpcode`; the post-kill loot queue and gathering both use it now.
+- **Reverse loot index** (`QuestKnowledgeBase`): item -> the creatures and objects that drop it,
+  read once at startup from `creature_loot_template`/`gameobject_loot_template` (following
+  reference rows one level deep), with the drop chance. A collect objective with no source is
+  unsupported and never accepted.
+- **Collect handler** (`LootItemObjectiveHandler`): the kill flow against the drop sources; Verify
+  counts the item in the bags, and the budget of empty kills scales with the drop chance.
+- **Chests** (`LootGameObjectObjectiveHandler` on a new `ObjectTargetHandler` base):
+  `GameObject::Use()` has no case for chests, so the handler casts the generic "Opening" spell
+  for the object's lock type (`QuestKB::OpeningSpellFor`, picked from the spell store at startup)
+  -- `Spell::EffectOpenLock` opens the loot window like it does for a player -- takes the items,
+  and releases the loot so the chest despawns for its respawn.
+
+**Verification**: same method as Phases 1-3 (all module sources compiled against the upstream
+core with the patch stubs, 291 unit checks green). **Not run on a live server.** Live checks to
+add to the Phases 1-3 list: Northshire quest 5261 "Eagan Peltskinner" is a delivery, 33 "Wolves
+Across the Border" is a collect (Tough Wolf Meat from Timber Wolves / Young Wolves) -- the bot
+should accept it, kill wolves, actually loot the meat (the old code never did) and turn it in.
+Watch for a chest quest in the same zones to exercise the Opening spell path.
+
+## 2026-09-24: Open-world AI rework, Phase 5 -- multi-quest routing (compiled, not live-tested)
+
+Stacked on Phase 4. Only `WorldPlanner.cpp` changes. A bot with several quests in its log no
+longer does them one at a time in whatever order the scores happen to fall:
+
+- **Overlap and route synergy** feed the objective score: shared targets with another open
+  objective ("kill kobolds" + "loot candles from kobolds"), or an area within 150 yd of one. A
+  turn-in scores higher when there is still work near the quest ender.
+- **Bundling**: the chosen objective takes up to 4 others with the same action that share its
+  targets or lie within 70 yd. Their targets join the live search and their progress counts for
+  the trip's Verify, so killing a mob that only a bundled quest wants is not a "dry" attempt.
+  Different actions never bundle (a kill task never starts opening chests).
+- **Route plan**: the remaining candidates, nearest-next from the chosen task, up to 4 steps,
+  shown as `Route:` in `.botcmd brain`. Only the first step executes; the planner re-plans when it
+  finishes.
+
+Live check: give a bot a kill quest and a collect quest on the same creature (any "kill N X" +
+"bring M items that X drops" pair in one zone) and confirm `.botcmd brain` shows the second
+objective under "bundled" and both counters climbing on one trip.
+
+## 2026-09-24: Open-world AI rework, Phase 6 -- use-object, explore, use-item-on and talk objectives (compiled, not live-tested)
+
+Stacked on Phase 5. Five more objective handlers under `module/src/world/objectives/`, so a bot
+now accepts most ordinary quest shapes, not only kill/collect:
+
+- **UseGameObject** (levers, crates, scattered notes -- goober objects): walk up, click through
+  `WorldSession::HandleGameObjectUseOpcode` (the real right-click path, distance check included);
+  `GameObject::Use`'s goober case hands out `KillCreditGO` or casts the object's item-creating
+  spell by itself.
+- **Cast on creature / Cast on object** ("use the Soothing Balm on 6 wounded soldiers"):
+  **AzerothCore sets `QUEST_SPECIAL_FLAGS_KILL | CAST | SPEAKTO` on every quest that has any
+  `RequiredNpcOrGo`** (`ObjectMgr::LoadQuests`), so the CAST flag cannot tell an item-use
+  objective from a kill -- don't try. The knowledge base instead looks for a quest item (the
+  quest's source item or one of its `ItemDrop` items) whose on-use spell has
+  `SPELL_EFFECT_KILL_CREDIT`/`KILL_CREDIT2` with that entry as MiscValue. The handler uses the item through its own spell (charges and all), and
+  follows the spell's feedback when it wants a corpse. The kill handler also switches to the item
+  on its own when several kills in a row gave no credit.
+- **Explore**: the server never notices a player entering an area trigger -- the client detects
+  it and sends `CMSG_AREATRIGGER`. The handler walks into the trigger's volume (radius or box,
+  judged by the core's own `IsInAreaTriggerRadius`) and sends that message through
+  `HandleAreaTriggerOpcode`, which runs the real checks and `AreaExploredOrEventHappens`.
+  Triggers come from `areatrigger_involvedrelation`. A trigger that gives nothing from inside
+  (scripted, phased) marks the objective unsupported for that bot.
+- **Talk**: talk-to credit comes from gossip scripts with no general way to pick the right
+  option, so such quests are never accepted. The handler only exists for ones already in a log:
+  one `CMSG_GOSSIP_HELLO`. (After the PR #5 review round, merged into this branch: a talk that
+  gave no credit, like an explore trigger that gave nothing or a quest item that is gone, marks
+  the quest `FailKind::Unworkable` for that bot for 6 h -- no work on it, and the log cleanup
+  treats it as a dead end, abandoned only when the log is full. The talk handler is the one handler
+  that takes KB-unsupported objectives; every other handler requires `def.supported`.)
+
+Live checks: a lever/crate quest (goober) and a "use item on X" quest in a starting zone should
+complete; an exploration quest (e.g. Westfall/Barrens scouting quests with an area trigger)
+should complete once the bot walks in.
+
+## 2026-09-24: Open-world AI rework, Phase 7 -- quest-driven hub travel, flights, zone-progression guard (compiled, not live-tested)
+
+Stacked on Phase 6. This closes the old "bot quests a spot dry and then grinds it forever" gap
+(TODO backlog, "Autonomous zone-to-zone travel"):
+
+- **Quest hubs**: the knowledge base already clustered quest-giver spawns (90 yd link, split
+  above 220 yd, at least 3 supported quests per hub, level range kept). When the planner finds no
+  objective, turn-in or giver nearby, `WorldPlanner::PickHub` scores the 10 nearest hubs on this
+  map that fit the bot's level by how many quests it could actually take there (`CanTakeQuest`,
+  level window, phase-visible givers), minus half the travel cost and the crowd in the heatmap,
+  plus per-bot jitter, and starts a `Travel` task (new `MoveOwner::Travel`). A failed hub trip is
+  remembered for 10 minutes. A bot in a grinding mood sometimes finishes its grind first.
+- **Flights for quest trips**: any quest/hub trip longer than `TaxiMinDistance` (900 yd) asks
+  `BotWorldBehavior::RequestTravel` for a flight once. New `teleportFallback` parameter: zone
+  progression keeps its old "no route -> teleport to the level hub" behaviour, but a quest trip
+  passes `false` and just walks on -- a bot heading for a quest area must never be teleported to
+  some unrelated hub.
+- **Zone-progression guard**: `BotZoneProgression::RelocateBot` (non-forced) now refuses to move
+  a bot that still has supported, unfinished quest work on its map (`WorldBrain::HasQuestWork`).
+  The other way round, a bot whose planner finds neither work nor a hub on its whole map asks zone
+  progression to move it (`QueueRelocation`), at most every 10 minutes.
+
+Live checks: a bot that finishes every quest in Northshire should travel to Goldshire on its own
+(`.botcmd brain` shows a `Travel` task with "heading to a new quest hub"), mounted; a bot with a
+known flight path and a far quest area should fly instead of walking across the continent; and
+a bot mid-quest should not be yanked away by the zone-progression relocation timer.
+
+## 2026-09-24: Open-world AI rework, Phase 8 -- opportunity detours, session breaks (compiled, not live-tested)
+
+Stacked on Phase 7. Only `WorldBrain.cpp` plus config/state/metrics fields. With this phase the
+stacked branches add up to the complete implementation.
+
+- **Opportunity detours**: while a task is in TravelToArea or Search, a bot with Herbalism or
+  Mining checks every 4-8 s (per-bot) for a node it can pick within `DetourRadius` (15 yd, via
+  `BotWorldPoi`); a gatherer by persona always stops, others sometimes. The task pauses (its
+  movement claims released), the brain returns `WorldDirective::Gather` so the existing gathering
+  code does the work, and the task resumes where it was. `ReportActivity` ends the detour when the
+  node is gathered, after 4.5 s if gathering never started, or after 30 s regardless.
+- **Session rhythm**: 20-45 minutes of questing (scaled by the persona's patience), then a 3-8
+  minute break during which the brain hands the tick to ambient life, then a fresh plan. Only
+  taken between tasks, never mid-objective.
+- `CoaBots.WorldBrain.GatherDetours` / `SessionBreaks` switch both off. `.botcmd brain` shows the
+  detour/session/break state; `worldstats` counts detours and breaks.
+
+Live checks: a herbalist bot questing in Elwynn should step off the path for Peacebloom/Silverleaf
+next to it and then carry on with the same task (`.botcmd brain` "back on the task after a
+detour"); with `sessionMinMs`/`sessionMaxMs` temporarily lowered in `WorldBrainConfig.h` (they
+are not in the conf file), a bot should drop into ambient errands between tasks and come back.
+
+**After the PR #5 review round was merged in (same day)**: the detour goes through the same pause
+as an ambient errand (`WorldExecutor::PauseTask`/`ResumeTask`) instead of flipping `task.paused`
+by hand. The task's clocks stop for the detour and move on by its length afterwards, and its
+target and heatmap "incoming" are let go. An errand, a suspension (group, command) or a death
+now ends a detour. Before, a death on a detour left the task paused for good.
+`WorldTask::ShiftPhaseClock` does nothing while the task is paused, because the pause already
+covers that time. Without that, a detour whose gathering cast kept the brain from ticking gave
+the interrupted phase its time back twice. There is a unit test for this in `TestTaskClocks`.
+
+## 2026-09-24: Open-world AI rework, Phase 9 -- social: tag-safe help, resurrection, temporary parties (compiled + linked, not live-tested)
+
+Stacked on Phase 8. The original spec's §32-33 (social open-world AI, helping others) and its
+"PHASE 9 -- Social: temporary parties / cooperation". §54 of the same spec called bot-only world
+parties "a separate future feature", so they are implemented but **off by default**
+(`CoaBots.WorldBrain.TemporaryParties = 0`) until someone watches them on a live server; the
+cooperation half is on by default.
+
+- **`SocialRules.h`** (pure, unit-tested): when to step into someone's fight, how to rank party
+  candidates, party lifetime, when a party ends, when a member drops out. The hard rule: helping
+  never takes anything from the person helped -- a bot only attacks a creature the player it
+  helps (or that player's group) has already tagged (`Creature::isTappedBy`), so loot, quest
+  credit and experience stay theirs. Never PvP, never the other faction, never world bosses,
+  nothing more than 3 levels above the bot, elites only when out-levelled by 5.
+- **`WorldSocial`** (on by default, `HelpOthers`, `ResurrectOthers`): while walking somewhere or
+  searching an area (never mid-fight, mid-loot or at a quest NPC), a bot scans players within
+  30 yd every 2.5-5 s. It resurrects a friendly corpse nobody has offered to resurrect yet with
+  the best resurrection spell in its own spellbook (found by `SPELL_EFFECT_RESURRECT`/
+  `_RESURRECT_NEW`, cached 10 min); the brain returns Busy until the cast ends so no walk breaks
+  it. Otherwise it helps a friendly player below 40% health against their own tagged mob with
+  `Attack()` and hands the fight to the combat engine. Sociability decides whether it bothers;
+  whoever it decided about is not reconsidered for a minute.
+- **`WorldParties`** (off by default): when a sociable bot starts a kill / collect-from-kills
+  objective, it may pull 1-4 bots into a real `Group` (`Group::Create` + `AddMember`, no invite
+  packets, so `DoAcceptInvite`'s teleport-to-leader never fires). Candidates: bots only (only bots
+  have a `BrainState`), within 60 yd, level within 3, same team, free, with the same quest open and
+  the objective unfinished; healers/tanks the party lacks rank higher; each candidate's own
+  sociability gets a roll. The **leader keeps its brain while grouped** (`BotAI.cpp` now asks
+  `WorldParties::IsLeader` before suspending a grouped bot); members are ordinary grouped bots
+  (follow, assist, group kill credit). Ends when the leader's task ends, after 5-20 min, when the
+  leader is gone / suspended / dead more than 45 s, or when nobody else is left; a member more
+  than 200 yd behind, off the map, or dead more than 90 s just leaves. 5-12 min cooldown after.
+  **The core persists every group to `groups`/`group_member`**; a party must never outlive a
+  restart (the bots would come back in a leaderless bot-only group with suspended brains), so the
+  rows are deleted right after forming and again 10 s later. The only way to leave one behind is a
+  crash in that 10 s window with more than one character-database worker thread -- if that ever
+  happens, disband the group by hand. The server's own `OnPlayerCanGroupInvite`/`Accept` hooks
+  are respected (challenge modes); never used in cluster mode (`sToCloud9Sidecar`), where the
+  core's local `Disband()` is a no-op.
+- `Roll` is also the name of the core's loot-roll class (`Group.h`): world/ files that include
+  `Group.h` must call `WorldBrainInternal::Roll(...)` qualified, or the build breaks with
+  "reference to 'Roll' is ambiguous".
+
+**Verification**: all module sources compile against the upstream core with the patch stubs, the
+full `worldserver` links, and 333 unit checks pass (42 new for `SocialRules`), also under
+ASan/UBSan. **Not run on a live server.** Live checks:
+1. Let a low-level player fight a same-level mob down to ~30% health with a questing bot within
+   30 yd: the bot should join (`.botcmd brain` "helping X against Y"), and the player keeps the loot.
+2. Kill a player (or `.botcmd kill` a bot) next to a bot with a resurrection spell: it should
+   cast it within a few seconds; a real player should see the prompt.
+3. With `TemporaryParties = 1`, spawn 3-4 same-level bots on the same kill quest in one spot:
+   within minutes some should group up (`.botcmd brain` "Temporary party", `worldstats` "Social"),
+   walk together, share kill credit, and disband when the leader's objective completes. Restart
+   the server during a party and confirm nobody comes back grouped.
+
+**After the PR #5 review round was merged in (same day)**: helping someone is now an external
+interruption, the same as an ambient errand or a gathering detour. `WorldSocial::StepAwayFromTask`
+used to release the task's claims and leave its clocks running. It now pauses the task through
+`WorldExecutor::PauseTask` and sets `BrainState::pausedBySocial`. `WorldBrain::Update` resumes the
+task (`ResumeTask`, clocks moved on by the help's length) on the first tick after the help is
+over. A resurrection cast or a fight for someone else therefore no longer eats the phase budget or
+the task deadline. A bot whose task is paused (errand, detour, helping) is no longer a temporary
+party candidate. The unit tests are now 487 checks (SocialRules plus the review-round lifecycle
+tests); the "333" above predates the merge. Live check 1 above should also show `.botcmd brain`
+"PAUSED" while the bot helps, then the same task carrying on.
+
+**This session's own review round**: `WorldSocial::TryAssist`'s success path never set
+`socialActive`/`socialUntilMs` the way `TryResurrect`'s does, and `IsHelping()` only ever checked
+`IsNonMeleeSpellCast()` (true for a resurrection cast, never true for melee) to decide whether help
+was still in progress. Together: the tick after a bot started helping via `Attack()`, `IsHelping()`
+returned false immediately, and the newly-added `pausedBySocial` resume block above fired while the
+bot was still mid-fight for someone else -- the PauseTask/pausedBySocial mechanism correctly
+accounted for the paused *clocks*, but nothing stopped it resuming *too early*, at the exact
+resurrection-vs-assist gap this same review round's own commit message describes fixing "for a
+fight for someone else" without actually covering that path. `TryAssist` now sets
+`socialActive`/`socialUntilMs` (a 60 s cap, generous for a real fight) and `IsHelping()` treats
+either an in-flight cast or `IsInCombat()` as still-helping.

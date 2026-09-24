@@ -150,6 +150,7 @@ namespace
         uint32 cityStayMs = 0;
         uint32 exitObjectEntry = 0;
         bool travelRequested = false;
+        bool travelTeleportFallback = true;
         TravelStage travelStage = TravelStage::None;
         float travelX = 0.0f;
         float travelY = 0.0f;
@@ -725,9 +726,15 @@ namespace
             }
 
             // No route after all (the flight master's own node was the nearest one, or the route
-            // needs a node the bot has never been to): fall back to the old teleport.
-            Finish(bot, state, "fell back to teleport", FAIL_COOLDOWN_MS, now);
+            // needs a node the bot has never been to). Zone progression falls back to the old
+            // teleport; a quest trip just walks on from here (WorldBrain resumes it).
             state.travelStage = TravelStage::None;
+            if (!state.travelTeleportFallback)
+            {
+                Finish(bot, state, "no flight route, walking instead", FAIL_COOLDOWN_MS, now);
+                return AmbientTick::Relocated;
+            }
+            Finish(bot, state, "fell back to teleport", FAIL_COOLDOWN_MS, now);
             BotZoneProgression::RelocateBot(bot, true);
             return AmbientTick::Relocated;
         }
@@ -1044,7 +1051,7 @@ namespace BotWorldBehavior
         TryStartAmbient(bot, state, profile, inCity, wantsToLeaveCity, now);
     }
 
-    bool RequestTravel(Player* bot, uint32 mapId, float x, float y, float z)
+    bool RequestTravel(Player* bot, uint32 mapId, float x, float y, float z, bool teleportFallback)
     {
         if (!_config.enabled || !bot || bot->GetMapId() != mapId || !KnowsNodeNear(bot, x, y, z))
             return false;
@@ -1058,6 +1065,7 @@ namespace BotWorldBehavior
 
         WorldState& state = _states[bot->GetGUID()];
         state.travelRequested = true;
+        state.travelTeleportFallback = teleportFallback;
         state.travelX = x;
         state.travelY = y;
         state.travelZ = z;

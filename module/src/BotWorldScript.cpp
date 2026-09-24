@@ -2,6 +2,7 @@
 #include "BotMgr.h"
 #include "BotTalentBuilds.h"
 #include "BotWorldBehavior.h"
+#include "WorldBrain.h"
 #include "Config.h"
 #include "Creature.h"
 #include "KillRewarder.h"
@@ -32,6 +33,8 @@ public:
         sBotMgr->LoadGuildGatherOrders();
         BotAI::LoadGatherLootData();
         BotWorldBehavior::LoadConfig();
+        // Quest knowledge base, objective handlers' config: built once, after the world loaded.
+        WorldBrain::Initialize();
 
         if (sConfigMgr->GetOption<bool>("CoaBots.AutoLoginOnStartup", false))
             sBotMgr->QueueAllBotsForAutoLogin();

@@ -16,13 +16,22 @@
  * higher-priority owner is already moving the bot, and releases only movement it actually owns.
  * The claim is stored here rather than in BotAIState because BotAIState is private to BotAI.cpp
  * and the ambient world-behavior layer lives in its own translation unit.
+ *
+ * Movement requests are persistent and idempotent (2026-09-24 open-world rework). Asking to walk
+ * to the place the bot is already walking to is a no-op: the old MoveTo did Clear() + MovePoint()
+ * on every call, and callers that asked every tick (the long-distance quest walk, the grind
+ * walk-back) restarted the spline and re-ran path generation every single tick. Navigate() adds
+ * the other half: it remembers the goal, splits long trips into legs, measures progress toward the
+ * goal and runs a recovery ladder when progress stops, instead of walking into a wall forever.
  */
 
 #ifndef COA_PLAYERBOTS_BOT_MOVEMENT_H
 #define COA_PLAYERBOTS_BOT_MOVEMENT_H
 
+#include "BotNavProgress.h"
 #include "Define.h"
 #include "ObjectGuid.h"
+#include <string>
 
 class Player;
 
@@ -37,13 +46,53 @@ enum class MoveOwner : uint8
     Grind,
     Gather,
     Fish,
+    Travel,
     Quest,
-    QuestTracker,
     Loot,
     Corpse,
     AutoDungeon,
     Battleground,
     Avoidance,
+};
+
+enum class NavStatus : uint8
+{
+    Moving,   // on the way (or waiting to be allowed to start the next leg)
+    Arrived,  // within the acceptance radius; point movement released
+    Blocked,  // a higher-priority owner is moving the bot right now
+    Stuck,    // the recovery ladder is exhausted; the caller must pick something else
+};
+
+// The persistent half of a Navigate() call: what the bot is walking to and how it is going.
+struct MovementRequest
+{
+    MoveOwner owner = MoveOwner::None;
+    uint64 goalId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float acceptRadius = 0.0f;
+    uint32 startedAt = 0;
+    uint32 lastCallAt = 0;
+    NavProgress progress;         // best distances, last progress, recovery stage (BotNavProgress.h)
+    uint32 legs = 0;
+    uint32 lastIssueAt = 0;
+    float legX = 0.0f;
+    float legY = 0.0f;
+    bool detour = false;
+    float detourX = 0.0f;
+    float detourY = 0.0f;
+    float detourZ = 0.0f;
+};
+
+struct MovementStats
+{
+    uint64 issued = 0;          // MovePoint calls actually made
+    uint64 redundantSkipped = 0; // MoveTo calls that asked for the walk already running
+    uint64 stuckEvents = 0;     // progress stalls that started a recovery
+    uint64 repaths = 0;
+    uint64 detours = 0;
+    uint64 gaveUp = 0;          // Navigate returned Stuck
 };
 
 namespace BotMovement
@@ -53,7 +102,31 @@ namespace BotMovement
     // is mid-cast, which the previous MoveBotToPoint also refused). Z is resolved to allowed
     // ground height for non-flying bots exactly as before. The owner is passed through as the
     // MovePoint id so a claim is also visible on the generator itself when debugging.
+    //
+    // Idempotent: when `owner` is already walking the bot to (within a yard of) this point, this
+    // returns true and leaves the running spline alone.
     bool MoveTo(Player* bot, MoveOwner owner, float x, float y, float z);
+
+    // Goal-directed travel with progress tracking. Call every tick while the bot should be going
+    // somewhere; it only touches the MotionMaster when a new leg is actually needed (first call,
+    // leg finished, goal moved, recovery). `goalId` identifies the destination: the same id with a
+    // moved point (a mob that walked off) updates the destination without resetting the stuck
+    // budget; a new id starts a fresh request.
+    //
+    // Progress counts on the ground or in height (stairs, ramps, mine shafts), and the recovery
+    // ladder -- repath, detour to one side, detour to the other side, then NavStatus::Stuck, at
+    // which point the caller escalates (another spawn, another area, blacklist, replan) -- only
+    // resets after the bot got materially closer, never after a few accidental yards (see
+    // BotNavProgress.h). Time spent not calling Navigate (combat, resting, looting) never counts
+    // as being stuck.
+    NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius);
+
+    // Drops the Navigate() request so the next call starts fresh, but leaves the movement claim
+    // and any running walk alone: for a caller that keeps moving the bot itself (a new area, a new
+    // goal). A caller giving up the legs uses Release(), which drops both.
+    void ResetRequest(ObjectGuid botGuid);
+
+    MovementRequest const* GetRequest(ObjectGuid botGuid);
 
     // Stops point movement only when `owner` is the one that claimed it. This is the direct
     // replacement for the old bare "clear a stray POINT_MOTION_TYPE" cleanups: a subsystem
@@ -75,6 +148,11 @@ namespace BotMovement
     void Forget(ObjectGuid botGuid);
 
     char const* OwnerName(MoveOwner owner);
+
+    // One line for `.botcmd brain`.
+    std::string Describe(Player* bot);
+
+    MovementStats const& Stats();
 }
 
 #endif // COA_PLAYERBOTS_BOT_MOVEMENT_H
