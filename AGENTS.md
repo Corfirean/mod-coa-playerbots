@@ -3205,3 +3205,26 @@ ASan/UBSan. **Not run on a live server.** Live checks:
    within minutes some should group up (`.botcmd brain` "Temporary party", `worldstats` "Social"),
    walk together, share kill credit, and disband when the leader's objective completes. Restart
    the server during a party and confirm nobody comes back grouped.
+
+**After the PR #5 review round was merged in (same day)**: helping someone is now an external
+interruption, the same as an ambient errand or a gathering detour. `WorldSocial::StepAwayFromTask`
+used to release the task's claims and leave its clocks running. It now pauses the task through
+`WorldExecutor::PauseTask` and sets `BrainState::pausedBySocial`. `WorldBrain::Update` resumes the
+task (`ResumeTask`, clocks moved on by the help's length) on the first tick after the help is
+over. A resurrection cast or a fight for someone else therefore no longer eats the phase budget or
+the task deadline. A bot whose task is paused (errand, detour, helping) is no longer a temporary
+party candidate. The unit tests are now 487 checks (SocialRules plus the review-round lifecycle
+tests); the "333" above predates the merge. Live check 1 above should also show `.botcmd brain`
+"PAUSED" while the bot helps, then the same task carrying on.
+
+**This session's own review round**: `WorldSocial::TryAssist`'s success path never set
+`socialActive`/`socialUntilMs` the way `TryResurrect`'s does, and `IsHelping()` only ever checked
+`IsNonMeleeSpellCast()` (true for a resurrection cast, never true for melee) to decide whether help
+was still in progress. Together: the tick after a bot started helping via `Attack()`, `IsHelping()`
+returned false immediately, and the newly-added `pausedBySocial` resume block above fired while the
+bot was still mid-fight for someone else -- the PauseTask/pausedBySocial mechanism correctly
+accounted for the paused *clocks*, but nothing stopped it resuming *too early*, at the exact
+resurrection-vs-assist gap this same review round's own commit message describes fixing "for a
+fight for someone else" without actually covering that path. `TryAssist` now sets
+`socialActive`/`socialUntilMs` (a 60 s cap, generous for a real fight) and `IsHelping()` treats
+either an in-flight cast or `IsInCombat()` as still-helping.

@@ -53,10 +53,6 @@ namespace
     // A dead-end quest is remembered (and logged) once per this long.
     constexpr uint32 DEAD_END_MEMORY_MS = HOUR * IN_MILLISECONDS;
 
-    // Opportunity detours (a herb next to the path).
-    constexpr uint32 OPPORTUNITY_MAX_MS = 30000;
-    constexpr uint32 OPPORTUNITY_START_GRACE_MS = 4500;
-
     // A quest a handler tried and found this bot cannot do is left alone this long before one more
     // try (the quest item may come back, a script may behave differently next time).
     constexpr uint32 UNWORKABLE_MEMORY_MS = 6 * HOUR * IN_MILLISECONDS;
@@ -554,6 +550,7 @@ namespace WorldBrain
         {
             state.suspended = false;
             extra.pausedByAmbient = false;
+            state.pausedBySocial = false;
             if (state.task.IsValid())
             {
                 if (now - extra.suspendedAtMs > SUSPEND_DROP_MS)
@@ -613,6 +610,13 @@ namespace WorldBrain
         // Someone nearby needs a hand (a fight they are losing, a corpse to resurrect).
         if (WorldSocial::IsHelping(bot, state) || WorldSocial::TryHelp(bot, state))
             return WorldDirective::Busy;
+        if (state.pausedBySocial)
+        {
+            // Done helping (the resurrection cast ended, the fight is over): the task picks up
+            // where it was, its clocks moved on by the interruption.
+            state.pausedBySocial = false;
+            WorldExecutor::ResumeTask(bot, state);
+        }
 
         if (state.task.IsValid())
         {

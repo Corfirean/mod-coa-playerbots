@@ -40,6 +40,7 @@ answer per kind of interruption:
 | --- | --- | --- |
 | Ambient errand (repair, vendor, flight) | paused, target let go | **stopped** (phase, deadline, scan/wait timers move on by the pause) |
 | Gathering detour (a node next to the path) | paused, target let go | **stopped**, same as an errand |
+| Helping someone (a fight they are losing, a resurrection) | paused, target let go | **stopped**, same as an errand |
 | Group, manual Stay, `.botcmd` AI suspend, guild gather order, battleground, dungeon | suspended, every claim released; kept ≤ 5 min, then re-planned | **stopped**; on return the task re-enters through `Recover` |
 | Its own business away from the brain: a fight with an add, resting, looting, a corpse run | kept | the **phase** clock does not count it; the task **deadline** does (anti-loop) |
 | Death | target dropped, `Recover`; twice killed in one area writes the area off | as above |
@@ -242,10 +243,16 @@ The hard rule: helping never takes anything from the person helped.
   has offered to resurrect yet. The brain holds the bot still until the cast finishes. A real
   player gets the normal accept prompt. A dead bot accepts during its own 15 s resurrect grace
   period.
+- **The task while helping.** Helping is an interruption from outside the task, the same as an
+  ambient errand. The task is paused: its clocks stop, and its movement, reserved target and
+  heatmap "incoming" are released. It resumes once the fight or the cast is over, with its clocks
+  moved on by the time spent helping. An objective that was walking up to a target looks for one
+  again.
 - **Temporary parties** (`TemporaryParties`, **off by default** until watched live).
   - *Who and when:* when a sociable bot starts a kill or collect-from-kills objective, it may pull
     1–4 bots into a real `Group`. Candidates must be within `PartyRadius`, within 3 levels, on the
-    same side, free, and have the same quest open with that objective unfinished. Healers and
+    same side, free (not mid-fight, not on a break, not away from their task on a detour, an errand
+    or helping someone), and have the same quest open with that objective unfinished. Healers and
     tanks rank higher if the party lacks one, and each candidate's own sociability gets a say.
   - *How it plays:* group kill credit is shared. The leader keeps its brain running while grouped;
     members are ordinary grouped bots that follow and fight alongside.
