@@ -1436,6 +1436,78 @@ fix confirmed by code-reading + clean build/boot only. **Still needs a real clie
 session to fully confirm** the visual behavior, consistent with every other addon-UI bug in
 this doc.
 
+## 2026-09-24: Bots never spent Ascension talent points through the real budget-checked path -- root-caused and fixed (core patch documented, not yet built/tested)
+
+Picked up from a prior conversation's diagnosis: bots never call
+`AscensionClassService::SetTalentRank()` at all, so every paid
+(`AECost`/`TECost > 0`) spec ability gets forced in via a plain
+`bot->learnSpell()` instead of the real gated path. Verified this directly by
+cloning the actual `jealous-sound/azerothcore-wotlk-coa` core fork read-only
+into this session and reading `AscensionCompat.cpp` line by line, rather than
+trusting the summary. Two real bugs, not one:
+
+1. **No talent-point budget enforcement.** `AscensionClassService::
+   SetTalentRank` (`AscensionCompat.cpp:1426`) checks a real per-level
+   class/spec `AE`/`TE` budget (`AscensionCompatData::GetCoATalentBudget`)
+   computed live from the spellbook before granting any rank.
+   `BotMgr::LearnSpecialization`'s fallback path and `BotTalentBuilds::
+   ApplyBuildForLevel` (this repo) enforced none of this.
+2. **`GetActiveSpecialization()` never actually saw a bot's spec.**
+   Confirmed by reading `AscensionCompat.cpp:1758` directly:
+   `GetActiveSpecialization()` reads an **in-memory** `_activeSpecializations`
+   map keyed by player guid, populated only by the real
+   `SwitchSpecialization()` — not by a raw `bot->UpdatePlayerSetting(
+   "core.ascension_active_spec", ...)` write, which is all this module's own
+   `LearnSpecialization`/`BotTalentBuilds::ChooseSpecForBot` ever did. So from
+   the core's own point of view, every bot's active spec was stuck at `0`
+   regardless of what the PlayerSetting column said — silently blocking
+   every spec-gated *automatic* talent grant (`SynchronizeAutomaticTalents`)
+   and any tuning keyed off active spec (`AscensionClassTuning::Synchronize`),
+   independent of the paid-talent problem above. This is a materially bigger
+   bug than "some paid abilities stay unlearned" — it means the bot module's
+   own role/spec bookkeeping (`BotAI::GetRole`, `ClassSpecRoles`, which read
+   the PlayerSetting directly) had silently drifted from what
+   `mod-ascension-compat` itself believed a bot's spec was this whole time.
+
+**Why it happened**: `AscensionClassService` is a class defined entirely
+inside a **file-local anonymous namespace** in `AscensionCompat.cpp` (lines
+~590-2145) — no header, genuinely no external linkage, unreachable from any
+other translation unit. This was a known, deliberate tradeoff (see the
+2026-09-13 "Healer/Tank casting live-validated" entry above), not an
+oversight — but it meant this module had to reimplement a subset of the real
+logic by hand instead of calling it, and that subset was missing pieces.
+
+**Fix**: documented a new core patch, `docs/core-patches.md`'s "Patch 3" --
+a two-function header (`AscensionClassServiceBridge.h`, new file in
+`src/server/coa/`) forwarding to `AscensionClassService::Instance().
+SwitchSpecialization()`/`SetTalentRank()` (both already `public` members,
+confirmed by reading the class body's access specifiers directly -- no
+visibility change needed inside the class itself, just two new file-scope
+functions next to it with real linkage). Rewrote `BotMgr::LearnSpecialization`,
+`BotTalentBuilds::ApplyBuildForLevel`, and `BotTalentBuilds::ChooseSpecForBot`
+(all in this repo, already committed) to call the bridge instead of
+`learnSpell`/`removeSpell`/`UpdatePlayerSetting` directly. A `SetTalentRank`
+failure (most commonly: the class/spec budget is already spent at this
+level) is now logged and skipped rather than forced through -- a bot below
+the level a real player would have earned the points for will end up with
+*fewer* paid talents than before, which is correct, not a regression.
+`specId == 0` ("shared tree only, no spec chosen") still can't go through
+`SwitchSpecialization` (the real function rejects 0 outright), so that one
+narrow case keeps the old hand-rolled strip-loop -- documented inline in
+`BotMgr::LearnSpecialization`.
+
+**Not built or tested** -- this session (Claude Code on the web) only has
+this repo (`mod-coa-playerbots`) attached, no access to the Windows dev box
+or a live CoA-Repack instance. The core-side header/forwarders need to be
+created in the real `azerothcore-wotlk-coa` checkout, the already-committed
+module changes mirrored in per `docs/core-patches.md`'s "Building after a
+change" section, rebuilt, and verified live before this is trusted the way
+Patch 1/2 are -- specifically: confirm a bot at a low level now gets
+*fewer* paid talents than the full curated build lists (proving the budget
+check is actually firing), and confirm spec-specific automatic entries now
+actually appear post-fix for a freshly-spec'd bot where they may not have
+before (proving `GetActiveSpecialization()` now sees the real spec).
+
 ## Not yet decided
 
 - Scope, the core-patch categorization, and the chassis are all settled and proven.

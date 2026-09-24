@@ -6,6 +6,7 @@
  */
 
 #include "BotTalentBuilds.h"
+#include "AscensionClassServiceBridge.h"
 #include "AscensionCoATalentData.h"
 #include "BotAI.h"
 #include "BotMgr.h"
@@ -35,11 +36,8 @@ uint32 MakeBuildKey(uint8 classId, uint32 specId)
     return (uint32(classId) << 16) | (specId & 0xFFFF);
 }
 
-uint32 ResolveTalentSpellId(uint32 entryId, uint8 rank)
+AscensionCompatData::CoATalentEntry const* FindTalentEntry(uint32 entryId)
 {
-    if (rank == 0)
-        return 0;
-
     auto itr = std::lower_bound(
         AscensionCompatData::CoATalentEntries.begin(),
         AscensionCompatData::CoATalentEntries.end(), entryId,
@@ -48,18 +46,21 @@ uint32 ResolveTalentSpellId(uint32 entryId, uint8 rank)
         });
 
     if (itr != AscensionCompatData::CoATalentEntries.end() && itr->EntryId == entryId)
-    {
-        if (rank <= itr->SpellCount && rank <= 3)
-            return itr->SpellIds[rank - 1];
-    }
-    return 0;
+        return &*itr;
+    return nullptr;
 }
 
-uint32 ResolvePreviousRankSpellId(uint32 entryId, uint8 rank)
+uint32 ResolveTalentSpellId(uint32 entryId, uint8 rank)
 {
-    if (rank <= 1)
+    if (rank == 0)
         return 0;
-    return ResolveTalentSpellId(entryId, rank - 1);
+
+    if (AscensionCompatData::CoATalentEntry const* entry = FindTalentEntry(entryId))
+    {
+        if (rank <= entry->SpellCount && rank <= 3)
+            return entry->SpellIds[rank - 1];
+    }
+    return 0;
 }
 
 std::string FindBuildsJsonPath()
@@ -192,37 +193,40 @@ void ApplyBuildForLevel(Player* bot, uint8 toLevel)
 
     uint8 maxPickLevel = std::min<uint8>(toLevel, 60);
     uint32 pointsSpent = 0;
+    uint32 pointsSkipped = 0;
 
     for (TalentPick const& pick : build->picks)
     {
         if (pick.level > maxPickLevel)
             break;
 
-        uint32 spellId = pick.spellId ? pick.spellId : ResolveTalentSpellId(pick.entryId, pick.rank);
-        if (!spellId)
+        AscensionCompatData::CoATalentEntry const* entry = FindTalentEntry(pick.entryId);
+        if (!entry)
             continue;
 
-        ++pointsSpent;
-
-        if (bot->HasSpell(spellId))
-            continue;
-
-        // If an earlier rank is known, cleanly remove it first
-        if (pick.rank > 1)
-        {
-            uint32 prevSpellId = ResolvePreviousRankSpellId(pick.entryId, pick.rank);
-            if (prevSpellId && bot->HasSpell(prevSpellId))
-                bot->removeSpell(prevSpellId, SPEC_MASK_ALL, false);
-        }
-
-        bot->learnSpell(spellId, false);
+        // Set through the real budget-checked path (AscensionClassServiceBridge::
+        // SetTalentRank, see docs/core-patches.md's "Patch 3") instead of learnSpell()-ing
+        // pick.spellId directly -- that used to bypass the class/spec talent-point budget
+        // entirely and skip the in-memory active-spec bookkeeping
+        // GetActiveSpecialization() depends on. A failure here (most commonly: this pick
+        // costs more than this level's remaining budget) is expected for a bot below the
+        // level a real player would have earned the points for, so it's skipped rather
+        // than forced through.
+        std::string error;
+        if (AscensionClassServiceBridge::SetTalentRank(bot, *entry, pick.rank, error))
+            ++pointsSpent;
+        else
+            ++pointsSkipped;
     }
 
+    if (pointsSkipped)
+        LOG_DEBUG("module.coa-playerbots", "BotTalentBuilds: bot '{}' skipped {} of {} build pick(s) for spec {} at level {} (budget or other limit).",
+            bot->GetName(), pointsSkipped, pointsSpent + pointsSkipped, specId, toLevel);
+
+    // Unrelated to the Ascension AE/TE point system above -- keeps the stock WotLK talent
+    // UI from showing unspent points for a character that never spends them the normal way.
     uint32 totalEarned = bot->CalculateTalentsPoints();
-    if (totalEarned >= pointsSpent)
-        bot->SetFreeTalentPoints(totalEarned - pointsSpent);
-    else
-        bot->SetFreeTalentPoints(0);
+    bot->SetFreeTalentPoints(totalEarned >= pointsSpent ? totalEarned - pointsSpent : 0);
 }
 
 uint32 ChooseSpecForBot(Player* bot)
@@ -274,7 +278,18 @@ uint32 ChooseSpecForBot(Player* bot)
 
     if (chosenSpec)
     {
-        bot->UpdatePlayerSetting("core.ascension_active_spec", 0, chosenSpec);
+        // Through the real AscensionClassServiceBridge::SwitchSpecialization() (see
+        // docs/core-patches.md's "Patch 3"), not a raw PlayerSetting write -- a raw write
+        // never touched the in-memory active-spec map GetActiveSpecialization() reads, so
+        // every spec-gated automatic talent grant silently never fired for a freshly
+        // spec'd bot even though the PlayerSetting itself looked correct.
+        if (!AscensionClassServiceBridge::SwitchSpecialization(bot, chosenSpec))
+        {
+            LOG_ERROR("module.coa-playerbots", "BotTalentBuilds: SwitchSpecialization rejected spec {} for bot '{}' (class {}).",
+                chosenSpec, bot->GetName(), uint32(classId));
+            return 0;
+        }
+
         BotRole role = BotAI::GetRoleForClassSpec(classId, chosenSpec);
         BotAI::SetRole(bot->GetGUID(), role);
 
