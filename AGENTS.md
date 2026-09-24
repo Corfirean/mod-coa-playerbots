@@ -2842,3 +2842,82 @@ confirmed clean boots throughout. **Not yet independently re-confirmed live** af
 mount-duration-filter build specifically (the round of testing that found it ended with the BG
 crash) -- next session should confirm a bot actually stays mounted for more than one tick before
 considering this one fully closed.
+
+## 2026-09-24: Open-world AI rework, Phases 1-3 -- WorldBrain, kill-quest vertical slice, anti-crowding (compiled, not live-tested)
+
+The user asked for a full rework of what an ungrouped bot does in the open world (quests, travel,
+target finding, spreading out) so it behaves like a real player instead of a set of competing
+scripts. Audit first (`docs/research/open-world-ai-audit.md` -- the ownership map of every old
+walker plus 11 confirmed problems with file references), then a new layer under
+`module/src/world/`, delivered as one PR per phase at the user's request. Architecture and the
+phase table: `docs/open-world-ai.md` -- read it before touching anything under `src/world/`.
+
+What changed, in short:
+
+- **One owner per decision.** `WorldBrain::Update` returns a `WorldDirective`
+  (Busy/Gather/Fish/Grind/Ambient/Idle) and only that activity runs this tick. SoloIntent, the
+  old quest scans, `BotQuestTracker` and the grind anchor no longer each issue their own
+  `MovePoint`. `BotQuestTracker.cpp/.h`, `TryStartQuesting`, `TryContinueQuestWalk`/
+  `TrackingWalk`/`ObjectiveWalk`, `ProcessQuestGiver`, `CollectQuestObjectiveEntries` and the
+  quest-priority pass in `TryGrindWhenSolo` are **gone** -- older entries in this file that
+  mention them (2026-09-14 "Quest-aware targeting", the TODO backlog) describe the old code.
+- **Persistent tasks, not per-tick guesses.** `WorldTask` carries type, phase (Travel -> Search
+  -> Approach -> Execute -> Combat -> Loot -> Verify), area, claimed target, counters, deadline.
+  `BotMovement::Navigate` keeps a persistent request per bot (idempotent: asking for the walk
+  already running is a no-op), walks long trips in 120 yd legs and runs a stuck ladder
+  (repath -> detour left -> detour right -> Stuck) when progress stops for 9 s.
+- **Kill quests end to end.** `QuestKnowledgeBase` (built once at startup) classifies every
+  quest's objectives and refuses what a bot can't finish (escorts, PvP, reputation, timed,
+  dailies, talk-to credit, anything without a handler yet). `QuestInteraction` accepts
+  (`CanTakeQuest`/`CanAddQuest`/`AddQuestAndCheckCompletion`, level window, log cap) and turns
+  in (`CanRewardQuest`/`RewardQuest`, reward picked by upgrade score then vendor price) through
+  the real engine calls. The kill handler finds a **live** target in the objective area,
+  reserves it, approaches (LOS), calls `Attack()` and hands the fight to the combat engine --
+  combat AI was deliberately not touched -- then verifies progress from the quest counter.
+  Plain delivery quests (no objectives) work too. **Collect quests are not accepted in this
+  phase** (they need the reverse loot index and quest-drop looting of Phase 4).
+- **Anti-crowding.** Static spawns are clustered into objective areas (45 yd single-link, 14 yd
+  vertical gap, split above 120 yd); areas are scored against spawn count, distance, bots
+  already assigned, a 100 yd population heatmap and recent failures. Live creatures are
+  reserved with a TTL so two bots never chase the same mob.
+- **Anti-loop.** Every phase has a budget; failures go into per-bot TTL memory (target 60 s,
+  area/NPC 5 min, quest 10 min, stretching on repeats); 3 bad areas suspend a quest, 3
+  suspensions abandon it; a periodic log cleanup abandons quests that can never finish.
+- **Suspension.** Groups, manual Stay, battlegrounds and dungeons suspend the brain (every
+  claim released, task kept up to 5 minutes and re-validated on return); death keeps the task,
+  drops the target, re-evaluates the area after the corpse run.
+- **Debugging.** `.botcmd brain <guid>` (goal, task, phase, quest verdict, handler, area,
+  reserved target, movement request, failure memory, counters) and `.botcmd worldstats`
+  (knowledge base, brains by task/phase, movement/reservation/heatmap stats). Log categories
+  `module.coa-playerbots.world` / `.quest` / `.navigation`, frequent lines at DEBUG.
+- Config: `CoaBots.WorldBrain.*` in `mod_coa_playerbots.conf.dist` (enable switch, planner
+  timing, quest policy, level window, mount distances, utility weights).
+
+**Verification so far**: this session had no Windows dev box and no CoA-Repack, only this repo.
+Every module source was compiled (`-fsyntax-only`, the core build's own flags) against a fresh
+clone of `jealous-sound/azerothcore-wotlk-coa` with this module's documented core patches
+stubbed in (`AscensionClassServiceBridge.h`, the petition hook, `LFGMgr::GetProposalIdForPlayer`,
+`friend class BotMgr` on `Guild`) -- clean, except the pre-existing boost `placeholders` error in
+`BotTalentBuilds.cpp` that only shows up with that environment's boost 1.83. The pure logic
+(failure memory, reservations, heatmap, clustering, utility scoring) has 291 standalone unit
+checks in `module/tests/` (`g++ -std=c++20 -I module/tests/stub -I module/src/world
+module/tests/world_logic_tests.cpp`), also clean under ASan/UBSan. **Nothing here has run on a
+live server yet.**
+
+**Live test checklist** (do this before trusting it):
+
+1. Boot: `>> QuestKB: N quests (M supported), ...` in the log; `.botcmd worldstats` shows the
+   same counts and no errors.
+2. Enable DEBUG for the three categories (see the conf.dist comment). Spawn one level 1-5 bot
+   in Northshire (Alliance: Marshal McBride, quest 7 "Kobold Camp Cleanup", kill 10 Kobold
+   Vermin) or the Valley of Trials (Horde: quest 788 "Cutting Teeth", kill 10 Mottled Boar).
+   `.botcmd brain <guid>` should walk QuestAccept -> QuestObjective (kill) -> Search/Approach/
+   Combat/Verify with the counter climbing -> QuestTurnIn, and the bot should get the reward.
+3. Spawn 3-5 bots on the same quest: `.botcmd brain` should show different reserved targets,
+   `worldstats` should show reservations and few conflicts, and the bots should not stack on
+   one spawn point.
+4. Watch `worldstats`' movement line: "MovePoints issued" should grow by a handful per task
+   (legs, new targets), not by one per bot per tick as before; stalls/recoveries should be rare.
+5. Invite a questing bot to a group: brain shows suspended, claims released; leave the group:
+   the task resumes (or re-plans if older than 5 minutes).
+6. Kill a questing bot: after the corpse run it resumes the same task.

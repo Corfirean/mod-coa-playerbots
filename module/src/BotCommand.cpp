@@ -3,6 +3,7 @@
 #include "BotFormations.h"
 #include "BotLfgFill.h"
 #include "BotMgr.h"
+#include "WorldBrain.h"
 #include "BotSpawnRandom.h"
 #include "Chat.h"
 #include "CommandScript.h"
@@ -48,6 +49,8 @@ public:
             { "setrole",      HandleBotSetRoleCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "checkrole",    HandleBotCheckRoleCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "profile",      HandleBotProfileCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "brain",        HandleBotBrainCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "worldstats",   HandleBotWorldStatsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "learnspec",    HandleBotLearnSpecCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "follow",       HandleBotFollowCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "stay",         HandleBotStayCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -358,6 +361,28 @@ public:
     static bool HandleBotCheckRoleCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
         sBotMgr->CheckRole(charLowGuid, handler);
+        return true;
+    }
+
+    // What the open-world layer is doing with this bot and why: goal, task, quest, objective,
+    // progress, phase, area, crowd, reserved target, movement request, failure memory, route.
+    static bool HandleBotBrainCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        WorldBrain::Describe(bot, handler);
+        return true;
+    }
+
+    // Population-wide counters of the open-world layer (quests, tasks, movement, reservations).
+    static bool HandleBotWorldStatsCommand(ChatHandler* handler)
+    {
+        WorldBrain::DescribeGlobal(handler);
         return true;
     }
 

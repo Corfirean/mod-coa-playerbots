@@ -9,6 +9,7 @@
 #include "BotSpawnRandom.h"
 #include "BotTalentBuilds.h"
 #include "BotZoneProgression.h"
+#include "WorldBrain.h"
 #include "ClassSpecRoles.h"
 #include "CellImpl.h"
 #include "CharacterCache.h"
@@ -2483,6 +2484,7 @@ void BotMgr::Update(uint32 diff)
     BotSpawn::ProcessPendingRandomBotSpawns(diff);
     BotSpawn::ProcessPendingLeveledBotSpawns(diff);
     BotZoneProgression::ProcessPendingRelocations(diff);
+    WorldBrain::GlobalUpdate(diff);
 
     // See QueueAllBotsForAutoLogin -- gradual login for every known bot character, throttled the
     // same way SpawnRandomBots/SpawnLeveledBots throttle bulk creation (login itself is much

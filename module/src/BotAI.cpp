@@ -78,8 +78,8 @@
 #include "BotProgression.h"
 #include "BotTaxi.h"
 #include "BotWorldBehavior.h"
-#include "BotQuestTracker.h"
 #include "BotZoneProgression.h"
+#include "WorldBrain.h"
 #include "GameTime.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -250,21 +250,8 @@ struct BotAIState
     uint32 fishingBobberGraceMs = 0;
     uint32 fishingReactionDelayMs = 0;
 
-    // See TryStartQuesting/TryContinueQuestWalk. No separate "in progress" state is needed
-    // beyond this -- unlike gathering/fishing, accepting or turning in a quest is instant (no
-    // cast time), so the walk is the only phase that can span more than one tick.
-    ObjectGuid questWalkTargetGuid;
-    uint32 nextQuestScanMs = 0;
-
-    // See TryStartQuesting/TryContinueQuestObjectiveWalk. Separate from questWalkTargetGuid
-    // (which is always a quest-giver Creature, processed via ProcessQuestGiver) because arriving
-    // at a quest *objective* GameObject instead calls its own real Use() -- same "dedicated walk
-    // guid per distinct arrival action" shape as gatherWalkTargetGuid vs. the grind anchor.
-    ObjectGuid questObjectiveWalkTargetGuid;
-
-    // Long-distance quest tracking walk across zone (BotQuestTracker)
-    bool isQuestTrackingWalk = false;
-    Position questTrackingTargetPos;
+    // Quest state lives in the open-world layer now (world/WorldBrain.h): the task, its phase,
+    // its target and its area persist there, not as walk-tracking guids here.
 
     // See TryMaintainProgression -- shared throttle for both the mount-ownership check and the
     // gear-upgrade bag scan.
@@ -346,9 +333,6 @@ constexpr float FISHING_MIN_DISTANCE = 5.0f;
 constexpr float FISHING_MAX_DISTANCE = 18.0f;
 constexpr uint32 FISHING_SCAN_INTERVAL_MS = 6000;
 constexpr uint32 FISHING_BITE_TIMEOUT_MS = 40000;
-
-constexpr float QUEST_SEARCH_RADIUS = 20.0f;
-constexpr uint32 QUEST_SCAN_INTERVAL_MS = 5000;
 
 // How often TryMaintainProgression re-checks mount/gear state -- infrequent on purpose (a
 // bot's spellbook/bags don't change fast enough to need per-tick scanning), shared by both
@@ -939,7 +923,7 @@ void TryUpgradeGearOnce(Player* bot, BotRole role)
     }
 }
 
-// Same shrinking-radius shape as QuestGiverCheck, but for a nearby repair vendor.
+// Shrinking-radius nearest-in-range search for a nearby repair vendor.
 class RepairNpcCheck
 {
 public:
@@ -1393,60 +1377,20 @@ private:
 // engine/SpellPredicates.h (brought into scope by the `using` block above) -- HostileEnemyCheck
 // stays here since FindAllyThreatenedTarget below needs the actual unit list, not just a count.
 
-// Reads this bot's own quest log (Player::GetQuestSlotQuestId/GetQuestSlotCounter -- the same
-// real quest-log data a client's own quest log window reads, not a synthetic re-derivation) to
-// find which specific creatures and GameObjects still owe this bot kill/use credit toward an
-// active quest (Quest::RequiredNpcOrGo: positive is a creature entry, negative is a GameObject
-// entry -- QuestDef.h). Used to bias grind target selection toward creatures a quest actually
-// wants dead (see GrindHostileUnitCheck/TryGrindWhenSolo) and to find quest objects worth
-// walking to and using (see QuestObjectiveGoCheck/TryStartQuesting). Without this, a solo bot's
-// grind only ever kills whatever's nearest, so kill/collect quests only progress by luck when
-// the right creature happens to wander by -- kill/loot credit itself already fires for free via
-// the normal engine paths (Unit::Kill -> RewardPlayerAndGroupAtKill -> KilledMonsterCredit, and
-// Player::StoreItem's own ItemAddedQuestCheck) the instant a bot lands the real kill or loot,
-// same as any other player; the only missing piece was ever choosing the right target.
-void CollectQuestObjectiveEntries(Player* bot, std::unordered_set<uint32>& wantedCreatures, std::unordered_set<uint32>& wantedGameObjects)
-{
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
-    {
-        uint32 questId = bot->GetQuestSlotQuestId(slot);
-        if (!questId || bot->GetQuestStatus(questId) != QUEST_STATUS_INCOMPLETE)
-            continue;
-
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        if (!quest)
-            continue;
-
-        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
-        {
-            int32 entry = quest->RequiredNpcOrGo[i];
-            if (!entry || bot->GetQuestSlotCounter(slot, i) >= quest->RequiredNpcOrGoCount[i])
-                continue; // no such objective slot, or already satisfied
-
-            if (entry > 0)
-                wantedCreatures.insert(uint32(entry));
-            else
-                wantedGameObjects.insert(uint32(-entry));
-        }
-    }
-}
-
 // Same shrinking-radius nearest-hostile shape as BotMgr::AttackNearestHostile's own
 // NearestHostileUnitInObjectRangeCheck, plus a level cap that check doesn't need: a directed
 // `.botcmd attack` trusts whatever the caller aimed it at, but a bot picking its own fights
 // while nobody's around to notice it dying must not pick something far above its own level.
-// Optionally restricted to a specific set of creature entries (see CollectQuestObjectiveEntries)
-// -- TryGrindWhenSolo runs this twice, once with the bot's own wanted-kill entries to prefer a
-// quest target over a random one, then again unrestricted as the normal fallback.
+// Quest targets are not this check's business any more: quest objectives are executed by the
+// open-world layer (world/QuestExecutor), which searches for its own live targets around the
+// objective area. Grinding is only ever grinding.
 class GrindHostileUnitCheck
 {
 public:
-    GrindHostileUnitCheck(Unit const* me, float range, uint32 maxLevel, std::unordered_set<uint32> const* requiredEntries = nullptr)
-        : _me(me), _range(range), _maxLevel(maxLevel), _requiredEntries(requiredEntries) { }
+    GrindHostileUnitCheck(Unit const* me, float range, uint32 maxLevel)
+        : _me(me), _range(range), _maxLevel(maxLevel) { }
     bool operator()(Unit* u)
     {
-        if (_requiredEntries && !_requiredEntries->count(u->GetEntry()))
-            return false;
         if (!_me->IsWithinDistInMap(u, _range, true, false, false))
             return false;
         if (!_me->IsValidAttackTarget(u))
@@ -1507,7 +1451,6 @@ private:
     Unit const* _me;
     float _range;
     uint32 _maxLevel;
-    std::unordered_set<uint32> const* _requiredEntries;
 };
 
 // Every caller names the subsystem the walk belongs to, so a "stop walking" from one subsystem
@@ -1813,40 +1756,14 @@ bool TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
     state.nextGrindScanMs = GRIND_SCAN_INTERVAL_MS;
 
     Unit* target = nullptr;
-
-    // Prefer a creature an active quest actually wants dead over a random one, when there's a
-    // choice -- see CollectQuestObjectiveEntries's own comment for why this is the only piece
-    // missing for kill/collect quests to progress on their own.
-    std::unordered_set<uint32> wantedCreatures, wantedGameObjects;
-    CollectQuestObjectiveEntries(bot, wantedCreatures, wantedGameObjects);
-    if (!wantedCreatures.empty())
-    {
-        GrindHostileUnitCheck questCheck(bot, GrindSearchRadius(), bot->GetLevel() + GrindMaxLevelAbove(), &wantedCreatures);
-        Acore::UnitLastSearcher<GrindHostileUnitCheck> questSearcher(bot, target, questCheck);
-        Cell::VisitObjects(bot, questSearcher, GrindSearchRadius());
-    }
-
-    if (!target)
-    {
-        GrindHostileUnitCheck check(bot, GrindSearchRadius(), bot->GetLevel() + GrindMaxLevelAbove());
-        Acore::UnitLastSearcher<GrindHostileUnitCheck> searcher(bot, target, check);
-        Cell::VisitObjects(bot, searcher, GrindSearchRadius());
-    }
+    GrindHostileUnitCheck check(bot, GrindSearchRadius(), bot->GetLevel() + GrindMaxLevelAbove());
+    Acore::UnitLastSearcher<GrindHostileUnitCheck> searcher(bot, target, check);
+    Cell::VisitObjects(bot, searcher, GrindSearchRadius());
 
     if (target)
     {
         bot->Attack(target, true);
         return true;
-    }
-
-    if (!wantedCreatures.empty())
-    {
-        Position objectivePos;
-        uint32 objEntry = 0;
-        bool isGoObj = false;
-        if (sBotQuestTracker->FindNearestQuestObjective(bot, objectivePos, objEntry, isGoObj) && !isGoObj)
-            return MoveBotToPoint(bot, MoveOwner::Grind, objectivePos.GetPositionX(), objectivePos.GetPositionY(),
-                objectivePos.GetPositionZ());
     }
     return false;
 }
@@ -2490,367 +2407,6 @@ bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
     return true;
 }
 
-// Same shrinking-radius nearest-in-range shape as every other search in this file, but for a
-// quest-giver creature that currently has something for this bot -- the exact same DIALOG_STATUS
-// check that drives the real "!"/"?" minimap icons (Player::GetQuestDialogStatus), checked here
-// just to decide who's worth walking to. GameObject quest givers (mailboxes, some quest chains'
-// item-triggered turn-ins) aren't covered -- creatures are the large majority of quest givers,
-// and this is deliberately the simpler slice for a first pass.
-class QuestGiverCheck
-{
-public:
-    QuestGiverCheck(Player* bot, float range) : _bot(bot), _range(range) { }
-    bool operator()(Creature* creature)
-    {
-        if (!creature->IsAlive() || !creature->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER))
-            return false;
-        if (!_bot->IsWithinDistInMap(creature, _range))
-            return false;
-
-        switch (_bot->GetQuestDialogStatus(creature))
-        {
-            case DIALOG_STATUS_REWARD:
-            case DIALOG_STATUS_REWARD2:
-            case DIALOG_STATUS_REWARD_REP:
-            case DIALOG_STATUS_AVAILABLE:
-            case DIALOG_STATUS_AVAILABLE_REP:
-                break;
-            default:
-                return false; // nothing for this bot here right now
-        }
-
-        _range = _bot->GetDistance(creature); // shrink the search radius to the closest hit so far
-        return true;
-    }
-
-private:
-    Player* _bot;
-    float _range;
-};
-
-// Same shrinking-radius shape as GatherableNodeCheck, but for an in-world GameObject an active
-// quest still wants used (see CollectQuestObjectiveEntries) -- deliberately restricted to
-// GAMEOBJECT_TYPE_GOOBER, the real WotLK "click this lever/mechanism/pile of goo" quest-object
-// shape: GameObject::Use's own GOOBER case (GameObject.cpp) already calls
-// player->KillCreditGO(...) itself once used, exactly like a real client's right-click, so
-// nothing beyond calling the real Use() is needed for this type. GAMEOBJECT_TYPE_CHEST quest
-// objectives (a lootable box, not a "use" trigger) are deliberately NOT matched here --
-// GameObject::Use() has no case for CHEST at all (confirmed reading its switch in
-// GameObject.cpp: it falls to `default:` and silently does nothing), so pathing a bot up to one
-// would just get it stuck retrying forever with nothing to show for it. Those, plus every other
-// objective shape this file doesn't attempt (escort, explore, dialogue), fall back to the
-// `.quest complete`/`.quest reward` GM commands (both already RA-console accessible) as the
-// deliberate manual escape hatch for a bot that can't make progress any other way.
-class QuestObjectiveGoCheck
-{
-public:
-    QuestObjectiveGoCheck(Player const* bot, float range, std::unordered_set<uint32> const& wantedEntries)
-        : _bot(bot), _range(range), _wantedEntries(wantedEntries) { }
-
-    bool operator()(GameObject* go)
-    {
-        if (go->GetGoType() != GAMEOBJECT_TYPE_GOOBER || !_wantedEntries.count(go->GetEntry()))
-            return false;
-        if (!go->isSpawned() || !_bot->IsWithinDistInMap(go, _range))
-            return false;
-
-        _range = _bot->GetDistance(go); // shrink the search radius to the closest hit so far
-        return true;
-    }
-
-private:
-    Player const* _bot;
-    float _range;
-    std::unordered_set<uint32> const& _wantedEntries;
-};
-
-// No attempt at "best" reward scoring here (mod-playerbots' own StatsWeightCalculator does that
-// properly) -- a solo bot with nobody to ask just takes the first choice. Deliberately the
-// simplest thing that unblocks turning the quest in at all, not an optimal pick.
-uint32 PickQuestRewardIndex(Quest const* /*quest*/)
-{
-    return 0;
-}
-
-// Turns in every quest this questgiver has ready for the bot, then accepts every quest it's
-// currently offering -- both via the same real Player methods a client's own quest-dialog
-// clicks ultimately call (CanRewardQuest/RewardQuest, CanTakeQuest/AddQuest), not packet
-// simulation. A quest's own start spell (if any) is cast exactly like a real accept would
-// trigger it.
-void ProcessQuestGiver(Player* bot, Creature* npc)
-{
-    QuestRelationBounds involved = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(npc->GetEntry());
-    for (auto itr = involved.first; itr != involved.second; ++itr)
-    {
-        uint32 questId = itr->second;
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        if (!quest || bot->GetQuestStatus(questId) == QUEST_STATUS_NONE || bot->GetQuestRewardStatus(questId))
-            continue;
-
-        // Some quests (go here, report to X) only ever reach QUEST_STATUS_COMPLETE via this
-        // call -- a real client's quest-giver dialog triggers it implicitly on open, this is
-        // the direct equivalent.
-        if (bot->CanCompleteQuest(questId))
-            bot->CompleteQuest(questId);
-        if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
-            continue;
-        if (!bot->CanRewardQuest(quest, false))
-            continue;
-
-        bot->RewardQuest(quest, PickQuestRewardIndex(quest), npc, true);
-        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' turned in quest {} ('{}').",
-            bot->GetName(), questId, quest->GetTitle());
-    }
-
-    QuestRelationBounds offered = sObjectMgr->GetCreatureQuestRelationBounds(npc->GetEntry());
-    for (auto itr = offered.first; itr != offered.second; ++itr)
-    {
-        uint32 questId = itr->second;
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        if (!quest || bot->GetQuestStatus(questId) != QUEST_STATUS_NONE)
-            continue;
-        if (!bot->CanTakeQuest(quest, false) || !bot->CanAddQuest(quest, false))
-            continue;
-
-        bot->AddQuest(quest, npc);
-        if (uint32 srcSpell = quest->GetSrcSpell())
-            bot->CastSpell(bot, srcSpell, true);
-
-        LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' accepted quest {} ('{}').",
-            bot->GetName(), questId, quest->GetTitle());
-    }
-}
-
-// Checked every idle-solo tick while state.questWalkTargetGuid is set -- mirrors
-// TryContinueGatherWalk exactly (see its own comment for why a separate walk-tracking guid,
-// not the grind anchor's POINT_MOTION_TYPE, is required). Once in range,
-// Player::GetNPCIfCanInteractWith re-validates distance/alive/flag exactly like a real client's
-// own interaction check before actually processing the quest giver.
-void TryContinueQuestWalk(Player* bot, BotAIState& state)
-{
-    Creature* npc = ObjectAccessor::GetCreature(*bot, state.questWalkTargetGuid);
-    if (!npc || !npc->IsAlive())
-    {
-        state.questWalkTargetGuid = ObjectGuid::Empty;
-        return;
-    }
-
-    if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
-    {
-        if (bot->GetDistance(npc) > 40.0f && !bot->IsMounted())
-            TryMount(bot, state, false);
-        return; // still walking
-    }
-
-    state.questWalkTargetGuid = ObjectGuid::Empty;
-
-    BotMovement::Release(bot, MoveOwner::Quest);
-
-    if (bot->IsMounted())
-        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
-
-    if (Creature* validated = bot->GetNPCIfCanInteractWith(npc->GetGUID(), UNIT_NPC_FLAG_QUESTGIVER))
-        ProcessQuestGiver(bot, validated);
-}
-
-// Checked every idle-solo tick while state.isQuestTrackingWalk is set -- handles long-distance
-// walks to distant questgivers/turn-ins/objectives across the zone found by BotQuestTracker.
-// Arriving in range ends the walk and updates the grind anchor to prevent leashing back across the zone.
-void TryContinueQuestTrackingWalk(Player* bot, BotAIState& state)
-{
-    if (bot->GetDistance(state.questTrackingTargetPos) <= INTERACTION_DISTANCE)
-    {
-        state.isQuestTrackingWalk = false;
-        BotMovement::Release(bot, MoveOwner::QuestTracker);
-
-        state.grindAnchorX = bot->GetPositionX();
-        state.grindAnchorY = bot->GetPositionY();
-        state.grindAnchorZ = bot->GetPositionZ();
-        state.grindAnchorMapId = bot->GetMapId();
-        return;
-    }
-
-    // Check if an objective or questgiver in local cell range has become reachable along the way
-    Creature* npc = nullptr;
-    QuestGiverCheck giverCheck(bot, QUEST_SEARCH_RADIUS);
-    Acore::CreatureLastSearcher<QuestGiverCheck> giverSearcher(bot, npc, giverCheck);
-    Cell::VisitObjects(bot, giverSearcher, QUEST_SEARCH_RADIUS);
-    if (npc)
-    {
-        state.isQuestTrackingWalk = false;
-        BotMovement::Release(bot, MoveOwner::QuestTracker);
-
-        state.grindAnchorX = bot->GetPositionX();
-        state.grindAnchorY = bot->GetPositionY();
-        state.grindAnchorZ = bot->GetPositionZ();
-        state.grindAnchorMapId = bot->GetMapId();
-        return;
-    }
-
-    if (bot->GetDistance(state.questTrackingTargetPos) > 40.0f && !bot->IsMounted())
-        TryMount(bot, state, false);
-
-    MoveBotToPoint(bot, MoveOwner::QuestTracker, state.questTrackingTargetPos.GetPositionX(),
-        state.questTrackingTargetPos.GetPositionY(), state.questTrackingTargetPos.GetPositionZ());
-}
-
-// Checked every idle-solo tick while state.questObjectiveWalkTargetGuid is set -- mirrors
-// TryContinueGatherWalk/TryContinueQuestWalk exactly (see gatherWalkTargetGuid's own comment for
-// why a dedicated walk-tracking guid, not the grind anchor's own POINT_MOTION_TYPE, is
-// required). Once in range, calls the object's own real Use() -- see QuestObjectiveGoCheck's
-// comment for why this alone is enough for a GOOBER-type quest object.
-void TryContinueQuestObjectiveWalk(Player* bot, BotAIState& state)
-{
-    GameObject* go = ObjectAccessor::GetGameObject(*bot, state.questObjectiveWalkTargetGuid);
-    if (!go || !go->isSpawned())
-    {
-        state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
-        return;
-    }
-
-    if (bot->GetDistance(go) > INTERACTION_DISTANCE)
-    {
-        if (bot->GetDistance(go) > 40.0f && !bot->IsMounted())
-            TryMount(bot, state, false);
-        return; // still walking
-    }
-
-    state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
-
-    BotMovement::Release(bot, MoveOwner::Quest);
-
-    if (bot->IsMounted())
-        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
-
-    go->Use(bot);
-    LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' used quest object (entry {}).", bot->GetName(), go->GetEntry());
-}
-
-// Called from the idle-solo routine, only when no gather/fish activity is already claiming this
-// tick and no quest walk is already underway. Scans for a nearby quest giver with something for
-// this bot and either processes it immediately (already in range) or walks to it first -- and if
-// no quest giver has anything right now, falls back to looking for an in-world quest object an
-// active quest still wants used (see QuestObjectiveGoCheck) -- exactly the same "scan, walk if
-// needed, act" shape as gathering, just with two possible kinds of target.
-bool TryStartQuesting(Player* bot, uint32 diff, BotAIState& state)
-{
-    if (state.nextQuestScanMs > diff)
-    {
-        state.nextQuestScanMs -= diff;
-        return false;
-    }
-    state.nextQuestScanMs = QUEST_SCAN_INTERVAL_MS;
-
-    Creature* npc = nullptr;
-    QuestGiverCheck check(bot, QUEST_SEARCH_RADIUS);
-    Acore::CreatureLastSearcher<QuestGiverCheck> searcher(bot, npc, check);
-    Cell::VisitObjects(bot, searcher, QUEST_SEARCH_RADIUS);
-
-    if (npc)
-    {
-        if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
-        {
-            state.questWalkTargetGuid = npc->GetGUID();
-            state.isQuestTrackingWalk = false;
-            if (bot->GetDistance(npc) > 40.0f && !bot->IsMounted())
-                TryMount(bot, state, false);
-            MoveBotToPoint(bot, MoveOwner::Quest, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ());
-            return true;
-        }
-
-        BotMovement::Release(bot, MoveOwner::Quest);
-
-        if (bot->IsMounted())
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
-
-        if (Creature* validated = bot->GetNPCIfCanInteractWith(npc->GetGUID(), UNIT_NPC_FLAG_QUESTGIVER))
-            ProcessQuestGiver(bot, validated);
-        return true;
-    }
-
-    // Nothing for a quest giver to do right now -- see if an active quest still needs an
-    // in-world object used instead.
-    std::unordered_set<uint32> wantedCreatures, wantedGameObjects;
-    CollectQuestObjectiveEntries(bot, wantedCreatures, wantedGameObjects);
-    if (!wantedGameObjects.empty())
-    {
-        GameObject* go = nullptr;
-        QuestObjectiveGoCheck objectiveCheck(bot, QUEST_SEARCH_RADIUS, wantedGameObjects);
-        Acore::GameObjectLastSearcher<QuestObjectiveGoCheck> objectiveSearcher(bot, go, objectiveCheck);
-        Cell::VisitObjects(bot, objectiveSearcher, QUEST_SEARCH_RADIUS);
-
-        if (go)
-        {
-            if (bot->GetDistance(go) > INTERACTION_DISTANCE)
-            {
-                state.questObjectiveWalkTargetGuid = go->GetGUID();
-                state.isQuestTrackingWalk = false;
-                if (bot->GetDistance(go) > 40.0f && !bot->IsMounted())
-                    TryMount(bot, state, false);
-                MoveBotToPoint(bot, MoveOwner::Quest, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
-                return true;
-            }
-
-            BotMovement::Release(bot, MoveOwner::Quest);
-
-            if (bot->IsMounted())
-                bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
-
-            go->Use(bot);
-            LOG_INFO("module.coa-playerbots", "BotAI: bot '{}' used quest object (entry {}).", bot->GetName(), go->GetEntry());
-            return true;
-        }
-    }
-
-    // Nothing within local cell range -- use global BotQuestTracker to pathfind across the zone
-    Position targetPos;
-    uint32 entry = 0;
-    // 1. Turn in completed quest
-    if (sBotQuestTracker->FindNearestQuestTurnIn(bot, targetPos, entry))
-    {
-        state.questWalkTargetGuid = ObjectGuid::Empty;
-        state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
-        state.isQuestTrackingWalk = true;
-        state.questTrackingTargetPos = targetPos;
-        if (bot->GetDistance(targetPos) > 40.0f && !bot->IsMounted())
-            TryMount(bot, state, false);
-        MoveBotToPoint(bot, MoveOwner::QuestTracker, targetPos.GetPositionX(), targetPos.GetPositionY(),
-            targetPos.GetPositionZ());
-        return true;
-    }
-
-    // 2. Head to nearest active quest objective
-    bool isGo = false;
-    if (sBotQuestTracker->FindNearestQuestObjective(bot, targetPos, entry, isGo))
-    {
-        state.questWalkTargetGuid = ObjectGuid::Empty;
-        state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
-        state.isQuestTrackingWalk = true;
-        state.questTrackingTargetPos = targetPos;
-        if (bot->GetDistance(targetPos) > 40.0f && !bot->IsMounted())
-            TryMount(bot, state, false);
-        MoveBotToPoint(bot, MoveOwner::QuestTracker, targetPos.GetPositionX(), targetPos.GetPositionY(),
-            targetPos.GetPositionZ());
-        return true;
-    }
-
-    // 3. Find next available questgiver
-    if (bot->GetQuestSlotQuestId(MAX_QUEST_LOG_SIZE - 1) == 0 && sBotQuestTracker->FindNearestQuestGiver(bot, targetPos, entry))
-    {
-        state.questWalkTargetGuid = ObjectGuid::Empty;
-        state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
-        state.isQuestTrackingWalk = true;
-        state.questTrackingTargetPos = targetPos;
-        if (bot->GetDistance(targetPos) > 40.0f && !bot->IsMounted())
-            TryMount(bot, state, false);
-        MoveBotToPoint(bot, MoveOwner::QuestTracker, targetPos.GetPositionX(), targetPos.GetPositionY(),
-            targetPos.GetPositionZ());
-        return true;
-    }
-
-    return false;
-}
-
 // Stops whatever follow motion is already running -- needed because a FOLLOW_MOTION_TYPE
 // generator, once started, keeps chasing its target on its own every tick until something
 // explicitly clears it. Simply skipping a *new* MoveFollow call (what this function used to
@@ -3166,6 +2722,106 @@ AmbientProfile MakeAmbientProfile(Player* bot, BotAIState& state)
     return profile;
 }
 
+WorldPersona MakeWorldPersona(Player* bot, BotAIState& state)
+{
+    EnsurePersonality(bot, state);
+    BotPersonality const& p = state.personality;
+    WorldPersona persona;
+    persona.seed = p.seed;
+    persona.questing = p.questing;
+    persona.gathering = p.gathering;
+    persona.fishing = p.fishing;
+    persona.grinding = p.grinding;
+    persona.patience = p.patience;
+    persona.sociability = p.sociability;
+    persona.lean = uint8(state.soloIntent);
+    return persona;
+}
+
+// The idle-solo tick of an ungrouped bot with no fight, no loot and no rest to do. Order:
+//  1. an explicit guild gather order from a player;
+//  2. the ambient layer's needs (repair, selling) and any errand or flight already in flight --
+//     they pause the brain's task while they have the bot;
+//  3. the open-world brain (world/WorldBrain.h), which either acts itself (quests, travel) or
+//     names the one activity -- gather, fish, grind, ambient life -- that gets this tick.
+// Before the brain existed, SoloIntent's scan order, the quest scans, the long-distance quest walk,
+// the grind anchor and the ambient errands each decided on their own to move the bot; now exactly
+// one of them runs per tick, the one the brain chose.
+void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
+{
+    // Active guild gather order: travel to target area and gather the requested resource
+    BotMgr::GuildGatherOrder const* gatherOrder = sBotMgr->GetGuildGatherOrder(bot->GetGUID());
+    if (gatherOrder && gatherOrder->remainingCount > 0)
+    {
+        if (gatherOrder->hasTargetLocation)
+        {
+            if (bot->GetMapId() != gatherOrder->targetMapId)
+            {
+                bot->TeleportTo(gatherOrder->targetMapId, gatherOrder->targetX, gatherOrder->targetY, gatherOrder->targetZ, 0.0f);
+                sBotMgr->QueueTeleportAck(bot->GetSession());
+                return;
+            }
+
+            float dist = bot->GetExactDist2d(gatherOrder->targetX, gatherOrder->targetY);
+            if (dist > 40.0f)
+            {
+                if (!bot->IsMounted())
+                    TryMount(bot, state, false);
+                MoveBotToPoint(bot, MoveOwner::Gather, gatherOrder->targetX, gatherOrder->targetY,
+                    gatherOrder->targetZ);
+                return;
+            }
+        }
+        if (!TryStartGathering(bot, diff, state))
+            TryGrindWhenSolo(bot, diff, state);
+        return;
+    }
+
+    // Persistent half-hour lean (personality + session variety); the brain uses it as a bias.
+    UpdateSoloIntent(bot, diff, state);
+
+    AmbientProfile ambientProfile = MakeAmbientProfile(bot, state);
+    AmbientTick ambient = BotWorldBehavior::UpdateBeforeSolo(bot, ambientProfile);
+    if (ambient == AmbientTick::Busy)
+    {
+        WorldBrain::NotifyAmbientBusy(bot);
+        return;
+    }
+    if (ambient == AmbientTick::Relocated)
+        state.hasGrindAnchor = false;
+
+    WorldDirective directive = WorldBrain::Update(bot, diff, MakeWorldPersona(bot, state));
+    bool started = false;
+    switch (directive)
+    {
+        case WorldDirective::Busy:
+            // The brain is walking the bot around for a task: whatever grind anchor existed from
+            // before is somewhere else now, and must not pull the bot back later.
+            state.hasGrindAnchor = false;
+            return;
+        case WorldDirective::Gather:
+            started = TryStartGathering(bot, diff, state);
+            break;
+        case WorldDirective::Fish:
+            started = TryStartFishing(bot, diff, state);
+            break;
+        case WorldDirective::Grind:
+            started = TryGrindWhenSolo(bot, diff, state);
+            break;
+        case WorldDirective::Idle:
+            return;
+        default:
+            break;
+    }
+
+    if (directive != WorldDirective::Ambient)
+        WorldBrain::ReportActivity(bot, directive, started);
+
+    // Cosmetic errands (town services, wandering, a trip to a gathering or grinding area) only
+    // start when the chosen activity found nothing to do.
+    BotWorldBehavior::UpdateAfterSolo(bot, ambientProfile, started);
+}
+
 // combatRole drives movement/positioning/taunt-eligibility behavior; profileRole is what's
 // looked up in the Data-Driven profile registry (item 12, Phase 2 fixup) -- normally the same
 // value, except for Support, which fights like Dps (combatRole) but must still find its own
@@ -3328,6 +2984,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             // something to kill.
             if (!bot->GetGroup() && state.manualCommand != BotManualCommand::Stay)
             {
+                // An in-flight gathering or fishing action finishes before anything else is
+                // decided; everything else goes through the open-world layer (UpdateSoloWorld).
                 if (!state.gatherTargetGuid.IsEmpty())
                     TryFinishGathering(bot, state);
                 else if (!state.gatherWalkTargetGuid.IsEmpty())
@@ -3336,87 +2994,18 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
                     TryFinishFishing(bot, diff, state);
                 else if (state.fishingCastInProgress)
                     TryWaitForFishingCast(bot, diff, state);
-                else if (!state.questWalkTargetGuid.IsEmpty())
-                    TryContinueQuestWalk(bot, state);
-                else if (!state.questObjectiveWalkTargetGuid.IsEmpty())
-                    TryContinueQuestObjectiveWalk(bot, state);
-                else if (state.isQuestTrackingWalk)
-                    TryContinueQuestTrackingWalk(bot, state);
                 else
-                {
-                    // Active guild gather order: travel to target area and gather the requested resource
-                    BotMgr::GuildGatherOrder const* gatherOrder = sBotMgr->GetGuildGatherOrder(bot->GetGUID());
-                    if (gatherOrder && gatherOrder->remainingCount > 0)
-                    {
-                        if (gatherOrder->hasTargetLocation)
-                        {
-                            if (bot->GetMapId() != gatherOrder->targetMapId)
-                            {
-                                bot->TeleportTo(gatherOrder->targetMapId, gatherOrder->targetX, gatherOrder->targetY, gatherOrder->targetZ, 0.0f);
-                                sBotMgr->QueueTeleportAck(bot->GetSession());
-                                return;
-                            }
-
-                            float dist = bot->GetExactDist2d(gatherOrder->targetX, gatherOrder->targetY);
-                            if (dist > 40.0f)
-                            {
-                                if (!bot->IsMounted())
-                                    TryMount(bot, state, false);
-                                MoveBotToPoint(bot, MoveOwner::Gather, gatherOrder->targetX, gatherOrder->targetY,
-                                    gatherOrder->targetZ);
-                                return;
-                            }
-                        }
-                        if (!TryStartGathering(bot, diff, state))
-                            TryGrindWhenSolo(bot, diff, state);
-                        return;
-                    }
-
-                    // A stable intent chooses the activity order. Fallbacks keep a bot useful
-                    // when its preferred resource, water, or quest is unavailable right now.
-                    UpdateSoloIntent(bot, diff, state);
-
-                    // Ambient world behavior (see BotWorldBehavior.h) wraps the solo scans: a need
-                    // or an errand already underway owns the tick outright, and a new errand only
-                    // starts once the scans below have come up empty for a while. When an errand
-                    // ends somewhere new the grind anchor is dropped, so it re-anchors here instead
-                    // of TryGrindWhenSolo marching the bot straight back where it came from.
-                    AmbientProfile ambientProfile = MakeAmbientProfile(bot, state);
-                    AmbientTick ambient = BotWorldBehavior::UpdateBeforeSolo(bot, ambientProfile);
-                    if (ambient == AmbientTick::Busy)
-                        return;
-                    if (ambient == AmbientTick::Relocated)
-                        state.hasGrindAnchor = false;
-
-                    bool started = false;
-                    switch (state.soloIntent)
-                    {
-                        case SoloIntent::Gather:
-                            started = TryStartGathering(bot, diff, state) || TryStartQuesting(bot, diff, state)
-                                || TryGrindWhenSolo(bot, diff, state);
-                            break;
-                        case SoloIntent::Fish:
-                            started = TryStartFishing(bot, diff, state) || TryStartGathering(bot, diff, state)
-                                || TryStartQuesting(bot, diff, state) || TryGrindWhenSolo(bot, diff, state);
-                            break;
-                        case SoloIntent::Grind:
-                            started = TryGrindWhenSolo(bot, diff, state);
-                            break;
-                        case SoloIntent::Explore:
-                            started = TryStartQuesting(bot, diff, state) || TryStartGathering(bot, diff, state)
-                                || TryStartFishing(bot, diff, state) || TryGrindWhenSolo(bot, diff, state);
-                            break;
-                        default:
-                            started = TryStartQuesting(bot, diff, state) || TryStartGathering(bot, diff, state)
-                                || TryGrindWhenSolo(bot, diff, state);
-                            break;
-                    }
-
-                    BotWorldBehavior::UpdateAfterSolo(bot, ambientProfile, started);
-                }
+                    UpdateSoloWorld(bot, diff, state);
             }
-            else if (combatRole == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
-                TryAutoPullInInstance(bot);
+            else
+            {
+                // A group or a manual Stay owns the bot now: the open-world layer steps back and
+                // drops every claim it holds (movement, reserved mobs, area occupancy) until the
+                // bot is solo and free again.
+                WorldBrain::Suspend(bot, bot->GetGroup() ? SuspendReason::Grouped : SuspendReason::ManualCommand);
+                if (combatRole == BotRole::Tank && state.manualCommand != BotManualCommand::Stay)
+                    TryAutoPullInInstance(bot);
+            }
         }
         return;
     }
@@ -3854,9 +3443,9 @@ void UpdateSupport(Player* bot, uint32 diff, BotAIState& state)
 //     what's confirmed vs. still-to-verify here).
 void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
 {
-    state.isQuestTrackingWalk = false;
-    state.questWalkTargetGuid = ObjectGuid::Empty;
-    state.questObjectiveWalkTargetGuid = ObjectGuid::Empty;
+    // The open-world task survives death: the brain drops its live target and area claims and
+    // re-evaluates the area once the bot is back on its feet.
+    WorldBrain::OnDeath(bot);
 
     if (bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
     {
@@ -4115,6 +3704,7 @@ void Forget(ObjectGuid botGuid)
     BotBattlegroundAI::Forget(botGuid);
     BotMovement::Forget(botGuid);
     BotWorldBehavior::Forget(botGuid);
+    WorldBrain::Forget(botGuid);
 }
 
 bool IsQuestOnlyGameObjectLoot(uint32 lootId)

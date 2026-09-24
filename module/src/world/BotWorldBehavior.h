@@ -1,11 +1,16 @@
 /*
  * mod-coa-playerbots
  *
- * Ambient world behavior: the layer that gives an ungrouped, idle bot a concrete errand when its
- * own solo activities (questing, gathering, fishing, grinding -- all still in BotAI.cpp) found
- * nothing within their few dozen yards of scan range. Before this layer existed that case simply
- * ended in the bot standing still, which is what made bots at town hubs and in capitals look like
- * NPCs rather than players.
+ * Ambient world behavior: the layer that gives an ungrouped, idle bot a concrete errand when the
+ * open-world brain (WorldBrain.h) has no task for it and the activity it chose (gathering, fishing,
+ * grinding -- still in BotAI.cpp) found nothing within its few dozen yards of scan range. Before
+ * this layer existed that case simply ended in the bot standing still, which is what made bots at
+ * town hubs and in capitals look like NPCs rather than players.
+ *
+ * Since the WorldBrain rework (2026-09-24) this layer no longer competes with questing: needs
+ * (repair, selling) and errands already in flight still run first and pause the brain's task, but
+ * a new cosmetic errand only starts on a tick the brain handed to ambient life or whose chosen
+ * activity found nothing.
  *
  * Two layers with different lifetimes, deliberately not merged. BotAI's SoloIntent is "what kind
  * of player am I this half hour" and is chosen from the persistent personality; the WorldIntent

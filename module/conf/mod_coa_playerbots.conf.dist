@@ -115,3 +115,72 @@ CoaBots.World.VerboseLog = 1
 # Level distribution for `.botcmd spawnleveled`: comma-separated "low-high:weight" brackets.
 # The default gives many levelling bots and few at the cap: 40% 1-20, 33% 21-60, 20% 61-79, 7% 80.
 CoaBots.LeveledSpawn.Brackets = "1-20:40,21-60:33,61-79:20,80-80:7"
+
+###################################################################################################
+# Open-world brain (src/world/WorldBrain.h): quests, travel and activity choice for ungrouped bots.
+#
+# The brain owns an idle, ungrouped bot: it plans a task by utility (quest objectives, turn-ins,
+# new quests from nearby givers, a new quest hub), executes it phase by phase (travel, live-target
+# search, approach, act, loot, verify) and hands fights to the combat engine. Gathering, fishing,
+# grinding and ambient errands only run when the brain chooses them.
+#
+# Debugging: `.botcmd brain <guid>` (one bot), `.botcmd worldstats` (population). Transition logs
+# (TaskSelected, PhaseChanged, TargetSelected, ObjectiveProgress, QuestTurnedIn, TaskFailed,
+# navigation stalls) are DEBUG-level on these categories -- enable them in worldserver.conf with e.g.
+#   Logger.module.coa-playerbots.world=5,Console Server
+#   Logger.module.coa-playerbots.quest=5,Console Server
+#   Logger.module.coa-playerbots.navigation=5,Console Server
+###################################################################################################
+
+# Master switch. Disabled, bots only gather/fish/grind/wander (no quests at all).
+CoaBots.WorldBrain.Enable = 1
+
+# Planner cadence window (ms). Each bot draws its own interval inside it; a planner pass that finds
+# nothing backs off exponentially (up to 3 minutes) while the bot does something else.
+CoaBots.WorldBrain.PlannerMinMs = 2000
+CoaBots.WorldBrain.PlannerMaxMs = 8000
+
+# Live target scan cadence while searching an objective area (ms), and the scan radius (yards).
+CoaBots.WorldBrain.ScanMinMs = 500
+CoaBots.WorldBrain.ScanMaxMs = 1500
+CoaBots.WorldBrain.SearchRadius = 50
+
+# Distance (yards) at which a bot engages a claimed quest mob; the combat engine then positions.
+CoaBots.WorldBrain.EngageRange = 28
+
+# Phase budgets (ms): searching an area with nothing alive before trying another area, walking up to
+# a claimed target, the whole trip to an area.
+CoaBots.WorldBrain.SearchTimeoutMs = 35000
+CoaBots.WorldBrain.ApproachTimeoutMs = 25000
+CoaBots.WorldBrain.TravelTimeoutMs = 360000
+
+# Quest log policy: at most this many quests at once; quests whose objectives are farther than this
+# (yards) are not taken; quest givers are looked for within this radius (yards).
+CoaBots.WorldBrain.MaxActiveQuests = 15
+CoaBots.WorldBrain.MaxObjectiveDistance = 3000
+CoaBots.WorldBrain.GiverSearchRadius = 500
+
+# Quest level window around the bot's level, and how far above its level a quest mob may be.
+CoaBots.WorldBrain.QuestLevelBelow = 6
+CoaBots.WorldBrain.QuestLevelAbove = 3
+CoaBots.WorldBrain.MaxMobLevelAbove = 3
+
+# Solo bots leave elite quests alone unless this is enabled.
+CoaBots.WorldBrain.AcceptEliteQuests = 0
+
+# Objective areas given up per objective before the quest is set aside, and for how long (ms).
+CoaBots.WorldBrain.MaxBadAreasPerObjective = 3
+CoaBots.WorldBrain.QuestSuspendMs = 600000
+
+# Mounting for travel: each bot mounts beyond its own threshold drawn from this range (yards).
+CoaBots.WorldBrain.MountDistanceMin = 60
+CoaBots.WorldBrain.MountDistanceMax = 95
+
+# Utility weights (see src/world/WorldUtility.h for all of them and what they mean).
+CoaBots.WorldBrain.Weight.TravelPer100Yards = 7
+CoaBots.WorldBrain.Weight.CrowdPerBot = 6
+CoaBots.WorldBrain.Weight.Overlap = 35
+CoaBots.WorldBrain.Weight.TurnIn = 120
+CoaBots.WorldBrain.Weight.Accept = 55
+CoaBots.WorldBrain.Weight.AreaOccupancy = 12
+CoaBots.WorldBrain.Weight.TargetReserved = 200
