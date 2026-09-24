@@ -3035,3 +3035,23 @@ add to the Phases 1-3 list: Northshire quest 5261 "Eagan Peltskinner" is a deliv
 Across the Border" is a collect (Tough Wolf Meat from Timber Wolves / Young Wolves) -- the bot
 should accept it, kill wolves, actually loot the meat (the old code never did) and turn it in.
 Watch for a chest quest in the same zones to exercise the Opening spell path.
+
+## 2026-09-24: Open-world AI rework, Phase 5 -- multi-quest routing (compiled, not live-tested)
+
+Stacked on Phase 4. Only `WorldPlanner.cpp` changes. A bot with several quests in its log no
+longer does them one at a time in whatever order the scores happen to fall:
+
+- **Overlap and route synergy** feed the objective score: shared targets with another open
+  objective ("kill kobolds" + "loot candles from kobolds"), or an area within 150 yd of one. A
+  turn-in scores higher when there is still work near the quest ender.
+- **Bundling**: the chosen objective takes up to 4 others with the same action that share its
+  targets or lie within 70 yd. Their targets join the live search and their progress counts for
+  the trip's Verify, so killing a mob that only a bundled quest wants is not a "dry" attempt.
+  Different actions never bundle (a kill task never starts opening chests).
+- **Route plan**: the remaining candidates, nearest-next from the chosen task, up to 4 steps,
+  shown as `Route:` in `.botcmd brain`. Only the first step executes; the planner re-plans when it
+  finishes.
+
+Live check: give a bot a kill quest and a collect quest on the same creature (any "kill N X" +
+"bring M items that X drops" pair in one zone) and confirm `.botcmd brain` shows the second
+objective under "bundled" and both counters climbing on one trip.

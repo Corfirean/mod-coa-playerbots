@@ -18,6 +18,12 @@ using namespace WorldBrainInternal;
 
 namespace
 {
+    // Objectives with areas this close count as "on the way" for each other.
+    constexpr float ROUTE_NEIGHBOUR_YARDS = 150.0f;
+    // Objectives this close (or sharing targets) are done on the same trip.
+    constexpr float BUNDLE_YARDS = 70.0f;
+    constexpr size_t MAX_BUNDLE = 4;
+    constexpr size_t ROUTE_STEPS = 4;
     // Quest givers considered per planning pass, nearest first.
     constexpr size_t MAX_GIVERS_EVALUATED = 8;
 
@@ -66,6 +72,16 @@ namespace
     {
         CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
         return tmpl && tmpl->minlevel > bot->GetLevel() + cfg.maxLevelAbove;
+    }
+
+    bool SharesTarget(ObjectiveDef const& a, ObjectiveDef const& b)
+    {
+        if (a.targetsAreGameObjects != b.targetsAreGameObjects)
+            return false;
+        for (uint32 target : a.targets)
+            if (std::find(b.targets.begin(), b.targets.end(), target) != b.targets.end())
+                return true;
+        return false;
     }
 
     struct EnderSpot
@@ -397,19 +413,37 @@ namespace WorldPlanner
             }
         }
 
-        for (Candidate& c : objectives)
+        // Overlap (shared targets) and route neighbours (areas close together) between objectives.
+        for (size_t i = 0; i < objectives.size(); ++i)
         {
+            for (size_t j = 0; j < objectives.size(); ++j)
+            {
+                if (i == j)
+                    continue;
+                Candidate& a = objectives[i];
+                Candidate const& b = objectives[j];
+                if (ActionOf(a.def->type) == ActionOf(b.def->type) && SharesTarget(*a.def, *b.def))
+                    ++a.input.overlapCount;
+                else if (std::hypot(a.task.x - b.task.x, a.task.y - b.task.y) <= ROUTE_NEIGHBOUR_YARDS)
+                    ++a.input.routeNeighbours;
+            }
+            Candidate& c = objectives[i];
             c.utility = WorldUtility::ScoreObjective(c.input, cfg.utility);
             c.task.utility = c.utility;
-            c.task.why = "objective";
+            c.task.why = c.input.overlapCount ? "objective (shared targets)" : c.input.routeNeighbours ? "objective (on the way)" : "objective";
         }
 
         for (EnderGroup const& group : enders)
         {
             Candidate c;
             c.task = NpcTask(WorldTaskType::QuestTurnIn, bot, group.spot, group.quests.front());
+            uint32 nearbyWork = 0;
+            for (Candidate const& o : objectives)
+                if (std::hypot(o.task.x - group.spot.spot.x, o.task.y - group.spot.spot.y) <= ROUTE_NEIGHBOUR_YARDS)
+                    ++nearbyWork;
             c.utility = cfg.utility.turnInBase + cfg.utility.turnInBatch * float(group.quests.size() - 1)
                 + cfg.utility.xpValue * std::min(1.0f, group.xp)
+                + cfg.utility.routeSynergy * float(std::min<uint32>(nearbyWork, 4))
                 - WorldUtility::TravelCost(group.spot.distance, cfg.utility.travelPer100Yards, cfg.utility.farTravelYards,
                     cfg.utility.farTravelMultiplier)
                 + 8.0f * WorldUtility::Jitter(botRaw, group.spot.spot.spawnId);
@@ -482,7 +516,46 @@ namespace WorldPlanner
 
         Candidate* best = *std::max_element(all.begin(), all.end(),
             [](Candidate const* a, Candidate const* b) { return a->utility < b->utility; });
+        WorldTask chosen = best->task;
+
+        // One trip, several objectives: same action, and either the same targets or a place close by.
+        if (chosen.type == WorldTaskType::QuestObjective && best->def)
+        {
+            for (Candidate const& other : objectives)
+            {
+                if (&other == best || chosen.quest.bundle.size() >= MAX_BUNDLE)
+                    continue;
+                if (ActionOf(other.def->type) != ActionOf(best->def->type) ||
+                    other.def->targetsAreGameObjects != best->def->targetsAreGameObjects)
+                    continue;
+                bool close = std::hypot(other.task.x - chosen.x, other.task.y - chosen.y) <= BUNDLE_YARDS;
+                if (close || SharesTarget(*other.def, *best->def))
+                    chosen.quest.bundle.push_back(ObjectiveRef{ other.task.quest.questId, other.task.quest.objectiveIndex });
+            }
+        }
+
+        // The rest of the plan, nearest-next from where the chosen task happens (for display, and
+        // to give the next planning pass an obvious continuation).
         state.route.clear();
-        return best->task;
+        state.route.push_back(RouteStep{ chosen.type, chosen.quest.questId, chosen.quest.objectiveIndex, chosen.x, chosen.y, best->utility });
+        std::vector<Candidate*> remaining;
+        for (Candidate* c : all)
+            if (c != best && c->utility > 0.0f)
+                remaining.push_back(c);
+        float cx = chosen.x;
+        float cy = chosen.y;
+        while (!remaining.empty() && state.route.size() < ROUTE_STEPS)
+        {
+            auto next = std::min_element(remaining.begin(), remaining.end(), [cx, cy](Candidate const* a, Candidate const* b)
+                { return std::hypot(a->task.x - cx, a->task.y - cy) < std::hypot(b->task.x - cx, b->task.y - cy); });
+            Candidate const* c = *next;
+            state.route.push_back(RouteStep{ c->task.type, c->task.quest.questId, c->task.quest.objectiveIndex, c->task.x, c->task.y,
+                c->utility });
+            cx = c->task.x;
+            cy = c->task.y;
+            remaining.erase(next);
+        }
+
+        return chosen;
     }
 }
