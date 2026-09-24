@@ -40,7 +40,7 @@ area after the corpse run (twice killed in one area writes the area off).
 A `WorldTask` persists across ticks: type (`QuestObjective`, `QuestAccept`, `QuestTurnIn`), phase,
 the area (map, anchor, radius, `ObjectiveArea` id), the quest/objective with its type, target
 entry, item, required/current count, the claimed live target guid, retry/dry-attempt/bad-area
-counters, deaths, last failure reason, deadline.
+counters, deaths, last failure reason, deadline, and the objectives bundled into the same trip.
 
 Phases for a creature objective:
 
@@ -94,8 +94,13 @@ Candidates, scored with named weights (`WorldUtility.h`, overridable in config):
 - when none of that exists, the brain hands the bot a fallback activity (gather, fish, grind,
   ambient errands) weighted by its persona; zone progression still relocates it as before.
 
-The best candidate becomes the task; the planner runs again when it finishes, because the world
-has moved on. (Bundling nearby objectives into one trip and a route plan are Phase 5.)
+Objectives score higher when they share targets with another open objective (overlap) or have an
+area within 150 yd of one (route synergy); a turn-in scores higher with work nearby. The chosen
+objective **bundles** every other objective with the same action that shares its targets or lies
+within 70 yd (up to 4; their targets join the live search, their progress counts toward the
+trip). The remaining candidates are laid out nearest-next as a short route, shown by `.botcmd
+brain`. Only the first step executes; the planner runs again when it finishes, because the world
+has moved on.
 
 The planner runs on a staggered 2–8 s window while idle and immediately (after a short human
 pause) when a task ends; a pass that finds nothing backs off exponentially up to 3 minutes.
@@ -132,7 +137,7 @@ abandoned by a periodic log cleanup instead of clogging the log.
 
 - `.botcmd brain <guid>` — goal, task, phase and time in phase, quest + knowledge-base verdict,
   objective + handler + progress, area (spawns, distance, crowd, assigned bots), reserved target,
-  movement request (owner, goal, distance, last progress, recoveries), live failure memory,
+  movement request (owner, goal, distance, last progress, recoveries), route, live failure memory,
   next planner pass, last event, per-bot counters.
 - `.botcmd worldstats` — knowledge base size, brains by task/phase, quest/objective/task counters,
   movement stats (MovePoints issued vs redundant skipped, stalls, recoveries), reservations, heatmap.
@@ -162,7 +167,7 @@ clustering, utility scoring) is unit-tested standalone (`module/tests/`, also un
 | 2 | Kill-quest vertical slice: knowledge base, live target search, accept/turn-in, verify | in code |
 | 3 | Anti-crowding: live-target reservations, spawn clustering into objective areas, population heatmap | in code |
 | 4 | Collect quests: reverse loot index, quest-drop looting, chests | in code |
-| 5 | Multi-quest routing: overlap, bundling, route plan | planned |
+| 5 | Multi-quest routing: overlap, bundling, route plan | in code |
 | 6 | Use-object / explore / use-item-on / talk handlers | planned |
 | 7 | Quest-driven hub travel, flights for quest trips, zone-progression guard | planned |
 | 8 | Humanisation: opportunity detours, session breaks | planned |

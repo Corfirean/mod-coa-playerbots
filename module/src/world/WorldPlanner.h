@@ -6,6 +6,8 @@
  *    count, distance, how many bots are already there, what failed recently);
  *  - turn-ins of completed quests, batched per quest ender;
  *  - quest givers nearby with work suitable for the bot.
+ * Objectives that share targets or lie next to each other are bundled into one trip, and the rest
+ * of the candidates are ordered into a short route (nearest-next) for `.botcmd brain`.
  *
  * Runs rarely (a staggered few seconds when idle, and after each finished task), never per tick.
  */
