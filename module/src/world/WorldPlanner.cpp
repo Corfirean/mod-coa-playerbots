@@ -26,6 +26,9 @@ namespace
     constexpr size_t ROUTE_STEPS = 4;
     // Quest givers considered per planning pass, nearest first.
     constexpr size_t MAX_GIVERS_EVALUATED = 8;
+    // A talk-to objective (only ever one already in the log -- they are never accepted) is a last
+    // resort: one gossip hello rarely gives the credit.
+    constexpr float TALK_PENALTY = 80.0f;
 
     struct Candidate
     {
@@ -279,6 +282,7 @@ namespace WorldPlanner
                 continue;
             }
             if (status != QUEST_STATUS_INCOMPLETE || state.failures.Has(FailKind::Quest, questId, now) ||
+                state.failures.Has(FailKind::Unworkable, questId, now) ||
                 !QuestInteraction::Workable(bot, questId, *quest))
                 continue;
             for (ObjectiveDef const& def : quest->objectives)
@@ -343,7 +347,8 @@ namespace WorldPlanner
                 group->xp += XpShare(bot, quest);
                 continue;
             }
-            if (status != QUEST_STATUS_INCOMPLETE || state.failures.Has(FailKind::Quest, questId, now))
+            if (status != QUEST_STATUS_INCOMPLETE || state.failures.Has(FailKind::Quest, questId, now) ||
+                state.failures.Has(FailKind::Unworkable, questId, now))
                 continue;
             // A quest with an open objective nothing can do (or that can never be completed) is a
             // dead end: working on its other objectives would be wasted. The log cleanup deals
@@ -429,6 +434,8 @@ namespace WorldPlanner
             }
             Candidate& c = objectives[i];
             c.utility = WorldUtility::ScoreObjective(c.input, cfg.utility);
+            if (c.def->type == ObjectiveType::TalkTo)
+                c.utility -= TALK_PENALTY;
             c.task.utility = c.utility;
             c.task.why = c.input.overlapCount ? "objective (shared targets)" : c.input.routeNeighbours ? "objective (on the way)" : "objective";
         }

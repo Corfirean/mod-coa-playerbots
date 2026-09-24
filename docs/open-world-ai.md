@@ -91,8 +91,10 @@ Three questions, kept apart and each answered in exactly one place:
 `QuestInteraction::Workable` combines the last two for a quest in the log (completable, and every
 open objective executable). Acceptance requires all three for every objective; the planner,
 `HasQuestWork` and the log cleanup all ask `Workable`/`CanExecute`, so no part of the brain can
-think a quest is doable while another can never create a task for it. Handlers (`objectives/`, one
-per kind, stateless, picked through a registry):
+think a quest is doable while another can never create a task for it.
+
+Handlers (`objectives/`, one per kind, stateless, picked through a registry; each takes only
+KB-supported objectives, except talk):
 
 - **kill** (including kill-credit proxies) and **collect** (kill the creatures that drop the
   item, loot it) — `Attack()` and the combat engine;
@@ -107,10 +109,14 @@ per kind, stateless, picked through a registry):
 - **explore**: walk into the area trigger's volume (as the core's `IsInAreaTriggerRadius` judges
   it), then send `CMSG_AREATRIGGER` through the real handler — the server never notices a player
   entering a trigger by itself, the client reports it;
-- **talk**: talk-to credit comes from gossip scripts and is never accepted; the handler only
-  tries a gossip hello for such quests already in a log, and drops the quest if that gives no
-  credit;
+- **talk**: talk-to credit comes from gossip scripts and is never accepted; the handler takes such
+  objectives only for quests already in a log (planned last, with a penalty) and tries one gossip
+  hello;
 - plain delivery quests (no objectives) are just an accept and a turn-in.
+
+When a handler finds that *this bot* cannot do an objective after all — the talk gave no credit,
+the trigger gave nothing from inside, the quest item is gone — the quest is marked **unworkable**
+for that bot for 6 hours: no work on it, and the log cleanup treats it as a dead end.
 
 **Quest drops.** Quest-only drops live in `Loot::quest_items`, in loot slots numbered after the
 regular items, and only for players who need them. The old loot code only ever took
@@ -184,8 +190,8 @@ What a failed task does to its quest (`QuestPolicy.h`):
   is set aside for `QuestSuspendMs` (10 min), doubling each time in a row up to
   `QuestSuspendMaxMs` (2 h), and retried. **Never abandoned** — a pathing defect or a busy camp
   must not cost a quest chain. A completed objective resets the back-off.
-- **Dead end** (the quest has failed, can never be completed, or has an open objective this build
-  cannot execute): the planner never works on it; the log cleanup notes it and abandons one per
+- **Dead end** (the quest has failed, can never be completed, has an open objective this build
+  cannot execute, or was marked unworkable for this bot by a handler): the planner never works on it; the log cleanup notes it and abandons one per
   pass **only when the log is full** (`MaxActiveQuests`), preferring failed quests.
 
 A kill by someone else is not a failed attempt (no credit was possible); a claimed target is

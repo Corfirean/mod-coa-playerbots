@@ -45,6 +45,10 @@ namespace
     // A dead-end quest is remembered (and logged) once per this long.
     constexpr uint32 DEAD_END_MEMORY_MS = HOUR * IN_MILLISECONDS;
 
+    // A quest a handler tried and found this bot cannot do is left alone this long before one more
+    // try (the quest item may come back, a script may behave differently next time).
+    constexpr uint32 UNWORKABLE_MEMORY_MS = 6 * HOUR * IN_MILLISECONDS;
+
     // A fallback activity that keeps finding nothing hands over to ambient life after this.
     constexpr uint32 ACTIVITY_IDLE_SWITCH_MS = 15000;
 
@@ -155,6 +159,8 @@ namespace
             char const* why = nullptr;
             if (status == QUEST_STATUS_FAILED)
                 why = "the quest has failed";
+            else if (status == QUEST_STATUS_INCOMPLETE && state.failures.Has(FailKind::Unworkable, questId, now))
+                why = "a handler tried and this bot cannot do it";
             else if (status == QUEST_STATUS_INCOMPLETE && !bot->CanCompleteQuest(questId))
             {
                 QuestKnowledge const* info = QuestKB::Get(questId);
@@ -239,9 +245,13 @@ namespace
                             SuspendQuest(bot, state, task.quest.questId, reason);
                             break;
                         case FailureReason::Unsupported:
-                            // Nothing to execute after all: set aside like any failure, and let the
-                            // log cleanup look at what the quest is on the next planner pass.
-                            SuspendQuest(bot, state, task.quest.questId, reason);
+                            // The handler tried and this bot cannot do it (a talk that gave no
+                            // credit, a trigger that gave nothing, a quest item that is gone). Not a
+                            // transient failure: no work on it for a long while, and the log cleanup
+                            // treats it as a dead end from its next pass.
+                            state.failures.Remember(FailKind::Unworkable, task.quest.questId, now, UNWORKABLE_MEMORY_MS,
+                                uint8(reason));
+                            NoteEvent(state, Acore::StringFormat("quest {} cannot be done by this bot", task.quest.questId));
                             state.nextLogCleanupMs = now;
                             break;
                         default:

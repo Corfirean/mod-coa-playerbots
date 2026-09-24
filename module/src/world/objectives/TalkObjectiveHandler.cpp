@@ -6,8 +6,9 @@
  * base marks these objectives unsupported and bots never accept such quests. This handler exists
  * for quests that are already in a bot's log (taken before this layer existed, or from a shared
  * quest): it walks up, opens the NPC's gossip exactly as a client's right-click does
- * (CMSG_GOSSIP_HELLO), and checks whether that alone gave the credit. If it didn't, the objective
- * fails as unsupported and the quest is dropped, instead of being retried forever.
+ * (CMSG_GOSSIP_HELLO), and checks whether that alone gave the credit. If it didn't, the task
+ * fails as unsupported: the brain marks the quest unworkable for this bot (no retry for hours),
+ * and the log cleanup treats it as a dead end -- abandoned only if the log fills up.
  */
 
 #include "CreatureTargetHandler.h"
@@ -28,6 +29,8 @@ namespace
     public:
         char const* Name() const override { return "talk"; }
 
+        // The one handler that takes objectives the knowledge base marks unsupported: talk-to
+        // quests are never accepted, but one already in a log gets an honest try.
         bool CanHandle(ObjectiveDef const& def) const override
         {
             return def.type == ObjectiveType::TalkTo;
