@@ -83,6 +83,26 @@ ObjectiveResult CreatureTargetHandler::ExecuteItemUse(ObjectiveContext& ctx, Cre
             return ObjectiveResult::Running;
         case ItemUse::CastOutcome::NeedsDeadTarget:
             ctx.task.quest.requireDeadTarget = true;
+            // Once requireDeadTarget is set, WantDead() makes every later Search look only for an
+            // existing corpse -- nothing in useItemMode ever fights, so without killing the target
+            // ourselves here first, the bot would wait forever for a corpse nobody creates (the
+            // real WoW pattern this covers: "use the item on it, but it has to be dead first" --
+            // loot-off-the-body quests). Kill it now; AfterExecute -> Loot -> Verify will see no
+            // progress yet and search again, and that search (now wanting a corpse) picks up the
+            // one this kill just made.
+            if (target->IsAlive())
+            {
+                if (!ctx.bot->Attack(target, true))
+                {
+                    ObjectiveCommon::ForgetTarget(ctx, FailureReason::InteractFailed);
+                    ObjectiveCommon::BeginSearch(ctx, "attack refused (need it dead for the item)");
+                    return ObjectiveResult::Running;
+                }
+                ++ctx.task.quest.attempts;
+                Count(ctx.state.metrics, &WorldMetrics::killTargetsSelected);
+                SetPhase(ctx.bot, ctx.state, TaskPhase::Combat, "killing target before item use");
+                return ObjectiveResult::Running;
+            }
             ObjectiveCommon::BeginSearch(ctx, "item needs a corpse");
             return ObjectiveResult::Running;
         case ItemUse::CastOutcome::NeedsLiveTarget:

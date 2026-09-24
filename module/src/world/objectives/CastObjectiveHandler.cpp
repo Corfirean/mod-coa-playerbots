@@ -59,6 +59,14 @@ IQuestObjectiveHandler& CastObjectiveHandlerInstance()
 
 namespace
 {
+    // Mirrors ObjectTargetHandler.cpp's own OBJECT_FAILURE_LIMIT (not exported across
+    // translation units). ObjectTargetHandler::Update only ever compares retryCount to that limit
+    // for its own Approach-phase failures (unreachable/timeout); a cast this handler's own Act()
+    // refuses over and over -- wrong conditions, a spell that never succeeds on this object -- was
+    // free to grow retryCount forever without ever being checked against it, so the objective just
+    // kept retrying instead of failing cleanly.
+    constexpr uint32 CAST_FAILURE_LIMIT = 5;
+
     // "Use the torch on the tents": the quest item's spell acts on an object. Same flow as any
     // object objective, the interaction is the item's spell cast on it.
     class CastOnObjectObjectiveHandler final : public ObjectTargetHandler
@@ -101,6 +109,11 @@ namespace
                     return ObjectiveResult::Failed;
                 default:
                     ObjectiveCommon::ForgetTarget(ctx, FailureReason::CastFailed);
+                    if (ctx.task.quest.retryCount >= CAST_FAILURE_LIMIT)
+                    {
+                        ctx.task.quest.lastFailure = FailureReason::CastFailed;
+                        return ObjectiveResult::Failed;
+                    }
                     ObjectiveCommon::BeginSearch(ctx, "item use refused");
                     return ObjectiveResult::Running;
             }
