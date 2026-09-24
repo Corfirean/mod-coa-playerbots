@@ -538,9 +538,18 @@ namespace WorldPlanner
         // to give the next planning pass an obvious continuation).
         state.route.clear();
         state.route.push_back(RouteStep{ chosen.type, chosen.quest.questId, chosen.quest.objectiveIndex, chosen.x, chosen.y, best->utility });
+        // Anything already folded into the chosen trip's bundle is being worked this pass, not a
+        // distinct upcoming stop -- without this check a bundled objective could also win a spot
+        // in the displayed route (it still has positive utility), showing the same work twice and,
+        // with ROUTE_STEPS capped, crowding out a genuinely distinct next step.
+        auto isBundled = [&chosen](Candidate const* c)
+        {
+            ObjectiveRef ref{ c->task.quest.questId, c->task.quest.objectiveIndex };
+            return std::find(chosen.quest.bundle.begin(), chosen.quest.bundle.end(), ref) != chosen.quest.bundle.end();
+        };
         std::vector<Candidate*> remaining;
         for (Candidate* c : all)
-            if (c != best && c->utility > 0.0f)
+            if (c != best && c->utility > 0.0f && !isBundled(c))
                 remaining.push_back(c);
         float cx = chosen.x;
         float cy = chosen.y;
