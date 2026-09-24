@@ -330,6 +330,12 @@ namespace QuestInteraction
                 }
                 if (PhaseElapsed(state) > cfg.travelTimeoutMs)
                     return FailNpc(bot, state, FailureReason::Timeout);
+                if (!task.taxiRequested && dist > cfg.taxiMinDistance)
+                {
+                    task.taxiRequested = true;
+                    if (WorldExecutor::TryRequestFlight(bot, state, task.x, task.y, task.z))
+                        return ExecResult::Running;
+                }
                 NavStatus status = WorldExecutor::TravelTo(bot, state, WorldGoalSub::Npc, task.x, task.y, task.z, 12.0f);
                 if (status == NavStatus::Arrived)
                     SetPhase(bot, state, TaskPhase::Search, "at the npc's spot");

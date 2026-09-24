@@ -9,7 +9,7 @@
  * decision per bot:
  *
  *   WorldBrain         what am I doing and why (goal, current task, interruptions, suspension)
- *     WorldPlanner     choose the next task by utility (quests, turn-ins, new quests)
+ *     WorldPlanner     choose the next task by utility (quests, turn-ins, new quests, hubs)
  *     WorldExecutor    advance the task a phase at a time (travel, search, approach, act, verify)
  *       QuestExecutor + objective handlers (kill, collect, use, loot, explore, cast)
  *

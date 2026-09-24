@@ -183,6 +183,9 @@ struct WorldTask
     bool wandering = false;
     uint32 corpsesSeen = 0;       // wanted corpses around at the last scan: respawn is coming
 
+    // A flight was requested for this trip (asked once; the ambient layer flies it).
+    bool taxiRequested = false;
+
     // Stopped by something outside the task (an ambient errand, a group, a manual command). The
     // task's clocks stand still from pausedAtMs until Resume(): an interruption that is not the
     // task's own failure must never look like time spent searching, approaching or travelling.

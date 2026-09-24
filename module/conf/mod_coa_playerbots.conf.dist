@@ -178,8 +178,10 @@ CoaBots.WorldBrain.QuestSuspendMs = 600000
 CoaBots.WorldBrain.QuestSuspendMaxMs = 7200000
 
 # Mounting for travel: each bot mounts beyond its own threshold drawn from this range (yards).
+# Trips longer than TaxiMinDistance (yards) use a flight path when the bot knows a route.
 CoaBots.WorldBrain.MountDistanceMin = 60
 CoaBots.WorldBrain.MountDistanceMax = 95
+CoaBots.WorldBrain.TaxiMinDistance = 900
 
 # Utility weights (see src/world/WorldUtility.h for all of them and what they mean).
 CoaBots.WorldBrain.Weight.TravelPer100Yards = 7

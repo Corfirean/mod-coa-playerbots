@@ -67,6 +67,13 @@ namespace
                         task.quest.lastFailure = FailureReason::Timeout;
                         return ObjectiveResult::Failed;
                     }
+                    float dist = ctx.bot->GetDistance2d(trigger->x, trigger->y);
+                    if (!task.taxiRequested && dist > ctx.cfg.taxiMinDistance)
+                    {
+                        task.taxiRequested = true;
+                        if (WorldExecutor::TryRequestFlight(ctx.bot, ctx.state, trigger->x, trigger->y, trigger->z))
+                            return ObjectiveResult::Running;
+                    }
                     // Aim for the middle: a box trigger's edge is easy to miss on a slope.
                     float radius = trigger->radius > 0.0f ? std::max(1.0f, trigger->radius * 0.4f)
                         : std::max(1.0f, std::min(trigger->length, trigger->width) * 0.2f);

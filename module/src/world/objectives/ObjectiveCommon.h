@@ -37,7 +37,7 @@ namespace ObjectiveCommon
 
     bool InArea(ObjectiveContext const& ctx, float slack = 15.0f);
 
-    // TravelToArea phase: walks (mounting when far) to the task's area. Moves the task to
+    // TravelToArea phase: walks (mounts, flies when far) to the task's area. Moves the task to
     // Search on arrival, escalates to FailArea when the trip is stuck or out of time.
     ObjectiveResult TravelToArea(ObjectiveContext& ctx);
 

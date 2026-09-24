@@ -64,6 +64,9 @@ struct BrainState
     // Planner passes in a row that found nothing: the next pass waits exponentially longer, so a
     // bot with nothing to do does not re-evaluate the whole neighbourhood every few seconds.
     uint32 emptyPlans = 0;
+    // The last planner pass found no quest work and no hub on this map at all.
+    bool noWorkOnMap = false;
+    uint32 nextRelocationAskMs = 0;
     uint32 nextLogCleanupMs = 0;
 
     uint32 nextPresenceMs = 0;

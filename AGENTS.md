@@ -2241,7 +2241,9 @@ but a bot-initiated test join does, since nothing else was watching it.
   (`EnsureBotHasMount`/`TryMaintainProgression`) specifically as a prerequisite for this, but
   actually riding it for travel isn't wired to anything yet. Assigned to the parallel Gemini
   session (2026-09-15) alongside guild bank orders -- still in progress as of this note (guild
-  bank orders shipped first, see below).
+  bank orders shipped first, see below). **Update 2026-09-24**: addressed by the open-world AI
+  rework's Phase 7 (quest-hub travel, flights for quest trips, riding the mount) -- see that dated
+  entry at the end of this file; the old walkers named here no longer exist.
 - **Addon client-side work for points 1-3** (user request, 2026-09-15): **done** -- see the
   2026-09-15 "CoABotUI: role-gating, Quick Fill, and the Guild Task Board" entry below. The
   user asked Claude to build this directly once it became clear Gemini's combat-AI task
@@ -3090,3 +3092,30 @@ now accepts most ordinary quest shapes, not only kill/collect:
 Live checks: a lever/crate quest (goober) and a "use item on X" quest in a starting zone should
 complete; an exploration quest (e.g. Westfall/Barrens scouting quests with an area trigger)
 should complete once the bot walks in.
+
+## 2026-09-24: Open-world AI rework, Phase 7 -- quest-driven hub travel, flights, zone-progression guard (compiled, not live-tested)
+
+Stacked on Phase 6. This closes the old "bot quests a spot dry and then grinds it forever" gap
+(TODO backlog, "Autonomous zone-to-zone travel"):
+
+- **Quest hubs**: the knowledge base already clustered quest-giver spawns (90 yd link, split
+  above 220 yd, at least 3 supported quests per hub, level range kept). When the planner finds no
+  objective, turn-in or giver nearby, `WorldPlanner::PickHub` scores the 10 nearest hubs on this
+  map that fit the bot's level by how many quests it could actually take there (`CanTakeQuest`,
+  level window, phase-visible givers), minus half the travel cost and the crowd in the heatmap,
+  plus per-bot jitter, and starts a `Travel` task (new `MoveOwner::Travel`). A failed hub trip is
+  remembered for 10 minutes. A bot in a grinding mood sometimes finishes its grind first.
+- **Flights for quest trips**: any quest/hub trip longer than `TaxiMinDistance` (900 yd) asks
+  `BotWorldBehavior::RequestTravel` for a flight once. New `teleportFallback` parameter: zone
+  progression keeps its old "no route -> teleport to the level hub" behaviour, but a quest trip
+  passes `false` and just walks on -- a bot heading for a quest area must never be teleported to
+  some unrelated hub.
+- **Zone-progression guard**: `BotZoneProgression::RelocateBot` (non-forced) now refuses to move
+  a bot that still has supported, unfinished quest work on its map (`WorldBrain::HasQuestWork`).
+  The other way round, a bot whose planner finds neither work nor a hub on its whole map asks zone
+  progression to move it (`QueueRelocation`), at most every 10 minutes.
+
+Live checks: a bot that finishes every quest in Northshire should travel to Goldshire on its own
+(`.botcmd brain` shows a `Travel` task with "heading to a new quest hub"), mounted; a bot with a
+known flight path and a far quest area should fly instead of walking across the continent; and
+a bot mid-quest should not be yanked away by the zone-progression relocation timer.

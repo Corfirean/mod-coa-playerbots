@@ -2,8 +2,8 @@
 
 How an ungrouped bot lives in the open world: takes quests, plans a route through them, goes to
 the right place, finds live targets, fights (through the existing combat engine), loots, checks
-its progress, hands quests in — and spreads out relative to other bots instead of converging on
-the same spawn point. Code: `module/src/world/`. The pre-rework state and
+its progress, hands quests in, moves on to the next hub — and spreads out relative to other bots
+instead of converging on the same spawn point. Code: `module/src/world/`. The pre-rework state and
 the problems this replaces are in `docs/research/open-world-ai-audit.md`.
 
 The organising principle: **a bot always knows where it is going, why, what it will do on arrival,
@@ -20,7 +20,8 @@ BotAI::UpdateOffensive (idle, ungrouped, no fight/loot/rest)
             ├─ WorldPlanner   choose the next WorldTask by utility
             ├─ WorldExecutor  advance the task one step
             │    ├─ QuestExecutor ─► objective handler (objectives/)
-            │    └─ QuestInteraction (accept / turn in at quest givers)
+            │    ├─ QuestInteraction (accept / turn in at quest givers)
+            │    └─ hub travel
             └─ fallback activity when there is no task:
                  Gather / Fish / Grind / Ambient  ── run by BotAI / BotWorldBehavior
 ```
@@ -48,7 +49,7 @@ paused starts at the frozen clock so a resume can never put it in the future.
 
 ## The task model (`WorldTask.h`)
 
-A `WorldTask` persists across ticks: type (`QuestObjective`, `QuestAccept`, `QuestTurnIn`), phase,
+A `WorldTask` persists across ticks: type (`QuestObjective`, `QuestAccept`, `QuestTurnIn`, `Travel`), phase,
 the area (map, anchor, radius, `ObjectiveArea` id), the quest/objective with its type, target
 entry, item, required/current count, the claimed live target guid, retry/dry-attempt/bad-area
 counters, deaths, last failure reason, deadline, pause state, and the objectives bundled into the
@@ -74,8 +75,8 @@ Built once at startup from the data the world was loaded from (plus one read of 
 - **reverse loot**: item → creatures/objects that drop it (reference loot one level deep), with
   drop chance; objects whose use spell creates the item;
 - kill-credit proxies: entry → creatures whose `KillCredit` names it;
-- quest giver spawns in a spatial grid (also clustered into quest hubs with their level range,
-  which nothing uses yet — hub travel is Phase 7);
+- quest giver spawns in a spatial grid, clustered into **quest hubs** (90 yd, split above 220 yd,
+  at least 3 supported quests) with their level range;
 - generic "Opening" spells per lock type (chests are opened by spell, not `GameObject::Use()`).
 
 Three questions, kept apart and each answered in exactly one place:
@@ -137,8 +138,13 @@ Candidates, scored with named weights (`WorldUtility.h`, overridable in config):
   bots already assigned, heatmap crowd, recent failures, per-bot jitter);
 - turn-ins, batched per ender spawn;
 - quest givers within `GiverSearchRadius` with quests the bot would accept;
-- when none of that exists, the brain hands the bot a fallback activity (gather, fish, grind,
-  ambient errands) weighted by its persona; zone progression still relocates it as before.
+- when none of that exists: the best **quest hub** on the map for the bot's level (quests left for
+  it, distance, crowd, recent failures) as a `Travel` task; when no hub either, zone progression
+  is asked to move the bot (flight, teleport only as its fallback), at most every 10 minutes.
+  Zone progression no longer relocates a bot that still has quest work on its map.
+- meanwhile the brain hands the bot a fallback activity (gather, fish, grind, ambient errands)
+  weighted by its persona; a bot in a grinding mood sometimes finishes its grind before leaving
+  for a new hub.
 
 Objectives score higher when they share targets with another open objective (overlap) or have an
 area within 150 yd of one (route synergy); a turn-in scores higher with work nearby. The chosen
@@ -174,15 +180,17 @@ pause) when a task ends; a pass that finds nothing backs off exponentially up to
   resetting the ladder: it only resets once the goal is 20 yd (or 8 yd of height) closer than at
   the first stall (`BotNavProgress.h`). Time spent fighting/looting/resting never counts as stuck.
 - Mounting per bot beyond its own 60–95 yd threshold, never in combat, never within 10 s of a
-  dismount.
+  dismount; trips beyond 900 yd (`TaxiMinDistance`) take a flight path when the bot knows a route.
+  A quest trip whose route turns out not to work at the flight master walks on — it is never
+  teleported (zone progression's own trips still fall back to the teleport).
 
 ## Failure memory and anti-loop
 
 Per-bot TTL memory (`FailureMemory.h`) of targets (60 s), objects (120 s), areas and quest NPC
-spawns (5 min), set-aside quests, and blocked turn-ins (kept apart: a finished quest is handed in
-even while its objective work was set aside); repeat failures stretch the ttl. Budgets: search
-35 s per area (×patience, ×1.5 with corpses around), approach 25 s, travel 6 min, whole task
-30 min, 4+ dry attempts (scaled by drop chance), 3 bad areas per objective → task fails.
+spawns (5 min), hubs (10 min), set-aside quests, and blocked turn-ins (kept apart: a finished quest
+is handed in even while its objective work was set aside); repeat failures stretch the ttl.
+Budgets: search 35 s per area (×patience, ×1.5 with corpses around), approach 25 s, travel 6 min,
+whole task 30 min, 4+ dry attempts (scaled by drop chance), 3 bad areas per objective → task fails.
 
 What a failed task does to its quest (`QuestPolicy.h`):
 
@@ -210,7 +218,7 @@ re-confirmed on every approach step, since the claim can lapse while the bot fig
 - Logs (DEBUG): `module.coa-playerbots.world` (TaskSelected, PhaseChanged, TaskCompleted/Failed,
   Replan), `.quest` (QuestAccepted, TargetSelected, ObjectiveProgress, ObjectiveCompleted,
   QuestCompleted, QuestTurnedIn, set-aside and dead-end decisions), `.navigation` (stalls,
-  recoveries), plus task pause/resume lines under `.world`.
+  recoveries, flights), plus task pause/resume lines under `.world`.
 
 ## Performance notes (3000+ bots)
 
@@ -237,5 +245,5 @@ progress, quest policy) is unit-tested standalone (`module/tests/`, also under A
 | 4 | Collect quests: reverse loot index, quest-drop looting, chests | in code |
 | 5 | Multi-quest routing: overlap, bundling, route plan | in code |
 | 6 | Use-object / explore / use-item-on / talk handlers | in code |
-| 7 | Quest-driven hub travel, flights for quest trips, zone-progression guard | planned |
+| 7 | Quest-driven hub travel, flights for quest trips, zone-progression guard | in code |
 | 8 | Humanisation: opportunity detours, session breaks | planned |
