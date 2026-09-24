@@ -33,8 +33,10 @@ enum class FailKind : uint8
     Cluster,    // an objective area (SpawnCluster id)
     GameObject, // a live GO guid used for an objective
     Npc,        // a quest giver / ender spawn id
-    Quest,      // a quest id: suspended, the planner leaves it alone
+    Quest,      // a quest id: objective work set aside, the planner leaves it alone
     Hub,        // a quest hub id
+    TurnIn,     // a quest id whose reward could not be taken (bags full): hand-in retried later
+    DeadEnd,    // a quest id noted as a dead end (logging / debug only; planning asks Workable)
     Count,
 };
 
@@ -140,6 +142,8 @@ inline char const* FailKindName(FailKind kind)
         case FailKind::Npc:        return "npc";
         case FailKind::Quest:      return "quest";
         case FailKind::Hub:        return "hub";
+        case FailKind::TurnIn:     return "turn-in";
+        case FailKind::DeadEnd:    return "dead end";
         default:                   return "?";
     }
 }

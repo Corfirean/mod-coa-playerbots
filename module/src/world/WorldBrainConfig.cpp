@@ -39,7 +39,8 @@ namespace WorldBrainSettings
         c.maxLevelAbove = Opt<uint32>("MaxMobLevelAbove", c.maxLevelAbove);
         c.acceptElite = Opt<bool>("AcceptEliteQuests", c.acceptElite);
         c.maxBadClusters = std::max<uint32>(1, Opt<uint32>("MaxBadAreasPerObjective", c.maxBadClusters));
-        c.questSuspendMs = Opt<uint32>("QuestSuspendMs", c.questSuspendMs);
+        c.questSuspendMs = std::max<uint32>(10000, Opt<uint32>("QuestSuspendMs", c.questSuspendMs));
+        c.questSuspendMaxMs = std::max(c.questSuspendMs, Opt<uint32>("QuestSuspendMaxMs", c.questSuspendMaxMs));
 
         c.mountDistanceMin = Opt<float>("MountDistanceMin", c.mountDistanceMin);
         c.mountDistanceMax = std::max(c.mountDistanceMin, Opt<float>("MountDistanceMax", c.mountDistanceMax));

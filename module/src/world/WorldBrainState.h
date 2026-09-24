@@ -41,8 +41,10 @@ struct BrainState
     uint32 nextTaskId = 1;
 
     uint32 nextPlanMs = 0;
-    uint32 lastUpdateMs = 0;
+    uint32 lastUpdateMs = 0;          // last brain tick: a longer gap means the bot was busy elsewhere
     uint32 lastMapId = 0xFFFFFFFF;
+    float lastX = 0.0f;               // position at the last brain tick (teleport detection)
+    float lastY = 0.0f;
     bool suspended = false;
     SuspendReason suspendReason = SuspendReason::None;
 

@@ -135,6 +135,26 @@ public:
     size_t CellCount() const { return _cells.size(); }
     size_t BotCount() const { return _bots.size(); }
 
+    // What the grid currently counts for one bot (debug output and tests).
+    struct BotStatus
+    {
+        bool present = false;
+        bool incoming = false;
+        PopulationActivity activity = PopulationActivity::Idle;
+    };
+
+    BotStatus StatusOf(uint64 bot) const
+    {
+        BotStatus status;
+        auto itr = _bots.find(bot);
+        if (itr == _bots.end())
+            return status;
+        status.present = itr->second.hasPresence;
+        status.incoming = itr->second.hasIncoming;
+        status.activity = itr->second.activity;
+        return status;
+    }
+
 private:
     struct BotEntry
     {

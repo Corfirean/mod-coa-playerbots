@@ -18,4 +18,9 @@ namespace ObjectiveHandlers
                 return handler;
         return nullptr;
     }
+
+    bool CanExecute(ObjectiveDef const& def)
+    {
+        return !def.providedByQuest && For(def) != nullptr;
+    }
 }

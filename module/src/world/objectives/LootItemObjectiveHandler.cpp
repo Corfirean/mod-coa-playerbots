@@ -24,7 +24,7 @@ namespace
 
         bool CanHandle(ObjectiveDef const& def) const override
         {
-            return def.type == ObjectiveType::CollectItem && !def.targetsAreGameObjects && !def.providedByQuest;
+            return def.type == ObjectiveType::CollectItem && def.supported && !def.targetsAreGameObjects && !def.providedByQuest;
         }
 
     protected:

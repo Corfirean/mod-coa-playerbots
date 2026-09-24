@@ -169,8 +169,13 @@ CoaBots.WorldBrain.MaxMobLevelAbove = 3
 CoaBots.WorldBrain.AcceptEliteQuests = 0
 
 # Objective areas given up per objective before the quest is set aside, and for how long (ms).
+# A quest that keeps failing for transient reasons (no targets, paths, deaths) is set aside for
+# QuestSuspendMs, doubling each time in a row up to QuestSuspendMaxMs, and retried -- never
+# abandoned. Only quests that can never be finished (no handler for an open objective, player
+# kills, reputation, no ender, failed) are abandoned, and only when the log is full.
 CoaBots.WorldBrain.MaxBadAreasPerObjective = 3
 CoaBots.WorldBrain.QuestSuspendMs = 600000
+CoaBots.WorldBrain.QuestSuspendMaxMs = 7200000
 
 # Mounting for travel: each bot mounts beyond its own threshold drawn from this range (yards).
 CoaBots.WorldBrain.MountDistanceMin = 60

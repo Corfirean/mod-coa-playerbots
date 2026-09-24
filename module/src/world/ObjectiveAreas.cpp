@@ -40,7 +40,7 @@ namespace
             std::vector<ClusterInputPoint> points;
             points.reserve(mapSpawns.size());
             for (SpawnPoint const* sp : mapSpawns)
-                points.push_back(ClusterInputPoint{ sp->x, sp->y, sp->z });
+                points.push_back(ClusterInputPoint{ sp->x, sp->y, sp->z, sp->phaseMask });
 
             for (auto const& members : SpawnClustering::Cluster(points, LINK_YARDS, VERTICAL_GAP_YARDS, MAX_AREA_RADIUS))
             {
@@ -57,13 +57,14 @@ namespace
                 area.cy = shape.cy;
                 area.radius = shape.radius;
                 area.spawnCount = uint32(members.size());
+                // Every member shares it (SpawnClustering never links different phases).
+                area.phaseMask = mapSpawns[members.front()]->phaseMask;
 
                 // Spread the kept wander points across the area rather than taking the first N.
                 size_t step = std::max<size_t>(1, members.size() / MAX_WANDER_POINTS);
                 for (size_t i = 0; i < members.size(); ++i)
                 {
                     SpawnPoint const* sp = mapSpawns[members[i]];
-                    area.phaseMask |= sp->phaseMask;
                     if (i % step == 0 && area.points.size() < MAX_WANDER_POINTS)
                         area.points.push_back(*sp);
                 }
