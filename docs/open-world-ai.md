@@ -39,6 +39,7 @@ answer per kind of interruption:
 | Interruption | Task | Clocks |
 | --- | --- | --- |
 | Ambient errand (repair, vendor, flight) | paused, target let go | **stopped** (phase, deadline, scan/wait timers move on by the pause) |
+| Gathering detour (a node next to the path) | paused, target let go | **stopped**, same as an errand |
 | Group, manual Stay, `.botcmd` AI suspend, guild gather order, battleground, dungeon | suspended, every claim released; kept ≤ 5 min, then re-planned | **stopped**; on return the task re-enters through `Recover` |
 | Its own business away from the brain: a fight with an add, resting, looting, a corpse run | kept | the **phase** clock does not count it; the task **deadline** does (anti-loop) |
 | Death | target dropped, `Recover`; twice killed in one area writes the area off | as above |
@@ -217,7 +218,9 @@ Variety comes from bias, never from deliberately bad play:
 - **opportunity detours**: while travelling to or searching an area, a bot with Herbalism or Mining
   that passes a node it can pick within `DetourRadius` (15 yd) — always if gathering is in its
   nature, sometimes otherwise — pauses the task, gathers, and resumes it where it was. The detour
-  gives up after 30 s, or after 4.5 s if gathering never starts (node unreachable, taken);
+  gives up after 30 s, or after 4.5 s if gathering never starts (node unreachable, taken). The
+  detour is an external interruption like an errand: the task's clocks stop for it and move on by
+  its length afterwards. An errand, a group, a command or a death ends the detour early;
 - **session rhythm**: after 20–45 minutes of questing (scaled by patience) a bot takes a 3–8
   minute break to ambient life (errands, repairs, wandering in town), then plans afresh.
 

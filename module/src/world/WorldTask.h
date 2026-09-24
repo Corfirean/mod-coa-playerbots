@@ -212,9 +212,12 @@ struct WorldTask
     // resting, looting, a corpse run -- counts toward the task as a whole (the deadline is an
     // anti-loop guard) but never toward the phase it interrupted: a 40-second fight with an add is
     // not 40 seconds of failed searching.
+    // While paused it does nothing: the pause already accounts for all of that time (a gathering
+    // detour whose cast kept the brain from ticking would otherwise be taken off the phase twice).
     void ShiftPhaseClock(uint32 ms)
     {
-        ShiftArmed(phaseStartedMs, ms);
+        if (!paused)
+            ShiftArmed(phaseStartedMs, ms);
     }
 
     // The task's own notion of "now": the real time, or the moment it was paused while it is.
