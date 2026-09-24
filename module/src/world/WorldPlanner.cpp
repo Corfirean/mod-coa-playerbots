@@ -26,6 +26,10 @@ namespace
     constexpr size_t ROUTE_STEPS = 4;
     // Quest givers considered per planning pass, nearest first.
     constexpr size_t MAX_GIVERS_EVALUATED = 8;
+    // Hubs evaluated in detail per pass, nearest first.
+    constexpr size_t MAX_HUBS_EVALUATED = 10;
+    // Trying a talk-to objective is a last resort: it usually cannot work.
+    constexpr float TALK_PENALTY = 80.0f;
 
     struct Candidate
     {
@@ -289,6 +293,78 @@ namespace WorldPlanner
         return false;
     }
 
+    QuestHub const* PickHub(Player* bot, BrainState& state)
+    {
+        std::vector<QuestHub> const* hubs = QuestKB::Hubs(bot->GetMapId());
+        if (!hubs)
+            return nullptr;
+
+        WorldBrainConfig const& cfg = WorldBrainSettings::Get();
+        uint32 now = NowMs();
+        int32 level = int32(bot->GetLevel());
+
+        std::vector<std::pair<float, QuestHub const*>> nearby;
+        for (QuestHub const& hub : *hubs)
+        {
+            if (state.failures.Has(FailKind::Hub, hub.id, now))
+                continue;
+            if (int32(hub.maxQuestLevel) + cfg.questLevelBelow < level || int32(hub.minQuestLevel) > level + cfg.questLevelAbove)
+                continue;
+            float d = Dist(bot, hub.x, hub.y);
+            // Already standing in it: if it had work the planner would have found it.
+            if (d < hub.radius + 40.0f || d > 8000.0f)
+                continue;
+            nearby.emplace_back(d, &hub);
+        }
+        std::sort(nearby.begin(), nearby.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+        if (nearby.size() > MAX_HUBS_EVALUATED)
+            nearby.resize(MAX_HUBS_EVALUATED);
+
+        QuestHub const* best = nullptr;
+        float bestScore = -1e9f;
+        for (auto const& [d, hub] : nearby)
+        {
+            std::unordered_set<uint32> seen;
+            uint32 suitable = 0;
+            for (GiverSpot const* giver : hub->givers)
+            {
+                if (!PhaseVisible(bot, giver->phaseMask))
+                    continue;
+                for (uint32 questId : giver->quests)
+                {
+                    if (suitable >= 15 || !seen.insert(questId).second)
+                        continue;
+                    QuestKnowledge const* info = QuestKB::Get(questId);
+                    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                    if (!info || !quest || !info->supported || (info->elite && !cfg.acceptElite))
+                        continue;
+                    if (bot->GetQuestStatus(questId) != QUEST_STATUS_NONE)
+                        continue;
+                    int32 questLevel = quest->GetQuestLevel() > 0 ? quest->GetQuestLevel() : level;
+                    if (questLevel + cfg.questLevelBelow < level || questLevel > level + cfg.questLevelAbove)
+                        continue;
+                    if (!bot->CanTakeQuest(quest, false))
+                        continue;
+                    ++suitable;
+                }
+            }
+            if (suitable < 2)
+                continue;
+
+            uint32 crowd = PopulationHeatmap::Around(bot->GetMapId(), hub->x, hub->y).Crowd();
+            float score = float(suitable) * 12.0f
+                - WorldUtility::TravelCost(d, cfg.utility.travelPer100Yards, cfg.utility.farTravelYards, cfg.utility.farTravelMultiplier) * 0.5f
+                - float(std::min<uint32>(crowd, 40)) * 2.0f
+                + 10.0f * WorldUtility::Jitter(bot->GetGUID().GetRawValue(), hub->id);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = hub;
+            }
+        }
+        return best;
+    }
+
     WorldTask ChooseTask(Player* bot, BrainState& state)
     {
         WorldTask none;
@@ -508,9 +584,24 @@ namespace WorldPlanner
         for (Candidate& c : others)
             all.push_back(&c);
 
+        state.noWorkOnMap = false;
         if (all.empty())
         {
             state.route.clear();
+            if (QuestHub const* hub = PickHub(bot, state))
+            {
+                WorldTask travel;
+                travel.type = WorldTaskType::Travel;
+                travel.mapId = mapId;
+                travel.x = hub->x;
+                travel.y = hub->y;
+                travel.z = hub->z;
+                travel.areaRadius = std::max(25.0f, hub->radius * 0.6f);
+                travel.npcSpawnId = hub->id; // the hub id, for failure memory
+                travel.why = "nothing left here: heading to a new quest hub";
+                return travel;
+            }
+            state.noWorkOnMap = true;
             return none;
         }
 

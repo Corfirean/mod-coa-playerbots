@@ -1,5 +1,6 @@
 #include "WorldBrain.h"
 #include "BotMovement.h"
+#include "BotZoneProgression.h"
 #include "Chat.h"
 #include "GameTime.h"
 #include "Map.h"
@@ -53,6 +54,9 @@ namespace
 
     // Planner backoff ceiling when it keeps finding nothing (the bot grinds/gathers meanwhile).
     constexpr uint32 MAX_EMPTY_PLAN_BACKOFF_MS = 3 * MINUTE * IN_MILLISECONDS;
+
+    // A bot with no work on its whole map asks zone progression to move it at most this often.
+    constexpr uint32 RELOCATION_ASK_MS = 10 * MINUTE * IN_MILLISECONDS;
 
     // How often the quest log is checked for quests nothing can ever finish.
     constexpr uint32 LOG_CLEANUP_MS = 2 * MINUTE * IN_MILLISECONDS;
@@ -248,6 +252,9 @@ namespace
                             break;
                     }
                     break;
+                case WorldTaskType::Travel:
+                    state.failures.Remember(FailKind::Hub, task.npcSpawnId, now, cfg.clusterFailMs * 2, uint8(reason));
+                    break;
                 default:
                     break;
             }
@@ -284,7 +291,7 @@ namespace
         WorldTask& t = state.task;
         t.quest.progressMark = t.type == WorldTaskType::QuestObjective ? ObjectiveCommon::TaskProgress(bot, t) : 0;
 
-        state.goal = WorldGoal::Questing;
+        state.goal = t.type == WorldTaskType::Travel ? WorldGoal::Traveling : WorldGoal::Questing;
         state.activity = WorldDirective::Idle;
 
         if (t.quest.selectedClusterId)
@@ -529,7 +536,19 @@ namespace WorldBrain
             if (!task.IsValid())
                 ++state.emptyPlans;
 
-            if (task.IsValid())
+            // No quest work and no hub anywhere on this map: zone progression moves the bot on
+            // (by flight where it can, teleport only as its last resort).
+            if (state.noWorkOnMap && now >= state.nextRelocationAskMs)
+            {
+                state.nextRelocationAskMs = now + RELOCATION_ASK_MS;
+                BotZoneProgression::QueueRelocation(bot);
+                NoteEvent(state, "no quest work left on this map, asking to move on");
+            }
+
+            // A bot in a grinding mood does not always drop everything to travel to a new hub.
+            bool grindMood = state.activity == WorldDirective::Grind && now < state.activityUntilMs &&
+                persona.lean == LEAN_GRIND && Roll(state, 0x6a1d) % 100 < 60;
+            if (task.IsValid() && !(grindMood && task.type == WorldTaskType::Travel))
             {
                 state.emptyPlans = 0;
                 StartTask(bot, state, std::move(task));
@@ -584,8 +603,8 @@ namespace WorldBrain
         if (extra.pausedByAmbient)
             return;
         extra.pausedByAmbient = true;
-        // Let the errand (a repair, a vendor) have the legs; the task's clocks stop until it is
-        // back (the errand is not the task's failure), and it walks on from there.
+        // Let the errand (a repair, a vendor, a flight) have the legs; the task's clocks stop
+        // until it is back (the errand is not the task's failure), and it walks on from there.
         WorldExecutor::PauseTask(bot, itr->second, "ambient errand");
     }
 
@@ -813,9 +832,10 @@ namespace WorldBrain
             if (state.suspended)
                 ++suspended;
         }
-        handler->PSendSysMessage("Brains: {} ({} suspended). Tasks: none {}, objective {}, accept {}, turn-in {}.",
+        handler->PSendSysMessage("Brains: {} ({} suspended). Tasks: none {}, objective {}, accept {}, turn-in {}, travel {}.",
             _states.size(), suspended, byType[size_t(WorldTaskType::None)], byType[size_t(WorldTaskType::QuestObjective)],
-            byType[size_t(WorldTaskType::QuestAccept)], byType[size_t(WorldTaskType::QuestTurnIn)]);
+            byType[size_t(WorldTaskType::QuestAccept)], byType[size_t(WorldTaskType::QuestTurnIn)],
+            byType[size_t(WorldTaskType::Travel)]);
         handler->PSendSysMessage("Phases: travel {}, search {}, approach {}, execute {}, combat {}, loot {}, verify {}, recover {}.",
             byPhase[size_t(TaskPhase::TravelToArea)], byPhase[size_t(TaskPhase::Search)], byPhase[size_t(TaskPhase::Approach)],
             byPhase[size_t(TaskPhase::Execute)], byPhase[size_t(TaskPhase::Combat)], byPhase[size_t(TaskPhase::Loot)],
@@ -826,9 +846,9 @@ namespace WorldBrain
             "({} loot, {} use, {} explore), {} failed, {} counter increments.", m.questsAccepted, m.questsCompleted, m.questsTurnedIn,
             m.questsSuspended, m.questsAbandoned, m.objectivesCompleted, m.lootObjectivesCompleted, m.useObjectivesCompleted,
             m.exploreObjectivesCompleted, m.failedObjectives, m.objectiveProgress);
-        handler->PSendSysMessage("Tasks: started {}, completed {}, failed {}, replans {}. Kill targets selected {}. "
+        handler->PSendSysMessage("Tasks: started {}, completed {}, failed {}, replans {}. Kill targets selected {}. Flights {}. "
             "Area switches {}.", m.tasksStarted, m.tasksCompleted, m.tasksFailed, m.replans,
-            m.killTargetsSelected, m.areaSwitches);
+            m.killTargetsSelected, m.travels, m.areaSwitches);
 
         MovementStats const& mv = BotMovement::Stats();
         double avgRetries = m.tasksStarted ? double(m.travelRetries) / double(m.tasksStarted) : 0.0;

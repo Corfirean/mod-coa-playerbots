@@ -2,9 +2,9 @@
  * mod-coa-playerbots
  *
  * Advances the bot's current WorldTask by one step per tick: quest objectives go to the
- * QuestExecutor (and its objective handlers), accepting and handing in quests to QuestInteraction.
- * Also owns the travel helper every executor shares, so mounting and stuck handling behave the
- * same whatever the trip is for.
+ * QuestExecutor (and its objective handlers), accepting and handing in quests to QuestInteraction,
+ * hub travel is handled here. Also owns the travel helper every executor shares, so mounting,
+ * flying and stuck handling behave the same whatever the trip is for.
  */
 
 #ifndef COA_PLAYERBOTS_WORLD_EXECUTOR_H
@@ -32,6 +32,10 @@ namespace WorldExecutor
     // property of the task's phase (SyncIncoming), not of every little walk toward a mob.
     NavStatus TravelTo(Player* bot, BrainState& state, uint8 sub, float x, float y, float z, float radius,
         uint64 goalSalt = 0, bool allowMount = true);
+
+    // Asks the ambient layer to fly the bot toward (x, y, z) when that is worth it. True when a
+    // flight was requested (the ambient layer takes over from the next tick).
+    bool TryRequestFlight(Player* bot, BrainState& state, float x, float y, float z);
 
     void Dismount(Player* bot, BrainState& state);
 

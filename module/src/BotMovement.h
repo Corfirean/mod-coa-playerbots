@@ -46,6 +46,7 @@ enum class MoveOwner : uint8
     Grind,
     Gather,
     Fish,
+    Travel,
     Quest,
     Loot,
     Corpse,
