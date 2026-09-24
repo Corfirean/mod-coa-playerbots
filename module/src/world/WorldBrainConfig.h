@@ -65,6 +65,7 @@ struct WorldBrainConfig
     // Travel.
     float mountDistanceMin = 60.0f;  // per-bot threshold drawn from [min, max]
     float mountDistanceMax = 95.0f;
+    float taxiMinDistance = 900.0f;
 
     // Humanisation.
     uint32 reactionMinMs = 300;

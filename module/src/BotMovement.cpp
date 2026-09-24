@@ -370,6 +370,7 @@ namespace BotMovement
             case MoveOwner::Grind:        return "Grind";
             case MoveOwner::Gather:       return "Gather";
             case MoveOwner::Fish:         return "Fish";
+            case MoveOwner::Travel:       return "Travel";
             case MoveOwner::Quest:        return "Quest";
             case MoveOwner::Loot:         return "Loot";
             case MoveOwner::Corpse:       return "Corpse";

@@ -29,6 +29,7 @@ struct WorldMetrics
     uint64 tasksFailed = 0;
     uint64 failedObjectives = 0;
     uint64 replans = 0;
+    uint64 travels = 0;
     uint64 travelRetries = 0;
     uint64 movementStuck = 0;
     uint64 reservationConflicts = 0;

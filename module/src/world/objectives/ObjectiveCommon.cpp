@@ -189,6 +189,14 @@ namespace ObjectiveCommon
         if (PhaseElapsed(ctx.state) > ctx.cfg.travelTimeoutMs)
             return FailArea(ctx, FailureReason::Timeout);
 
+        float dist = Dist2d(ctx.bot, ctx.task.x, ctx.task.y);
+        if (!ctx.task.taxiRequested && dist > ctx.cfg.taxiMinDistance)
+        {
+            ctx.task.taxiRequested = true;
+            if (WorldExecutor::TryRequestFlight(ctx.bot, ctx.state, ctx.task.x, ctx.task.y, ctx.task.z))
+                return ObjectiveResult::Running;
+        }
+
         NavStatus status = WorldExecutor::TravelTo(ctx.bot, ctx.state, WorldGoalSub::Area, ctx.task.x, ctx.task.y, ctx.task.z,
             std::max(8.0f, ctx.task.areaRadius * 0.5f));
         if (status == NavStatus::Arrived)
@@ -235,6 +243,7 @@ namespace ObjectiveCommon
         ctx.task.z = pick.area->z;
         ctx.task.areaRadius = std::clamp(pick.area->radius, 15.0f, 100.0f);
         ctx.task.quest.selectedClusterId = pick.area->id;
+        ctx.task.taxiRequested = false;
         ctx.task.wandering = false;
         WorldReservations::Join(ReservationKind::QuestCluster, pick.area->id, ctx.bot->GetGUID(), ctx.cfg.clusterJoinMs);
         BotMovement::ResetRequest(ctx.bot->GetGUID());

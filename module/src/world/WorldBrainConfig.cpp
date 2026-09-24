@@ -43,6 +43,7 @@ namespace WorldBrainSettings
 
         c.mountDistanceMin = Opt<float>("MountDistanceMin", c.mountDistanceMin);
         c.mountDistanceMax = std::max(c.mountDistanceMin, Opt<float>("MountDistanceMax", c.mountDistanceMax));
+        c.taxiMinDistance = Opt<float>("TaxiMinDistance", c.taxiMinDistance);
 
         c.utility.travelPer100Yards = Opt<float>("Weight.TravelPer100Yards", c.utility.travelPer100Yards);
         c.utility.crowdPerBot = Opt<float>("Weight.CrowdPerBot", c.utility.crowdPerBot);

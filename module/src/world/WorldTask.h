@@ -182,6 +182,8 @@ struct WorldTask
     bool wandering = false;
     uint32 corpsesSeen = 0;       // wanted corpses around at the last scan: respawn is coming
 
+    // A flight was requested for this trip (asked once; the ambient layer flies it).
+    bool taxiRequested = false;
     // Paused for an opportunity or a need; travel resumes from scratch.
     bool paused = false;
 

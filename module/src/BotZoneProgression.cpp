@@ -1,6 +1,7 @@
 #include "BotZoneProgression.h"
 #include "BotMgr.h"
 #include "BotWorldBehavior.h"
+#include "WorldBrain.h"
 #include "CellImpl.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -388,6 +389,13 @@ namespace BotZoneProgression
 
         // Unless forced (e.g. at bot creation), guard against teleporting while a real player is nearby
         if (!force && IsRealPlayerNearby(bot, 50.0f))
+            return false;
+
+        // A bot in the middle of quest work on this map keeps doing it: the open-world layer moves
+        // it on to the next hub by itself (WorldPlanner::PickHub) once the work here runs out.
+        // Relocation stays for bots with nothing to do here at all -- a fresh bot in the wrong
+        // zone, or one that levelled past everything this map offers.
+        if (!force && WorldBrain::HasQuestWork(bot))
             return false;
 
         uint8 level = bot->GetLevel();

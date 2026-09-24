@@ -5,7 +5,8 @@
  *  - objectives of quests already in the log, each placed in its best objective area (spawn
  *    count, distance, how many bots are already there, what failed recently);
  *  - turn-ins of completed quests, batched per quest ender;
- *  - quest givers nearby with work suitable for the bot.
+ *  - quest givers nearby with work suitable for the bot;
+ *  - a new quest hub when the current area has nothing left.
  * Objectives that share targets or lie next to each other are bundled into one trip, and the rest
  * of the candidates are ordered into a short route (nearest-next) for `.botcmd brain`.
  *
@@ -19,6 +20,7 @@
 #include "WorldBrainState.h"
 
 class Player;
+struct QuestHub;
 
 struct AreaPick
 {
@@ -47,6 +49,9 @@ namespace WorldPlanner
 
     // Supported, not suspended, incomplete quest work on this map.
     bool HasQuestWork(Player* bot, BrainState& state);
+
+    // A hub on this map with quests for the bot's level, scored against distance and crowding.
+    QuestHub const* PickHub(Player* bot, BrainState& state);
 }
 
 #endif // COA_PLAYERBOTS_WORLD_PLANNER_H
