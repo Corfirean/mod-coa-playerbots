@@ -1,10 +1,11 @@
-﻿#include "BotAvoidance.h"
+#include "BotAvoidance.h"
 #include "BotMovement.h"
 #include "Player.h"
 #include "Creature.h"
 #include "DynamicObject.h"
 #include "Spell.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "CellImpl.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -42,6 +43,71 @@ private:
     Player const* _bot;
     DynamicObject* _found;
 };
+
+BotAvoidance::GroundHazardSeverity BotAvoidance::GetGroundHazardSeverity(Player* bot)
+{
+    if (!bot || !bot->IsAlive() || bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_ROOT))
+        return GroundHazardSeverity::None;
+
+    constexpr float HAZARD_CHECK_RADIUS = 25.0f;
+    WorldObject* result = nullptr;
+    HostileGroundHazardCheck check(bot);
+    Acore::WorldObjectSearcher<HostileGroundHazardCheck> searcher(bot, result, check, GRID_MAP_TYPE_MASK_DYNAMICOBJECT);
+    Cell::VisitObjects(bot, searcher, HAZARD_CHECK_RADIUS);
+
+    DynamicObject* hazard = check.GetFound();
+    if (!hazard)
+        return GroundHazardSeverity::None;
+
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(hazard->GetSpellId());
+    if (!spellInfo)
+        return GroundHazardSeverity::Dangerous;
+
+    bool percentageOrLethalDamage = spellInfo->HasEffect(SPELL_EFFECT_INSTAKILL)
+        || spellInfo->HasAura(SPELL_AURA_PERIODIC_DAMAGE_PERCENT);
+    bool damaging = percentageOrLethalDamage
+        || spellInfo->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE)
+        || spellInfo->HasEffect(SPELL_EFFECT_ENVIRONMENTAL_DAMAGE)
+        || spellInfo->HasEffect(SPELL_EFFECT_HEALTH_LEECH)
+        || spellInfo->HasAura(SPELL_AURA_PERIODIC_DAMAGE)
+        || spellInfo->HasAura(SPELL_AURA_PERIODIC_LEECH);
+
+    if (percentageOrLethalDamage || (damaging && bot->GetHealthPct() < 60.0f))
+        return GroundHazardSeverity::Critical;
+
+    return GroundHazardSeverity::Dangerous;
+}
+
+bool BotAvoidance::HasCriticalBossMechanic(Player* bot, Unit* target)
+{
+    if (!bot || !bot->IsAlive() || !target || !target->IsAlive())
+        return false;
+
+    Creature* boss = target->ToCreature();
+    if (!boss)
+        return false;
+
+    CreatureTemplate const* cinfo = boss->GetCreatureTemplate();
+    if (!cinfo || (cinfo->rank < CREATURE_ELITE_ELITE && !boss->isWorldBoss()))
+        return false;
+
+    Spell const* spell = boss->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!spell)
+        spell = boss->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    if (!spell || bot->GetDistance(boss) >= 12.0f)
+        return false;
+
+    SpellInfo const* spellInfo = spell->GetSpellInfo();
+    if (!spellInfo || !spellInfo->IsChanneled())
+        return false;
+
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (spellInfo->Effects[i].TargetA.GetTarget() == TARGET_SRC_CASTER ||
+            spellInfo->Effects[i].TargetA.GetTarget() == TARGET_UNIT_SRC_AREA_ENEMY)
+            return true;
+
+    return false;
+}
 
 bool BotAvoidance::TryAvoidGroundHazards(Player* bot)
 {

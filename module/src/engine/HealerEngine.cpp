@@ -57,15 +57,9 @@ namespace BotAI
         }
         nextCastAllowedMs = 0;
 
-        // Check ongoing cast
+        // The top-level combat loop owns all preemption decisions before movement.
         if (CastGuard::IsCurrentlyCasting(bot))
-        {
-            BotAction candidate = ActionEvaluator::EvaluateBestAction(ctx, profile->abilities);
-            if (candidate.IsValid() && CastGuard::ShouldInterruptCurrentCast(ctx, candidate))
-                CastGuard::InterruptCurrentCast(bot);
-            else
-                return CombatResult::Busy; // Let existing cast finish
-        }
+            return CombatResult::Busy;
 
         ObjectGuid botGuid = bot->GetGUID();
         uint32 now = getMSTime();

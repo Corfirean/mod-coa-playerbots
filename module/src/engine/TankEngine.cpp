@@ -47,13 +47,7 @@ namespace BotAI
         nextCastAllowedMs = 0;
 
         if (CastGuard::IsCurrentlyCasting(bot))
-        {
-            BotAction candidate = ActionEvaluator::EvaluateBestAction(ctx, profile->abilities);
-            if (candidate.IsValid() && CastGuard::ShouldInterruptCurrentCast(ctx, candidate))
-                CastGuard::InterruptCurrentCast(bot);
-            else
-                return CombatResult::Busy;
-        }
+            return CombatResult::Busy;
 
         ObjectGuid botGuid = bot->GetGUID();
         uint32 now = getMSTime();

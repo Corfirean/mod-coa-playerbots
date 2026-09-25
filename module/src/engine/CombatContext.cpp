@@ -5,6 +5,7 @@
  */
 
 #include "engine/CombatContext.h"
+#include "engine/CastGuard.h"
 #include "engine/DamageTracker.h"
 #include "engine/HealEvaluator.h"
 #include "engine/SpellPredicates.h"
@@ -31,7 +32,7 @@ namespace BotAI
         Powers powerType = bot->getPowerType();
         uint32 maxPower = bot->GetMaxPower(powerType);
         ctx.botPowerPct = (maxPower > 0) ? (static_cast<float>(bot->GetPower(powerType)) * 100.0f / maxPower) : 100.0f;
-        ctx.isCasting = bot->IsNonMeleeSpellCast(false);
+        ctx.isCasting = CastGuard::IsCurrentlyCasting(bot);
         ctx.resources = CombatResourceEvaluator::BuildSnapshot(bot);
 
         ctx.classId = bot->getClass();

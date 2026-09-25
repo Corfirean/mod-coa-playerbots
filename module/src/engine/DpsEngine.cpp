@@ -55,17 +55,10 @@ namespace BotAI
         }
         nextCastAllowedMs = 0;
 
-        // Check ongoing cast -- always allowed to re-evaluate for a higher-priority interrupt,
-        // regardless of the internal no-action recompute gate below (that gate only paces "found
-        // nothing to do" re-attempts, not "am I still doing the right thing").
+        // Cast preemption is decided once, before movement, by BotAI's central CastGuard path.
+        // Engines are deliberately incapable of replacing an owned cast based on a new score.
         if (CastGuard::IsCurrentlyCasting(bot))
-        {
-            BotAction candidate = ActionEvaluator::EvaluateBestAction(ctx, profile->abilities);
-            if (candidate.IsValid() && CastGuard::ShouldInterruptCurrentCast(ctx, candidate))
-                CastGuard::InterruptCurrentCast(bot);
-            else
-                return CombatResult::Busy;
-        }
+            return CombatResult::Busy;
 
         ObjectGuid botGuid = bot->GetGUID();
         uint32 now = getMSTime();

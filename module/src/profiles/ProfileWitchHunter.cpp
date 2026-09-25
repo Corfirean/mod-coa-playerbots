@@ -181,6 +181,8 @@ namespace BotAI
             p.specId = 10; // Boltslinger
             p.role = BotRole::Dps;
             p.profileName = "WitchHunter_Boltslinger_Ranged";
+            p.useRangedAutoRepeat = true;
+            p.preferredEngageDistance = PROFILE_RANGED_ENGAGE_DISTANCE;
 
             // 1. Burst Cooldown: Repeater (Rapid Crossbow Barrage)
             {

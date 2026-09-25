@@ -421,6 +421,8 @@ namespace BotAI
             p.specId = 49; // Demolition
             p.role = BotRole::Dps;
             p.profileName = "Tinker_Demolition_Dps";
+            p.useRangedAutoRepeat = true;
+            p.preferredEngageDistance = PROFILE_RANGED_ENGAGE_DISTANCE;
 
             // 1. Emergency Defense: Kinetic Shield (< 40% HP)
             {

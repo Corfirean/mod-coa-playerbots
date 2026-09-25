@@ -15,8 +15,12 @@ namespace BotAI
         if (!bot || !spellInfo)
             return false;
 
-        if (spellInfo->CalcCastTime(bot) <= 0)
-            return true; // instant -- no movement interaction needed
+        bool requiresStationary = (spellInfo->CalcCastTime(bot) > 0 || spellInfo->IsChanneled());
+        if (bot->CanCastSpellWhileMoving(spellInfo))
+            requiresStationary = false;
+
+        if (!requiresStationary)
+            return true; // instant / mobile spell -- no movement interaction needed
 
         if (!bot->isMoving())
             return true; // already stationary

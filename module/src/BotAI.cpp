@@ -48,6 +48,7 @@
 #include "profiles/ProfileRegistry.h"
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
+#include "engine/CastGuard.h"
 #include "engine/CombatResource.h"
 #include "engine/CombatReservations.h"
 #include "engine/CombatUtility.h"
@@ -144,6 +145,12 @@ struct BotPersonality
     // Sociability currently makes questing (the most hub/group-adjacent solo activity) more attractive.
 };
 
+struct BotEngageProfile
+{
+    float preferredDist = MELEE_ENGAGE_RANGE;
+    bool useRangedAutoRepeat = false;
+};
+
 struct BotAIState
 {
     uint32 nextCastAllowedMs = 0;
@@ -158,6 +165,19 @@ struct BotAIState
     uint32 soloIntentRemainingMs = 0;
     uint32 soloIntentGeneration = 0;
     std::unordered_map<uint32, uint32> lastBuffCastTimeMs;
+
+    // Cached engagement profile
+    BotEngageProfile engageProfile;
+    bool engageProfileCached = false;
+    uint32 engageCachedSpec = 0;
+    uint8 engageCachedClass = 0;
+    BotRole engageCachedRole = BotRole::Dps;
+    size_t engageCachedSpellCount = 0;
+
+    // Cast-hold diagnostics are DEBUG-only and throttled per bot/cast.
+    uint32 castHoldLogMs = 0;
+    uint32 heldCastSpellId = 0;
+    uint32 castPreemptionCheckMs = 0;
 
     // See TryMatchLeaderMountState -- a "mount" spell in this server's account-wide collection
     // is actually a wrapper (mod-ascension-compat's spell_ascension_local_mount script) that
@@ -1293,6 +1313,10 @@ using BotAI::AbilityDescriptor;
 using BotAI::AbilityTag;
 using BotAI::TargetType;
 using BotAI::HasTag;
+using BotAI::CastGuard;
+using BotAI::CastInterruptReason;
+using BotAI::CombatProfile;
+using BotAI::ProfileRegistry;
 
 uint32 FindKnownAutoRepeatRangedSpell(Player const* bot)
 {
@@ -1311,52 +1335,118 @@ uint32 FindKnownAutoRepeatRangedSpell(Player const* bot)
     return 0;
 }
 
+BotEngageProfile GetOrComputeBotEngageProfile(Player* bot, BotRole role, BotAIState& state)
+{
+    if (!bot)
+        return {};
+
+    uint8 classId = bot->getClass();
+    uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+
+    if (state.engageProfileCached &&
+        state.engageCachedClass == classId &&
+        state.engageCachedSpec == activeSpec &&
+        state.engageCachedRole == role &&
+        state.engageCachedSpellCount == bot->GetSpellMap().size())
+    {
+        return state.engageProfile;
+    }
+
+    BotEngageProfile profile;
+
+    if (role == BotRole::Tank)
+    {
+        profile.preferredDist = MELEE_ENGAGE_RANGE;
+        profile.useRangedAutoRepeat = false;
+    }
+    else if (role == BotRole::Healer)
+    {
+        profile.preferredDist = RANGED_ENGAGE_DISTANCE;
+        profile.useRangedAutoRepeat = false;
+    }
+    else // Dps / Support
+    {
+        CombatProfile const* cp = ProfileRegistry::FindProfile(classId, activeSpec, role);
+        if (!cp && role == BotRole::Support)
+            cp = ProfileRegistry::FindProfile(classId, activeSpec, BotRole::Dps);
+
+        if (cp)
+        {
+            profile.useRangedAutoRepeat = cp->useRangedAutoRepeat;
+            if (cp->preferredEngageDistance > 0.0f)
+            {
+                profile.preferredDist = cp->preferredEngageDistance;
+            }
+            else
+            {
+                uint32 meleeAbilities = 0;
+                uint32 rangedAbilities = 0;
+                for (auto const& ab : cp->abilities)
+                {
+                    if (HasTag(ab.tags, AbilityTag::MeleeAttack))
+                        ++meleeAbilities;
+                    if (HasTag(ab.tags, AbilityTag::RangedAttack))
+                        ++rangedAbilities;
+                }
+                if (rangedAbilities > meleeAbilities)
+                    profile.preferredDist = RANGED_ENGAGE_DISTANCE;
+                else
+                    profile.preferredDist = MELEE_ENGAGE_RANGE;
+            }
+        }
+        else
+        {
+            // Last-resort drafted-kit analysis. Auto-repeat itself is excluded by
+            // IsUsableOffensiveSpell and can never vote a kit into ranged mode.
+                uint32 meleeAttacks = 0;
+                uint32 rangedNukes = 0;
+                for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+                {
+                    if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                        continue;
+                    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+                    if (!spellInfo || spellInfo->IsPassive() || spellInfo->IsPositive() || !spellInfo->CanBeUsedInCombat())
+                        continue;
+                    if (!IsUsableOffensiveSpell(spellInfo))
+                        continue;
+
+                    if (spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE)
+                        ++meleeAttacks;
+                    else if (spellInfo->GetMaxRange(false, bot) <= 5.0f)
+                        ++meleeAttacks;
+                    else if (spellInfo->DmgClass == SPELL_DAMAGE_CLASS_RANGED || spellInfo->GetMaxRange(false, bot) >= 20.0f)
+                        ++rangedNukes;
+                }
+
+                if (rangedNukes >= 2 && rangedNukes > meleeAttacks)
+                    profile.preferredDist = RANGED_ENGAGE_DISTANCE;
+                else
+                    profile.preferredDist = MELEE_ENGAGE_RANGE;
+
+                profile.useRangedAutoRepeat = false;
+        }
+    }
+
+    state.engageProfile = profile;
+    state.engageProfileCached = true;
+    state.engageCachedClass = classId;
+    state.engageCachedSpec = activeSpec;
+    state.engageCachedRole = role;
+    state.engageCachedSpellCount = bot->GetSpellMap().size();
+    return profile;
+}
+
 float GetBotPreferredEngageDistance(Player* bot, BotRole role)
 {
     if (!bot)
         return MELEE_ENGAGE_RANGE;
 
-    if (role == BotRole::Tank)
-        return MELEE_ENGAGE_RANGE;
+    auto itr = states.find(bot->GetGUID());
+    if (itr != states.end())
+        return GetOrComputeBotEngageProfile(bot, role, itr->second).preferredDist;
 
-    if (role == BotRole::Healer)
-        return RANGED_ENGAGE_DISTANCE;
-
-    uint32 rangedCount = 0;
-    uint32 meleeCount = 0;
-
-    for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
-    {
-        if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
-            continue;
-
-        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-        if (!spellInfo || spellInfo->IsPassive() || spellInfo->IsPositive() || !spellInfo->CanBeUsedInCombat())
-            continue;
-
-        if (spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE)
-        {
-            ++meleeCount;
-            continue;
-        }
-
-        if (!IsUsableOffensiveSpell(spellInfo))
-            continue;
-
-        float maxRange = spellInfo->GetMaxRange(false, bot);
-        if (maxRange >= 15.0f || spellInfo->DmgClass == SPELL_DAMAGE_CLASS_RANGED)
-            ++rangedCount;
-        else if (maxRange <= 5.0f)
-            ++meleeCount;
-    }
-
-    if (FindKnownAutoRepeatRangedSpell(bot))
-        ++rangedCount;
-
-    if (rangedCount > meleeCount)
-        return RANGED_ENGAGE_DISTANCE;
-
-    return MELEE_ENGAGE_RANGE;
+    BotAIState tempState;
+    return GetOrComputeBotEngageProfile(bot, role, tempState).preferredDist;
 }
 
 class HostileEnemyCheck
@@ -3177,25 +3267,78 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         return;
     }
 
-    if (state.nextCastAllowedMs > diff)
-    {
+    bool reactionGated = state.nextCastAllowedMs > diff;
+    if (reactionGated)
         state.nextCastAllowedMs -= diff;
-        return;
-    }
-    state.nextCastAllowedMs = 0;
+    else
+        state.nextCastAllowedMs = 0;
 
-    // Try a spell FIRST, regardless of distance -- SelectKnownSpell already checks each
-    // candidate's own real min/max range, so a ranged/caster kit can fire from wherever it's
-    // actually standing without ever needing to close to melee. This used to be gated behind
-    // "must be within MELEE_ENGAGE_RANGE (4.0yd) first," which meant every ranged bot ran all
-    // the way into melee range before its first cast attempt, then failed with
-    // SPELL_FAILED_TOO_CLOSE against its own dead-zone (e.g. a 5-30yd shot).
-    //
-    // Tank priority: if this bot doesn't currently hold the target's aggro (a real threat-
-    // table check isn't available without the SpellHistory-era threat API this fork
-    // predates -- "is the target currently swinging on me" is the cheap, good-enough proxy),
-    // try a taunt before falling through to the normal offensive pick.
-    float preferredDist = GetBotPreferredEngageDistance(bot, combatRole);
+    // -------------------------------------------------------------
+    // Cast Ownership & Preemption Guard (Atomic Cast Protection)
+    // -------------------------------------------------------------
+    if (CastGuard::IsCurrentlyCasting(bot))
+    {
+        CombatContext ctx;
+        CastInterruptReason reason = CastInterruptReason::None;
+        if (state.castPreemptionCheckMs <= diff)
+        {
+            ctx = CombatContext::Build(bot, target);
+            reason = CastGuard::EvaluatePreemption(bot, ctx);
+            state.castPreemptionCheckMs = 100;
+        }
+        else
+            state.castPreemptionCheckMs -= diff;
+        if (reason != CastInterruptReason::None)
+        {
+            CastGuard::InterruptCurrentCast(bot, reason);
+            state.nextCastAllowedMs = 0;
+            reactionGated = false;
+            state.castHoldLogMs = 0;
+            state.heldCastSpellId = 0;
+            state.castPreemptionCheckMs = 0;
+
+            if (reason == CastInterruptReason::LethalGroundHazard)
+            {
+                BotAvoidance::TryAvoidGroundHazards(bot);
+                return;
+            }
+            if (reason == CastInterruptReason::LethalBossMechanic)
+            {
+                BotAvoidance::TryAvoidBossTelegraphedAttacks(bot, target);
+                return;
+            }
+            if (reason == CastInterruptReason::EmergencyTankSave)
+                return; // let the healer role select the emergency heal on its next update
+
+            // Critical interrupt/taunt goes directly to the utility layer before any movement.
+            if (CombatUtility::Execute(bot, ctx, diff, state.nextCastAllowedMs))
+                return;
+            return; // failed critical action: reassess next tick; never turn it into reposition
+        }
+        else
+        {
+            uint32 spellId = CastGuard::CurrentSpellId(bot);
+            if (state.heldCastSpellId != spellId || state.castHoldLogMs <= diff)
+            {
+                LOG_DEBUG("module.coa-playerbots", "CastGuard: bot '{}' holding spell {} with {}ms remaining.",
+                    bot->GetName(), spellId, CastGuard::CurrentSpellRemainingMs(bot));
+                state.heldCastSpellId = spellId;
+                state.castHoldLogMs = 2000;
+            }
+            else
+                state.castHoldLogMs -= diff;
+            return;
+        }
+    }
+    state.castHoldLogMs = 0;
+    state.heldCastSpellId = 0;
+    state.castPreemptionCheckMs = 0;
+
+    if (reactionGated)
+        return;
+
+    BotEngageProfile engageProfile = GetOrComputeBotEngageProfile(bot, combatRole, state);
+    float preferredDist = engageProfile.preferredDist;
     float distance = bot->GetDistance(target);
 
     // Positioning is handled once, up front, independent of whatever ends up castable this
@@ -3264,18 +3407,29 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
 
     if (preferredDist > MELEE_ENGAGE_RANGE)
     {
-        if (uint32 autoRepeatSpell = FindKnownAutoRepeatRangedSpell(bot))
+        if (engageProfile.useRangedAutoRepeat)
         {
-            if (!bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
-                bot->CastSpell(target, autoRepeatSpell, false);
+            if (uint32 autoRepeatSpell = FindKnownAutoRepeatRangedSpell(bot))
+            {
+                if (!bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+                    bot->CastSpell(target, autoRepeatSpell, false);
+            }
+        }
+        else if (bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+        {
+            bot->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
         }
 
         if (bot->GetVictim() != target)
             bot->Attack(target, false);
     }
-    else if (bot->GetVictim() != target || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+    else
     {
-        bot->Attack(target, true);
+        if (bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+            bot->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
+
+        if (bot->GetVictim() != target || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+            bot->Attack(target, true);
     }
 
     // Global Combat Utility Layer: emergency taunt/interrupt/cleanse ahead of role rotation --
@@ -3322,6 +3476,10 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         if (!strategy->CanUseLegacyFallback(ctx))
             return;
     }
+
+    // GLOBAL GATE: Legacy fallback MUST NOT execute if currently casting
+    if (CastGuard::IsCurrentlyCasting(bot))
+        return;
 
     uint32 spellId = 0;
     char const* castVerb = "cast";
@@ -3443,6 +3601,81 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
 
 void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 {
+    if (!bot || !bot->IsAlive() || !bot->IsInWorld())
+        return;
+
+    bool reactionGated = state.nextCastAllowedMs > diff;
+    if (reactionGated)
+        state.nextCastAllowedMs -= diff;
+    else
+        state.nextCastAllowedMs = 0;
+
+    // -------------------------------------------------------------
+    // Cast Ownership & Preemption Guard (Atomic Cast Protection)
+    // -------------------------------------------------------------
+    if (CastGuard::IsCurrentlyCasting(bot))
+    {
+        Unit* threat = nullptr;
+        CombatContext ctx;
+        CastInterruptReason reason = CastInterruptReason::None;
+        if (state.castPreemptionCheckMs <= diff)
+        {
+            threat = FindGroupCombatTarget(bot, bot->GetGroup());
+            ctx = CombatContext::Build(bot, threat);
+            reason = CastGuard::EvaluatePreemption(bot, ctx);
+            state.castPreemptionCheckMs = 100;
+        }
+        else
+            state.castPreemptionCheckMs -= diff;
+        if (reason != CastInterruptReason::None)
+        {
+            CastGuard::InterruptCurrentCast(bot, reason);
+            state.nextCastAllowedMs = 0;
+            reactionGated = false;
+            state.castHoldLogMs = 0;
+            state.heldCastSpellId = 0;
+            state.castPreemptionCheckMs = 0;
+
+            if (reason == CastInterruptReason::LethalGroundHazard)
+            {
+                BotAvoidance::TryAvoidGroundHazards(bot);
+                return;
+            }
+            if (reason == CastInterruptReason::LethalBossMechanic)
+            {
+                BotAvoidance::TryAvoidBossTelegraphedAttacks(bot, ctx.victim);
+                return;
+            }
+            if (reason == CastInterruptReason::HighPriorityInterrupt || reason == CastInterruptReason::CriticalTaunt)
+            {
+                if (CombatUtility::Execute(bot, ctx, diff, state.nextCastAllowedMs))
+                    return;
+                return;
+            }
+            // Emergency healing continues below and selects a replacement heal normally.
+        }
+        else
+        {
+            uint32 spellId = CastGuard::CurrentSpellId(bot);
+            if (state.heldCastSpellId != spellId || state.castHoldLogMs <= diff)
+            {
+                LOG_DEBUG("module.coa-playerbots", "CastGuard: bot '{}' holding spell {} with {}ms remaining.",
+                    bot->GetName(), spellId, CastGuard::CurrentSpellRemainingMs(bot));
+                state.heldCastSpellId = spellId;
+                state.castHoldLogMs = 2000;
+            }
+            else
+                state.castHoldLogMs -= diff;
+            return;
+        }
+    }
+    state.castHoldLogMs = 0;
+    state.heldCastSpellId = 0;
+    state.castPreemptionCheckMs = 0;
+
+    if (reactionGated)
+        return;
+
     if (BotAvoidance::TryAvoidGroundHazards(bot))
         return;
 
@@ -3545,6 +3778,10 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
         strategy = BotAI::SpecStrategyRegistry::FindStrategy(bot->getClass(), activeSpec);
 
     if (strategy && !strategy->CanUseLegacyFallback(ctx))
+        return;
+
+    // GLOBAL GATE: Legacy heal fallback MUST NOT execute if currently casting
+    if (CastGuard::IsCurrentlyCasting(bot))
         return;
 
     spellId = BotAI::SelectClassHealRotationSpell(bot, healTarget, bot->getClass(), activeSpec);

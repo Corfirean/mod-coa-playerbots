@@ -27,6 +27,8 @@ namespace BotAI
             p.specId = 29; // Farstrider
             p.role = BotRole::Support;
             p.profileName = "Ranger_Farstrider_Support";
+            p.useRangedAutoRepeat = true;
+            p.preferredEngageDistance = PROFILE_RANGED_ENGAGE_DISTANCE;
 
             // 1. Emergency Defensive: Elude (< 40% HP)
             {
@@ -278,6 +280,8 @@ namespace BotAI
             p.specId = 28; // Archery
             p.role = BotRole::Dps;
             p.profileName = "Ranger_Archery_Marksman";
+            p.useRangedAutoRepeat = true;
+            p.preferredEngageDistance = PROFILE_RANGED_ENGAGE_DISTANCE;
 
             // 1. Defensive: Elude (< 40% HP)
             {
@@ -487,6 +491,8 @@ namespace BotAI
             p.specId = 30; // Brigand
             p.role = BotRole::Dps;
             p.profileName = "Ranger_Brigand_Melee";
+            p.useRangedAutoRepeat = false;
+            p.preferredEngageDistance = PROFILE_MELEE_ENGAGE_DISTANCE;
 
             // 1. Defensive: Elude (< 40% HP)
             {

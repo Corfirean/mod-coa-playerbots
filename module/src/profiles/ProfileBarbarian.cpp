@@ -35,6 +35,8 @@ namespace BotAI
             p.specId = 1; // Headhunting
             p.role = BotRole::Dps;
             p.profileName = "Barbarian_Headhunting_Ranged";
+            p.useRangedAutoRepeat = true;
+            p.preferredEngageDistance = PROFILE_RANGED_ENGAGE_DISTANCE;
 
             // 1. Party Buff: War Cry
             {
