@@ -6,12 +6,13 @@
  *   - Spec 15: Lightning (Ranged Lightning Caster DPS)
  *   - Spec 13: Wind (Wind Mobility / Support DPS)
  *   - Spec 14: Maelstrom (Tempest / Hybrid Burst DPS)
- *   - Spec 0: Default Fallback
  */
 
 #include "profiles/ProfileStormbringer.h"
 #include "profiles/ProfileRegistry.h"
 #include "engine/CombatContext.h"
+#include "engine/SpecStrategyRegistry.h"
+#include "Player.h"
 
 namespace BotAI
 {
@@ -35,6 +36,8 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 45.0f;
+                d.missingAuraOnCaster = 500923;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 320.0f;
                 p.abilities.push_back(d);
             }
@@ -44,9 +47,10 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Invigorating Surge (Emergency Heal)";
                 d.rootSpellId = 500038;
-                d.tags = AbilityTag::DirectHeal;
+                d.tags = AbilityTag::DirectHeal | AbilityTag::EmergencyHeal;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 40.0f;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 260.0f;
                 p.abilities.push_back(d);
             }
@@ -58,6 +62,7 @@ namespace BotAI
                 d.rootSpellId = 500924;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 12000;
                 d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
@@ -69,6 +74,7 @@ namespace BotAI
                 d.rootSpellId = 805288;
                 d.tags = AbilityTag::AoEDamage | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
@@ -80,6 +86,7 @@ namespace BotAI
                 d.rootSpellId = 804020;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
@@ -91,6 +98,7 @@ namespace BotAI
                 d.rootSpellId = 421;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 180.0f;
                 p.abilities.push_back(d);
             }
@@ -114,11 +122,46 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 804018;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 140.0f;
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            // SpecStrategy for Lightning
+            SpecStrategy s;
+            s.classId = 16;
+            s.specId = 15;
+            s.role = BotRole::Dps;
+            s.strategyName = "Stormbringer_Lightning_Caster_Strategy";
+
+            s.phaseModifiers[CombatPhase::Opener] = {
+                { AbilityTag::RangedAttack, 1.5f, 40.0f }
+            };
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD,  1.8f, 50.0f },
+                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage, 2.0f, 60.0f }
+            };
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 30) &&
+                       (bot->GetHealthPct() >= 50.0f);
+            };
+
+            // ResourcePolicy for Static (803102)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 803102 };
+                pol.overcapThreshold = 80;
+                s.resourcePolicies.push_back(pol);
+            }
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
         // -------------------------------------------------------------
@@ -138,7 +181,9 @@ namespace BotAI
                 d.rootSpellId = 804018;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.casterAuraId = 804018;
                 d.missingAuraOnCaster = 804018;
+                d.internalThrottleMs = 20000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
@@ -151,6 +196,8 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 45.0f;
+                d.missingAuraOnCaster = 500923;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 320.0f;
                 p.abilities.push_back(d);
             }
@@ -163,6 +210,7 @@ namespace BotAI
                 d.tags = AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 55.0f;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -174,6 +222,7 @@ namespace BotAI
                 d.rootSpellId = 500924;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 12000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
@@ -185,6 +234,7 @@ namespace BotAI
                 d.rootSpellId = 805288;
                 d.tags = AbilityTag::AoEDamage | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
@@ -196,11 +246,38 @@ namespace BotAI
                 d.rootSpellId = 804020;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 180.0f;
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            // SpecStrategy for Wind
+            SpecStrategy s;
+            s.classId = 16;
+            s.specId = 13;
+            s.role = BotRole::Support;
+            s.strategyName = "Stormbringer_Wind_Support_Strategy";
+
+            s.phaseModifiers[CombatPhase::Opener] = {
+                { AbilityTag::Buff,         1.5f, 40.0f },
+                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD, 1.8f, 50.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage, 1.8f, 50.0f }
+            };
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 35) &&
+                       (bot->GetHealthPct() >= 50.0f);
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
         // -------------------------------------------------------------
@@ -221,6 +298,8 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 45.0f;
+                d.missingAuraOnCaster = 500923;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 320.0f;
                 p.abilities.push_back(d);
             }
@@ -233,6 +312,7 @@ namespace BotAI
                 d.tags = AbilityTag::DirectHeal;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 40.0f;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -244,6 +324,7 @@ namespace BotAI
                 d.rootSpellId = 805288;
                 d.tags = AbilityTag::AoEDamage | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
@@ -255,6 +336,7 @@ namespace BotAI
                 d.rootSpellId = 500924;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 12000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
@@ -266,6 +348,7 @@ namespace BotAI
                 d.rootSpellId = 804020;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
@@ -277,13 +360,38 @@ namespace BotAI
                 d.rootSpellId = 421;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 175.0f;
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
-        }
 
+            // SpecStrategy for Maelstrom
+            SpecStrategy s;
+            s.classId = 16;
+            s.specId = 14;
+            s.role = BotRole::Dps;
+            s.strategyName = "Stormbringer_Maelstrom_Hybrid_Strategy";
+
+            s.phaseModifiers[CombatPhase::Opener] = {
+                { AbilityTag::RangedAttack, 1.5f, 40.0f }
+            };
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD,  1.8f, 50.0f },
+                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage, 2.0f, 60.0f }
+            };
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 25) &&
+                       (bot->GetHealthPct() >= 50.0f);
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
+        }
     }
 }
-

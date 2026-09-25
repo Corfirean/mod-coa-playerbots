@@ -57,9 +57,39 @@ from outside the class.
 
 ### Patch 3 — spending Ascension talent points through the real budget-checked path
 
-Not committed yet (2026-09-24) — apply against `src/server/coa/` in
-`azerothcore-wotlk-coa`, build/test locally, then commit following the same
-pattern as Patch 1/2.
+Commit: `4111c67ec` ("fix(coa): expose AscensionClassService spec/talent
+switch via bridge") in `azerothcore-wotlk-coa`.
+
+Live-verified 2026-09-24: after applying this patch, mirroring the
+already-committed `BotMgr.cpp`/`BotMgr.h`/`BotTalentBuilds.cpp` changes into
+the build tree, and rebuilding, `.botcmd learnspec <guid> 1` (and other
+invalid spec ids for the bot's class) is now genuinely rejected by
+`SwitchSpecialization`'s own validation instead of being silently accepted.
+With a valid spec id, `.botcmd checkrole <guid>` now correctly reports the
+bot's real active spec (e.g. "spec 28 'Archery'") where it previously always
+read 0, and `.botcmd listauras <guid>` shows the matching spec-gated
+automatic aura (e.g. "CoA Aura - Ranger - Archery", "CoA Aura - Bloodmage -
+Sanguine") appearing post-`learnspec` where it did not before. Tested across
+two classes (Ranger/21, Bloodmage/20) at multiple levels (20, 36, 59); the
+two test bots happened to have zero paid (`AECost`/`TECost` > 0) entries
+available at their levels/specs, so the budget-check path itself (rather
+than just the active-spec-visibility path) wasn't separately exercised live
+this round — both consequences described below are still real per the code
+read, but only the second was directly observed working end-to-end.
+
+**Unrelated crash observed during this verification pass**: partway through
+testing (after several `.botcmd spawnbot`/`.botcmd learnspec` calls against
+an already-~600-bot world), the world server crashed with
+`ACCESS_VIOLATION` in `Object::SetFloatValue` <- `Player::
+IsWorldObjectOutOfSightRange` <- `Acore::VisibleNotifier::SendToSelf` <-
+`Unit::ExecuteDelayedUnitRelocationEvent` <- `Map::HandleDelayedVisibility`
+<- `Map::Update` (crash dump:
+`Core/Crashes/..._[24-9_6-1-58].{dmp,txt}` in the CoA-Repack checkout). This
+is in unit relocation/visibility code, nowhere near `AscensionCompat.cpp` or
+this module's talent/spec code, and no earlier crash dump shares this
+signature -- flagging as a separate, not-yet-investigated bot-relocation
+issue rather than something this patch caused. The server was restarted and
+came back up clean; not otherwise chased down as part of this patch.
 
 **The bug this fixes**: `BotMgr::LearnSpecialization` and
 `BotTalentBuilds::ApplyBuildForLevel` (this repo, `module/src/BotMgr.cpp` and

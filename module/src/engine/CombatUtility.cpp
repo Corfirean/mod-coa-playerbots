@@ -9,6 +9,8 @@
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
 #include "engine/CombatReservations.h"
+#include "engine/CombatResource.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "engine/SpellPredicates.h"
 #include "BotClassRotations.h"
 #include "Group.h"
@@ -20,6 +22,8 @@
 #include "SpellMgr.h"
 #include <algorithm>
 #include <vector>
+
+#include "engine/ActionEvaluator.h"
 
 namespace BotAI
 {
@@ -39,9 +43,18 @@ namespace BotAI
         // for every role, not just Healer).
         constexpr float CLEANSE_SEARCH_RANGE = 40.0f;
 
-        bool TryCast(Player* bot, uint32 spellId, Unit* target, char const* verb, uint32& nextCastAllowedMs)
+        bool TryCast(Player* bot, CombatContext const& ctx, uint32 spellId, Unit* target, char const* verb, uint32& nextCastAllowedMs)
         {
             if (!spellId || !target)
+                return false;
+
+            BotAction action;
+            action.spellId = spellId;
+            action.rootSpellId = spellId;
+            action.target = target;
+            action.score = 100.0f;
+            action.name = verb;
+            if (!ActionEvaluator::ValidateAction(ctx, action))
                 return false;
 
             SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
@@ -52,6 +65,7 @@ namespace BotAI
             }
 
             SpellCastResult result = bot->CastSpell(target, spellId, false);
+            SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
             if (result == SPELL_CAST_OK)
             {
                 nextCastAllowedMs = UTILITY_REACTION_GATE_MS;
@@ -154,12 +168,17 @@ namespace BotAI
         if (CastGuard::IsCurrentlyCasting(bot))
             return false; // don't preempt the bot's own in-progress cast for utility work
 
-        // 1. Taunt -- Tank only, only while not currently holding this target's aggro.
-        if (ctx.role == BotRole::Tank && ctx.victim && ctx.victim->IsAlive() && ctx.victim->GetVictim() != bot)
+        SpecStrategyRuntime const& runtime = SpecStrategyRegistry::GetRuntime(bot->GetGUID());
+        bool inBaseline = (runtime.lastStateStatus == CombatStateStatus::Ready);
+
+        // 1. Taunt -- Tank only, only while not currently holding this target's aggro, and only in baseline form!
+        if (ctx.role == BotRole::Tank && inBaseline && ctx.victim && ctx.victim->IsAlive() && ctx.victim->GetVictim() != bot)
         {
             if (uint32 spellId = SelectTauntSpell(bot, ctx.victim))
-                if (TryCast(bot, spellId, ctx.victim, "reflexively taunted", nextCastAllowedMs))
+            {
+                if (TryCast(bot, ctx, spellId, ctx.victim, "reflexively taunted", nextCastAllowedMs))
                     return true;
+            }
         }
 
         // 2. Interrupt -- any role, reservation-gated (see engine/CombatReservations.h) so
@@ -182,7 +201,7 @@ namespace BotAI
                     // already sees it, not just after this cast resolves next tick.
                     CombatReservations::TryReserveInterrupt(enemyGuid, ctx.victimCastingSpellId, bot->GetGUID(), reserveMs);
 
-                    if (TryCast(bot, spellId, ctx.victim, "reserved and used interrupt", nextCastAllowedMs))
+                    if (TryCast(bot, ctx, spellId, ctx.victim, "reserved and used interrupt", nextCastAllowedMs))
                     {
                         CombatReservations::ClearInterruptReservation(enemyGuid);
                         return true;
@@ -203,7 +222,7 @@ namespace BotAI
         CleansePlan cleansePlan = FindCleansePlan(bot);
         if (cleansePlan.target && cleansePlan.spellId)
         {
-            if (TryCast(bot, cleansePlan.spellId, cleansePlan.target, "cleansed", nextCastAllowedMs))
+            if (TryCast(bot, ctx, cleansePlan.spellId, cleansePlan.target, "cleansed", nextCastAllowedMs))
                 return true;
         }
 

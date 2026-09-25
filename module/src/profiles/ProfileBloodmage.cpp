@@ -1,17 +1,18 @@
 /*
  * mod-coa-playerbots
  *
- * Data-Driven Combat AI Framework: Bloodmage Profiles implementation
- * Supports:
- *   - Spec 99: Eternal (Blood Protection Tank)
- *   - Spec 25: Fleshweaver (Blood & Vitality Healer / Support)
+ * Data-Driven Combat AI Framework: Bloodmage Profiles & Spec Strategies
+ *
+ * Specializations:
+ *   - Spec 99: Eternal (Blood Protection Heavy Tank)
+ *   - Spec 25: Fleshweaver (Blood & Vitality Support / Hybrid Healer)
  *   - Spec 26: Sanguine (Ranged Blood Caster DPS)
- *   - Spec 27: Accursed (Melee Ferocity / Werewolf DPS)
- *   - Spec 0: Default Fallback
+ *   - Spec 27: Accursed (Accursed Werewolf Melee DPS)
  */
 
 #include "profiles/ProfileBloodmage.h"
 #include "profiles/ProfileRegistry.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
 
@@ -19,17 +20,25 @@ namespace BotAI
 {
     void RegisterBloodmageProfiles()
     {
-        // -------------------------------------------------------------
-        // Profile 1: Bloodmage - Spec 99: Eternal (BLOOD TANK)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 1. SPEC 99: ETERNAL (BLOOD PROTECTION HEAVY TANK)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Tank
+        // - Baseline State: Caster/Physical
+        // - Resource: Health + Rage economy (prevent self-damage suicide)
+        // - Defensives: Liquify (<25% HP), Bloody Sacrifice (<45% HP), Fleshcraft (<65% HP)
+        // - Buffs: Aortic Aegis & Blood Veil throttled to 30s
+        // - TankReady: Aortic Aegis active + HP > 75%
+        // =========================================================================
         {
             CombatProfile p;
-            p.classId = 20; // Son of Arugal / Bloodmage
-            p.specId = 99; // Eternal
+            p.classId = 20; // Bloodmage
+            p.specId = 99;  // Eternal
             p.role = BotRole::Tank;
             p.profileName = "Bloodmage_Eternal_Tank";
 
-            // 1. Primary Taunt
+            // Primary Taunt
             {
                 AbilityDescriptor d;
                 d.name = "Taunt";
@@ -40,19 +49,20 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 2. Emergency Survival: Liquify (< 25% HP immunity)
+            // Emergency Survival
             {
                 AbilityDescriptor d;
-                d.name = "Liquify (Emergency Immunity)";
+                d.name = "Liquify";
                 d.rootSpellId = 806310;
                 d.tags = AbilityTag::DefensiveCD;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 25.0f;
-                d.baseScore = 400.0f;
+                d.internalThrottleMs = 90000;
+                d.baseScore = 420.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. Active Mitigation: Bloody Sacrifice (< 45% HP)
+            // Active Mitigation
             {
                 AbilityDescriptor d;
                 d.name = "Bloody Sacrifice";
@@ -60,24 +70,25 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 45.0f;
-                d.minSelfHpPct = 15.0f; // Prevent suicide
-                d.baseScore = 320.0f;
+                d.minSelfHpPct = 20.0f; // Prevent suicide
+                d.internalThrottleMs = 30000;
+                d.baseScore = 340.0f;
                 p.abilities.push_back(d);
             }
-
-            // 4. Blood Shield: Fleshcraft (< 65% HP)
             {
                 AbilityDescriptor d;
-                d.name = "Fleshcraft (Shield)";
+                d.name = "Fleshcraft";
                 d.rootSpellId = 801952;
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 65.0f;
-                d.baseScore = 300.0f;
+                d.missingAuraOnCaster = 801952;
+                d.internalThrottleMs = 15000;
+                d.baseScore = 310.0f;
                 p.abilities.push_back(d);
             }
 
-            // 5. Stance / Auras: Aortic Aegis / Blood Veil
+            // Stance / Auras
             {
                 AbilityDescriptor d;
                 d.name = "Aortic Aegis";
@@ -85,7 +96,8 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 806274;
-                d.baseScore = 210.0f;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -95,14 +107,15 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 504263;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
 
-            // 6. Threat / Leech DoTs
+            // Threat / Leech
             {
                 AbilityDescriptor d;
-                d.name = "Vampyr's Kiss (Leech Threat)";
+                d.name = "Vampyr's Kiss";
                 d.rootSpellId = 504275;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -112,7 +125,7 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
-                d.name = "Crimson Tide (AoE Blood Wave)";
+                d.name = "Crimson Tide";
                 d.rootSpellId = 504282;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
@@ -120,7 +133,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 7. Heavy Threat Spenders
+            // Heavy Threat Spenders (Health-aware)
             {
                 AbilityDescriptor d;
                 d.name = "Heartbreak";
@@ -151,7 +164,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 8. Builders / Self-Heal Strike
+            // Builders
             {
                 AbilityDescriptor d;
                 d.name = "Ravenous Bite";
@@ -167,73 +180,111 @@ namespace BotAI
                 d.rootSpellId = 804685;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 160.0f;
+                d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            // Strategy Registration
+            SpecStrategy s;
+            s.classId = 20;
+            s.specId = 99;
+            s.role = BotRole::Tank;
+            s.strategyName = "Eternal_Tank_Strategy";
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 75.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Emergency] = {
+                { AbilityTag::DefensiveCD, 2.5f, 100.0f },
+                { AbilityTag::Shield,      2.0f,  80.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage,   1.8f,  50.0f }
+            };
+
+            // ResourcePolicy for Bloodmage resource (680687)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 680687 };
+                pol.overcapThreshold = 8;
+                s.resourcePolicies.push_back(pol);
+            }
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
-        // -------------------------------------------------------------
-        // Profile 2: Bloodmage - Spec 25: Fleshweaver (HEALER / SUPPORT)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 2. SPEC 25: FLESHWEAVER (SUPPORT / HYBRID HEALER)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Support (registered for Support & Healer lookup)
+        // - Baseline State: Caster
+        // - Resource: Vitality pooling through damage weaving
+        // =========================================================================
+        auto registerFleshweaver = [](BotRole role)
         {
             CombatProfile p;
             p.classId = 20;
-            p.specId = 25; // Fleshweaver
-            p.role = BotRole::Healer;
-            p.profileName = "Bloodmage_Fleshweaver_Healer";
+            p.specId = 25;
+            p.role = role;
+            p.profileName = (role == BotRole::Support) ? "Bloodmage_Fleshweaver_Support" : "Bloodmage_Fleshweaver_Healer";
 
-            // 1. Emergency Critical Heal: Transfusion (< 40% HP)
+            // Emergency Direct Heal
             {
                 AbilityDescriptor d;
-                d.name = "Transfusion (Critical Direct Heal)";
+                d.name = "Transfusion";
                 d.rootSpellId = 705734;
-                d.tags = AbilityTag::DirectHeal;
+                d.tags = AbilityTag::EmergencyHeal | AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 40.0f;
-                d.baseScore = 380.0f;
+                d.internalThrottleMs = 3000;
+                d.baseScore = 400.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Emergency Shield: Fleshcraft (< 50% HP)
+            // Shield
             {
                 AbilityDescriptor d;
-                d.name = "Fleshcraft (Protective Shield)";
+                d.name = "Fleshcraft";
                 d.rootSpellId = 801952;
                 d.tags = AbilityTag::Shield;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 50.0f;
-                d.baseScore = 350.0f;
+                d.missingAuraOnCaster = 801952;
+                d.internalThrottleMs = 12000;
+                d.baseScore = 340.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. AoE Blood Wave Heal: Waves of Blood (>= 2 injured allies)
+            // AoE Blood Wave
             {
                 AbilityDescriptor d;
-                d.name = "Waves of Blood (Group Heal)";
+                d.name = "Waves of Blood";
                 d.rootSpellId = 681427;
                 d.tags = AbilityTag::AoEHeal;
                 d.targetType = TargetType::Self;
                 d.minInjuredAllies = 2;
                 d.injuredAllyHpPctThreshold = 80.0f;
-                d.baseScore = 320.0f;
+                d.internalThrottleMs = 6000;
+                d.baseScore = 310.0f;
                 p.abilities.push_back(d);
             }
 
-            // 4. Primary Sustained Heal: Transfusion / Sanguine Mend (< 80% HP)
+            // Primary Heal
             {
                 AbilityDescriptor d;
-                d.name = "Sanguine Mend (Primary Heal)";
+                d.name = "Sanguine Mend";
                 d.rootSpellId = 802310;
                 d.tags = AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 80.0f;
-                d.baseScore = 280.0f;
+                d.baseScore = 270.0f;
                 p.abilities.push_back(d);
             }
-
-            // 5. Blood Redistribution (< 85% HP)
             {
                 AbilityDescriptor d;
                 d.name = "Blood Redistribution";
@@ -241,26 +292,30 @@ namespace BotAI
                 d.tags = AbilityTag::PeriodicHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 85.0f;
-                d.baseScore = 260.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 4000;
+                d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
 
-            // 6. Support Buff: Universal Donor / Blood Pact
+            // Support Buff
             {
                 AbilityDescriptor d;
                 d.name = "Universal Donor";
                 d.rootSpellId = 806428;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
+                d.casterAuraId = 806428;
                 d.missingAuraOnCaster = 806428;
-                d.baseScore = 220.0f;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
 
-            // 7. Offensive Vitality Weaving (generates vitality for healing)
+            // Offensive Vitality Weaving
             {
                 AbilityDescriptor d;
-                d.name = "Vampyr's Kiss (Leech Vitality)";
+                d.name = "Vampyr's Kiss";
                 d.rootSpellId = 504275;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -279,7 +334,7 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
-                d.name = "Bloodbolt (Vitality Builder)";
+                d.name = "Bloodbolt";
                 d.rootSpellId = 804685;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
@@ -288,11 +343,38 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
-        }
 
-        // -------------------------------------------------------------
-        // Profile 3: Bloodmage - Spec 26: Sanguine (RANGED BLOOD CASTER DPS)
-        // -------------------------------------------------------------
+            SpecStrategy s;
+            s.classId = 20;
+            s.specId = 25;
+            s.role = role;
+            s.strategyName = (role == BotRole::Support) ? "Fleshweaver_Support_Strategy" : "Fleshweaver_Healer_Strategy";
+            s.minResourceToEngage = 50.0f;
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 70.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Emergency] = {
+                { AbilityTag::EmergencyHeal, 2.5f, 100.0f },
+                { AbilityTag::Shield,        2.0f,  80.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
+        };
+
+        registerFleshweaver(BotRole::Support);
+        registerFleshweaver(BotRole::Healer);
+
+        // =========================================================================
+        // 3. SPEC 26: SANGUINE (RANGED BLOOD CASTER DPS)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Dps
+        // - Baseline State: Caster
+        // - Resource: Health + Rage + Thirst (minSelfHpPct on health-spending nukes)
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 20;
@@ -300,7 +382,7 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Bloodmage_Sanguine_Dps";
 
-            // 1. Emergency Defense: Liquify (< 20% HP)
+            // Emergency Defense
             {
                 AbilityDescriptor d;
                 d.name = "Liquify";
@@ -308,27 +390,31 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 20.0f;
+                d.internalThrottleMs = 90000;
                 d.baseScore = 400.0f;
                 p.abilities.push_back(d);
             }
             {
                 AbilityDescriptor d;
-                d.name = "Fleshcraft (< 35% HP)";
+                d.name = "Fleshcraft";
                 d.rootSpellId = 801952;
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 35.0f;
+                d.missingAuraOnCaster = 801952;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 320.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Major Cooldown: Apotheosis / Blood Moon
+            // Major Burst Cooldowns
             {
                 AbilityDescriptor d;
                 d.name = "Apotheosis";
                 d.rootSpellId = 804195;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 90000;
                 d.baseScore = 280.0f;
                 p.abilities.push_back(d);
             }
@@ -338,24 +424,26 @@ namespace BotAI
                 d.rootSpellId = 804199;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
                 d.baseScore = 270.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. Core Blood DoTs (Always Maintain)
+            // Core Blood DoTs
             {
                 AbilityDescriptor d;
-                d.name = "Crimson Tide (Primary DoT)";
+                d.name = "Crimson Tide";
                 d.rootSpellId = 504282;
-                d.tags = AbilityTag::RangedAttack;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
             {
                 AbilityDescriptor d;
-                d.name = "Vampyr's Kiss (Leech DoT)";
+                d.name = "Vampyr's Kiss";
                 d.rootSpellId = 504275;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -364,10 +452,10 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 4. Heavy Spenders / Finishers
+            // Heavy Spenders (Health-protected)
             {
                 AbilityDescriptor d;
-                d.name = "Heartbreak (Execute Spender)";
+                d.name = "Heartbreak";
                 d.rootSpellId = 520314;
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Execute;
                 d.targetType = TargetType::CurrentTarget;
@@ -377,7 +465,7 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
-                d.name = "Veinburst (Burst Spender)";
+                d.name = "Veinburst";
                 d.rootSpellId = 504260;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -396,18 +484,19 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 5. Summon / Pet: Animated Blood
+            // Pet / Summon
             {
                 AbilityDescriptor d;
                 d.name = "Animated Blood";
                 d.rootSpellId = 573299;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 60000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
 
-            // 6. Fillers
+            // Fillers
             {
                 AbilityDescriptor d;
                 d.name = "Bloodbolt";
@@ -428,11 +517,38 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            SpecStrategy s;
+            s.classId = 20;
+            s.specId = 26;
+            s.role = BotRole::Dps;
+            s.strategyName = "Sanguine_Dps_Strategy";
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 70.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD,  1.8f, 50.0f },
+                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::Execute] = {
+                { AbilityTag::Execute,      1.8f, 60.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
-        // -------------------------------------------------------------
-        // Profile 4: Bloodmage - Spec 27: Accursed (MELEE FEROCITY / WEREWOLF DPS)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 4. SPEC 27: ACCURSED (ACCURSED WEREWOLF MELEE DPS)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Dps
+        // - Mandatory Baseline State: Accursed Form (spell 562572, aura 562572)
+        // - Resource: Rage / Ferocity in Werewolf Form
+        // - Tactical Policy: Close gap with Bloodleaper, howl buffs, claw and bite
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 20;
@@ -440,7 +556,7 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Bloodmage_Accursed_Dps";
 
-            // 1. Maintain Accursed / Werewolf Form
+            // Mandatory Form: Accursed Form
             {
                 AbilityDescriptor d;
                 d.name = "Accursed Form";
@@ -448,11 +564,12 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 562572;
-                d.baseScore = 300.0f;
+                d.internalThrottleMs = 4000;
+                d.baseScore = 500.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Gap Closer: Bloodleaper (> 8 yards)
+            // Gap Closer: Bloodleaper
             {
                 AbilityDescriptor d;
                 d.name = "Bloodleaper";
@@ -469,13 +586,14 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 3. Major Offensive Howls
+            // Offensive Howls
             {
                 AbilityDescriptor d;
                 d.name = "Night Hunter's Howl";
                 d.rootSpellId = 500124;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 45000;
                 d.baseScore = 260.0f;
                 p.abilities.push_back(d);
             }
@@ -485,14 +603,15 @@ namespace BotAI
                 d.rootSpellId = 804207;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 45000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
 
-            // 4. Primary Execute Strike: Reave
+            // Execute Strike: Reave
             {
                 AbilityDescriptor d;
-                d.name = "Reave (Execute Bleed)";
+                d.name = "Reave";
                 d.rootSpellId = 800490;
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::Execute;
                 d.targetType = TargetType::CurrentTarget;
@@ -500,7 +619,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 5. Claw Attacks
+            // Primary Claw Strikes
             {
                 AbilityDescriptor d;
                 d.name = "Rotclaw";
@@ -529,7 +648,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 6. Blood Shards (Filler / Spender)
+            // Filler / Spender
             {
                 AbilityDescriptor d;
                 d.name = "Blood Shards";
@@ -541,8 +660,28 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
-        }
 
+            SpecStrategy s;
+            s.classId = 20;
+            s.specId = 27;
+            s.role = BotRole::Dps;
+            s.strategyName = "Accursed_Dps_Strategy";
+            s.requiredState.formSpellId = 562572; // Accursed Form
+            s.requiredState.formAuraId = 562572;
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->HasAura(562572) && bot->GetHealthPct() >= 70.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD, 1.8f, 50.0f }
+            };
+            s.phaseModifiers[CombatPhase::Execute] = {
+                { AbilityTag::Execute,     2.0f, 60.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
+        }
     }
 }
-

@@ -10,6 +10,7 @@
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
 #include "engine/CombatReservations.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "profiles/ProfileRegistry.h"
 #include "BotClassRotations.h"
 #include "Log.h"
@@ -56,15 +57,9 @@ namespace BotAI
         }
         nextCastAllowedMs = 0;
 
-        // Check ongoing cast
+        // The top-level combat loop owns all preemption decisions before movement.
         if (CastGuard::IsCurrentlyCasting(bot))
-        {
-            BotAction candidate = ActionEvaluator::EvaluateBestAction(ctx, profile->abilities);
-            if (candidate.IsValid() && CastGuard::ShouldInterruptCurrentCast(ctx, candidate))
-                CastGuard::InterruptCurrentCast(bot);
-            else
-                return CombatResult::Busy; // Let existing cast finish
-        }
+            return CombatResult::Busy;
 
         ObjectGuid botGuid = bot->GetGUID();
         uint32 now = getMSTime();
@@ -111,6 +106,7 @@ namespace BotAI
         }
 
         SpellCastResult result = bot->CastSpell(action.target, action.spellId, false);
+        SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
         if (result == SPELL_CAST_OK)
         {
             if (action.internalThrottleMs > 0 && action.rootSpellId != 0)
@@ -135,5 +131,6 @@ namespace BotAI
     void HealerEngine::ForgetBot(ObjectGuid botGuid)
     {
         s_noActionRetryAt.erase(botGuid);
+        SpecStrategyRegistry::ForgetBot(botGuid);
     }
 }

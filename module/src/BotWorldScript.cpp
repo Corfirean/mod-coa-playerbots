@@ -2,6 +2,7 @@
 #include "BotMgr.h"
 #include "BotTalentBuilds.h"
 #include "BotWorldBehavior.h"
+#include "WorldBrain.h"
 #include "Config.h"
 #include "Creature.h"
 #include "KillRewarder.h"
@@ -9,6 +10,7 @@
 #include "PlayerScript.h"
 #include "ScriptMgr.h"
 #include "WorldScript.h"
+#include "engine/SpecStrategyRegistry.h"
 
 class coa_playerbots_worldscript : public WorldScript
 {
@@ -27,9 +29,12 @@ public:
     void OnStartup() override
     {
         BotTalentBuilds::Initialize();
+        BotAI::SpecStrategyRegistry::Validate();
         sBotMgr->LoadGuildGatherOrders();
         BotAI::LoadGatherLootData();
         BotWorldBehavior::LoadConfig();
+        // Quest knowledge base, objective handlers' config: built once, after the world loaded.
+        WorldBrain::Initialize();
 
         if (sConfigMgr->GetOption<bool>("CoaBots.AutoLoginOnStartup", false))
             sBotMgr->QueueAllBotsForAutoLogin();

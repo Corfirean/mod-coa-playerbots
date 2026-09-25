@@ -1,4 +1,4 @@
-﻿/*
+/*
  * mod-coa-playerbots
  *
  * Data-Driven Combat AI Framework: CastGuard
@@ -15,19 +15,34 @@ class Player;
 namespace BotAI
 {
     struct CombatContext;
-    struct BotAction;
+    enum class CastInterruptReason : uint8
+    {
+        None = 0,
+        LethalGroundHazard,
+        LethalBossMechanic,
+        EmergencyTankSave,
+        HighPriorityInterrupt,
+        CriticalTaunt,
+        ManualOverride
+    };
 
     class CastGuard
     {
     public:
         // Returns true if the bot is currently in the middle of a non-melee spell cast or channel.
-        static bool IsCurrentlyCasting(Player* bot);
+        // Skips auto-repeat (Shoot / Auto Shot) and finished instant spells.
+        static bool IsCurrentlyCasting(Player const* bot);
 
-        // Determines whether an ongoing cast should be cancelled to execute a higher-priority action.
-        static bool ShouldInterruptCurrentCast(CombatContext const& ctx, BotAction const& pendingAction);
+        // Introspection used by diagnostics and timing-aware preemption. Auto-repeat is excluded.
+        static uint32 CurrentSpellId(Player const* bot);
+        static uint32 CurrentSpellRemainingMs(Player const* bot);
 
-        // Immediately cancels current non-melee spell cast.
-        static void InterruptCurrentCast(Player* bot);
+        // Evaluates whether an ongoing cast must be preempted by a critical combat event.
+        // Returns CastInterruptReason::None if the cast should be held/protected.
+        static CastInterruptReason EvaluatePreemption(Player* bot, CombatContext const& ctx);
+
+        // Immediately cancels current non-melee spell cast with diagnostic logging.
+        static void InterruptCurrentCast(Player* bot, CastInterruptReason reason);
     };
 }
 

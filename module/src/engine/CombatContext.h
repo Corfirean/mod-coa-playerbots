@@ -9,6 +9,7 @@
 
 #include "Define.h"
 #include "BotAI.h"
+#include "engine/CombatResource.h"
 
 class Player;
 class Unit;
@@ -31,8 +32,18 @@ namespace BotAI
 
         // Self snapshot
         float botHpPct = 100.0f;
-        float botPowerPct = 100.0f;
+        float botPowerPct = 100.0f;  // native primary power bar only -- see `resources` below for
+                                      // the bot's full multi-channel picture (native + custom
+                                      // Ascension resources); kept as-is for back-compat, nothing
+                                      // in the engine or profiles should treat it as "the" resource.
         bool isCasting = false;
+
+        // Universal resource-management snapshot (native power bars + custom Ascension aura-
+        // stack resources, all of them, built once per tick) -- see engine/CombatResource.h. Not
+        // used for any scoring/strategy decisions yet (that's Phase 3); ActionEvaluator::CanCast
+        // uses it purely as a correctness gate so the AI doesn't select an ability it can't
+        // actually pay for.
+        CombatResourceSnapshot resources;
 
         // Threat & hostile environment
         bool victimIsCastingInterruptible = false;

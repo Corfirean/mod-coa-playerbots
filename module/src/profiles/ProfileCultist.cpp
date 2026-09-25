@@ -1,17 +1,18 @@
 /*
  * mod-coa-playerbots
  *
- * Data-Driven Combat AI Framework: Cultist Profiles implementation
- * Supports:
- *   - Spec 96: Dreadnought (Void Plate Tank)
- *   - Spec 40: Heretic (Dark Mending Healer)
- *   - Spec 41: Corruption (Old God Caster DPS)
- *   - Spec 42: Godblade (Void Melee DPS)
- *   - Spec 0: Default Fallback
+ * Data-Driven Combat AI Framework: Cultist Profiles & Spec Strategies
+ *
+ * Specializations:
+ *   - Spec 96: Dreadnought (Void Plate Heavy Tank)
+ *   - Spec 40: Heretic (Dark Mending Healer / Hybrid)
+ *   - Spec 41: Corruption (Old God Insanity Caster DPS)
+ *   - Spec 42: Godblade (Void Melee Insanity DPS)
  */
 
 #include "profiles/ProfileCultist.h"
 #include "profiles/ProfileRegistry.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
 
@@ -19,17 +20,23 @@ namespace BotAI
 {
     void RegisterCultistProfiles()
     {
-        // -------------------------------------------------------------
-        // Profile 1: Cultist - Spec 96: Dreadnought (VOID TANK)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 1. SPEC 96: DREADNOUGHT (VOID PLATE HEAVY TANK)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Tank
+        // - Baseline State: Void Armor (buff 804633)
+        // - Anti-Spam: Dreadnought & Abyssal Ward throttled to prevent spam bug
+        // - TankReady: Void-Enchanted Armor active + HP >= 75%
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 25; // Cultist
-            p.specId = 96; // Dreadnought
+            p.specId = 96;  // Dreadnought
             p.role = BotRole::Tank;
             p.profileName = "Cultist_Dreadnought_Tank";
 
-            // 1. Primary Taunts
+            // Primary Taunts
             {
                 AbilityDescriptor d;
                 d.name = "Taunt";
@@ -41,15 +48,16 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
-                d.name = "Grasp of Zek'voz (Void Grip)";
+                d.name = "Grasp of Zek'voz";
                 d.rootSpellId = 573028;
                 d.tags = AbilityTag::Taunt;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 440.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Active Mitigation: Dreadnought / Abyssal Ward (< 55% HP)
+            // Active Mitigation (FIXED: Added missingAuraOnCaster & internalThrottleMs to prevent spam)
             {
                 AbilityDescriptor d;
                 d.name = "Dreadnought";
@@ -57,6 +65,8 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 55.0f;
+                d.missingAuraOnCaster = 680750;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 350.0f;
                 p.abilities.push_back(d);
             }
@@ -67,11 +77,13 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 65.0f;
+                d.missingAuraOnCaster = 804670;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 320.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. Self-Sustain: Satiate (< 45% HP)
+            // Self-Sustain
             {
                 AbilityDescriptor d;
                 d.name = "Satiate";
@@ -79,11 +91,12 @@ namespace BotAI
                 d.tags = AbilityTag::DirectHeal;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 45.0f;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 300.0f;
                 p.abilities.push_back(d);
             }
 
-            // 4. Buffs: Void-Enchanted Armor
+            // Buff: Void-Enchanted Armor (Anti-spam throttle)
             {
                 AbilityDescriptor d;
                 d.name = "Void-Enchanted Armor";
@@ -91,11 +104,12 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 804633;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
 
-            // 5. Threat Strikes
+            // Threat Strikes
             {
                 AbilityDescriptor d;
                 d.name = "Blade of the Empire";
@@ -125,11 +139,35 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            SpecStrategy s;
+            s.classId = 25;
+            s.specId = 96;
+            s.role = BotRole::Tank;
+            s.strategyName = "Dreadnought_Tank_Strategy";
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 75.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Emergency] = {
+                { AbilityTag::DefensiveCD, 2.5f, 100.0f },
+                { AbilityTag::Shield,      2.0f,  80.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
-        // -------------------------------------------------------------
-        // Profile 2: Cultist - Spec 40: Heretic (DARK MENDING HEALER)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 2. SPEC 40: HERETIC (DARK MENDING HEALER)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Healer
+        // - Baseline State: Caster
+        // - Resource: Mana + Insanity
+        // - Anti-Spam: Herald of the Depths throttled to 30s
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 25;
@@ -137,19 +175,20 @@ namespace BotAI
             p.role = BotRole::Healer;
             p.profileName = "Cultist_Heretic_Healer";
 
-            // 1. Critical Direct Heal: Abyssal Reconstruction (< 40% HP)
+            // Critical Direct Heal
             {
                 AbilityDescriptor d;
                 d.name = "Abyssal Reconstruction";
                 d.rootSpellId = 800429;
-                d.tags = AbilityTag::DirectHeal | AbilityTag::DefensiveCD;
+                d.tags = AbilityTag::EmergencyHeal | AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 40.0f;
+                d.internalThrottleMs = 4000;
                 d.baseScore = 400.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Protective Shield: Void Shield (< 60% HP)
+            // Protective Shield
             {
                 AbilityDescriptor d;
                 d.name = "Void Shield";
@@ -157,11 +196,12 @@ namespace BotAI
                 d.tags = AbilityTag::Shield;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 60.0f;
+                d.internalThrottleMs = 8000;
                 d.baseScore = 340.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. Sustained Dark Heal: Satiate (< 80% HP)
+            // Sustained Direct Heal
             {
                 AbilityDescriptor d;
                 d.name = "Satiate";
@@ -173,7 +213,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 4. Group Dark Blessing: Herald of the Depths
+            // Dark Blessing
             {
                 AbilityDescriptor d;
                 d.name = "Herald of the Depths";
@@ -181,11 +221,12 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 92131;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
 
-            // 5. Offensive Weaving
+            // Offensive Weaving
             {
                 AbilityDescriptor d;
                 d.name = "Gaze of C'Thun";
@@ -193,6 +234,7 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 160.0f;
                 p.abilities.push_back(d);
             }
@@ -202,16 +244,45 @@ namespace BotAI
                 d.rootSpellId = 800416;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 140.0f;
+                d.baseScore = 130.0f;
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            SpecStrategy s;
+            s.classId = 25;
+            s.specId = 40;
+            s.role = BotRole::Healer;
+            s.strategyName = "Heretic_Healer_Strategy";
+            s.minResourceToEngage = 50.0f;
+            s.recoveryThreshold = 20.0f;
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 50;
+            };
+
+            s.phaseModifiers[CombatPhase::Emergency] = {
+                { AbilityTag::EmergencyHeal, 2.5f, 100.0f },
+                { AbilityTag::DirectHeal,    1.8f,  50.0f }
+            };
+            s.phaseModifiers[CombatPhase::Recovery] = {
+                { AbilityTag::Filler,        0.1f, -50.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
-        // -------------------------------------------------------------
-        // Profile 3: Cultist - Spec 41: Corruption (OLD GOD CASTER DPS)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 3. SPEC 41: CORRUPTION (OLD GOD CASTER DPS)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Dps
+        // - Baseline State: Caster
+        // - Resource: Mana + Insanity
+        // - Tactical Policy: Channel Gaze of C'Thun, AoE Screams, summon heralds
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 25;
@@ -219,7 +290,7 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Cultist_Corruption_Dps";
 
-            // 1. Emergency Defense: Void Shield (< 35% HP)
+            // Emergency Defense
             {
                 AbilityDescriptor d;
                 d.name = "Void Shield";
@@ -227,17 +298,19 @@ namespace BotAI
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.maxSelfHpPct = 35.0f;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 350.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Major Cooldowns: Corrupting Whispers / Vision of Doom
+            // Burst Offensive Cooldowns
             {
                 AbilityDescriptor d;
                 d.name = "Corrupting Whispers";
                 d.rootSpellId = 92130;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 90000;
                 d.baseScore = 280.0f;
                 p.abilities.push_back(d);
             }
@@ -247,17 +320,19 @@ namespace BotAI
                 d.rootSpellId = 520388;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 60000;
                 d.baseScore = 270.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. Heralds
+            // Heralds (Throttled so not spammed)
             {
                 AbilityDescriptor d;
                 d.name = "Herald of Yogg-Saron";
                 d.rootSpellId = 805120;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -267,18 +342,20 @@ namespace BotAI
                 d.rootSpellId = 805119;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
                 d.baseScore = 240.0f;
                 p.abilities.push_back(d);
             }
 
-            // 4. DoTs & Channels
+            // DoTs & Channels
             {
                 AbilityDescriptor d;
-                d.name = "Gaze of C'Thun (Void Channel)";
+                d.name = "Gaze of C'Thun";
                 d.rootSpellId = 500110;
-                d.tags = AbilityTag::RangedAttack;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 240.0f;
                 p.abilities.push_back(d);
             }
@@ -288,11 +365,12 @@ namespace BotAI
                 d.rootSpellId = 525049;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 3;
                 d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
 
-            // 5. Filler: Horrorbolt
+            // Filler
             {
                 AbilityDescriptor d;
                 d.name = "Horrorbolt";
@@ -304,11 +382,40 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            SpecStrategy s;
+            s.classId = 25;
+            s.specId = 41;
+            s.role = BotRole::Dps;
+            s.strategyName = "Corruption_Dps_Strategy";
+            s.minResourceToEngage = 40.0f;
+            s.recoveryThreshold = 15.0f;
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 40;
+            };
+
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD,  1.8f, 50.0f },
+                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage,    2.0f, 60.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
-        // -------------------------------------------------------------
-        // Profile 4: Cultist - Spec 42: Godblade (VOID MELEE DPS)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 4. SPEC 42: GODBLADE (VOID MELEE DPS)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Dps
+        // - Baseline State: Melee
+        // - Resource: Insanity
+        // - Gap Closer: Grasp of Zek'voz
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 25;
@@ -316,7 +423,7 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Cultist_Godblade_Dps";
 
-            // 1. Buff: Shroud of Pride
+            // Buff
             {
                 AbilityDescriptor d;
                 d.name = "Shroud of Pride";
@@ -324,22 +431,24 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 805126;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Major Cooldown: Obliteration
+            // Burst Cooldown
             {
                 AbilityDescriptor d;
                 d.name = "Obliteration";
                 d.rootSpellId = 92129;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
+                d.internalThrottleMs = 90000;
                 d.baseScore = 280.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. Gap Closer / Grip: Grasp of Zek'voz (> 8 yards)
+            // Gap Closer: Grasp of Zek'voz
             {
                 AbilityDescriptor d;
                 d.name = "Grasp of Zek'voz";
@@ -356,7 +465,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 4. Melee Strikes
+            // Melee Strikes
             {
                 AbilityDescriptor d;
                 d.name = "Blade of the Empire";
@@ -385,7 +494,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 5. Spender / Channel: Gaze of C'Thun
+            // Spender
             {
                 AbilityDescriptor d;
                 d.name = "Gaze of C'Thun";
@@ -393,13 +502,40 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 180.0f;
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
-        }
 
+            SpecStrategy s;
+            s.classId = 25;
+            s.specId = 42;
+            s.role = BotRole::Dps;
+            s.strategyName = "Godblade_Dps_Strategy";
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 70.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD, 1.8f, 50.0f }
+            };
+            s.phaseModifiers[CombatPhase::Execute] = {
+                { AbilityTag::MeleeAttack, 1.4f, 40.0f }
+            };
+
+            // ResourcePolicy for Insanity (500706)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 500706 };
+                pol.overcapThreshold = 85;
+                s.resourcePolicies.push_back(pol);
+            }
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
+        }
     }
 }
-

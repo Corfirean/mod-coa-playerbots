@@ -15,10 +15,13 @@
 #include "Player.h"
 #include "SharedDefines.h"
 #include "Spell.h"
+#include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Timer.h"
 #include "Unit.h"
+#include "engine/SpellResolver.h"
+#include "profiles/ProfileRegistry.h"
 #include <algorithm>
 #include <vector>
 
@@ -356,7 +359,52 @@ namespace BotAI
     uint32 SelectSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableOffensiveSpell); }
     uint32 SelectTauntSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableTauntSpell); }
     uint32 SelectHealSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, true, IsUsableHealSpell); }
-    uint32 SelectBuffSpell(Player* bot) { return SelectKnownSpell(bot, bot, true, IsUsableBuffSpell); }
+    uint32 SelectBuffSpell(Player* bot)
+    {
+        CombatProfile const* profile = nullptr;
+        uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Support);
+        if (!profile)
+            profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Dps);
+        if (!profile)
+            profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Healer);
+        if (!profile)
+            profile = ProfileRegistry::FindProfile(bot->getClass(), activeSpec, BotRole::Tank);
+
+        for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+        {
+            if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                continue;
+
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+            if (!IsUsableBuffSpell(spellInfo))
+                continue;
+
+            // Never select cooldowns tagged as DefensiveCD or OffensiveCD for routine buff maintenance
+            if (profile)
+            {
+                bool isCooldown = false;
+                for (auto const& desc : profile->abilities)
+                {
+                    uint32 resolved = SpellResolver::ResolveSpell(bot, desc.rootSpellId);
+                    if (desc.rootSpellId == spellId || (resolved && resolved == spellId))
+                    {
+                        if (HasTag(desc.tags, AbilityTag::DefensiveCD) || HasTag(desc.tags, AbilityTag::OffensiveCD))
+                        {
+                            isCooldown = true;
+                            break;
+                        }
+                    }
+                }
+                if (isCooldown)
+                    continue;
+            }
+
+            if (IsKnownSpellCastable(bot, spellId, bot, true))
+                return spellId;
+        }
+        return 0;
+    }
     uint32 SelectInterruptSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableInterruptSpell); }
     uint32 SelectAoeSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableAoeSpell); }
     uint32 SelectSingleTargetSpell(Player* bot, Unit* target) { return SelectKnownSpell(bot, target, false, IsUsableSingleTargetOffensiveSpell); }
@@ -406,5 +454,126 @@ namespace BotAI
         HostileEnemyCheck check(bot, center, range);
         Acore::UnitListSearcher<HostileEnemyCheck> searcher(center, out, check);
         Cell::VisitObjects(center, searcher, range);
+    }
+
+    // -----------------------------------------------------------------------
+    // FindCasterAuraForDescriptor (Round 3.2.2)
+    //
+    // Returns the first active Aura on `bot` that can be attributed to the
+    // ability described by `desc` + `resolvedSpellId`.  Resolution order is
+    // documented in SpellPredicates.h.  Every explicit aura-ID check also
+    // tries the rank-chain variant so that a profile entry that says
+    // casterAuraId=804018 (root rank) correctly matches a live 503322 aura
+    // (resolved rank for a high-level bot).
+    //
+    // Helper lambda: try `id`, then the resolved rank of `id`.
+    Aura const* FindCasterAuraForDescriptor(Player* bot, AbilityDescriptor const& desc, uint32 resolvedSpellId)
+    {
+        if (!bot)
+            return nullptr;
+
+        auto tryId = [&](uint32 id) -> Aura const*
+        {
+            if (!id)
+                return nullptr;
+            if (Aura const* a = bot->GetAura(id))
+                return a;
+            uint32 ranked = SpellResolver::ResolveSpell(bot, id);
+            if (ranked && ranked != id)
+                if (Aura const* a = bot->GetAura(ranked))
+                    return a;
+            return nullptr;
+        };
+
+        // 1. Explicit casterAuraId
+        if (Aura const* a = tryId(desc.casterAuraId))
+            return a;
+
+        // 2. missingAuraOnCaster
+        if (Aura const* a = tryId(desc.missingAuraOnCaster))
+            return a;
+
+        // 3. targetAuraId when self-targeting
+        if (desc.targetType == TargetType::Self)
+            if (Aura const* a = tryId(desc.targetAuraId))
+                return a;
+
+        // 4. resolvedSpellId directly
+        if (Aura const* a = bot->GetAura(resolvedSpellId))
+            return a;
+
+        // 5. Triggered auras from resolvedSpellId's spell effects
+        if (SpellInfo const* si = resolvedSpellId ? sSpellMgr->GetSpellInfo(resolvedSpellId) : nullptr)
+        {
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                if (uint32 trig = si->Effects[i].TriggerSpell)
+                {
+                    if (Aura const* a = bot->GetAura(trig))
+                        return a;
+                }
+            }
+        }
+
+        // 6. rootSpellId directly
+        if (desc.rootSpellId && desc.rootSpellId != resolvedSpellId)
+            if (Aura const* a = bot->GetAura(desc.rootSpellId))
+                return a;
+
+        return nullptr;
+    }
+
+    // -----------------------------------------------------------------------
+    // ShouldRefreshCasterAura (Round 3.2.2)
+    //
+    // Returns true when the bot SHOULD cast (i.e. the existing aura needs
+    // refreshing).  Returns false when the aura is good and the cast should
+    // be skipped.
+    //
+    // Policy evaluation:
+    //   hasStackPolicy = refreshCasterBelowStacks > 0
+    //   hasTimePolicy  = refreshCasterBelowMs > 0 (or refreshBelowMs if Self)
+    //
+    //   Neither policy → presence-only → NO CAST (return false)
+    //   Permanent aura:
+    //     - If stack policy exists and stacks < threshold → CAST (build stacks)
+    //     - Otherwise                                    → NO CAST
+    //   OR semantics: CAST if needsStackRefresh OR needsTimeRefresh
+    bool ShouldRefreshCasterAura(Aura const* aura, AbilityDescriptor const& desc)
+    {
+        if (!aura)
+            return false;   // caller should cast when aura is absent
+
+        uint8 stackThreshold = desc.refreshCasterBelowStacks;
+        if (stackThreshold == 0 && desc.targetType == TargetType::Self)
+            stackThreshold = desc.refreshBelowStacks;
+
+        uint32 refreshWindow = desc.refreshCasterBelowMs;
+        if (refreshWindow == 0 && desc.targetType == TargetType::Self)
+            refreshWindow = desc.refreshBelowMs;
+
+        bool hasStackPolicy = stackThreshold > 0;
+        bool hasTimePolicy  = refreshWindow > 0;
+
+        // No policy at all: presence-only semantics → don't recast
+        if (!hasStackPolicy && !hasTimePolicy)
+            return false;
+
+        bool permanent = aura->IsPermanent();
+
+        if (permanent)
+        {
+            // Permanent + stackable: only recast if still building stacks
+            if (hasStackPolicy && aura->GetStackAmount() < stackThreshold)
+                return true;
+            // Permanent without a missing-stacks condition: never recast
+            return false;
+        }
+
+        // Non-permanent: OR semantics
+        bool needsStackRefresh = hasStackPolicy && aura->GetStackAmount() < stackThreshold;
+        bool needsTimeRefresh  = hasTimePolicy  && aura->GetDuration() <= static_cast<int32>(refreshWindow);
+
+        return needsStackRefresh || needsTimeRefresh;
     }
 }

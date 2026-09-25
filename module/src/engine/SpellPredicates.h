@@ -16,8 +16,10 @@
 #define COA_PLAYERBOTS_SPELL_PREDICATES_H
 
 #include "Define.h"
+#include "engine/AbilityDescriptor.h"
 #include <vector>
 
+class Aura;
 class Player;
 class Unit;
 class SpellInfo;
@@ -126,6 +128,31 @@ namespace BotAI
     // (Phase 2) to score candidates instead of just counting them. Appends into `out` rather than
     // returning by value so a caller can reuse one vector across a tight scan loop.
     void GetNearbyEnemies(Player const* bot, Unit const* center, float range, std::vector<Unit*>& out);
+
+    // -----------------------------------------------------------------------
+    // Chain-aware caster-aura helpers (Round 3.2.2)
+    //
+    // Resolution order (first Aura* found wins):
+    //   1. desc.casterAuraId (+ resolved rank of that ID via SpellResolver)
+    //   2. desc.missingAuraOnCaster (+ resolved rank)
+    //   3. desc.targetAuraId when targetType == TargetType::Self (+ resolved rank)
+    //   4. resolvedSpellId directly
+    //   5. triggered auras from SpellInfo->Effects[i].TriggerSpell for resolvedSpellId
+    //   6. desc.rootSpellId directly
+    //
+    // Always returns nullptr when none of the above match.
+    Aura const* FindCasterAuraForDescriptor(Player* bot, AbilityDescriptor const& desc, uint32 resolvedSpellId);
+
+    // Returns true when `aura` should be refreshed according to descriptor refresh policies.
+    //
+    //   hasStackPolicy = refreshCasterBelowStacks > 0
+    //   hasTimePolicy  = refreshCasterBelowMs > 0  (or refreshBelowMs > 0 when targetType==Self)
+    //
+    //   - Neither policy → presence-only: NO REFRESH (aura active = skip cast)
+    //   - Permanent + no remaining stacks needed → NO REFRESH
+    //   - Permanent + stackable + stacks < threshold → REFRESH (build missing stacks)
+    //   - Otherwise: OR semantics — refresh if needsStackRefresh OR needsTimeRefresh
+    bool ShouldRefreshCasterAura(Aura const* aura, AbilityDescriptor const& desc);
 }
 
 #endif // COA_PLAYERBOTS_SPELL_PREDICATES_H

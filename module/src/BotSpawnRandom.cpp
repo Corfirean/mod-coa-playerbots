@@ -58,6 +58,10 @@ namespace BotSpawn
 {
 namespace
 {
+// Defined further down in this same (TU-wide) unnamed namespace; forward-declared here so
+// ProcessPendingRandomBotSpawns can hand it to spawnrandom bots too, same as spawnleveled already does.
+void ApplyFreshBotSetup(Player* bot, uint8 level);
+
 // Standard playable WotLK races. 9 (Goblin) is NPC-only; nothing here is Death-Knight-only,
 // so no starting-level special case is needed.
 constexpr std::array<uint8, 10> VALID_RACES = { 1, 2, 3, 4, 5, 6, 7, 8, 10, 11 };
@@ -448,7 +452,12 @@ void ProcessPendingRandomBotSpawns(uint32 diff)
 
         ++g_pendingRandomBotCreated;
         if (autoLogin)
-            sBotMgr->SpawnBot(newGuid, nullptr);
+            // CloneCharacter never copies character_inventory/item_instance (cloning item guids
+            // across characters would be its own can of worms -- see CloneCharacter's comment),
+            // so a cloned bot starts with zero gear regardless of its template's own equipment.
+            // Same fix as spawnleveled: hand it real level-appropriate gear via ApplyFreshBotSetup
+            // instead of leaving it naked. Every spawnrandom bot is level 80 (see CreateBotClone).
+            sBotMgr->SpawnBot(newGuid, nullptr, [](Player* bot) { ApplyFreshBotSetup(bot, 80); });
     }
     g_pendingRandomBotCount -= thisBatch;
 

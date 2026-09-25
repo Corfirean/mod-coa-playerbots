@@ -3,6 +3,7 @@
 #include "BotFormations.h"
 #include "BotLfgFill.h"
 #include "BotMgr.h"
+#include "WorldBrain.h"
 #include "BotSpawnRandom.h"
 #include "Chat.h"
 #include "CommandScript.h"
@@ -41,6 +42,7 @@ public:
             { "guilddepositgold",  HandleBotGuildDepositGoldCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "guildwithdrawgold", HandleBotGuildWithdrawGoldCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "despawn",      HandleBotDespawnCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "purgeall",     HandleBotPurgeAllCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "listauras",    HandleBotListAurasCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "runchat",      HandleBotRunChatCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "hasspells",    HandleBotHasSpellsCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -48,6 +50,10 @@ public:
             { "setrole",      HandleBotSetRoleCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "checkrole",    HandleBotCheckRoleCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "profile",      HandleBotProfileCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "resources",    HandleBotResourcesCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "strategy",     HandleBotStrategyCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "brain",        HandleBotBrainCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "worldstats",   HandleBotWorldStatsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "learnspec",    HandleBotLearnSpecCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "follow",       HandleBotFollowCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "stay",         HandleBotStayCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -318,6 +324,16 @@ public:
         return true;
     }
 
+    // Despawns every online bot and permanently deletes every bot character (see
+    // BotMgr::PurgeAllBots) -- for clearing out an old population (e.g. one spawned before the
+    // spawnrandom gear-up fix) before respawning a fresh one. Does not create replacement bots
+    // itself; follow up with spawnrandom/spawnleveled.
+    static bool HandleBotPurgeAllCommand(ChatHandler* handler)
+    {
+        sBotMgr->PurgeAllBots(handler);
+        return true;
+    }
+
     static bool HandleBotListAurasCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
         sBotMgr->ListAuras(charLowGuid, handler);
@@ -361,6 +377,28 @@ public:
         return true;
     }
 
+    // What the open-world layer is doing with this bot and why: goal, task, quest, objective,
+    // progress, phase, area, crowd, reserved target, movement request, failure memory, route.
+    static bool HandleBotBrainCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        WorldBrain::Describe(bot, handler);
+        return true;
+    }
+
+    // Population-wide counters of the open-world layer (quests, tasks, movement, reservations).
+    static bool HandleBotWorldStatsCommand(ChatHandler* handler)
+    {
+        WorldBrain::DescribeGlobal(handler);
+        return true;
+    }
+
     static bool HandleBotProfileCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
         Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
@@ -371,6 +409,35 @@ public:
             return true;
         }
         BotAI::ReportProfile(bot, handler);
+        return true;
+    }
+
+    static bool HandleBotResourcesCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, Optional<uint32> spellId)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        if (spellId)
+            BotAI::ReportSpellResources(bot, *spellId, handler);
+        else
+            BotAI::ReportResources(bot, handler);
+        return true;
+    }
+
+    static bool HandleBotStrategyCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        BotAI::ReportStrategy(bot, handler);
         return true;
     }
 

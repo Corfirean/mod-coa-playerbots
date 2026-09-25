@@ -1,25 +1,33 @@
 /*
  * mod-coa-playerbots
  *
- * Data-Driven Combat AI Framework: Felsworn Profiles implementation
- * Supports:
+ * Data-Driven Combat AI Framework: Felsworn Profiles & Spec Strategies
+ *
+ * Specializations:
  *   - Spec 8: Slayer (Melee Havoc / Dual-Wield DPS)
  *   - Spec 9: Tyrant (Demon Metamorphosis Tank)
- *   - Spec 7: Infernal (Chaos / Fire Ranged Caster DPS)
- *   - Spec 0: Default Fallback
+ *   - Spec 7: Infernal (Chaos / Fire Caster DPS)
  */
 
 #include "profiles/ProfileFelsworn.h"
 #include "profiles/ProfileRegistry.h"
+#include "engine/SpecStrategyRegistry.h"
 #include "engine/CombatContext.h"
+#include "Player.h"
 
 namespace BotAI
 {
     void RegisterFelswornProfiles()
     {
-        // -------------------------------------------------------------
-        // Profile 1: Felsworn - Spec 8: Slayer (MELEE HAVOC DPS)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 1. SPEC 8: SLAYER (MELEE HAVOC / DUAL-WIELD DPS)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Dps
+        // - Baseline State: Melee
+        // - Resource: Energy + Felfury
+        // - Tactical Policy: The Demon Within is a burst window (not spammed)
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 14;
@@ -27,40 +35,48 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Felsworn_Slayer_Melee";
 
-            // 1. Steroid / Metamorphosis: The Demon Within
+            // Burst Metamorphosis Window
             {
                 AbilityDescriptor d;
-                d.name = "The Demon Within (Burst)";
+                d.name = "The Demon Within";
                 d.rootSpellId = 800222;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
-                d.baseScore = 260.0f;
+                d.internalThrottleMs = 90000;
+                d.baseScore = 280.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Crowd Control: Chaos Nova (AoE Stun)
+            // Crowd Control
             {
                 AbilityDescriptor d;
-                d.name = "Chaos Nova (AoE Stun)";
+                d.name = "Chaos Nova";
                 d.rootSpellId = 802025;
                 d.tags = AbilityTag::CrowdControl | AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 45000;
                 d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. Mobility: Chaos Rush (Fel Rush)
+            // Mobility / Gap Closer: Chaos Rush
             {
                 AbilityDescriptor d;
-                d.name = "Chaos Rush (Fel Rush)";
+                d.name = "Chaos Rush";
                 d.rootSpellId = 500028;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 190.0f;
+                d.baseScore = 210.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    if (!ctx.victim) return -1.0f;
+                    float dist = ctx.bot->GetDistance(ctx.victim);
+                    return (dist >= 8.0f && dist <= 25.0f) ? 80.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
 
-            // 4. Area Fire Pulse: Immolation Aura
+            // Immolation Aura
             {
                 AbilityDescriptor d;
                 d.name = "Immolation Aura";
@@ -68,26 +84,28 @@ namespace BotAI
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800207;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
 
-            // 5. Periodic: Demonfire Pact (DoT)
+            // DoT: Demonfire Pact
             {
                 AbilityDescriptor d;
-                d.name = "Demonfire Pact (DoT)";
+                d.name = "Demonfire Pact";
                 d.rootSpellId = 800031;
                 d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 195.0f;
                 p.abilities.push_back(d);
             }
 
-            // 6. High Damage Spender: Felrend
+            // Spender: Felrend
             {
                 AbilityDescriptor d;
-                d.name = "Felrend (Heavy Strike)";
+                d.name = "Felrend";
                 d.rootSpellId = 800210;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -95,10 +113,10 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 7. Primary Builder: Twin Slice
+            // Builder: Twin Slice
             {
                 AbilityDescriptor d;
-                d.name = "Twin Slice (Builder)";
+                d.name = "Twin Slice";
                 d.rootSpellId = 801901;
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
@@ -106,7 +124,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 8. Self Buff: Illidari Intuition
+            // Buff: Illidari Intuition
             {
                 AbilityDescriptor d;
                 d.name = "Illidari Intuition";
@@ -114,16 +132,53 @@ namespace BotAI
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800212;
+                d.internalThrottleMs = 30000;
                 d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            SpecStrategy s;
+            s.classId = 14;
+            s.specId = 8;
+            s.role = BotRole::Dps;
+            s.strategyName = "Slayer_Melee_Strategy";
+            s.minResourceToEngage = 50.0f;
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetPower(POWER_ENERGY) >= 50;
+            };
+
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD, 1.8f, 50.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage,   1.6f, 40.0f }
+            };
+
+            // ResourcePolicy for Felfury (800058)
+            {
+                ResourcePolicy pol;
+                pol.key = CombatResourceKey{ CombatResourceKind::AuraStack, 0, 800058 };
+                pol.overcapThreshold = 4;
+                s.resourcePolicies.push_back(pol);
+            }
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
-        // -------------------------------------------------------------
-        // Profile 2: Felsworn - Spec 9: Tyrant (DEMON TANK)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 2. SPEC 9: TYRANT (DEMON METAMORPHOSIS TANK)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Tank
+        // - Baseline State: Tank Melee
+        // - Emergency Window: The Demon Within (< 65% HP)
+        // - AoE Threat: Immolation Aura + Infernal Strike
+        // - TankReady: HP >= 75%
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 14;
@@ -131,7 +186,7 @@ namespace BotAI
             p.role = BotRole::Tank;
             p.profileName = "Felsworn_Tyrant_Tank";
 
-            // 1. Taunt: Standard Tank Taunt
+            // Primary Taunt
             {
                 AbilityDescriptor d;
                 d.name = "Taunt";
@@ -142,55 +197,58 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 2. Metamorphosis / Form: The Demon Within (< 70% HP or boss combat)
+            // Metamorphosis Defensive Window
             {
                 AbilityDescriptor d;
-                d.name = "The Demon Within (Demon Form)";
+                d.name = "The Demon Within";
                 d.rootSpellId = 800222;
                 d.tags = AbilityTag::DefensiveCD | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
-                d.baseScore = 280.0f;
+                d.maxSelfHpPct = 65.0f;
+                d.internalThrottleMs = 90000;
+                d.baseScore = 320.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. AoE Control: Chaos Nova (AoE Stun)
+            // AoE Control
             {
                 AbilityDescriptor d;
-                d.name = "Chaos Nova (AoE Stun)";
+                d.name = "Chaos Nova";
                 d.rootSpellId = 802025;
                 d.tags = AbilityTag::CrowdControl | AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 45000;
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
 
-            // 4. AoE Threat: Immolation Aura
+            // AoE Threat
             {
                 AbilityDescriptor d;
-                d.name = "Immolation Aura (AoE Threat)";
+                d.name = "Immolation Aura";
                 d.rootSpellId = 800207;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800207;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 240.0f;
                 p.abilities.push_back(d);
             }
-
-            // 5. AoE Slam / Threat: Infernal Strike
             {
                 AbilityDescriptor d;
-                d.name = "Infernal Strike (AoE Slam)";
+                d.name = "Infernal Strike";
                 d.rootSpellId = 801016;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 10000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
 
-            // 6. High Threat Spender: Felrend
+            // Threat Spender
             {
                 AbilityDescriptor d;
-                d.name = "Felrend (Threat Strike)";
+                d.name = "Felrend";
                 d.rootSpellId = 800210;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -198,7 +256,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 7. Threat / Debuff: Demonfire Pact
+            // DoT Debuff
             {
                 AbilityDescriptor d;
                 d.name = "Demonfire Pact";
@@ -206,11 +264,12 @@ namespace BotAI
                 d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 180.0f;
                 p.abilities.push_back(d);
             }
 
-            // 8. Primary Generator: Twin Slice
+            // Generator
             {
                 AbilityDescriptor d;
                 d.name = "Twin Slice";
@@ -222,11 +281,37 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
+
+            SpecStrategy s;
+            s.classId = 14;
+            s.specId = 9;
+            s.role = BotRole::Tank;
+            s.strategyName = "Tyrant_Tank_Strategy";
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 75.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Emergency] = {
+                { AbilityTag::DefensiveCD, 2.5f, 100.0f }
+            };
+            s.phaseModifiers[CombatPhase::AoE] = {
+                { AbilityTag::AoEDamage,   1.8f,  50.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
         }
 
-        // -------------------------------------------------------------
-        // Profile 3: Felsworn - Spec 7: Infernal (CHAOS / FIRE CASTER DPS)
-        // -------------------------------------------------------------
+        // =========================================================================
+        // 3. SPEC 7: INFERNAL (CHAOS / FIRE CASTER DPS)
+        // =========================================================================
+        // Contract:
+        // - Canonical Role: Dps
+        // - Baseline State: Caster
+        // - Resource: Mana / Felfury
+        // - Nuke: Tormentor (Chaos Bolt), DoT: Demonfire Pact
+        // =========================================================================
         {
             CombatProfile p;
             p.classId = 14;
@@ -234,32 +319,34 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Felsworn_Infernal_Caster";
 
-            // 1. Steroid: The Demon Within
+            // Burst Cooldown
             {
                 AbilityDescriptor d;
                 d.name = "The Demon Within";
                 d.rootSpellId = 800222;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
-                d.baseScore = 250.0f;
+                d.internalThrottleMs = 90000;
+                d.baseScore = 270.0f;
                 p.abilities.push_back(d);
             }
 
-            // 2. Crowd Control: Chaos Nova
+            // CC
             {
                 AbilityDescriptor d;
                 d.name = "Chaos Nova";
                 d.rootSpellId = 802025;
                 d.tags = AbilityTag::CrowdControl | AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 45000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
 
-            // 3. Primary Ranged Nuke: Tormentor
+            // Primary Nuke: Tormentor
             {
                 AbilityDescriptor d;
-                d.name = "Tormentor (Chaos Bolt)";
+                d.name = "Tormentor";
                 d.rootSpellId = 800162;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
@@ -267,19 +354,20 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 4. DoT: Demonfire Pact
+            // DoT: Demonfire Pact
             {
                 AbilityDescriptor d;
-                d.name = "Demonfire Pact (DoT)";
+                d.name = "Demonfire Pact";
                 d.rootSpellId = 800031;
                 d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
 
-            // 5. AoE: Immolation Aura
+            // AoE: Immolation Aura
             {
                 AbilityDescriptor d;
                 d.name = "Immolation Aura";
@@ -287,11 +375,12 @@ namespace BotAI
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 800207;
+                d.internalThrottleMs = 15000;
                 d.baseScore = 180.0f;
                 p.abilities.push_back(d);
             }
 
-            // 6. Melee Spender Fallback: Felrend
+            // Melee Fallbacks
             {
                 AbilityDescriptor d;
                 d.name = "Felrend";
@@ -301,8 +390,6 @@ namespace BotAI
                 d.baseScore = 170.0f;
                 p.abilities.push_back(d);
             }
-
-            // 7. Melee Generator Fallback: Twin Slice
             {
                 AbilityDescriptor d;
                 d.name = "Twin Slice";
@@ -314,8 +401,25 @@ namespace BotAI
             }
 
             ProfileRegistry::RegisterProfile(std::move(p));
-        }
 
+            SpecStrategy s;
+            s.classId = 14;
+            s.specId = 7;
+            s.role = BotRole::Dps;
+            s.strategyName = "Infernal_Caster_Strategy";
+            s.minResourceToEngage = 40.0f;
+
+            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            {
+                return bot->GetHealthPct() >= 70.0f;
+            };
+
+            s.phaseModifiers[CombatPhase::Burst] = {
+                { AbilityTag::OffensiveCD,  1.8f, 50.0f },
+                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+            };
+
+            SpecStrategyRegistry::RegisterStrategy(std::move(s));
+        }
     }
 }
-

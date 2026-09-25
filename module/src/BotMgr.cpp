@@ -6,9 +6,12 @@
 #include "AscensionClassServiceBridge.h"
 #include "AscensionCoATalentData.h"
 #include "BotAI.h"
+#include "engine/SpecStrategyRegistry.h"
+#include "engine/ActionEvaluator.h"
 #include "BotSpawnRandom.h"
 #include "BotTalentBuilds.h"
 #include "BotZoneProgression.h"
+#include "WorldBrain.h"
 #include "ClassSpecRoles.h"
 #include "CellImpl.h"
 #include "CharacterCache.h"
@@ -1379,18 +1382,27 @@ std::vector<std::string> BotMgr::GetGuildRosterInfo(Player* commander) const
         };
 
         std::string task = "idle";
+        uint32 taskItemEntry = 0; // 0 == idle, no tooltip -- see docs/addon-protocol.md's ROSTER row
         if (auto craftItr = _craftOrders.find(bot->GetGUID()); craftItr != _craftOrders.end())
-            task = "crafting " + std::to_string(craftItr->second.remainingCount) + "x " + itemName(craftItr->second.itemEntry);
+        {
+            taskItemEntry = craftItr->second.itemEntry;
+            task = "crafting " + std::to_string(craftItr->second.remainingCount) + "x " + itemName(taskItemEntry);
+        }
         else if (auto gatherItr = _guildGatherOrders.find(bot->GetGUID()); gatherItr != _guildGatherOrders.end())
         {
+            taskItemEntry = gatherItr->second.itemEntry;
             uint32 target = gatherItr->second.targetCount ? gatherItr->second.targetCount : 1;
             uint32 gathered = gatherItr->second.gatheredCount;
             uint32 percent = std::min<uint32>(100, (gathered * 100) / target);
-            task = "gathering " + itemName(gatherItr->second.itemEntry) + " (" + std::to_string(gathered) + "/" + std::to_string(target) + " - " + std::to_string(percent) + "%)";
+            task = "gathering " + itemName(taskItemEntry) + " (" + std::to_string(gathered) + "/" + std::to_string(target) + " - " + std::to_string(percent) + "%)";
         }
 
+        // Trailing itemEntry field (added for the task board's item tooltip, see
+        // docs/addon-protocol.md) -- task's item *name* was already resolved server-side above,
+        // but a real GameTooltip needs the id, not just the name, to show icon/stats.
         lines.push_back("ROSTER:" + std::to_string(bot->GetGUID().GetCounter()) + ":" + bot->GetName() + ":" +
-            std::to_string(uint32(bot->getClass())) + ":" + std::to_string(bot->GetLevel()) + ":" + task + ":" + professions);
+            std::to_string(uint32(bot->getClass())) + ":" + std::to_string(bot->GetLevel()) + ":" + task + ":" +
+            professions + ":" + std::to_string(taskItemEntry));
     }
     return lines;
 }
@@ -1722,6 +1734,71 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
         handler->PSendSysMessage("BotMgr: bot '{}' despawned.", name);
 }
 
+void BotMgr::PurgeAllBots(ChatHandler* handler)
+{
+    // Despawn every online bot first -- every session in _botSessions is one of ours (BotMgr
+    // never tracks a real client's session here), and DeleteFromDB below would otherwise be
+    // deleting a character row still logged in.
+    std::vector<ObjectGuid::LowType> onlineGuids;
+    onlineGuids.reserve(_botSessions.size());
+    for (WorldSession* session : _botSessions)
+        if (Player* bot = session->GetPlayer())
+            onlineGuids.push_back(bot->GetGUID().GetCounter());
+    for (ObjectGuid::LowType guid : onlineGuids)
+        DespawnBot(guid, nullptr);
+
+    // Same account lookup QueueAllBotsForAutoLogin already uses to find every bot-hosting
+    // account, so this catches bots that were never logged in this session too, not just the
+    // ones just despawned above.
+    std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE username LIKE '{}%'", accountPrefix);
+    if (!accounts)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no bot-hosting accounts found, nothing to purge.");
+        return;
+    }
+
+    std::vector<uint32> accountIds;
+    std::ostringstream accountIdList;
+    do
+    {
+        uint32 accountId = (*accounts)[0].Get<uint32>();
+        accountIds.push_back(accountId);
+        accountIdList << accountId << ",";
+    } while (accounts->NextRow());
+    std::string idList = accountIdList.str();
+    idList.pop_back();
+
+    QueryResult chars = CharacterDatabase.Query(
+        "SELECT guid, account FROM characters WHERE account IN ({})", idList);
+    if (!chars)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no bot characters found, nothing to purge.");
+        return;
+    }
+
+    uint32 deleted = 0;
+    do
+    {
+        Field* fields = chars->Fetch();
+        ObjectGuid::LowType guid = fields[0].Get<uint32>();
+        uint32 accountId = fields[1].Get<uint32>();
+        // deleteFinally=true: a hard delete, not the recycle-bin soft delete a real player's
+        // ".character erase" leaves behind -- there's no reason to keep a purged bot's row
+        // around, and leaving it would just block CharacterCreate from reusing its name.
+        Player::DeleteFromDB(guid, accountId, true, true);
+        ++deleted;
+    } while (chars->NextRow());
+
+    LOG_INFO("module.coa-playerbots", "BotMgr: purged {} bot character(s) across {} bot-hosting account(s).",
+        deleted, accountIds.size());
+    if (handler)
+        handler->PSendSysMessage("BotMgr: purged {} bot character(s). Use .botcmd spawnrandom or "
+            ".botcmd spawnleveled to create a fresh population.", deleted);
+}
+
 void BotMgr::ListAuras(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
 {
     Player* target = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(charLowGuid));
@@ -2040,6 +2117,9 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
     BotRole autoRole = BotAI::GetRoleForClassSpec(bot->getClass(), specId);
     char const* roleStr = RoleToString(autoRole);
 
+    BotAI::SpecStrategyRegistry::ForgetBot(bot->GetGUID());
+    BotAI::ActionEvaluator::ClearThrottles(bot->GetGUID());
+
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' spent {} talent(s) ({} skipped, budget or other limit) for specialization {} '{}' (detected role: {}).",
             bot->GetName(), learned, skipped, specId, specName ? specName : "unknown", roleStr);
@@ -2263,6 +2343,188 @@ BotGroupFormation BotMgr::GetGroupFormation(ObjectGuid leaderGuid) const
     return BotGroupFormation::RoleBased;
 }
 
+void BotMgr::TeleportBotsToPlayer(Player* commander, ChatHandler* handler)
+{
+    if (!commander)
+        return;
+
+    if (commander->IsInCombat())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: cannot teleport bots to you while you are in combat.");
+        return;
+    }
+
+    Group* group = commander->GetGroup();
+    if (!group)
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: you are not in a group.");
+        return;
+    }
+
+    constexpr float ALREADY_HERE_DIST = 5.0f;
+    uint32 teleported = 0;
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || member == commander)
+            continue;
+        if (!FindBotPlayer(member->GetGUID().GetCounter()))
+            continue;
+
+        if (member->IsInCombat())
+            continue;
+
+        if (member->GetMap() == commander->GetMap() && member->GetDistance(commander) < ALREADY_HERE_DIST)
+            continue;
+
+        member->TeleportTo(commander->GetWorldLocation());
+        _pendingTeleportAck.push_back(member->GetSession());
+        ++teleported;
+    }
+
+    LOG_INFO("module.coa-playerbots", "BotMgr::TeleportBotsToPlayer: '{}' brought {} bot(s) to their location.",
+        commander->GetName(), teleported);
+
+    if (handler)
+    {
+        if (teleported)
+            handler->PSendSysMessage("BotMgr: teleporting {} bot(s) to you.", teleported);
+        else
+            handler->SendSysMessage("BotMgr: no bots needed to be teleported.");
+    }
+}
+
+namespace
+{
+struct GearProbeItem
+{
+    uint32 subclass;
+    uint32 itemId;
+};
+
+constexpr GearProbeItem ARMOR_PROBES[4] = {
+    { ITEM_SUBCLASS_ARMOR_CLOTH,   37222 },
+    { ITEM_SUBCLASS_ARMOR_LEATHER, 37165 },
+    { ITEM_SUBCLASS_ARMOR_MAIL,    37144 },
+    { ITEM_SUBCLASS_ARMOR_PLATE,   37395 },
+};
+
+constexpr GearProbeItem WEAPON_PROBES[6] = {
+    { ITEM_SUBCLASS_WEAPON_SWORD, 37179 },
+    { ITEM_SUBCLASS_WEAPON_MACE,  37681 },
+    { ITEM_SUBCLASS_WEAPON_AXE,   37260 },
+    { ITEM_SUBCLASS_WEAPON_FIST,  37631 },
+    { ITEM_SUBCLASS_WEAPON_DAGGER,37181 },
+    { ITEM_SUBCLASS_WEAPON_STAFF, 37190 },
+};
+}
+
+uint32 BotMgr::GetGearPreference(Player* bot, bool weapon) const
+{
+    if (!bot)
+        return 0;
+    char const* key = weapon ? "coa.gear_pref_weapon" : "coa.gear_pref_armor";
+    return bot->GetPlayerSetting(key, 0).value;
+}
+
+void BotMgr::SetGearPreference(Player* bot, bool weapon, uint32 subclass)
+{
+    if (!bot)
+        return;
+    char const* key = weapon ? "coa.gear_pref_weapon" : "coa.gear_pref_armor";
+    bot->UpdatePlayerSetting(key, 0, weapon ? subclass + 1 : subclass);
+}
+
+std::vector<uint32> BotMgr::GetLegalArmorSubclasses(Player* bot) const
+{
+    std::vector<uint32> legal;
+    if (!bot)
+        return legal;
+    for (GearProbeItem const& probe : ARMOR_PROBES)
+    {
+        uint16 dest = uint16(EQUIPMENT_SLOT_CHEST) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
+        if (bot->CanEquipNewItem(NULL_SLOT, dest, probe.itemId, true) == EQUIP_ERR_OK)
+            legal.push_back(probe.subclass);
+    }
+    return legal;
+}
+
+std::vector<uint32> BotMgr::GetLegalWeaponSubclasses(Player* bot) const
+{
+    std::vector<uint32> legal;
+    if (!bot)
+        return legal;
+    for (GearProbeItem const& probe : WEAPON_PROBES)
+    {
+        uint16 dest = uint16(EQUIPMENT_SLOT_MAINHAND) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
+        if (bot->CanEquipNewItem(NULL_SLOT, dest, probe.itemId, true) == EQUIP_ERR_OK)
+            legal.push_back(probe.subclass);
+    }
+    return legal;
+}
+
+bool BotMgr::MatchesGearPreference(Player* bot, uint32 itemEntry) const
+{
+    if (!bot)
+        return true;
+
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemEntry);
+    if (!proto)
+        return true;
+
+    bool isBasicArmor = proto->Class == ITEM_CLASS_ARMOR &&
+        (proto->SubClass == ITEM_SUBCLASS_ARMOR_CLOTH || proto->SubClass == ITEM_SUBCLASS_ARMOR_LEATHER ||
+         proto->SubClass == ITEM_SUBCLASS_ARMOR_MAIL || proto->SubClass == ITEM_SUBCLASS_ARMOR_PLATE);
+    bool isBasicWeapon = proto->Class == ITEM_CLASS_WEAPON &&
+        (proto->SubClass == ITEM_SUBCLASS_WEAPON_SWORD || proto->SubClass == ITEM_SUBCLASS_WEAPON_MACE ||
+         proto->SubClass == ITEM_SUBCLASS_WEAPON_AXE || proto->SubClass == ITEM_SUBCLASS_WEAPON_FIST ||
+         proto->SubClass == ITEM_SUBCLASS_WEAPON_DAGGER || proto->SubClass == ITEM_SUBCLASS_WEAPON_STAFF);
+    if (!isBasicArmor && !isBasicWeapon)
+        return true;
+
+    uint16 dest = 0;
+    if (bot->CanEquipNewItem(NULL_SLOT, dest, itemEntry, true) != EQUIP_ERR_OK)
+        return false;
+
+    if (isBasicArmor)
+    {
+        uint32 pref = GetGearPreference(bot, false);
+        if (pref == 0)
+            return true;
+        return proto->SubClass == pref;
+    }
+
+    uint32 pref = GetGearPreference(bot, true);
+    if (pref == 0)
+        return true;
+    return proto->SubClass + 1 == pref;
+}
+
+std::vector<std::string> BotMgr::GetEquippedGearInfo(Player* bot) const
+{
+    std::vector<std::string> lines;
+    if (!bot)
+        return lines;
+
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+            continue;
+
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+
+        ItemTemplate const* proto = item->GetTemplate();
+        std::string name = proto ? proto->Name1 : ("item " + std::to_string(item->GetEntry()));
+        lines.push_back("GEAR:" + std::to_string(bot->GetGUID().GetCounter()) + ":" + std::to_string(uint32(slot)) +
+            ":" + std::to_string(item->GetEntry()) + ":" + name);
+    }
+    return lines;
+}
+
 void BotMgr::RestoreGroupBotsOnLogin(Player* player)
 {
     if (!player || FindBotPlayer(player->GetGUID().GetCounter()))
@@ -2422,6 +2684,15 @@ void BotMgr::DoRollGreed(WorldSession* session, Roll* roll)
     session->HandleLootRoll(packet);
 }
 
+void BotMgr::DoRollPass(WorldSession* session, Roll* roll)
+{
+    WorldPacket packet;
+    packet << roll->itemGUID;
+    packet << uint32(roll->itemSlot);
+    packet << uint8(ROLL_PASS);
+    session->HandleLootRoll(packet);
+}
+
 void BotMgr::QueueAllBotsForAutoLogin()
 {
     std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
@@ -2483,6 +2754,7 @@ void BotMgr::Update(uint32 diff)
     BotSpawn::ProcessPendingRandomBotSpawns(diff);
     BotSpawn::ProcessPendingLeveledBotSpawns(diff);
     BotZoneProgression::ProcessPendingRelocations(diff);
+    WorldBrain::GlobalUpdate(diff);
 
     // See QueueAllBotsForAutoLogin -- gradual login for every known bot character, throttled the
     // same way SpawnRandomBots/SpawnLeveledBots throttle bulk creation (login itself is much
@@ -2592,8 +2864,11 @@ void BotMgr::Update(uint32 diff)
     for (WorldSession* session : _botSessions)
         TryReturnGhostToCorpseMap(session);
 
-    // Loot rolls: also checked every tick. Policy for now is always Greed — real
-    // need-eligibility (armor type/class fit) is future AI work, not this milestone.
+    // Loot rolls: also checked every tick. Greeds on anything except the 4 basic armor types /
+    // 6 basic melee weapon types this bot's class can't wear or doesn't prefer
+    // (MatchesGearPreference, see docs/addon-protocol.md's GETGEAR/SETGEARPREF verbs) --
+    // everything else (shields/jewelry/ranged weapons/relics/consumables/etc.) still always
+    // Greeds, unchanged from before.
     for (WorldSession* session : _botSessions)
     {
         Player* bot = session->GetPlayer();
@@ -2609,9 +2884,18 @@ void BotMgr::Update(uint32 diff)
             auto voteItr = roll->playerVote.find(bot->GetGUID());
             if (voteItr != roll->playerVote.end() && voteItr->second == NOT_EMITED_YET)
             {
-                LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' rolling Greed on item {} (slot {}).",
-                    bot->GetName(), roll->itemid, roll->itemSlot);
-                DoRollGreed(session, roll);
+                if (MatchesGearPreference(bot, roll->itemid))
+                {
+                    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' rolling Greed on item {} (slot {}).",
+                        bot->GetName(), roll->itemid, roll->itemSlot);
+                    DoRollGreed(session, roll);
+                }
+                else
+                {
+                    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' rolling Pass on item {} (slot {}) -- wrong armor/weapon type for its class/preference.",
+                        bot->GetName(), roll->itemid, roll->itemSlot);
+                    DoRollPass(session, roll);
+                }
             }
         }
     }

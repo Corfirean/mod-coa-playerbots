@@ -16,6 +16,7 @@
 class ChatHandler;
 class Player;
 struct ItemTemplate;
+struct Loot;
 
 // Bot role (Dps/Tank/Healer) that changes which target-selection and spell-selection
 // path BotAI::Update() takes. By default, auto-detected from the bot's active Ascension
@@ -150,6 +151,21 @@ namespace BotAI
     // operator-facing inspection tool and a deliberately small first UI for the human-behavior layer.
     void ReportProfile(Player* bot, ChatHandler* handler);
 
+    // Prints this bot's full resource snapshot (native power bar(s) + every custom Ascension
+    // resource channel its class has) -- see engine/CombatResource.h. Live-testing/verification
+    // tool for the universal resource-management engine, e.g. `.botcmd resources <guid>`.
+    void ReportResources(Player* bot, ChatHandler* handler);
+
+    // Prints the full resource-requirement breakdown for one specific already-resolved spellId
+    // against this bot (need/have/consumption per requirement, whether each conditional
+    // requirement is currently active, and the final CanAfford verdict) -- the per-ability
+    // diagnostic form, e.g. `.botcmd resources <guid> <spellId>`.
+    void ReportSpellResources(Player* bot, uint32 resolvedSpellId, ChatHandler* handler);
+
+    // Prints the PvE strategic combat state for one bot (spec, role, phase, form status,
+    // pull readiness, tank/healer ready flags, and pull blockers), e.g. `.botcmd strategy <guid>`.
+    void ReportStrategy(Player* bot, ChatHandler* handler);
+
     // Per-bot follow angle derived from this bot's position within its own group (stable across
     // ticks, and collision-free for any group up to 8 real members) spread evenly around the
     // leader instead of every bot using the engine's default Unit::GetFollowAngle() (a single
@@ -174,6 +190,10 @@ namespace BotAI
 
     // Enqueues a killed creature into the bot's (and its bot groupmates') pending loot queue.
     void EnqueuePendingLoot(Player* player, ObjectGuid creatureGuid);
+
+    // Takes everything in a loot window the bot has open -- regular items and this bot's
+    // quest-only drops -- through the same autostore handler a client's loot clicks reach.
+    void TakeAllLoot(Player* bot, Loot& loot);
 }
 
 #endif // COA_PLAYERBOTS_BOT_AI_H

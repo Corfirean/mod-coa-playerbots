@@ -1,4 +1,4 @@
-﻿/*
+/*
  * mod-coa-playerbots
  *
  * Data-Driven Combat AI Framework: ProfileRegistry
@@ -9,6 +9,7 @@
 #define COA_PLAYERBOTS_PROFILE_REGISTRY_H
 
 #include "profiles/CombatProfile.h"
+#include <vector>
 
 namespace BotAI
 {
@@ -18,6 +19,7 @@ namespace BotAI
         static void RegisterProfile(CombatProfile profile);
         static CombatProfile const* FindProfile(uint8 classId, uint32 specId, BotRole role);
         static bool HasProfile(uint8 classId, uint32 specId, BotRole role);
+        static std::vector<CombatProfile> const& GetAllProfiles();
         static void Initialize();
     };
 }
