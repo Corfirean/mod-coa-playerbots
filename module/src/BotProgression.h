@@ -8,7 +8,7 @@
  * whatever it was created with.
  *
  * Learning goes through the same paths a player's own clicks do. This realm runs
- * AscensionCompat.AutoProgression = 0, so class abilities are not handed out on level-up; a player
+ * CoA.AutoProgression = 0, so class abilities are not handed out on level-up; a player
  * asks their Book of Ascension ("Restore my available class abilities"), which is the
  * npc_ascension_training_book gossip in mod-ascension-compat. A bot does exactly that: summons the
  * book briefly and selects that gossip option through ScriptMgr. Recipes come from the Book of
@@ -36,7 +36,7 @@ namespace BotProgression
     void GrantCompanions(Player* bot);
 
     // Two ground and two flying mounts for the bot's race and faction. Riding skill itself comes
-    // from mod-ascension-compat (AscensionCompat.MaxRidingFromStart), exactly as for players.
+    // from mod-ascension-compat (CoA.MaxRidingFromStart), exactly as for players.
     void GrantMounts(Player* bot);
 
     // The tools each profession needs in the bags, upgrading the enchanting rod with skill.

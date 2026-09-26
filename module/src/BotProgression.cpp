@@ -21,7 +21,7 @@
 namespace
 {
     // npc_ascension_training_book (mod-ascension-compat): the gossip a player uses to receive the
-    // class abilities their level allows while AscensionCompat.AutoProgression is off.
+    // class abilities their level allows while CoA.AutoProgression is off.
     constexpr uint32 BOOK_OF_ASCENSION_CREATURE = 75115;
     constexpr uint32 BOOK_RESTORE_ABILITIES_ACTION = GOSSIP_ACTION_INFO_DEF + 1;
 
@@ -80,7 +80,7 @@ namespace
     constexpr uint32 FISHING_POLE = 6256;
 
     // The riding spells mod-ascension-compat's InitializeRiding teaches every character when
-    // AscensionCompat.MaxRidingFromStart is on: Apprentice, Journeyman, Expert, Artisan riding and
+    // CoA.MaxRidingFromStart is on: Apprentice, Journeyman, Expert, Artisan riding and
     // Cold Weather Flying.
     constexpr std::array<uint32, 5> RIDING_SPELLS = { 33388, 33391, 34090, 34091, 54197 };
 
@@ -266,8 +266,9 @@ namespace BotProgression
         // socketless sessions before reaching InitializeRiding -- so on this realm every player
         // rides from level 1 while no bot ever had a riding skill at all, and CoA's own mount
         // wrapper refuses to mount anyone below 75 riding. Mirror that rule here, reading the same
-        // option so bots follow the server if it is ever turned off.
-        static bool const maxRidingFromStart = sConfigMgr->GetOption<bool>("AscensionCompat.MaxRidingFromStart", true);
+        // option so bots follow the server if it is ever turned off (CoA.MaxRidingFromStart since the core
+        // renamed its AscensionCompat.* settings to CoA.*).
+        static bool const maxRidingFromStart = sConfigMgr->GetOption<bool>("CoA.MaxRidingFromStart", true);
         if (maxRidingFromStart && bot->GetBaseSkillValue(SKILL_RIDING) < 300)
         {
             for (uint32 spellId : RIDING_SPELLS)
