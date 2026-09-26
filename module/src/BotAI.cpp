@@ -624,7 +624,7 @@ uint32 SelectKnownMountSpell(Player* bot, bool wantFlying = false, std::unordere
 }
 
 // Riding skill and Cold Weather Flying are deliberately not granted here any more: this realm runs
-// AscensionCompat.MaxRidingFromStart, which gives every character -- player or bot -- full riding
+// CoA.MaxRidingFromStart, which gives every character -- player or bot -- full riding
 // from its first login, so a bot rides by exactly the same rule a player does.
 void EnsureBotHasMount(Player* bot)
 {
