@@ -262,13 +262,8 @@ namespace BotProgression
 
     void GrantMounts(Player* bot)
     {
-        // mod-ascension-compat grants full riding in its OnPlayerLogin, but returns early for
-        // socketless sessions before reaching InitializeRiding -- so on this realm every player
-        // rides from level 1 while no bot ever had a riding skill at all, and CoA's own mount
-        // wrapper refuses to mount anyone below 75 riding. Mirror that rule here, reading the same
-        // option so bots follow the server if it is ever turned off (CoA.MaxRidingFromStart since the core
-        // renamed its AscensionCompat.* settings to CoA.*).
-        static bool const maxRidingFromStart = sConfigMgr->GetOption<bool>("CoA.MaxRidingFromStart", true);
+        // Keep provisioning aligned with the core's riding setting, including config reloads.
+        bool const maxRidingFromStart = sConfigMgr->GetOption<bool>("CoA.MaxRidingFromStart", true);
         if (maxRidingFromStart && bot->GetBaseSkillValue(SKILL_RIDING) < 300)
         {
             for (uint32 spellId : RIDING_SPELLS)

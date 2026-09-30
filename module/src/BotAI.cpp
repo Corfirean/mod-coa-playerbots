@@ -623,9 +623,7 @@ uint32 SelectKnownMountSpell(Player* bot, bool wantFlying = false, std::unordere
     return 0;
 }
 
-// Riding skill and Cold Weather Flying are deliberately not granted here any more: this realm runs
-// CoA.MaxRidingFromStart, which gives every character -- player or bot -- full riding
-// from its first login, so a bot rides by exactly the same rule a player does.
+// Provision mounts and riding through the shared progression path.
 void EnsureBotHasMount(Player* bot)
 {
     BotProgression::GrantMounts(bot);

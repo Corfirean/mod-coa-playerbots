@@ -35,8 +35,8 @@ namespace BotProgression
     // Book of Artisans and Book of Ascension companions.
     void GrantCompanions(Player* bot);
 
-    // Two ground and two flying mounts for the bot's race and faction. Riding skill itself comes
-    // from mod-ascension-compat (CoA.MaxRidingFromStart), exactly as for players.
+    // Two ground and two flying mounts for the bot's race and faction. Grant full riding when
+    // CoA.MaxRidingFromStart is enabled; preserve existing skills when it is disabled.
     void GrantMounts(Player* bot);
 
     // The tools each profession needs in the bags, upgrading the enchanting rod with skill.
