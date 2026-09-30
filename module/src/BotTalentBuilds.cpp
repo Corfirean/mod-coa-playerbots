@@ -71,7 +71,6 @@ std::string FindBuildsJsonPath()
         return configPath;
 
     std::vector<std::string> candidates = {
-        "C:/games/source/server/mod-coa-playerbots/reference/ascensionsidekick-level-builds.json",
         "reference/ascensionsidekick-level-builds.json",
         "../reference/ascensionsidekick-level-builds.json",
         "../../reference/ascensionsidekick-level-builds.json",
