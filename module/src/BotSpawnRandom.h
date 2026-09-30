@@ -56,6 +56,18 @@ void ProcessPendingLeveledBotSpawns(uint32 diff);
 // ApplyFreshBotSetup so it can backfill a bot that never went through that path (this project's
 // original hand-made test characters predate it and have zero profession skills).
 void GrantAllProfessions(Player* bot, uint8 level);
+
+// Creates and logs in one bot of an EXACT class (unlike CreateOneRandomBot's random pick) --
+// for a debugging population that needs guaranteed class coverage. Returns 0 (and reports via
+// handler) if that class has no matching-faction template character, rather than silently
+// substituting a different class.
+ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler = nullptr);
+
+// `.botcmd spawnfleet <race> <level>` -- one bot per custom class (ids 12-32, 21 total), same
+// race and level, logged in immediately and synchronously (no gradual-queue throttling; this is
+// a small, deliberate debugging population, not a bulk spawn). Reports which classes (if any)
+// had no matching-faction template instead of silently skipping or substituting them.
+void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler = nullptr);
 }
 
 #endif // COA_PLAYERBOTS_BOT_SPAWN_RANDOM_H

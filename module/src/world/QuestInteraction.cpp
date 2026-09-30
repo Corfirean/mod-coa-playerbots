@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "QuestInteraction.h"
 #include "BotAI.h"
 #include "Creature.h"
@@ -36,7 +37,7 @@ namespace
         if (task.npcSpawnId)
             state.failures.Remember(FailKind::Npc, task.npcSpawnId, NowMs(), cfg.npcFailMs, uint8(reason));
         task.quest.lastFailure = reason;
-        LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' could not deal with quest npc {} (spawn {}): {}.", bot->GetName(),
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' could not deal with quest npc {} (spawn {}): {}.", bot->GetName(),
             task.npcEntry, task.npcSpawnId, FailureReasonName(reason));
         return ExecResult::Failed;
     }
@@ -263,7 +264,7 @@ namespace QuestInteraction
             ++result.turnedIn;
             Count(state.metrics, &WorldMetrics::questsTurnedIn);
             state.questSuspensions.erase(questId);
-            LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' QuestTurnedIn {} ('{}'), reward choice {}.", bot->GetName(), questId,
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' QuestTurnedIn {} ('{}'), reward choice {}.", bot->GetName(), questId,
                 quest->GetTitle(), reward);
         }
 
@@ -288,7 +289,7 @@ namespace QuestInteraction
                 bot->CastSpell(bot, spell, true);
             ++result.accepted;
             Count(state.metrics, &WorldMetrics::questsAccepted);
-            LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' QuestAccepted {} ('{}', level {}).", bot->GetName(), questId,
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' QuestAccepted {} ('{}', level {}).", bot->GetName(), questId,
                 quest->GetTitle(), quest->GetQuestLevel());
         }
 
@@ -305,7 +306,7 @@ namespace QuestInteraction
         WorldPackets::Quest::QuestLogRemoveQuest packet(std::move(data));
         packet.Slot = uint8(slot);
         bot->GetSession()->HandleQuestLogRemoveQuest(packet);
-        LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' abandoned quest {}.", bot->GetName(), questId);
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' abandoned quest {}.", bot->GetName(), questId);
     }
 
     uint32 PhaseBudgetMs(BrainState const& state)

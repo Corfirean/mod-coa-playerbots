@@ -9,6 +9,7 @@
  * code does. Closing it matters: DoLootRelease is what despawns an emptied chest for respawn.
  */
 
+#include "engine/BotDebugLog.h"
 #include "BotAI.h"
 #include "GameObject.h"
 #include "LootMgr.h"
@@ -56,7 +57,7 @@ namespace
             if (spellId)
             {
                 SpellCastResult result = ctx.bot->CastSpell(go, spellId, false);
-                LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' opening object {} with spell {} (result {}).", ctx.bot->GetName(),
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' opening object {} with spell {} (result {}).", ctx.bot->GetName(),
                     go->GetEntry(), spellId, uint32(result));
                 if (result != SPELL_CAST_OK)
                 {

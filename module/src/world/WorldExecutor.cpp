@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "WorldExecutor.h"
 #include "BotAI.h"
 #include "BotWorldBehavior.h"
@@ -115,7 +116,7 @@ namespace WorldExecutor
         BotMovement::Release(bot, MoveOwner::Quest);
         BotMovement::Release(bot, MoveOwner::Travel);
         NoteEvent(state, Acore::StringFormat("taking a flight toward ({:.0f}, {:.0f})", x, y));
-        LOG_DEBUG("module.coa-playerbots.navigation", "Bot '{}' requested a flight toward ({:.0f}, {:.0f}) for task {}.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' requested a flight toward ({:.0f}, {:.0f}) for task {}.",
             bot->GetName(), x, y, state.task.id);
         return true;
     }
@@ -154,7 +155,7 @@ namespace WorldExecutor
             if (task.type == WorldTaskType::QuestObjective && (task.phase == TaskPhase::Approach || task.phase == TaskPhase::Execute))
                 SetPhase(bot, state, TaskPhase::Search, "paused: target released");
         }
-        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' task #{} paused ({}).", bot->GetName(), task.id, why);
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' task #{} paused ({}).", bot->GetName(), task.id, why);
     }
 
     void ResumeTask(Player* bot, BrainState& state)
@@ -163,7 +164,7 @@ namespace WorldExecutor
         if (!task.paused)
             return;
         uint32 length = task.Resume(NowMs());
-        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' task #{} resumed after {}s paused; clocks moved on by as much.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' task #{} resumed after {}s paused; clocks moved on by as much.",
             bot->GetName(), task.id, length / IN_MILLISECONDS);
     }
 

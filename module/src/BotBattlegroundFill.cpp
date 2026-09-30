@@ -31,6 +31,7 @@
  * (BotMgr::FindBotPlayer polled per tick), not attempted synchronously.
  */
 
+#include "engine/BotDebugLog.h"
 #include "BotBattlegroundFill.h"
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
@@ -163,7 +164,7 @@ void PortBotIntoBattleground(Player* bot, BattlegroundQueueTypeId bgQueueTypeId)
             bg->AddToBGFreeSlotQueue();
         bot->RemoveBattlegroundQueueId(bgQueueTypeId);
         bot->SetBattlegroundId(0, BATTLEGROUND_TYPE_NONE, PLAYER_MAX_BATTLEGROUND_QUEUES, false, false, TEAM_NEUTRAL);
-        LOG_ERROR("module.coa-playerbots", "BotBGFill: bot '{}' failed to teleport into bg instance {}.",
+        LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotBGFill: bot '{}' failed to teleport into bg instance {}.",
             bot->GetName(), bg->GetInstanceID());
         return;
     }
@@ -180,7 +181,7 @@ void PortBotIntoBattleground(Player* bot, BattlegroundQueueTypeId bgQueueTypeId)
     // bookkeeping, but never actually landed.
     sBotMgr->QueueTeleportAck(bot->GetSession());
 
-    LOG_INFO("module.coa-playerbots", "BotBGFill: bot '{}' ported into battleground (type {}, instance {}, team {}).",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotBGFill: bot '{}' ported into battleground (type {}, instance {}, team {}).",
         bot->GetName(), uint32(bgTypeId), bg->GetInstanceID(), uint32(teamId));
 }
 
@@ -219,7 +220,7 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
     bot->AddBattlegroundQueueId(bgQueueTypeId);
     sBattlegroundMgr->ScheduleQueueUpdate(0, 0, bgQueueTypeId, bgTypeId, bracketEntry->GetBracketId());
 
-    LOG_INFO("module.coa-playerbots", "BotBGFill: bot '{}' (team {}) queued for bg type {}.",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotBGFill: bot '{}' (team {}) queued for bg type {}.",
         bot->GetName(), uint32(bot->GetTeamId()), uint32(bgTypeId));
 
     queuedBots.push_back({ bot->GetGUID().GetCounter(), bgTypeId, bgQueueTypeId, bracketEntry->GetBracketId() });

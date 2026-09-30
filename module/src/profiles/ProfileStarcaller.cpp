@@ -247,10 +247,18 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
+                // Confirmed live (2026-09-26, `.spellinfo targets 800370`): spell 800370's own
+                // implicit target is TARGET_UNIT_TARGET_ALLY, not the hostile combat target --
+                // CurrentTarget made every attempt fail SPELL_FAILED_BAD_TARGETS against the enemy,
+                // every time (Finding 2 in docs/research/bot-fleet-combat-findings.md). Fixed the
+                // confirmed target-type bug only; the `AoEDamage` tag and this customScorer's
+                // "only when everyone's still above 85% HP" logic both read like a preventive
+                // ward/setup ability rather than a reactive heal, but that's a design read, not a
+                // confirmed bug -- left alone pending an actual look at what this is supposed to do.
                 d.name = "Moonwell Splash";
                 d.rootSpellId = 800370;
                 d.tags = AbilityTag::AoEDamage;
-                d.targetType = TargetType::CurrentTarget;
+                d.targetType = TargetType::Self;
                 d.internalThrottleMs = 6000;
                 d.baseScore = 140.0f;
                 d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
@@ -361,10 +369,12 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
+                // Confirmed live (2026-09-26, `.spellinfo targets 800370`): TARGET_UNIT_TARGET_ALLY
+                // -- see the other "Moonwell Splash" entry above for the full note.
                 d.name = "Moonwell Splash";
                 d.rootSpellId = 800370;
                 d.tags = AbilityTag::AoEDamage;
-                d.targetType = TargetType::CurrentTarget;
+                d.targetType = TargetType::Self;
                 d.internalThrottleMs = 6000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);

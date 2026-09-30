@@ -36,6 +36,11 @@ struct RouteStep
 
 struct BrainState
 {
+    // Set once by StateFor when the state is first created -- lets NoteEvent (the single existing
+    // "what did I just decide, and why" hook already threaded through 7 files/27 call sites across
+    // this whole layer) route into the bot's own debug log without touching any of those call sites.
+    ObjectGuid botGuid;
+
     WorldPersona persona;
     WorldGoal goal = WorldGoal::None;
     WorldTask task;

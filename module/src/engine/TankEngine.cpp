@@ -4,6 +4,7 @@
  * Data-Driven Combat AI Framework: TankEngine implementation
  */
 
+#include "engine/BotDebugLog.h"
 #include "engine/TankEngine.h"
 #include "engine/ActionEvaluator.h"
 #include "engine/CastGuard.h"
@@ -78,14 +79,14 @@ namespace BotAI
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
 
             nextCastAllowedMs = AI_REACTION_GATE_MS;
-            LOG_INFO("module.coa-playerbots", "DataDrivenAI [Tank]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [Tank]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",
                 bot->GetName(), action.name, action.spellId, action.target->GetName(), action.score);
             return CombatResult::Cast;
         }
 
-        BotAI::RecordSpellCastFailure(bot->GetGUID(), action.spellId);
+        BotAI::HandleSpellCastFailure(bot, action.target, action.spellId, result);
         nextCastAllowedMs = RETRY_GATE_MS;
-        LOG_INFO("module.coa-playerbots", "DataDrivenAI [Tank]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [Tank]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
             bot->GetName(), action.name, action.spellId, action.target->GetName(), static_cast<uint32>(result));
         return CombatResult::Busy;
     }

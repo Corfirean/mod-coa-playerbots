@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "BotProgression.h"
 #include "BotAI.h"
 #include "Config.h"
@@ -199,7 +200,7 @@ namespace BotProgression
             bot->GetPositionY(), bot->GetPositionZ(), bot->GetOrientation(), TEMPSUMMON_TIMED_DESPAWN, 5000);
         if (!book)
         {
-            LOG_WARN("module.coa-playerbots", "BotProgression: could not summon a Book of Ascension for '{}'.",
+            LOG_WARN(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotProgression: could not summon a Book of Ascension for '{}'.",
                 bot->GetName());
             return;
         }
@@ -210,7 +211,7 @@ namespace BotProgression
 
         uint32 after = uint32(bot->GetSpellMap().size());
         if (after > before)
-            LOG_INFO("module.coa-playerbots",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                 "BotProgression: '{}' learned {} spell(s) from its Book of Ascension at level {}.",
                 bot->GetName(), after - before, bot->GetLevel());
     }
@@ -248,7 +249,7 @@ namespace BotProgression
         }
 
         if (learned)
-            LOG_INFO("module.coa-playerbots", "BotProgression: '{}' learned {} recipe(s) from its Book of Artisans.",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotProgression: '{}' learned {} recipe(s) from its Book of Artisans.",
                 bot->GetName(), learned);
         return learned;
     }

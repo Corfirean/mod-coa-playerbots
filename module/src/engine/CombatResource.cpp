@@ -4,6 +4,7 @@
  * Data-Driven Combat AI Framework: CombatResource implementation
  */
 
+#include "engine/BotDebugLog.h"
 #include "engine/CombatResource.h"
 #include "Log.h"
 #include "Player.h"
@@ -320,7 +321,7 @@ namespace BotAI
             int32 have = state ? state->current : 0;
             if (have < req.amount)
             {
-                LOG_DEBUG("module.coa-playerbots",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                     "CombatResource: bot '{}' can't afford spell {} -- needs {} of custom resource "
                     "{}, has {}.", bot->GetName(), resolvedSpellId, req.amount, req.key.auraSpellId, have);
                 return false;
@@ -334,7 +335,7 @@ namespace BotAI
             bool hasAura = bot->HasAura(gate.AuraSpellId);
             if (gate.RequireAbsent ? hasAura : !hasAura)
             {
-                LOG_DEBUG("module.coa-playerbots",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                     "CombatResource: bot '{}' can't cast spell {} -- aura gate on {} ({}).",
                     bot->GetName(), resolvedSpellId, gate.AuraSpellId,
                     gate.RequireAbsent ? "must be absent" : "must be present");
@@ -354,7 +355,7 @@ namespace BotAI
                     AscensionCompatData::QueryMinionCapacityState(bot);
                 if (capacity.Maximum < capacity.Current + capacityCost)
                 {
-                    LOG_DEBUG("module.coa-playerbots",
+                    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                         "CombatResource: bot '{}' can't afford spell {} -- needs {} minion "
                         "capacity, has {}/{} used.", bot->GetName(), resolvedSpellId, capacityCost,
                         capacity.Current, capacity.Maximum);

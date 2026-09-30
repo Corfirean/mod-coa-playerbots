@@ -40,6 +40,23 @@ namespace BotAI
         if (spellInfo->IsAutoRepeatRangedSpell())
             return false;
 
+        // Confirmed live (21-bot class-fleet exercise, 2026-09-25/26): every character silently
+        // knows the baseline ranged-weapon spells (75/Shoot-family, 3018 "Shoot", 2764 "Throw", and
+        // several custom Ascension equivalents like 804179 "Darkslayer") regardless of class or
+        // spec, and they pass every check above -- real weapon-damage effects, needs a unit target,
+        // usable in combat. Without this exclusion this generic "any offensive spell in the
+        // spellbook" search hands them to melee specs as a filler exactly as often as any real
+        // ability, and since a ranged-weapon-slot spell requires actual ranged distance (the core
+        // enforces a real minimum -- see docs/research/bot-fleet-combat-findings.md Finding 1), a
+        // melee bot standing at its normal engage distance fails it every single time:
+        // SPELL_FAILED_TOO_CLOSE, forever, on repeat. This was the fleet's single largest source of
+        // stalled combat (spell 3018 alone: 15 of 21 bots, thousands of failed casts). A genuinely
+        // ranged spec never reaches this fallback for its real rotation -- that goes through its own
+        // CombatProfile/useRangedAutoRepeat path entirely separately -- so excluding ranged-weapon
+        // spells here costs it nothing.
+        if (spellInfo->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT))
+            return false;
+
         return spellInfo->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE) ||
             spellInfo->HasEffect(SPELL_EFFECT_WEAPON_DAMAGE) ||
             spellInfo->HasEffect(SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL) ||
@@ -277,6 +294,15 @@ namespace BotAI
 
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
         if (!spellInfo)
+            return false;
+
+        // Confirmed live (21-bot fleet, 2026-09-25/26): a genuinely stunned bot kept getting a
+        // spell selected here anyway, tried to cast it, and failed SPELL_FAILED_STUNNED every
+        // single tick until the stun wore off (Finding 3 in
+        // docs/research/bot-fleet-combat-findings.md) -- wasted attempts, not a real problem with
+        // any specific spell. A stunned unit cannot cast anything (barring a handful of trinket-like
+        // exceptions this AI doesn't have), so just don't offer a candidate at all while stunned.
+        if (bot->HasUnitState(UNIT_STATE_STUNNED))
             return false;
         if (bot->HasSpellCooldown(spellId))
             return false;

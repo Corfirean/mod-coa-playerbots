@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "WorldSocial.h"
 #include "BotMovement.h"
 #include "CellImpl.h"
@@ -123,7 +124,7 @@ namespace
             bot->SetFacingToObject(other);
 
             SpellCastResult result = bot->CastSpell(other, spellId, false);
-            LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' casts resurrection {} on '{}' (result {}).", bot->GetName(), spellId,
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' casts resurrection {} on '{}' (result {}).", bot->GetName(), spellId,
                 other->GetName(), uint32(result));
             if (result != SPELL_CAST_OK)
                 continue;
@@ -191,7 +192,7 @@ namespace
                 Count(state.metrics, &WorldMetrics::assists);
                 NoteEvent(state, Acore::StringFormat("helping {} ({:.0f}% health) against {}", other->GetName(),
                     other->GetHealthPct(), creature->GetName()));
-                LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' helps '{}' ({:.0f}% health) against '{}' (entry {}).",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' helps '{}' ({:.0f}% health) against '{}' (entry {}).",
                     bot->GetName(), other->GetName(), other->GetHealthPct(), creature->GetName(), creature->GetEntry());
                 return true;
             }

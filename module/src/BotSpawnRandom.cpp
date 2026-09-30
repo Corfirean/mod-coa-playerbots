@@ -29,6 +29,8 @@
 #include "AccountMgr.h"
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "BotNameData.h"
+#include "engine/BotDebugLog.h"
 #include "BotProgression.h"
 #include "BotTaxi.h"
 #include "BotTalentBuilds.h"
@@ -78,9 +80,8 @@ uint32 RandomInt(uint32 minInclusive, uint32 maxInclusive)
     return dist(Rng());
 }
 
-// Character names are letters-only; combining small consonant-heavy onset/coda sets with a
-// vowel (or vowel pair) between them gives pronounceable, WoW-plausible results without a
-// real name dataset. Retried by the caller on a DB collision.
+// Syllable-built pronounceable string. No longer used for character names (see GenerateLoreName);
+// still used to make throwaway account passwords.
 std::string GenerateRandomName()
 {
     static constexpr std::array<char const*, 20> ONSETS = {
@@ -112,11 +113,36 @@ std::string GenerateRandomName()
     return name;
 }
 
-std::string GenerateUniqueName()
+// Lore names: "<First> <Last>" drawn from per-race pools (BotNameData.h), so orcs get orcish names
+// and clan names, tauren get tauren family names, and so on. The surname is optional per race: races
+// whose lore has no family names get a single first name. The server accepts a two-word name
+// (ObjectMgr::CheckPlayerName); the pools are letters-only, 3-12 characters per word. A race
+// without a pool (custom races) falls back to the human pool.
+std::string GenerateLoreName(uint8 race, uint8 gender)
+{
+    BotNameData::RacePools const* pools = &BotNameData::kRacePools[0];
+    for (BotNameData::RacePools const& candidate : BotNameData::kRacePools)
+    {
+        if (candidate.race == race)
+        {
+            pools = &candidate;
+            break;
+        }
+    }
+    BotNameData::NamePool const& firsts = gender == GENDER_FEMALE ? pools->female : pools->male;
+    BotNameData::NamePool const& lasts = pools->surname;
+    std::string name = firsts.names[RandomInt(0, firsts.count - 1)];
+    // Races with no family names in canon (draenei, trolls) have an empty surname pool.
+    if (lasts.count)
+        name += std::string(" ") + lasts.names[RandomInt(0, lasts.count - 1)];
+    return name;
+}
+
+std::string GenerateUniqueName(uint8 race, uint8 gender)
 {
     for (uint32 attempt = 0; attempt < 50; ++attempt)
     {
-        std::string candidate = GenerateRandomName();
+        std::string candidate = GenerateLoreName(race, gender);
         if (!sCharacterCache->GetCharacterGuidByName(candidate))
             return candidate;
     }
@@ -525,7 +551,13 @@ std::vector<std::pair<std::string, std::string>> FreshCharacterOverrides(uint8 l
 
 // level 0 keeps the template's own row untouched (the original .botcmd spawnrandom / BG-fill
 // behaviour: a level-80 copy); any other level creates a fresh character of that level.
-ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level)
+// forcedClassId == 0 (the default) keeps the original random-pick behavior. A non-zero value
+// requests that exact class instead of a random one from availableClasses -- and, unlike the
+// random pick, fails loudly (returns 0, PSendSysMessage naming the class) rather than silently
+// substituting a different class when no matching-faction template exists for it. Callers that
+// need every class covered (SpawnClassFleet) need to know which ones are missing, not have gaps
+// papered over.
+ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId = 0)
 {
     std::unordered_map<uint8, ClassTemplates> templateRoster = BuildClassTemplateRoster();
     if (templateRoster.empty())
@@ -566,18 +598,33 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
         return 0;
     }
 
+    uint8 classId;
+    if (forcedClassId)
+    {
+        if (std::find(availableClasses.begin(), availableClasses.end(), forcedClassId) == availableClasses.end())
+        {
+            if (handler)
+                handler->PSendSysMessage(
+                    "BotMgr: class {} has no level 80+ template character of race {}'s faction "
+                    "(not on account 1) -- skipped, not substituted.", uint32(forcedClassId), uint32(race));
+            return 0;
+        }
+        classId = forcedClassId;
+    }
+    else
+        classId = availableClasses[RandomInt(0, availableClasses.size() - 1)];
+
     std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
     uint32 charactersPerAccount = sWorld->getIntConfig(CONFIG_CHARACTERS_PER_ACCOUNT);
     uint32 accountId = FindOrCreateBotAccount(accountPrefix, charactersPerAccount, handler);
     if (!accountId)
         return 0;
 
-    uint8 classId = availableClasses[RandomInt(0, availableClasses.size() - 1)];
     ClassTemplates const& templates = templateRoster[classId];
     uint32 templateGuid = templates.byTeam[wantedTeam].guid ? templates.byTeam[wantedTeam].guid
         : templates.byTeam[1 - wantedTeam].guid;
     uint8 gender = uint8(RandomInt(0, 1));
-    std::string name = GenerateUniqueName();
+    std::string name = GenerateUniqueName(race, gender);
 
     std::vector<std::pair<std::string, std::string>> overrides;
     if (level)
@@ -608,6 +655,56 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
 ObjectGuid::LowType CreateOneRandomBot(uint8 race, ChatHandler* handler)
 {
     return CreateBotClone(race, handler, 0);
+}
+
+ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler)
+{
+    return CreateBotClone(race, handler, level, classId);
+}
+
+void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
+{
+    // The 21 custom Ascension classes, ids 12-32 -- same range BuildClassTemplateRoster's own
+    // query uses (line ~165). Synchronous, not queued: this is 21 bots for a controlled debugging
+    // population, not a several-hundred-bot batch, so none of SpawnRandomBots/SpawnLeveledBots'
+    // gradual-throttle machinery (built after a synchronous 1000-bot burst crashed the worldserver
+    // outright) is needed here.
+    // Fresh registry every run -- a re-spawn after `.botcmd purgeall` must not keep logging a
+    // deleted bot's old GUID under a slot number a brand new bot is about to reuse.
+    BotAI::BotDebugLog::Clear();
+
+    uint32 created = 0;
+    std::vector<uint8> failedClasses;
+    for (uint8 classId = 12; classId <= 32; ++classId)
+    {
+        ObjectGuid::LowType newGuid = CreateClassBot(classId, race, level, handler);
+        if (!newGuid)
+        {
+            failedClasses.push_back(classId);
+            continue;
+        }
+
+        uint8 slot = classId - 12 + 1;
+        BotAI::BotDebugLog::Register(ObjectGuid::Create<HighGuid::Player>(newGuid), slot);
+
+        ++created;
+        sBotMgr->SpawnBot(newGuid, handler, [level](Player* bot) { ApplyFreshBotSetup(bot, level); });
+    }
+
+    if (handler)
+    {
+        handler->PSendSysMessage("BotMgr: spawnfleet created {} of 21 class bots (race {}, level {}).",
+            created, uint32(race), uint32(level));
+        if (!failedClasses.empty())
+        {
+            std::string missing;
+            for (uint8 classId : failedClasses)
+                missing += (missing.empty() ? "" : ", ") + std::to_string(uint32(classId));
+            handler->PSendSysMessage("BotMgr: spawnfleet -- no matching-faction template for class id(s): {}.", missing);
+        }
+    }
+    LOG_INFO("module.coa-playerbots", "BotMgr: spawnfleet created {} of 21 class bots (race {}, level {}, {} missing).",
+        created, race, level, failedClasses.size());
 }
 
 namespace
@@ -989,7 +1086,7 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
     // Relocate fresh bot to a level-appropriate zone hub instead of leaving it at the cloned template's coordinates
     BotZoneProgression::RelocateBot(bot, true /*force initial relocation*/);
 
-    LOG_INFO("module.coa-playerbots", "BotMgr: applied fresh-bot setup (level {}, spec {}, {} spells) to '{}'.",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: applied fresh-bot setup (level {}, spec {}, {} spells) to '{}'.",
         level, bot->GetPlayerSetting("core.ascension_active_spec", 0).value, bot->GetSpellMap().size(),
         bot->GetName());
 }

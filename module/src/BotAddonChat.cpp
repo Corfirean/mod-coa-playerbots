@@ -11,6 +11,7 @@
  * or core change needed.
  */
 
+#include "engine/BotDebugLog.h"
 #include "BotAI.h"
 #include "BotFormations.h"
 #include "BotMgr.h"
@@ -276,13 +277,13 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     Player* bot = ResolveAuthorizedBot(commander, botGuidLow);
     if (!bot)
     {
-        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' sent COABOT verb '{}' for guid {} but it failed authorization "
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAddonChat: '{}' sent COABOT verb '{}' for guid {} but it failed authorization "
             "(not a tracked bot session, or not grouped with the sender) -- dropped.",
             commander->GetName(), verb, botGuidLow);
         return;
     }
 
-    LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> bot '{}' verb '{}'{}{}.",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAddonChat: '{}' -> bot '{}' verb '{}'{}{}.",
         commander->GetName(), bot->GetName(), verb,
         parts.size() >= 3 ? " arg='" : "", parts.size() >= 3 ? parts[2] + "'" : "");
 
@@ -350,7 +351,7 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
 
         if (parts[3] == "auto")
         {
-            sBotMgr->SetGearPreference(bot, weapon, 0);
+            sBotMgr->SetGearPreference(bot, weapon, 0, true);
             return;
         }
 
@@ -360,13 +361,13 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
             : GearSubclassByName(ARMOR_TYPES, (sizeof(ARMOR_TYPES) / sizeof(ARMOR_TYPES[0])), parts[3], subclass);
         if (!found)
         {
-            LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' sent SETGEARPREF with unrecognized {} type '{}' -- dropped.",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAddonChat: '{}' sent SETGEARPREF with unrecognized {} type '{}' -- dropped.",
                 commander->GetName(), weapon ? "weapon" : "armor", parts[3]);
             return;
         }
 
         sBotMgr->SetGearPreference(bot, weapon, subclass);
-        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> SETGEARPREF bot '{}' {} = {}.",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAddonChat: '{}' -> SETGEARPREF bot '{}' {} = {}.",
             commander->GetName(), bot->GetName(), weapon ? "weapon" : "armor", parts[3]);
     }
     else if (verb == "GETGEAR")

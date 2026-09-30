@@ -4,6 +4,7 @@
  * Data-Driven Combat AI Framework: DpsEngine implementation
  */
 
+#include "engine/BotDebugLog.h"
 #include "engine/DpsEngine.h"
 #include "engine/ActionEvaluator.h"
 #include "engine/CastGuard.h"
@@ -97,7 +98,7 @@ namespace BotAI
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
 
             nextCastAllowedMs = AI_REACTION_GATE_MS;
-            LOG_INFO("module.coa-playerbots", "DataDrivenAI [DPS]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [DPS]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",
                 bot->GetName(), action.name, action.spellId, action.target->GetName(), action.score);
             return CombatResult::Cast;
         }
@@ -107,9 +108,9 @@ namespace BotAI
         // successful one). The tick still counts as handled (Busy, not NoAction/Cast): the
         // profile did find a valid candidate, it just failed for a transient reason (range/LoS/
         // interrupted) -- falling through to the legacy chain would likely hit the same wall.
-        BotAI::RecordSpellCastFailure(bot->GetGUID(), action.spellId);
+        BotAI::HandleSpellCastFailure(bot, action.target, action.spellId, result);
         nextCastAllowedMs = RETRY_GATE_MS;
-        LOG_INFO("module.coa-playerbots", "DataDrivenAI [DPS]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [DPS]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
             bot->GetName(), action.name, action.spellId, action.target->GetName(), static_cast<uint32>(result));
         return CombatResult::Busy;
     }

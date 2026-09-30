@@ -211,7 +211,16 @@ namespace BotAI
         }
 
         // 1. Check if bot has baseline form active
-        bool hasBaseline = bot->HasAura(baselineAura);
+        // Resolve through SpellResolver first: the form spell can be rank-gated (e.g. "Gift of
+        // Zeal" Rank 1 at low level, Rank 2 at higher level -- see Templar spec 2's 706634/300916
+        // chain), and casting it applies whichever rank SpellResolver actually chose for the bot's
+        // level, not necessarily baselineAura itself. Checking the hardcoded root id here would
+        // then never match once the bot outlevels rank 1, so it would keep re-issuing this exact
+        // recovery action forever (confirmed live on a Templar bot stuck re-casting a form spell
+        // every ~1-2s while unable to fight back). Resolving mirrors the id the recovery action
+        // below actually casts (see SpellResolver::ResolveSpell(bot, formSpellId) a few lines down).
+        uint32 resolvedBaselineAura = SpellResolver::ResolveSpell(bot, baselineAura);
+        bool hasBaseline = bot->HasAura(resolvedBaselineAura ? resolvedBaselineAura : baselineAura);
         if (hasBaseline)
         {
             runtime.lastBaselineStateMs = now;
@@ -643,7 +652,7 @@ namespace BotAI
 
             // Check if drinking / resting
             if (member->HasAuraWithMechanic(1 << MECHANIC_BANDAGE) ||
-                member->HasAura(430) || member->HasAura(433) || member->HasAura(10258) || member->HasAura(22734) ||
+                member->HasAura(430) || member->HasAura(431) || member->HasAura(433) || member->HasAura(10258) || member->HasAura(22734) ||
                 member->HasAura(27089) || member->HasAura(34291) || member->HasAura(43180) || member->HasAura(43183))
             {
                 info.result = PullReadinessResult::GroupMemberResting;

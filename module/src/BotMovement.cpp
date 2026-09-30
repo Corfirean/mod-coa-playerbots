@@ -6,6 +6,7 @@
 #include "GameTime.h"
 #include "Log.h"
 #include "MotionMaster.h"
+#include "PathGenerator.h"
 #include "Player.h"
 #include "StringFormat.h"
 #include <cmath>
@@ -26,6 +27,26 @@ namespace
     std::unordered_map<ObjectGuid, IssuedPoint> _issued;
     std::unordered_map<ObjectGuid, MovementRequest> _requests;
     MovementStats _stats;
+
+    // Confirmed live (2026-09-27): without this, a bot whose caller keeps re-requesting the same
+    // genuinely unreachable point every tick (quest/grind travel has no repath backoff of its
+    // own -- only Navigate()'s leg ladder does) turned the NOPATH pre-check below into a tight
+    // busy loop: a full PathGenerator::CalculatePath (a real navmesh query, not cheap) plus a log
+    // line, hundreds of times a second, indefinitely, for as long as the destination stayed
+    // unreachable. Caching "this owner already confirmed NOPATH to about here, recently" and
+    // skipping straight to the same false return is the fix -- same outcome, none of the repeated
+    // work. A real repath attempt (new leg, new target, or just time passing) still gets a fresh
+    // check once the cooldown lapses, so a spawn that becomes reachable later isn't stuck forever.
+    struct NopathCacheEntry
+    {
+        MoveOwner owner = MoveOwner::None;
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        uint32 expiresAtMs = 0;
+    };
+    std::unordered_map<ObjectGuid, NopathCacheEntry> _nopathCache;
+    constexpr uint32 NOPATH_RECHECK_COOLDOWN_MS = 5000;
 
     // A request asked for the same point when it is within this of what is already running.
     constexpr float SAME_POINT_YARDS = 1.0f;
@@ -121,7 +142,12 @@ namespace
             _issued.erase(bot->GetGUID());
         }
 
-        if (!BotMovement::MoveTo(bot, req.owner, tx, ty, tz))
+        // forceDestination=false: a leg is an intermediate hop, not the final goal -- if the real
+        // navmesh path doesn't quite reach (tx,ty,tz), stop at wherever it actually gets to instead
+        // of force-shortcutting a straight line through a wall/floor. The repath/detour ladder in
+        // Navigate() above continues from the bot's real position on the next tick either way, so
+        // this loses nothing when the leg genuinely completes and only helps when it doesn't.
+        if (!BotMovement::MoveTo(bot, req.owner, tx, ty, tz, /*forceDestination=*/false))
             return false;
         ++req.legs;
         req.legX = tx;
@@ -157,7 +183,7 @@ namespace BotMovement
         return current == MoveOwner::None || current == owner || Priority(current) <= Priority(owner);
     }
 
-    bool MoveTo(Player* bot, MoveOwner owner, float x, float y, float z)
+    bool MoveTo(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination)
     {
         if (!bot || bot->IsNonMeleeSpellCast(false))
             return false;
@@ -182,6 +208,37 @@ namespace BotMovement
             }
         }
 
+        // Confirmed live and fatal (2026-09-27): when the real navmesh has NO path at all between
+        // the bot and (x,y,z) -- not merely an imperfect/partial one -- PointMovementGenerator's own
+        // fallback builds a straight-line spline through walls/floors regardless of forceDestination
+        // (documented as a known residual limitation when Phase 1 shipped; live testing then hit it
+        // hard: a tank clipped through a wall to pull an entire unrelated room, wiping the group).
+        // Pre-checking the path ourselves and refusing to move at all on a genuine PATHFIND_NOPATH
+        // closes this for every caller of MoveTo, not just Navigate's leg-issuing one -- a bot must
+        // never walk through geometry, full stop, regardless of what it was trying to reach.
+        {
+            uint32 now = NowMs();
+            auto cached = _nopathCache.find(bot->GetGUID());
+            if (cached != _nopathCache.end() && cached->second.owner == owner && now < cached->second.expiresAtMs &&
+                std::fabs(cached->second.x - x) <= SAME_POINT_YARDS &&
+                std::fabs(cached->second.y - y) <= SAME_POINT_YARDS &&
+                std::fabs(cached->second.z - groundZ) <= SAME_POINT_YARDS * 3.0f)
+            {
+                return false;
+            }
+
+            PathGenerator path(bot);
+            path.CalculatePath(x, y, groundZ, false);
+            if (path.GetPathType() & PATHFIND_NOPATH)
+            {
+                LOG_DEBUG("module.coa-playerbots.navigation",
+                    "MoveTo: bot '{}' has NO real path to ({:.1f}, {:.1f}, {:.1f}) -- refusing to move through geometry.",
+                    bot->GetName(), x, y, groundZ);
+                _nopathCache[bot->GetGUID()] = NopathCacheEntry{ owner, x, y, groundZ, now + NOPATH_RECHECK_COOLDOWN_MS };
+                return false;
+            }
+        }
+
         // Redirecting an existing point movement needs the old generator gone first, same as
         // before. The CanClaim check above is what makes this safe now: at this point the slot is
         // either unowned, stale, ours, or held by someone we outrank.
@@ -190,7 +247,8 @@ namespace BotMovement
 
         _claims[bot->GetGUID()] = owner;
         _issued[bot->GetGUID()] = IssuedPoint{ owner, x, y, groundZ };
-        bot->GetMotionMaster()->MovePoint(uint32(owner), x, y, groundZ);
+        bot->GetMotionMaster()->MovePoint(uint32(owner), x, y, groundZ, FORCED_MOVEMENT_NONE, 0.f, 0.0f,
+            /*generatePath=*/true, forceDestination);
         ++_stats.issued;
         return true;
     }

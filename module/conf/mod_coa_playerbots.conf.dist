@@ -62,6 +62,15 @@ CoaBots.BGFill.TargetPlayersPerTeam = 0
 # scope -- see BotLfgFill.cpp's header comment.
 CoaBots.LfgFill.Enable = 1
 
+# When enabled, an idle Tank-role bot with no group occasionally self-queues for a random
+# level-appropriate dungeon via the real Dungeon Finder (LFGMgr) -- CoaBots.LfgFill.Enable's
+# existing fill logic then rounds out Healer + 3x Damage automatically, same as it does for a
+# real player's solo queue. New and unproven: heavily logged under "AutoQueueDungeon:" (entry
+# check, legitimate-clear check via the same real encounter-completion tracking AutoDungeon mode
+# itself uses, exit, and auto-disband once every member is confirmed to be a bot) so behaviour
+# can be audited from Server.log before trusting it unattended. Off by default.
+CoaBots.AutoQueueDungeon.Enable = 0
+
 # Path to the community talent-build data (see reference/ascensionsidekick-level-builds.json in
 # the module's own repo, sourced from ascensionsidekick.com) that bots use to spend real talent
 # points as they level. Leave blank to use the built-in search (checks this path relative to the

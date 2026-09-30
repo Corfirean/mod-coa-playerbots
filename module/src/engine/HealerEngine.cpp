@@ -4,6 +4,7 @@
  * Data-Driven Combat AI Framework: HealerEngine implementation
  */
 
+#include "engine/BotDebugLog.h"
 #include "engine/HealerEngine.h"
 #include "engine/ActionEvaluator.h"
 #include "engine/CastGuard.h"
@@ -101,7 +102,7 @@ namespace BotAI
             uint32 expectedHeal = uint32(action.target->GetMaxHealth() * healFraction);
             uint32 castTimeMs = spellInfo->CalcCastTime(bot);
             CombatReservations::ReserveHeal(bot->GetGUID(), action.target->GetGUID(), action.spellId, expectedHeal, castTimeMs);
-            LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' reserved ~{} heal on '{}' (spell {}, cast {}ms).",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' reserved ~{} heal on '{}' (spell {}, cast {}ms).",
                 bot->GetName(), expectedHeal, action.target->GetName(), action.spellId, castTimeMs);
         }
 
@@ -113,7 +114,7 @@ namespace BotAI
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
 
             nextCastAllowedMs = AI_REACTION_GATE_MS;
-            LOG_INFO("module.coa-playerbots", "DataDrivenAI [Healer]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [Healer]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",
                 bot->GetName(), action.name, action.spellId, action.target->GetName(), action.score);
             return CombatResult::Cast;
         }
@@ -121,9 +122,9 @@ namespace BotAI
         // Didn't actually go out -- no real heal is coming, so don't hold the reservation.
         if (isHealingAction)
             CombatReservations::ClearHealReservation(bot->GetGUID());
-        BotAI::RecordSpellCastFailure(bot->GetGUID(), action.spellId);
+        BotAI::HandleSpellCastFailure(bot, action.target, action.spellId, result);
         nextCastAllowedMs = RETRY_GATE_MS;
-        LOG_INFO("module.coa-playerbots", "DataDrivenAI [Healer]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [Healer]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
             bot->GetName(), action.name, action.spellId, action.target->GetName(), static_cast<uint32>(result));
         return CombatResult::Busy;
     }

@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "BotWorldBehavior.h"
 #include "BotAI.h"
 #include "BotMovement.h"
@@ -209,7 +210,7 @@ namespace
     {
         if (!_config.verbose)
             return;
-        LOG_INFO("module.coa-playerbots.world", "Bot '{}' {}", bot->GetName(),
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' {}", bot->GetName(),
             Acore::StringFormat(fmt, std::forward<Args>(args)...));
     }
 

@@ -8,6 +8,7 @@
  * handler only has to pick an unused object, walk up to it, click, and read the counter.
  */
 
+#include "engine/BotDebugLog.h"
 #include "GameObject.h"
 #include "ObjectTargetHandler.h"
 #include "ObjectiveHandlerList.h"
@@ -51,7 +52,7 @@ namespace
 
             ++ctx.task.quest.attempts;
             ctx.task.waitUntilMs = ctx.now + RollRange(ctx.state, 0x05e0, 500, 1300);
-            LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' used object {} for quest {}.", ctx.bot->GetName(), go->GetEntry(),
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' used object {} for quest {}.", ctx.bot->GetName(), go->GetEntry(),
                 ctx.task.quest.questId);
             SetPhase(ctx.bot, ctx.state, TaskPhase::Loot, "clicked the object");
             return ObjectiveResult::Running;

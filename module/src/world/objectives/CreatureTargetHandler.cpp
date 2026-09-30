@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "CreatureTargetHandler.h"
 #include "BotAI.h"
 #include "Creature.h"
@@ -60,7 +61,7 @@ void CreatureTargetHandler::StartApproach(ObjectiveContext& ctx, Creature* targe
     ctx.task.quest.targetGuid = target->GetGUID();
     ctx.task.quest.progressMark = ObjectiveCommon::TaskProgress(ctx.bot, ctx.task);
     ctx.task.wandering = false;
-    LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' TargetSelected '{}' ({}) for quest {} objective {} at {:.0f} yd.",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' TargetSelected '{}' ({}) for quest {} objective {} at {:.0f} yd.",
         ctx.bot->GetName(), target->GetName(), target->GetGUID().ToString(), ctx.task.quest.questId,
         uint32(ctx.task.quest.objectiveIndex), ctx.bot->GetDistance(target));
     SetPhase(ctx.bot, ctx.state, TaskPhase::Approach, "target reserved");
@@ -359,7 +360,7 @@ namespace ItemUse
         else
             return CastOutcome::Refused;
 
-        LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' used quest item {} (spell {}) on '{}' (result {}).", bot->GetName(),
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' used quest item {} (spell {}) on '{}' (result {}).", bot->GetName(),
             ctx.def.castItemId, spell->Id, target->GetName(), uint32(result));
 
         switch (result)

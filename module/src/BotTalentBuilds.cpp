@@ -5,6 +5,7 @@
  * Sourced from reference/ascensionsidekick-level-builds.json.
  */
 
+#include "engine/BotDebugLog.h"
 #include "BotTalentBuilds.h"
 #include "AscensionClassServiceBridge.h"
 #include "AscensionCoATalentData.h"
@@ -220,7 +221,7 @@ void ApplyBuildForLevel(Player* bot, uint8 toLevel)
     }
 
     if (pointsSkipped)
-        LOG_DEBUG("module.coa-playerbots", "BotTalentBuilds: bot '{}' skipped {} of {} build pick(s) for spec {} at level {} (budget or other limit).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotTalentBuilds: bot '{}' skipped {} of {} build pick(s) for spec {} at level {} (budget or other limit).",
             bot->GetName(), pointsSkipped, pointsSpent + pointsSkipped, specId, toLevel);
 
     // Unrelated to the Ascension AE/TE point system above -- keeps the stock WotLK talent
@@ -285,7 +286,7 @@ uint32 ChooseSpecForBot(Player* bot)
         // spec'd bot even though the PlayerSetting itself looked correct.
         if (!AscensionClassServiceBridge::SwitchSpecialization(bot, chosenSpec))
         {
-            LOG_ERROR("module.coa-playerbots", "BotTalentBuilds: SwitchSpecialization rejected spec {} for bot '{}' (class {}).",
+            LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotTalentBuilds: SwitchSpecialization rejected spec {} for bot '{}' (class {}).",
                 chosenSpec, bot->GetName(), uint32(classId));
             return 0;
         }
@@ -293,7 +294,7 @@ uint32 ChooseSpecForBot(Player* bot)
         BotRole role = BotAI::GetRoleForClassSpec(classId, chosenSpec);
         BotAI::SetRole(bot->GetGUID(), role);
 
-        LOG_INFO("module.coa-playerbots", "BotTalentBuilds: assigned spec {} ('{}') to bot '{}' (class {}, role {}).",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotTalentBuilds: assigned spec {} ('{}') to bot '{}' (class {}, role {}).",
             chosenSpec, BotAI::GetSpecName(classId, chosenSpec) ? BotAI::GetSpecName(classId, chosenSpec) : "unknown",
             bot->GetName(), uint32(classId), uint32(role));
     }

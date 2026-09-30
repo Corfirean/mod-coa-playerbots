@@ -63,6 +63,13 @@ public:
     // count == 0 means deposit all matching items. Returns deposited count.
     uint32 GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler);
 
+    // Banks every Trade Goods item (ore, herbs, cloth, leather, meat/fish -- anything
+    // GatherableCatalog would offer) currently sitting in a guilded bot's bags. No-op if the bot
+    // isn't in a guild. Raw materials are worth more in the guild bank than sold to a vendor for a
+    // few coppers or left clogging bag space -- called before handing out a new guild task (see
+    // GuildGather) so a bot starts each task with its bags already as empty as they can be.
+    void DepositLooseResourcesToGuildBank(Player* bot);
+
     // Withdraws items of itemEntry from guild bank into bot's inventory. Returns withdrawn count.
     uint32 GuildWithdrawItem(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler);
 
@@ -107,6 +114,13 @@ public:
         bool hasTargetLocation = false;
     };
     GuildGatherOrder const* GetGuildGatherOrder(ObjectGuid const& guid) const;
+
+    // Re-resolves and re-teleports an in-progress guild gather order to a fresh location for the
+    // same item, called from BotAI.cpp's UpdateSoloWorld when a targeted node search has come up
+    // empty nearby for too long (GUILD_GATHER_RETELEPORT_MS) -- the original spot's node was
+    // already consumed (respawn pending) or claimed by someone else first. No-op if the bot has no
+    // such order, no active session, or the item has no resolvable gather location at all.
+    void RetryGuildGatherLocation(ObjectGuid const& guid);
     void LoadGuildGatherOrders();
     void SaveGuildGatherOrder(ObjectGuid const& guid, GuildGatherOrder const& order);
     void DeleteGuildGatherOrder(ObjectGuid const& guid);
@@ -120,7 +134,7 @@ public:
 
     // Addon catalog queries (see docs/addon-protocol.md's GETGATHERCATALOG/GETRECIPECATALOG
     // verbs) -- both return pre-chunked "GCAT:category:entry,name|entry,name|..." /
-    // "RCAT:entry,name|..." reply bodies (several per call, chat-length-safe, same chunking
+    // "RCAT:profession:entry,name|..." reply bodies (several per call, chat-length-safe, same chunking
     // reasoning as GetGuildRosterInfo) so the addon can build icon-menu pickers instead of
     // making the player type a raw item id. GetGatherCatalog is guild-agnostic (any online bot
     // can gather any of these once granted every profession, see GrantAllProfessions) and its
@@ -288,7 +302,7 @@ public:
     // ITEM_SUBCLASS_WEAPON_AXE is itself 0 and would otherwise collide with an "unset" sentinel;
     // 0 means "auto/any". See docs/addon-protocol.md's GETGEAR/SETGEARPREF verbs.
     uint32 GetGearPreference(Player* bot, bool weapon) const;
-    void SetGearPreference(Player* bot, bool weapon, uint32 subclass);
+    void SetGearPreference(Player* bot, bool weapon, uint32 subclass, bool automatic = false);
 
     // Whether `itemEntry` (an armor or weapon item) is one this bot should Greed-roll on / treat
     // as a valid upgrade candidate, given its real equip proficiency (CanEquipNewItem) and its
@@ -308,7 +322,7 @@ public:
     std::vector<uint32> GetLegalArmorSubclasses(Player* bot) const;
     std::vector<uint32> GetLegalWeaponSubclasses(Player* bot) const;
 
-    // One "GEAR:botGuidLow:slot:itemEntry:itemName" line per currently-equipped item (skips empty
+    // One "GEAR:botGuidLow:slot:itemEntry:itemName:itemLevel" line per currently-equipped item (skips empty
     // slots and the cosmetic-only shirt/tabard slots, which have no "type" concept relevant to
     // gear preference) -- the addon-facing gear inspector. See docs/addon-protocol.md's GETGEAR
     // verb.

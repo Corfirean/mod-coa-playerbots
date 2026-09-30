@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "ObjectTargetHandler.h"
 #include "GameObject.h"
 #include "ObjectAccessor.h"
@@ -51,7 +52,7 @@ void ObjectTargetHandler::StartApproach(ObjectiveContext& ctx, GameObject* go)
     ctx.task.quest.targetGuid = go->GetGUID();
     ctx.task.quest.progressMark = ObjectiveCommon::TaskProgress(ctx.bot, ctx.task);
     ctx.task.wandering = false;
-    LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' TargetSelected object {} ({}) for quest {} objective {} at {:.0f} yd.",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' TargetSelected object {} ({}) for quest {} objective {} at {:.0f} yd.",
         ctx.bot->GetName(), go->GetEntry(), go->GetGUID().ToString(), ctx.task.quest.questId,
         uint32(ctx.task.quest.objectiveIndex), ctx.bot->GetDistance(go));
     SetPhase(ctx.bot, ctx.state, TaskPhase::Approach, "object reserved");
