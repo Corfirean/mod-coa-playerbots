@@ -1224,6 +1224,18 @@ void SpawnLeveledBots(uint32 requestedCount, ChatHandler* handler)
     g_pendingLeveledBotRequested += count;
 }
 
+uint32 CancelPendingSpawns()
+{
+    uint32 cancelled = g_pendingRandomBotCount + g_pendingLeveledBotCount;
+    g_pendingRandomBotCount = 0;
+    g_pendingRandomBotRequested = 0;
+    g_pendingRandomBotCreated = 0;
+    g_pendingLeveledBotCount = 0;
+    g_pendingLeveledBotRequested = 0;
+    g_pendingLeveledBotCreated = 0;
+    return cancelled;
+}
+
 void ProcessPendingLeveledBotSpawns(uint32 diff)
 {
     if (!g_pendingLeveledBotCount)

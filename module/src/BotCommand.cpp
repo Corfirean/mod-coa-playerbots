@@ -43,6 +43,8 @@ public:
             { "guilddepositgold",  HandleBotGuildDepositGoldCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "guildwithdrawgold", HandleBotGuildWithdrawGoldCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "despawn",      HandleBotDespawnCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "despawnall",   HandleBotDespawnAllCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "spawncancel",  HandleBotSpawnCancelCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "purgeall",     HandleBotPurgeAllCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "listauras",    HandleBotListAurasCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "runchat",      HandleBotRunChatCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -325,6 +327,22 @@ public:
     static bool HandleBotGuildWithdrawGoldCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, uint32 copper)
     {
         sBotMgr->GuildWithdrawMoney(charLowGuid, copper, handler);
+        return true;
+    }
+
+    // Logs every online bot out; nothing is deleted (see BotMgr::DespawnAllBots).
+    static bool HandleBotDespawnAllCommand(ChatHandler* handler)
+    {
+        uint32 n = sBotMgr->DespawnAllBots();
+        handler->PSendSysMessage("BotMgr: {} bot(s) logged out; no bot character was deleted.", n);
+        return true;
+    }
+
+    // Stops queued spawns; bots that already exist are left alone (see BotSpawn::CancelPendingSpawns).
+    static bool HandleBotSpawnCancelCommand(ChatHandler* handler)
+    {
+        uint32 n = BotSpawn::CancelPendingSpawns();
+        handler->PSendSysMessage("BotMgr: cancelled {} queued bot spawn(s).", n);
         return true;
     }
 

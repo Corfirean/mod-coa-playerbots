@@ -179,6 +179,10 @@ public:
     // itself.
     void PurgeAllBots(ChatHandler* handler);
 
+    // Logs every online bot out and forgets the queued automatic logins, WITHOUT deleting anything: the bot characters
+    // stay in the database and come back with the next auto-login or spawnbot. Returns how many were logged out.
+    uint32 DespawnAllBots();
+
     // Diagnostic-only, not bot-specific: dumps every current aura (spell id,
     // name, whether it carries SPELL_AURA_PREVENT_REGENERATE_POWER) on any
     // online player found by low guid -- bot or real client. Added to chase

@@ -1910,6 +1910,19 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
         handler->PSendSysMessage("BotMgr: bot '{}' despawned.", name);
 }
 
+uint32 BotMgr::DespawnAllBots()
+{
+    _pendingAutoLoginQueue.clear();
+    std::vector<ObjectGuid::LowType> onlineGuids;
+    onlineGuids.reserve(_botSessions.size());
+    for (WorldSession* session : _botSessions)
+        if (Player* bot = session->GetPlayer())
+            onlineGuids.push_back(bot->GetGUID().GetCounter());
+    for (ObjectGuid::LowType guid : onlineGuids)
+        DespawnBot(guid, nullptr);
+    return uint32(onlineGuids.size());
+}
+
 void BotMgr::PurgeAllBots(ChatHandler* handler)
 {
     // Despawn every online bot first -- every session in _botSessions is one of ours (BotMgr
