@@ -105,7 +105,16 @@ namespace BotMovement
     //
     // Idempotent: when `owner` is already walking the bot to (within a yard of) this point, this
     // returns true and leaves the running spline alone.
-    bool MoveTo(Player* bot, MoveOwner owner, float x, float y, float z);
+    //
+    // `forceDestination` is threaded straight into MotionMaster::MovePoint/PathGenerator::
+    // CalculatePath. True (the default, matching every existing caller's behavior) force-appends
+    // a straight-line shortcut to (x,y,z) whenever the real navmesh path doesn't quite reach it --
+    // through a wall/floor if that's what's in the way. False stops at the real reachable end of
+    // whatever path was found instead, letting a caller with its own recovery loop (Navigate's
+    // repath/detour ladder) continue from there rather than clipping. Only Navigate's own leg-
+    // issuing call passes false today; every direct caller (grind chase, quest travel,
+    // BotAvoidance's retreat points, BotFlee's retreat) keeps today's forced behavior unchanged.
+    bool MoveTo(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination = true);
 
     // Goal-directed travel with progress tracking. Call every tick while the bot should be going
     // somewhere; it only touches the MotionMaster when a new leg is actually needed (first call,

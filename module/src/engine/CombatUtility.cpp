@@ -4,6 +4,7 @@
  * Data-Driven Combat AI Framework: CombatUtility implementation
  */
 
+#include "engine/BotDebugLog.h"
 #include "engine/CombatUtility.h"
 #include "engine/CastGuard.h"
 #include "engine/CombatContext.h"
@@ -69,12 +70,12 @@ namespace BotAI
             if (result == SPELL_CAST_OK)
             {
                 nextCastAllowedMs = UTILITY_REACTION_GATE_MS;
-                LOG_INFO("module.coa-playerbots", "CombatAI: bot '{}' {} (spell {}) on '{}'.",
+                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' {} (spell {}) on '{}'.",
                     bot->GetName(), verb, spellId, target->GetName());
                 return true;
             }
 
-            BotAI::RecordSpellCastFailure(bot->GetGUID(), spellId);
+            BotAI::HandleSpellCastFailure(bot, target, spellId, result);
             nextCastAllowedMs = UTILITY_RETRY_GATE_MS;
             return false;
         }

@@ -1,4 +1,5 @@
 #include "WorldBrain.h"
+#include "engine/BotDebugLog.h"
 #include "BotMovement.h"
 #include "BotZoneProgression.h"
 #include "BotWorldPoi.h"
@@ -106,6 +107,7 @@ namespace
         state.persona = persona;
         if (fresh)
         {
+            state.botGuid = bot->GetGUID();
             WorldBrainConfig const& cfg = WorldBrainSettings::Get();
             state.seed = persona.seed ^ Mix(bot->GetGUID().GetCounter() * 2654435761U);
             state.mountThreshold = cfg.mountDistanceMin + RollFloat(state, 0x40a7) * (cfg.mountDistanceMax - cfg.mountDistanceMin);
@@ -149,7 +151,7 @@ namespace
         state.failures.Forget(FailKind::Quest, questId);
         state.failures.Remember(FailKind::Quest, questId, now, ms, uint8(reason));
         Count(state.metrics, &WorldMetrics::questsSuspended);
-        LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' sets quest {} aside for {}s ({}, {} in a row).", bot->GetName(), questId,
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' sets quest {} aside for {}s ({}, {} in a row).", bot->GetName(), questId,
             ms / IN_MILLISECONDS, FailureReasonName(reason), suspensions);
         NoteEvent(state, Acore::StringFormat("set quest {} aside for {}s ({}, {} in a row)", questId, ms / IN_MILLISECONDS,
             FailureReasonName(reason), suspensions));
@@ -195,7 +197,7 @@ namespace
             if (!state.failures.Has(FailKind::DeadEnd, questId, now))
             {
                 state.failures.Remember(FailKind::DeadEnd, questId, now, DEAD_END_MEMORY_MS, uint8(FailureReason::Unsupported));
-                LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' leaves quest {} alone: {}.", bot->GetName(), questId, why);
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' leaves quest {} alone: {}.", bot->GetName(), questId, why);
                 NoteEvent(state, Acore::StringFormat("quest {} is a dead end ({})", questId, why));
             }
 
@@ -213,7 +215,7 @@ namespace
             state.failures.Remember(FailKind::Quest, victim, now, ABANDONED_QUEST_MEMORY_MS, uint8(FailureReason::Unsupported));
             state.questSuspensions.erase(victim);
             Count(state.metrics, &WorldMetrics::questsAbandoned);
-            LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' abandons dead-end quest {} to make room ({} quests in the log).",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' abandons dead-end quest {} to make room ({} quests in the log).",
                 bot->GetName(), victim, inLog);
             NoteEvent(state, Acore::StringFormat("abandoned dead-end quest {} to make room in the log", victim));
         }
@@ -235,7 +237,7 @@ namespace
             if (task.type == WorldTaskType::QuestObjective)
                 state.questSuspensions.erase(task.quest.questId);
             Count(state.metrics, &WorldMetrics::tasksCompleted);
-            LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' TaskCompleted {} #{} (quest {}) after {}s.", bot->GetName(),
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' TaskCompleted {} #{} (quest {}) after {}s.", bot->GetName(),
                 WorldTaskTypeName(task.type), task.id, task.quest.questId, (now - task.startedMs) / IN_MILLISECONDS);
             NoteEvent(state, Acore::StringFormat("completed {} (quest {})", WorldTaskTypeName(task.type), task.quest.questId));
             // A beat before the next decision -- nobody turns on their heel the instant a mob dies.
@@ -246,7 +248,7 @@ namespace
         {
             Count(state.metrics, &WorldMetrics::tasksFailed);
             FailureReason reason = task.quest.lastFailure;
-            LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' TaskFailed {} #{} (quest {}, phase {}): {}.", bot->GetName(),
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' TaskFailed {} #{} (quest {}, phase {}): {}.", bot->GetName(),
                 WorldTaskTypeName(task.type), task.id, task.quest.questId, TaskPhaseName(task.phase), FailureReasonName(reason));
             NoteEvent(state, Acore::StringFormat("gave up on {} (quest {}): {}", WorldTaskTypeName(task.type), task.quest.questId,
                 FailureReasonName(reason)));
@@ -296,7 +298,7 @@ namespace
         if (!state.task.IsValid())
             return;
         state.task.quest.lastFailure = reason;
-        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' Replan: dropping {} #{} ({}).", bot->GetName(),
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' Replan: dropping {} #{} ({}).", bot->GetName(),
             WorldTaskTypeName(state.task.type), state.task.id, FailureReasonName(reason));
         WorldExecutor::ReleaseTask(bot, state);
         WorldParties::OnLeaderTaskEnded(bot->GetGUID());
@@ -329,7 +331,7 @@ namespace
         Count(state.metrics, &WorldMetrics::tasksStarted);
 
         float dist = std::hypot(bot->GetPositionX() - t.x, bot->GetPositionY() - t.y);
-        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' TaskSelected {} #{} quest {} objective {} utility {:.0f} ({}), "
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' TaskSelected {} #{} quest {} objective {} utility {:.0f} ({}), "
             "area {} at {:.0f} yd, {} bundled.", bot->GetName(), WorldTaskTypeName(t.type), t.id, t.quest.questId,
             uint32(t.quest.objectiveIndex), t.utility, t.why, t.quest.selectedClusterId, dist, t.quest.bundle.size());
         NoteEvent(state, Acore::StringFormat("started {} (quest {}): {}", WorldTaskTypeName(t.type), t.quest.questId, t.why));
@@ -388,7 +390,7 @@ namespace
             case WorldDirective::Grind:  state.goal = WorldGoal::Grinding; break;
             default:                     state.goal = WorldGoal::Exploring; break;
         }
-        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' has no quest work here; activity {} for {}s.", bot->GetName(),
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' has no quest work here; activity {} for {}s.", bot->GetName(),
             WorldDirectiveName(chosen), (state.activityUntilMs - now) / IN_MILLISECONDS);
         return chosen;
     }
@@ -481,7 +483,7 @@ namespace WorldBrainInternal
     {
         if (state.task.phase == phase)
             return;
-        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' PhaseChanged {} -> {} ({}) task #{} quest {}.", bot->GetName(),
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' PhaseChanged {} -> {} ({}) task #{} quest {}.", bot->GetName(),
             TaskPhaseName(state.task.phase), TaskPhaseName(phase), why, state.task.id, state.task.quest.questId);
         state.task.phase = phase;
         // A phase entered while the task is paused (a death on an errand, the pause itself
@@ -492,6 +494,7 @@ namespace WorldBrainInternal
 
     void NoteEvent(BrainState& state, std::string text)
     {
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(state.botGuid), "WorldBrain: {}", text);
         state.lastEvent = std::move(text);
         state.lastEventMs = NowMs();
     }
@@ -786,7 +789,7 @@ namespace WorldBrain
         state.opportunityActive = false;
         extra.opportunityStarted = false;
         extra.suspendedAtMs = NowMs();
-        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' brain suspended ({}), task #{} kept with its clocks stopped.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' brain suspended ({}), task #{} kept with its clocks stopped.",
             bot->GetName(), SuspendReasonName(reason), state.task.id);
         NoteEvent(state, "suspended");
     }

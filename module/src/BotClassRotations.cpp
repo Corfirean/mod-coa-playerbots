@@ -5,6 +5,7 @@
  */
 
 #include "BotClassRotations.h"
+#include "engine/BotDebugLog.h"
 #include "CellImpl.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -1474,6 +1475,116 @@ void RecordSpellCastFailure(ObjectGuid botGuid, uint32 spellId)
     if (!spellId)
         return;
     failureCooldowns[botGuid][spellId] = getMSTime() + FAILURE_COOLDOWN_MS;
+}
+
+namespace
+{
+    // A range/facing failure will never resolve itself by retrying the identical cast from the
+    // identical spot -- confirmed live (21-bot class-fleet debugging exercise, 2026-09-25): with
+    // only the default 2s failure cooldown, a bot whose highest-scored ability needs a min range
+    // it isn't at (SPELL_FAILED_TOO_CLOSE) or a facing it doesn't have (SPELL_FAILED_UNIT_NOT_INFRONT)
+    // just reselects the same doomed spell every ~2s forever -- one bot logged over 1100 nine-second
+    // stalls and made zero level progress in three hours. Long enough for HandleSpellCastFailure's
+    // own reposition (a few seconds of travel) to actually land before the same spell is eligible
+    // again, instead of racing it.
+    constexpr uint32 RANGE_FAILURE_COOLDOWN_MS = 6000;
+
+    bool IsRangeOrFacingFailure(SpellCastResult result)
+    {
+        return result == SPELL_FAILED_TOO_CLOSE || result == SPELL_FAILED_OUT_OF_RANGE ||
+            result == SPELL_FAILED_UNIT_NOT_INFRONT || result == SPELL_FAILED_LINE_OF_SIGHT;
+    }
+}
+
+void HandleSpellCastFailure(Player* bot, Unit* target, uint32 spellId, SpellCastResult result)
+{
+    if (!bot || !spellId)
+        return;
+
+    if (!target || !IsRangeOrFacingFailure(result))
+    {
+        RecordSpellCastFailure(bot->GetGUID(), spellId);
+        return;
+    }
+
+    failureCooldowns[bot->GetGUID()][spellId] = getMSTime() + RANGE_FAILURE_COOLDOWN_MS;
+
+    if (result == SPELL_FAILED_TOO_CLOSE)
+    {
+        // Same min-range formula ActionEvaluator::CanCast already uses (engine/ActionEvaluator.cpp)
+        // -- reuse it rather than re-deriving a second, possibly-diverging one. +2yd so the bot
+        // lands clearly past the boundary instead of sitting exactly on it (path/position jitter
+        // would put it back in the dead zone next tick otherwise). Capped: a bug in an unusually
+        // large min-range value must not send the bot sprinting away from its own fight.
+        //
+        // Confirmed live (21-bot fleet, 2026-09-25 21:13) that SpellInfo::GetMinRange() reads 0 for
+        // at least some of the exact spells that still fail TOO_CLOSE server-side (3018, 2764) --
+        // the core's own SPELL_FAILED_TOO_CLOSE only fires when its internal min_range is genuinely
+        // > 0, so there IS a real minimum distance here that GetMinRange()/RangeEntry isn't
+        // surfacing correctly (still unidentified, see docs/research/bot-fleet-combat-findings.md).
+        // Rather than do nothing when minRange reads 0 -- which was silently turning this whole
+        // branch into a no-op for exactly the spells that needed it most -- fall back to a small,
+        // bounded default backoff so there is always a physical reaction, not just a longer cooldown.
+        constexpr float DEFAULT_BACKOFF_YD = 5.0f;
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        float minRange = spellInfo ? spellInfo->GetMinRange(spellInfo->IsPositive()) : 0.0f;
+        float backoff = minRange > 0.0f
+            ? std::min(minRange + bot->GetMeleeRange(target) + 2.0f, 15.0f)
+            : DEFAULT_BACKOFF_YD;
+        bot->GetMotionMaster()->MoveBackwards(target, backoff);
+        LOG_DEBUG(BotDebugLog::LoggerName(bot->GetGUID()),
+            "BotClassRotations: bot '{}' backing away {:.1f}yd from '{}' after spell {} failed TOO_CLOSE.",
+            bot->GetName(), backoff, target->GetName(), spellId);
+    }
+    else if (result == SPELL_FAILED_UNIT_NOT_INFRONT)
+    {
+        // Cheap and idempotent -- BotAI.cpp's engage loop already does this every tick, but doing
+        // it again right after the failure closes the gap between "we just found out we're not
+        // facing" and "the next tick's normal facing update" instead of waiting on it.
+        bot->SetInFront(target);
+        bot->SetFacingToObject(target);
+    }
+    else if (result == SPELL_FAILED_OUT_OF_RANGE)
+    {
+        // Confirmed live (21-bot fleet, Traeminotham/Runemaster, 2026-09-26): a genuinely
+        // melee-range ability (e.g. "Runeblade", 0-5yd, SPELL_DAMAGE_CLASS_MELEE) can still fail
+        // OUT_OF_RANGE while the bot sits at the generic MELEE_ENGAGE_RANGE chase band (4yd) --
+        // the core's own melee-range check (Spell.cpp's CheckRange) subtracts a leeway margin
+        // (up to 2x MIN_MELEE_REACH) from the spell's declared max range before comparing, so a
+        // nominally-5yd ability's real usable distance can be tighter than the generic chase band
+        // ever settles at. The passive MoveChase banding alone left this bot making zero level
+        // progress for 3+ hours. Actively close the last stretch for a genuine melee spell
+        // (never for a ranged-slot one -- that's Finding 1's territory and excluded from this
+        // legacy search entirely now, see SpellPredicates.cpp's IsUsableOffensiveSpell).
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (spellInfo && spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE && !spellInfo->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT))
+        {
+            constexpr float TIGHT_MELEE_DISTANCE_YD = 2.0f;
+            bot->GetMotionMaster()->MoveForwards(target, TIGHT_MELEE_DISTANCE_YD);
+            LOG_DEBUG(BotDebugLog::LoggerName(bot->GetGUID()),
+                "BotClassRotations: bot '{}' closing to {:.1f}yd from '{}' after spell {} failed OUT_OF_RANGE.",
+                bot->GetName(), TIGHT_MELEE_DISTANCE_YD, target->GetName(), spellId);
+        }
+        // A ranged-type OUT_OF_RANGE (too far for a legitimate ranged spec's own ability) is left
+        // to the existing MoveChase banding -- the longer cooldown above is what stops the
+        // immediate re-fail there.
+    }
+    else if (result == SPELL_FAILED_LINE_OF_SIGHT)
+    {
+        // Confirmed live (2026-09-27): a healer stuck behind instance geometry (a pillar/wall
+        // corner) re-picks the same heal on the same out-of-sight target every ~1s forever --
+        // STUCK-DETECTOR fires at unchanged HP while the ally being "healed" keeps taking damage.
+        // Unlike TOO_CLOSE/OUT_OF_RANGE there's no single correct direction to move (the obstacle
+        // could be on any side), so a bounded step toward the target's position is the cheapest
+        // real reaction: it either clears a corner directly or, failing that, changes the bot's
+        // position enough for the next failure's step to find a clear angle instead of never
+        // moving from the exact spot LOS first broke at.
+        constexpr float LOS_REPOSITION_STEP_YD = 8.0f;
+        bot->GetMotionMaster()->MoveForwards(target, LOS_REPOSITION_STEP_YD);
+        LOG_DEBUG(BotDebugLog::LoggerName(bot->GetGUID()),
+            "BotClassRotations: bot '{}' repositioning {:.1f}yd toward '{}' after spell {} failed LINE_OF_SIGHT.",
+            bot->GetName(), LOS_REPOSITION_STEP_YD, target->GetName(), spellId);
+    }
 }
 
 void ForgetRotationState(ObjectGuid botGuid)

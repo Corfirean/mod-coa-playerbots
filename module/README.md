@@ -1,162 +1,107 @@
-# mod-coa-playerbots — real module, milestone 1: bot joins a real group
+﻿# CoA Companions (mod-coa-playerbots)
 
-**Status: succeeded, 2026-09-11.** Builds on `pilot/` (proved a bot can exist via a
-null-socket `WorldSession`). This milestone proves a bot can be a **real group
-member** alongside the GM's actual client — confirmed both server-side (`.group
-list`) and visually (bot showing in the real party frame). **Auto-accept, loot-roll
-auto-Greed, teleport-to-leader, follow, and `.botcmd despawn` all added and confirmed
-working (loot-roll pending a live test) same day.**
+AI companion bots that can play [Conquest of Azeroth](https://github.com/jealous-sound/azerothcore-wotlk-coa)'s
+21 custom Ascension classes — built for real dungeon/raid/leveling groups,
+not just standing around.
 
-### The teleport gotcha (worth knowing before touching bot movement again)
+**Status: Live & in active development**, powering bot populations in the thousands on Conquest of Azeroth.
 
-`Player::TeleportTo()` only **requests** a move — for a same-map ("near") teleport,
-the real position isn't applied until the client sends `MSG_MOVE_TELEPORT_ACK`
-(`WorldSession::HandleMoveTeleportAck` → `Player::UpdatePosition`); for a cross-map
-("far") one it's `HandleMoveWorldportAck`. A bot has no client to ever send that ack,
-so it silently stayed semaphore-locked at its old position forever — `TeleportTo()`
-itself never errors, which is why this wasn't visible from logs alone (diagnostic
-logging confirmed every earlier step succeeded before finding this). `MoveFollow` had
-nothing real to work from as a result — the bot looked simply frozen.
+---
 
-**Fix, attempt 1 (crashed)**: after `TeleportTo()`, check
-`bot->IsBeingTeleportedNear()` / `IsBeingTeleportedFar()` and call the matching ack
-directly — `HandleMoveWorldportAck()` already has a no-packet "for server-side calls"
-overload for the far case; the near case needs a minimal packed-guid `WorldPacket`
-(`bot->GetGUID().WriteAsPacked()` + two unused `uint32`s), same "call the real
-handler directly" pattern this module already uses for login/group-accept/loot-roll.
-This part was right — but calling it **synchronously, in the same tick as
-`TeleportTo()` itself**, crashed live with an `IsInGrid()` assertion failure inside
-`Map::PlayerRelocation` (full stack in the crash dump:
-`GridObject<Player>::RemoveFromGrid` ← `Map::PlayerRelocation` ← `Unit::UpdatePosition`
-← `Player::UpdatePosition` ← `HandleMoveTeleportAck` ← `BotMgr::DoAcceptInvite`). A real
-client's ack only ever arrives after its own network round trip — never in the same
-tick as the teleport request — so firing it inline races whatever per-tick
-grid/relocation bookkeeping `TeleportTo()`'s near-teleport branch expects to have
-already happened. (`Unit::NearTeleportTo` doesn't sidestep this either: for a `Player`
-it's just a thin wrapper around the same `TeleportTo()` — only `Creature` gets a truly
-synchronous path.)
+## Overview
 
-**Fix, attempt 2 (confirmed working live, no crash)**: `DoAcceptInvite` now only
-calls `TeleportTo()` and queues the session in a `_pendingTeleportAck` list;
-`BotMgr::Update()` drains that queue (via `FinishPendingTeleport`, which also starts
-the `MoveFollow` once the teleport has actually landed) at the very top of the
-function — before that same tick's own invite-check loop gets a chance to queue a
-*fresh* one. That guarantees at least one full world tick of separation between
-`TeleportTo()` and its ack, mirroring the real network delay instead of trying to
-remove it. **Any future code that force-moves a bot needs this same
-"queue the ack, fire it next tick" shape** — it's a property of `TeleportTo()`
-generally, not specific to the group-join flow, and skipping the one-tick gap crashes
-the server, not just "doesn't work."
+Unlike standard 3.3.5 bot engines ([NPCBots](https://github.com/trickerer/AzerothCore-wotlk-with-NPCBots) or [Playerbots](https://github.com/mod-playerbots/mod-playerbots)) which only support the original 10 vanilla/WotLK classes, **CoA Companions** is designed from the ground up to natively understand and play Ascension's 21 custom classes and their unique mechanics.
 
-## What changed from `pilot/`
+Every companion is driven by a data-driven Utility AI combat engine with strict retail-style specialization rules (one dedicated specialization tree per companion), complete with custom spell priority queues, resource management, triage healing, active tank mitigation, and tactical group awareness.
 
-Renamed, not rewritten — the proven login mechanism (`sWorld->AddQueryHolderCallback`,
-the `WorldScript::OnUpdate` heartbeat) is untouched:
+---
 
-- `PilotBotMgr` → `BotMgr`, `.pilot spawnbot` → `.botcmd spawnbot` (unchanged logic).
-- `.botcmd acceptinvite <charLowGuid>` — finds the bot's session, confirms
-  `Player::GetGroupInvite()` is set, builds a 4-byte padding `WorldPacket`, and calls
-  `WorldSession::HandleGroupAcceptOpcode` directly. That handler only does
-  `recvData.read_skip<uint32>()` before its real logic (`RemoveInvite`, validation,
-  `Group::Create`-if-new, `AddMember`, `BroadcastGroupUpdate`) — calling it directly
-  reuses all of that real validation instead of re-deriving it. **Kept as a manual
-  override/debug tool**, no longer needed for normal use (see below).
-- **Auto-accept**: `BotMgr::Update()` now checks every active bot's
-  `Player::GetGroupInvite()` on **every tick** (not throttled, unlike the heartbeat —
-  a human expects a near-instant response to an invite) and calls the same
-  `HandleGroupAcceptOpcode` logic automatically the moment one is pending. GM invites
-  the bot by name from a real client exactly like inviting another player; the bot
-  joins with no further action needed. Confirmed working live.
+## Screenshots
 
-**No core patch was needed for grouping.** The hypothesis from `AGENTS.md` — that
-`Group::AddMember(Player*)` needs nothing bot-specific — held. `Group.cpp`'s
-Category-C double-invite fix was never applied and never needed; grouping worked
-cleanly on CoA's stock, unpatched `Group.cpp`.
+### Companion Control UI (CoABotUI)
+Real-time floating control HUD for companion orders, formations, stances, and direct combat commands.
+![Companion Control HUD](docs/screenshots/bot_companion_control.png)
 
-## The real blocker, and it wasn't in core at all
+### Guild Roster & Taskboard
+Guild taskboard and management interface showing companions participating in guild progression.
+![Guild Taskboard](docs/screenshots/guild_taskboard_live.png)
 
-Two client-visible failures happened before this worked, neither was a core-patch
-gap:
+### Active Companion Party HUD
+Companions assembled in party formation ready for dungeon runs.
+![Companion Party HUD](docs/screenshots/companion_party_hud.png)
 
-1. **"Cannot find player 'Test'."** The bot's test character happened to be guid 1
-   (`Test`), which is on the **same account** (`LOCAL`, account id 1) as the GM's own
-   login. Two simultaneous character sessions on one account is a state AzerothCore's
-   normal login flow never produces (character-select is exclusive per account) — our
-   bot's fake-session login bypasses that exclusivity, and the resulting collision left
-   the bot Player in a visibly wrong state (`.pinfo` showed `GM Mode active, Phase: -1`
-   on a character that should've been an ordinary Phase 1 player). **Fix: bots must be
-   on a different account than whichever account the human is playing on** — exactly
-   why real Playerbots always uses separate bot accounts (`masterAccountId` is tracked
-   as distinct from the bot's own account in their code). Practical fix used here: moved
-   a second test character (`Shaniel`, guid 2) to this repack's existing second account
-   (`ADMIN`, id 2) with `UPDATE characters SET account=2 WHERE guid=2;`, then spawned
-   the bot as `Shaniel` instead. `.pinfo` then showed the expected `Phase: 1`.
-2. **Friends List "Invite" greyed out ("in N minutes").** A client-side-only cooldown
-   on that specific UI element (WotLK's Friends List throttles its own Invite button),
-   unrelated to the server, the bot, or account setup. Fixed by typing `/invite
-   <name>` directly in chat instead — works immediately, no cooldown.
-3. **GM-invoked invites skip the faction check.** `WorldSession::HandleGroupInviteOpcode`
-   only enforces same-faction grouping `if (!invitingPlayer->IsGameMaster() && ...)` —
-   a GM-level inviter bypasses it entirely. Confirmed by reading the handler directly;
-   the test's cross-faction character pairing (Tauren GM character, Night Elf bot) was
-   never actually a problem, though the user reasonably suspected it might be.
+### Dungeon Combat & Triage
+Live combat execution: Tank threat management, dynamic triage healing, and AoE/single-target DPS execution.
+![Dungeon Combat & Triage](docs/screenshots/dungeon_combat_triage.jpg)
 
-**Takeaway for future bot-account setup**: this project needs its own dedicated bot
-account(s), never reusing whatever account the human tester is logged into that
-session — worth building a proper `.botcmd createaccount`-style helper (or at least a
-documented manual step) before scaling past one bot, rather than rediscovering this
-per test session.
+---
 
-## Verification performed
+## Supported Classes & Specializations
 
-- `.botcmd spawnbot 2` → bot `Shaniel` logs in cleanly on account `ADMIN` (separate
-  from the GM's `LOCAL` account), confirmed via `.pinfo Shaniel` (`Phase: 1`, no GM-mode
-  artifact).
-- GM (real client, playing `Test`, account `LOCAL`) sends `/invite Shaniel` from
-  chat — succeeds (`Shaniel added to friends. You have invited Shaniel to join your
-  group.`).
-- `.botcmd acceptinvite 2` → bot accepts via the real `HandleGroupAcceptOpcode` path.
-- `.group list Test` and `.group list Shaniel` both report `Group type: Party and
-  consists of 2 players.`
-- **User visually confirmed** Shaniel showing as the second party member in their
-  actual party frame — the one signal that genuinely needs a real client, not RA.
-- Server stayed healthy throughout (uptime climbing, update-diff mean ~4-6ms, no new
-  errors) — same stability bar as the pilot.
+CoA Companions provides dedicated AI combat profiles for all **21 Conquest of Azeroth classes**, adhering strictly to modern retail WoW 1-tree specialization mechanics:
 
-## Next milestones (not done yet)
+| Class ID | Class Name | Supported Specializations | Supported Roles |
+| :--- | :--- | :--- | :--- |
+| **12** | **Barbarian** | Berserker (90), Juggernaut (91) | Melee DPS, Tank |
+| **13** | **Primalist** | Totemist (93), Shaman (94), Geomancy (95) | Healer, Melee DPS, Ranged DPS |
+| **14** | **Pyromancer** | Firestorm (96), Magma (97) | Ranged DPS |
+| **15** | **Chronomancer** | Time (99), Warp (100) | Healer, Ranged DPS |
+| **16** | **Cultist** | Void (102), Madness (103) | Ranged DPS |
+| **17** | **Tinker** | Engineering (105), Artillery (106) | Tank, Ranged DPS |
+| **18** | **Sun Cleric** | Dawn (44), Eclipse (45), Piety (46) | Healer, Ranged DPS |
+| **19** | **Witch Doctor** | Shadowhunting (4), Voodoo (5) | Healer, Ranged DPS |
+| **20** | **Necromancer** | Blood (7), Bone (8), Decay (9) | Tank, Ranged DPS, Caster |
+| **21** | **Felsworn** | Chaos (11), Havoc (12) | Melee DPS, Tank |
+| **22** | **Knight of Xoroth** | Annihilation (14), Torment (15) | Tank, Melee DPS |
+| **23** | **Guardian** | Sentinel (17), Watcher (18) | Tank, Melee DPS |
+| **24** | **Starcaller** | Astral (20), Luminary (21) | Healer, Ranged DPS |
+| **25** | **Bloodmage** | Crimson (23), Siphon (24) | Healer, Ranged DPS |
+| **26** | **Runemaster** | Arcane (62), Runic (63) | Melee DPS, Tank |
+| **27** | **Reaper** | Harvest (29), Scythe (30) | Melee DPS |
+| **28** | **Venomancer** | Poison (32), Toxicity (33) | Healer, Ranged DPS |
+| **29** | **Stormbringer** | Tempest (35), Thunder (36) | Tank, Melee DPS |
+| **30** | **Templar** | Crusader (38), Zealot (39) | Tank, Melee DPS |
+| **31** | **Witch Hunter** | Inquisition (41), Purge (42) | Ranged DPS, Melee DPS |
+| **32** | **Ranger** | Marksman (47), Survival (48), Beastmaster (49) | Ranged DPS |
 
-Guild support, gearing/talents, bot character creation from scratch (still reusing
-existing test characters), any AI/rotation logic. See `AGENTS.md` for the full-parity
-scope this is incrementally building toward.
+---
 
-## Dedicated bot account question — settled 2026-09-12, no new account needed
+## Core Systems & Capabilities
 
-Tested whether multiple bots need separate accounts from each other (not just from the
-human's own account): spawned `Shaniel` (guid 2) and `Necrotest` (guid 6) simultaneously,
-both already on account `ADMIN` (id 2) — both came up healthy (`Phase: 1`, no GM-mode
-artifact), confirmed via `.pinfo` on both while the server also reported "Characters in
-world: 2". **Multiple bots can safely share one account at the same time** — the
-account-collision bug documented above was specifically about a bot sharing identity with
-a session the *human* is actively using that session, not about bots sharing an account
-with each other. `ADMIN` (account 2) already holds 8 idle test characters across a decent
-class spread (see `docs/research/ascension-class-status.md`'s caveat: names don't reliably
-match actual class/testing status, e.g. `Stormtest` is actually class 28 Tinker, not
-Stormbringer — verify by querying `characters.class` before trusting a name) and works
-fine as a shared bot pool as-is. No new account was created. Genuine from-scratch
-character creation (via a synthesized `CMSG_CHAR_CREATE` packet through
-`HandleCharCreateOpcode`, the same "call the real handler" pattern used elsewhere in this
-module) is still not implemented — deferred, since the existing idle characters already
-cover enough classes for near-term AI work; picking it up only becomes necessary once a
-class with no existing test character needs a bot.
+- **Data-Driven Utility AI Engine**:
+  - HealerEngine: Weighted triage system taking into account missing HP%, incoming damage rate, HoT presence, tank priority, mana efficiency, and emergency burst healing.
+  - TankEngine: Active mitigation upkeep, peel rotations for aggro lost to healers/casters, positioning, and taunt management.
+  - DpsEngine: Target selection (focus lowest HP, priority adds, skull targets), execute phase burst, resource pools (Mana, Energy, Rage, Focus, Runes, Heat), and cooldown alignment.
+- **Client Addon (CoABotUI)**:
+  - In-game floating widget for commanding your companion squad without typing GM commands.
+  - Formations: Shieldwall, Arrowhead, Circle, Flank, Line.
+  - Stances: Aggressive, Defensive, Passive, Assist.
+  - Fast commands: Attack Target, Pull, Peel, Hold Position, Regroup.
+- **World & Group Integration**:
+  - Auto-Dungeon Finder and Battleground queue filler.
+  - Smart loot distribution and greed/need rolling.
+  - Leveling and zone progression from 1 to 80 with automatic talent allocation per spec build.
+  - Racial mount usage and intelligent pathing.
 
-## RA console tooling note
+---
 
-`tools/ra_client.py` (raw sockets, not `telnetlib` — removed in the bundled Python 3.14)
-now lives in this repo instead of being rewritten ad hoc per session. Observed: rapid
-successive RA connections intermittently get "Authentication failed" with correct
-credentials — `RASession::CheckAccessLevel`/`CheckPassword` (`RASession.cpp`) have no
-lockout/backoff logic at all, so this isn't a documented rate limit, just an observed
-flakiness pattern (recovers within a few seconds to ~20s). The script retries with backoff
-rather than failing outright; if this starts actually blocking work, it's worth reading
-`RASession::Start()`'s connection-negotiation handling more closely rather than continuing
-to paper over it with retries.
+## Installation
+
+See [INSTALL.md](INSTALL.md) for full setup instructions, including precompiled quick-install for repack users and source build instructions for core developers.
+
+---
+
+## Documentation
+
+- [INSTALL.md](INSTALL.md) — Detailed setup, installation and troubleshooting guide.
+- [AGENTS.md](AGENTS.md) — Technical context and conventions for core developers and AI assistants.
+- [docs/capabilities.md](docs/capabilities.md) — Deep-dive into implemented behaviors and systems.
+- [docs/addon-protocol.md](docs/addon-protocol.md) — Wire protocol specifications for client-addon communication.
+- [docs/architecture.md](docs/architecture.md) — High-level architecture and core integration strategy.
+- [docs/core-patches.md](docs/core-patches.md) — Required core patches and diff rationale.
+
+---
+
+## License / Attribution
+
+Builds on research into [mod-playerbots](https://github.com/mod-playerbots/mod-playerbots) (GPL-2.0, per AzerothCore conventions) and [azerothcore-wotlk-coa](https://github.com/jealous-sound/azerothcore-wotlk-coa). All custom class combat profiles and utility AI engines are original works developed specifically for Ascension: Conquest of Azeroth.

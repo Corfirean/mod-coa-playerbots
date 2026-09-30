@@ -7,15 +7,15 @@
 
 local ADDON_NAME = "CoABotUI"
 local PROTOCOL_PREFIX = "COABOT"
-local VERSION = "1.2.0"
+local VERSION = "2.1.1"
 
 -- Role configuration: names, labels, and display colors
 local ROLES = {
-    { id = "auto",    name = "Auto",    color = "|cFF888888", r = 0.55, g = 0.55, b = 0.55 },
-    { id = "tank",    name = "Tank",    color = "|cFF3399FF", r = 0.20, g = 0.60, b = 1.00 },
-    { id = "healer",  name = "Healer",  color = "|cFF33FF33", r = 0.20, g = 1.00, b = 0.20 },
-    { id = "dps",     name = "DPS",     color = "|cFFFF3333", r = 1.00, g = 0.20, b = 0.20 },
-    { id = "support", name = "Support", color = "|cFFFFCC00", r = 1.00, g = 0.80, b = 0.00 },
+    { id = "auto",    name = "Auto",    short = "A",   color = "|cFF888888", r = 0.55, g = 0.55, b = 0.55 },
+    { id = "tank",    name = "Tank",    short = "T",   color = "|cFF3399FF", r = 0.20, g = 0.60, b = 1.00 },
+    { id = "healer",  name = "Healer",  short = "H",   color = "|cFF33FF33", r = 0.20, g = 1.00, b = 0.20 },
+    { id = "dps",     name = "DPS",     short = "DPS", color = "|cFFFF3333", r = 1.00, g = 0.20, b = 0.20 },
+    { id = "support", name = "Support", short = "Sup", color = "|cFFFFCC00", r = 1.00, g = 0.80, b = 0.00 },
 }
 
 local ROLE_BY_ID = {}
@@ -46,7 +46,8 @@ local dbDefaults = {
     yOfs = 100,
     isShown = true,
     isCollapsed = false,
-    debug = true,
+    debug = false,
+    activePage = "squad",
     roles = {}, -- [botGuidLow] = "tank"
     autoDungeon = false,
     minimap = { hide = false },
@@ -66,6 +67,11 @@ local RefreshTaskBoard
 local UpdateRoleButtonText
 local ShowOrderPicker
 local ShowGearPanel
+local ShowMainPage
+local taskBoardFrame
+local orderPickerFrame
+local gearPanelFrame
+local gearPanelBotGuid
 local autoDungeonSynced = false
 local currentFormationId = "rolebased"
 
@@ -115,6 +121,14 @@ local function SendGroupCommand(verb)
     SendRawBody(verb .. ":0")
 end
 
+local function ShowItemTooltip(owner, itemEntry, anchor)
+    if not itemEntry then return end
+    GameTooltip:SetOwner(owner, anchor or "ANCHOR_RIGHT")
+    local _, itemLink = GetItemInfo(itemEntry)
+    GameTooltip:SetHyperlink(itemLink or ("item:" .. tostring(itemEntry)))
+    GameTooltip:Show()
+end
+
 -------------------------------------------------------------------------------
 -- Server Reply Cache (GETROLES/ROLES, GUILDROSTER/ROSTER)
 -------------------------------------------------------------------------------
@@ -151,7 +165,7 @@ local gearCache = {}
 -- from GETGEAR/GEARPREFS.
 local gearPrefsCache = {}
 
--- [categoryId] = { {entry=, name=}, ... } in server arrival order -- GCAT chunks arrive
+-- [categoryId] = { {entry=, name=, profession=}, ... } in server arrival order -- GCAT chunks arrive
 -- RequiredLevel-sorted (low-level materials first, see BotMgr::GetGatherCatalog), RCAT chunks
 -- arrive name-sorted (see BotMgr::GetRecipeCatalog) -- kept as a plain array instead of an
 -- entry-keyed dict specifically to preserve that server-side ordering for display.
@@ -204,7 +218,7 @@ function UpdateRoleButtonText(row, botGuidLow, defaultRole)
 
     if savedRole == "auto" and currentRoleCache[botGuidLow] then
         local currentInfo = ROLE_BY_ID[currentRoleCache[botGuidLow]] or roleInfo
-        row.roleBtn:SetText(roleInfo.color .. "Auto|r " .. currentInfo.color .. "(" .. currentInfo.name .. ")|r")
+        row.roleBtn:SetText(roleInfo.color .. "Auto|r " .. currentInfo.color .. "/ " .. currentInfo.short .. "|r")
     else
         row.roleBtn:SetText(roleInfo.color .. roleInfo.name .. "|r")
     end
@@ -239,11 +253,11 @@ end
 
 -- Appends one GCAT/RCAT chunk's "entry,name|entry,name|..." payload to orderCatalog[category].
 -- Item names never contain "," or "|" (no real WoW item does), so this plain gmatch is safe.
-local function ParseCatalogChunk(category, itemsCsv)
+local function ParseCatalogChunk(category, itemsCsv, profession)
     orderCatalog[category] = orderCatalog[category] or {}
     local list = orderCatalog[category]
     for entryStr, name in (itemsCsv or ""):gmatch("(%d+),([^|]+)") do
-        table.insert(list, { entry = tonumber(entryStr), name = name })
+        table.insert(list, { entry = tonumber(entryStr), name = name, profession = profession })
     end
 end
 
@@ -326,7 +340,11 @@ local function HandleIncomingMessage(body)
         end
 
     elseif verb == "RCAT" then
-        ParseCatalogChunk("recipe", parts[2])
+        if parts[3] and parts[3] ~= "" then
+            ParseCatalogChunk("recipe", parts[3], parts[2])
+        else
+            ParseCatalogChunk("recipe", parts[2], "Other")
+        end
         if RefreshOrderPicker then
             RefreshOrderPicker()
         end
@@ -355,7 +373,11 @@ local function HandleIncomingMessage(body)
         local name = parts[5]
         if not botGuidLow or not slot then return end
         gearCache[botGuidLow] = gearCache[botGuidLow] or {}
-        gearCache[botGuidLow][slot] = { entry = entry, name = name or ("item " .. tostring(entry)) }
+        gearCache[botGuidLow][slot] = {
+            entry = entry,
+            name = name or ("item " .. tostring(entry)),
+            itemLevel = tonumber(parts[6]) or 0,
+        }
         if RefreshGearPanel then RefreshGearPanel() end
 
     elseif verb == "GEARPREFS" then
@@ -700,35 +722,6 @@ end
 -- still widen/narrow it without that fight. `onResize(width, height)`, if given, fires once
 -- dragging ends (e.g. to relay a new width into a scroll child that isn't itself anchored to
 -- track the parent's size).
-local function AddResizeGrip(frame, minW, minH, maxW, maxH, axis, onResize)
-    frame:SetResizable(true)
-    if frame.SetMinResize then frame:SetMinResize(minW, minH) end
-    if frame.SetMaxResize and maxW then frame:SetMaxResize(maxW, maxH) end
-
-    local grip = CreateFrame("Button", nil, frame)
-    grip:SetSize(16, 16)
-    grip:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -4, 4)
-    -- A plain CreateFrame("Button", ...) is NOT mouse-enabled by default in this client (unlike
-    -- template-based buttons, which enable it in their XML) -- without this, every mouse event
-    -- fell through to the parent frame's own drag-to-move handler instead, so dragging the grip
-    -- just moved the window (confirmed live: "resizing doesn't work at all, only dragging the
-    -- window does").
-    grip:EnableMouse(true)
-    grip:SetFrameLevel(frame:GetFrameLevel() + 10)
-    grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-    grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-    grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-    local sizePoint = (axis == "width") and "RIGHT" or (axis == "height") and "BOTTOM" or "BOTTOMRIGHT"
-    grip:SetScript("OnMouseDown", function()
-        frame:StartSizing(sizePoint)
-    end)
-    grip:SetScript("OnMouseUp", function()
-        frame:StopMovingOrSizing()
-        if onResize then onResize(frame:GetWidth(), frame:GetHeight()) end
-    end)
-    frame.resizeGrip = grip
-    return grip
-end
 
 -------------------------------------------------------------------------------
 -- UI Construction
@@ -736,8 +729,8 @@ end
 
 local function CreateBotRow(parent, index)
     local row = CreateFrame("Frame", nil, parent)
-    row:SetSize(536, 44)
-    row:SetPoint("TOPLEFT", parent, "TOPLEFT", 12, -128 - (index - 1) * 46)
+    row:SetSize(472, 36)
+    row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -(index - 1) * 38)
 
     -- Row background highlight on mouseover
     local bg = row:CreateTexture(nil, "BACKGROUND")
@@ -758,8 +751,8 @@ local function CreateBotRow(parent, index)
     -- Name & Low GUID Label -- anchored a little above row-center (see specText below it) since
     -- the row is tall enough for two lines now.
     local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    nameText:SetPoint("LEFT", row, "LEFT", 6, 7)
-    nameText:SetWidth(140)
+    nameText:SetPoint("LEFT", row, "LEFT", 8, 6)
+    nameText:SetWidth(116)
     nameText:SetJustifyH("LEFT")
     row.nameText = nameText
 
@@ -768,14 +761,14 @@ local function CreateBotRow(parent, index)
     -- it into the role button's own text overflowed into the Follow button next to it.
     local specText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     specText:SetPoint("TOPLEFT", nameText, "BOTTOMLEFT", 0, -2)
-    specText:SetWidth(140)
+    specText:SetWidth(116)
     specText:SetJustifyH("LEFT")
     row.specText = specText
 
     -- Role Selector Button
     local roleBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    roleBtn:SetSize(84, 22)
-    roleBtn:SetPoint("LEFT", nameText, "RIGHT", 4, -7)
+    roleBtn:SetSize(86, 22)
+    roleBtn:SetPoint("LEFT", nameText, "RIGHT", 4, -6)
     roleBtn:SetText("Auto")
     roleBtn:SetScript("OnClick", function(self)
         if row.botGuidLow then
@@ -786,8 +779,8 @@ local function CreateBotRow(parent, index)
 
     -- Action Buttons: Follow, Stay, Pull, Stop
     local btnFollow = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    btnFollow:SetSize(54, 22)
-    btnFollow:SetPoint("LEFT", roleBtn, "RIGHT", 6, 0)
+    btnFollow:SetSize(46, 22)
+    btnFollow:SetPoint("LEFT", roleBtn, "RIGHT", 4, 0)
     btnFollow:SetText("Follow")
     btnFollow:SetScript("OnClick", function()
         SendBotCommand("FOLLOW", row.botGuidLow)
@@ -795,8 +788,8 @@ local function CreateBotRow(parent, index)
     row.btnFollow = btnFollow
 
     local btnStay = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    btnStay:SetSize(48, 22)
-    btnStay:SetPoint("LEFT", btnFollow, "RIGHT", 4, 0)
+    btnStay:SetSize(42, 22)
+    btnStay:SetPoint("LEFT", btnFollow, "RIGHT", 3, 0)
     btnStay:SetText("Stay")
     btnStay:SetScript("OnClick", function()
         SendBotCommand("STAY", row.botGuidLow)
@@ -804,8 +797,8 @@ local function CreateBotRow(parent, index)
     row.btnStay = btnStay
 
     local btnPull = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    btnPull:SetSize(48, 22)
-    btnPull:SetPoint("LEFT", btnStay, "RIGHT", 4, 0)
+    btnPull:SetSize(42, 22)
+    btnPull:SetPoint("LEFT", btnStay, "RIGHT", 3, 0)
     btnPull:SetText("Pull")
     btnPull:SetScript("OnClick", function()
         SendBotCommand("PULL", row.botGuidLow)
@@ -813,8 +806,8 @@ local function CreateBotRow(parent, index)
     row.btnPull = btnPull
 
     local btnStop = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    btnStop:SetSize(48, 22)
-    btnStop:SetPoint("LEFT", btnPull, "RIGHT", 4, 0)
+    btnStop:SetSize(42, 22)
+    btnStop:SetPoint("LEFT", btnPull, "RIGHT", 3, 0)
     btnStop:SetText("Stop")
     btnStop:SetScript("OnClick", function()
         SendBotCommand("STOPATTACK", row.botGuidLow)
@@ -824,8 +817,8 @@ local function CreateBotRow(parent, index)
     -- Gear inspector/preference button -- opens a panel showing what's currently equipped and
     -- lets the player pick a preferred armor/weapon type (see ShowGearPanel).
     local btnGear = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    btnGear:SetSize(48, 22)
-    btnGear:SetPoint("LEFT", btnStop, "RIGHT", 4, 0)
+    btnGear:SetSize(42, 22)
+    btnGear:SetPoint("LEFT", btnStop, "RIGHT", 3, 0)
     btnGear:SetText("Gear")
     btnGear:SetScript("OnClick", function()
         if row.botGuidLow then
@@ -855,26 +848,12 @@ local function RefreshUI()
     local members = ScanRoster()
     local memberCount = #members
 
-    -- Utility Bars (Quick Fill / Guild Tasks / Auto Dungeon / Formation / Bring Bots to Me)
-    -- don't depend on having any bots already in your group/raid -- Quick Fill's whole purpose
-    -- is to work from an empty or partial group.
-    mainFrame.utilityBar:Show()
-    if mainFrame.utilityBar2 then mainFrame.utilityBar2:Show() end
-
-    -- Update Window Height dynamically based on row count
-    local contentHeight
     if memberCount == 0 then
-        contentHeight = 216
         mainFrame.emptyNotice:Show()
         mainFrame.globalBar:Hide()
     else
-        contentHeight = 166 + (memberCount * 46)
         mainFrame.emptyNotice:Hide()
         mainFrame.globalBar:Show()
-    end
-
-    if not CoABotUIDB.isCollapsed then
-        mainFrame:SetHeight(contentHeight)
     end
 
     -- Update bot rows
@@ -882,7 +861,7 @@ local function RefreshUI()
         local member = members[i]
         if member then
             if not rows[i] then
-                rows[i] = CreateBotRow(mainFrame, i)
+                rows[i] = CreateBotRow(mainFrame.squadScrollChild, i)
             end
 
             local row = rows[i]
@@ -906,60 +885,52 @@ local function RefreshUI()
         end
     end
 
+    mainFrame.squadScrollChild:SetHeight(math.max(memberCount * 38, 1))
+
     -- Update target bar
     UpdateTargetStatus(mainFrame.statusBar)
 end
 
+
 local function CreateMainFrame()
     local frame = CreateFrame("Frame", "CoABotUIMainFrame", UIParent)
-    frame:SetSize(560, 200)
-    frame.expandedWidth = 560 -- restored on un-collapse; kept in sync by the resize grip below
+    frame:SetSize(520, 450)
+    frame.expandedWidth = 520
+    frame.expandedHeight = 450
     frame:SetFrameStrata("MEDIUM")
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
-
-    -- Flat, clean panel skin -- thin tooltip-style border instead of the thick stock stone
-    -- dialog frame, closer to a modern minimalist HUD than the default WotLK grey-panel look.
     frame:SetBackdrop({
         bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
         tile = true, tileSize = 16, edgeSize = 14,
         insets = { left = 3, right = 3, top = 3, bottom = 3 }
     })
-    frame:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
-    frame:SetBackdropBorderColor(0.35, 0.35, 0.42, 1.0)
+    frame:SetBackdropColor(0.035, 0.04, 0.055, 0.97)
+    frame:SetBackdropBorderColor(0.32, 0.35, 0.42, 1.0)
 
-    -- Draggable Header Script
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         local pt, _, relPt, x, y = self:GetPoint()
-        CoABotUIDB.point = pt
-        CoABotUIDB.relativePoint = relPt
-        CoABotUIDB.xOfs = x
-        CoABotUIDB.yOfs = y
+        CoABotUIDB.point, CoABotUIDB.relativePoint = pt, relPt
+        CoABotUIDB.xOfs, CoABotUIDB.yOfs = x, y
     end)
 
-    -- Title bar accent strip -- a thin gold underline under the title, cheap visual polish that
-    -- separates the header from the command bars below without needing a second backdrop.
-    local titleAccent = frame:CreateTexture(nil, "ARTWORK")
-    titleAccent:SetPoint("TOPLEFT", frame, "TOPLEFT", 3, -26)
-    titleAccent:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -3, -26)
-    titleAccent:SetHeight(1)
-    titleAccent:SetTexture(0.85, 0.65, 0.13, 0.6)
-    frame.titleAccent = titleAccent
-
-    -- Title Bar Text
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -10)
-    title:SetText("|cFFFFD100CoA Bot Companion Control|r |cFF888888v" .. VERSION .. "|r")
+    title:SetText("|cFFFFD100CoA Companions|r |cFF697080v" .. VERSION .. "|r")
     frame.title = title
 
-    -- Close Button [X] -- explicit size (the template's own default is a large ~32x32 button,
-    -- which overflowed past the collapsed frame's short 32px-tall strip -- confirmed live, the
-    -- close/collapse/compact-icon row visibly stuck out past the dark background).
+    local titleAccent = frame:CreateTexture(nil, "ARTWORK")
+    titleAccent:SetPoint("TOPLEFT", frame, "TOPLEFT", 3, -29)
+    titleAccent:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -3, -29)
+    titleAccent:SetHeight(1)
+    titleAccent:SetTexture(0.85, 0.65, 0.13, 0.65)
+    frame.titleAccent = titleAccent
+
     local btnClose = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     btnClose:SetSize(20, 20)
     btnClose:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
@@ -968,265 +939,224 @@ local function CreateMainFrame()
         CoABotUIDB.isShown = false
     end)
 
-    -- Minimize/Collapse Button [-] / [+]
     local btnCollapse = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     btnCollapse:SetSize(20, 20)
     btnCollapse:SetPoint("RIGHT", btnClose, "LEFT", -2, 0)
     btnCollapse:SetText("-")
-    local COLLAPSED_HEIGHT = 40
-    local COLLAPSED_WIDTH = 190
-    -- Keeps the frame's top-right corner (where the close/collapse/icon controls all live)
-    -- visually fixed across a width change instead of drifting -- a single-point anchor (e.g.
-    -- the saved "CENTER" position) would otherwise resize symmetrically and visibly shift the
-    -- controls sideways. UIParent's own BOTTOMLEFT corner is screen coordinate (0,0), so
-    -- GetRight()/GetTop() (already in that same coordinate space) reproduce the exact spot.
-    local function KeepTopRightFixed()
-        local right, top = frame:GetRight(), frame:GetTop()
-        if right and top then
-            frame:ClearAllPoints()
-            frame:SetPoint("TOPRIGHT", UIParent, "BOTTOMLEFT", right, top)
-        end
-    end
-    btnCollapse:SetScript("OnClick", function(self)
-        CoABotUIDB.isCollapsed = not CoABotUIDB.isCollapsed
-        if CoABotUIDB.isCollapsed then
-            self:SetText("+")
-            KeepTopRightFixed()
-            frame:SetSize(COLLAPSED_WIDTH, COLLAPSED_HEIGHT)
-            if frame.globalBar then frame.globalBar:Hide() end
-            if frame.utilityBar then frame.utilityBar:Hide() end
-            if frame.utilityBar2 then frame.utilityBar2:Hide() end
-            if frame.statusBar then frame.statusBar:Hide() end
-            if frame.emptyNotice then frame.emptyNotice:Hide() end
-            for _, r in ipairs(rows) do r:Hide() end
-            for _, b in ipairs(frame.compactButtons) do b:Show() end
-            -- The long title/version text (and the now-pointless empty strip of background it
-            -- left behind once the frame narrows to just the icons) don't fit or matter in a
-            -- compact strip that's just command icons -- hidden rather than shrunk, per the
-            -- user's explicit ask to drop the label and the dead space in compact mode.
-            frame.title:Hide()
-            frame.titleAccent:Hide()
-            if frame.resizeGrip then frame.resizeGrip:Hide() end
-        else
-            self:SetText("-")
-            KeepTopRightFixed()
-            frame:SetWidth(frame.expandedWidth or 560)
-            if frame.statusBar then frame.statusBar:Show() end
-            for _, b in ipairs(frame.compactButtons) do b:Hide() end
-            frame.title:Show()
-            frame.titleAccent:Show()
-            if frame.resizeGrip then frame.resizeGrip:Show() end
-            RefreshUI()
-        end
-    end)
     frame.btnCollapse = btnCollapse
 
-    -- Compact-mode icon bar: All Follow/Stay/Pull/Stop as icon buttons in the title strip, shown
-    -- only while collapsed -- collapsing used to hide the global command bar entirely with no
-    -- replacement, per the user's explicit ask for *some* way to command the whole group without
-    -- expanding back out. Icons (not text), sized to fully fit inside COLLAPSED_HEIGHT with a
-    -- couple pixels of margin top/bottom -- the first pass anchored these off the close button's
-    -- untouched ~32px template size, which overflowed past the (then 32px) collapsed frame.
     local COMPACT_ICONS = {
-        { verb = "FOLLOW",     icon = "Interface\\Icons\\Ability_Rogue_Sprint",       tip = "All Follow" },
-        { verb = "STAY",       icon = "Interface\\Icons\\Ability_Warrior_ShieldWall", tip = "All Stay" },
-        { verb = "PULL",       icon = "Interface\\Icons\\Ability_Warrior_Charge",     tip = "All Pull" },
-        { verb = "STOPATTACK", icon = "Interface\\Buttons\\UI-GroupLoot-Pass-Up",     tip = "All Stop" },
+        { verb = "FOLLOW", icon = "Interface\\Icons\\Ability_Rogue_Sprint", tip = "All Follow" },
+        { verb = "STAY", icon = "Interface\\Icons\\Ability_Warrior_ShieldWall", tip = "All Stay" },
+        { verb = "PULL", icon = "Interface\\Icons\\Ability_Warrior_Charge", tip = "All Pull" },
+        { verb = "STOPATTACK", icon = "Interface\\Buttons\\UI-GroupLoot-Pass-Up", tip = "All Stop" },
     }
     frame.compactButtons = {}
-    local prevAnchor = btnCollapse
-    for i = #COMPACT_ICONS, 1, -1 do
-        local def = COMPACT_ICONS[i]
+    for i, def in ipairs(COMPACT_ICONS) do
+        local verb, tip = def.verb, def.tip
         local btn = CreateFrame("Button", nil, frame)
-        btn:SetSize(22, 22)
-        btn:SetPoint("RIGHT", prevAnchor, "LEFT", -6, 0)
-        btn:SetNormalTexture(def.icon)
-        btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
-        btn:GetNormalTexture():SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        btn:SetSize(36, 36)
+        btn:SetPoint("LEFT", frame, "LEFT", 6 + (i - 1) * 40, 0)
+        btn:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = true, tileSize = 8, edgeSize = 9,
+            insets = { left = 2, right = 2, top = 2, bottom = 2 }
+        })
+        btn:SetBackdropColor(0.025, 0.025, 0.03, 1)
+        btn:SetBackdropBorderColor(0.48, 0.44, 0.32, 1)
+        local icon = btn:CreateTexture(nil, "ARTWORK")
+        icon:SetPoint("TOPLEFT", btn, "TOPLEFT", 4, -4)
+        icon:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -4, 4)
+        icon:SetTexture(def.icon)
+        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        btn.icon = icon
+        local highlight = btn:CreateTexture(nil, "HIGHLIGHT")
+        highlight:SetPoint("TOPLEFT", icon, "TOPLEFT", 0, 0)
+        highlight:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 0, 0)
+        highlight:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+        highlight:SetBlendMode("ADD")
         btn:SetScript("OnClick", function()
-            for _, m in ipairs(activeMembers) do
-                SendBotCommand(def.verb, m.lowGuid)
+            for _, member in ipairs(activeMembers) do
+                SendBotCommand(verb, member.lowGuid)
             end
         end)
         btn:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-            GameTooltip:AddLine(def.tip)
+            GameTooltip:AddLine(tip)
             GameTooltip:Show()
         end)
         btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
         btn:Hide()
         frame.compactButtons[i] = btn
-        prevAnchor = btn
     end
 
-    -- Global Command Bar (All Bots)
-    local globalBar = CreateFrame("Frame", nil, frame)
-    globalBar:SetSize(536, 26)
-    globalBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -36)
+    frame.tabs = {}
+    local tabDefs = {
+        { id = "squad", label = "Squad" },
+        { id = "tasks", label = "Tasks" },
+        { id = "orders", label = "Orders" },
+        { id = "gear", label = "Gear" },
+    }
+    for i, tabDef in ipairs(tabDefs) do
+        local pageId, label = tabDef.id, tabDef.label
+        local tab = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+        tab:SetSize(116, 22)
+        tab:SetPoint("TOPLEFT", frame, "TOPLEFT", 14 + (i - 1) * 122, -36)
+        tab:SetText(label)
+        tab.pageId = pageId
+        tab.label = label
+        tab:SetScript("OnClick", function() ShowMainPage(pageId) end)
+        frame.tabs[i] = tab
+    end
 
+    local squadPage = CreateFrame("Frame", nil, frame)
+    squadPage:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -66)
+    squadPage:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -12, 10)
+    frame.squadPage = squadPage
+
+    local globalBar = CreateFrame("Frame", nil, squadPage)
+    globalBar:SetSize(492, 24)
+    globalBar:SetPoint("TOPLEFT", squadPage, "TOPLEFT", 0, 0)
     local lblAll = globalBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     lblAll:SetPoint("LEFT", globalBar, "LEFT", 4, 0)
-    lblAll:SetText("|cFFCCCCCCAll Bots:|r")
-
-    local btnAllFollow = CreateFrame("Button", nil, globalBar, "UIPanelButtonTemplate")
-    btnAllFollow:SetSize(66, 20)
-    btnAllFollow:SetPoint("LEFT", lblAll, "RIGHT", 8, 0)
-    btnAllFollow:SetText("All Follow")
-    btnAllFollow:SetScript("OnClick", function()
-        for _, m in ipairs(activeMembers) do
-            SendBotCommand("FOLLOW", m.lowGuid)
-        end
-    end)
-
-    local btnAllStay = CreateFrame("Button", nil, globalBar, "UIPanelButtonTemplate")
-    btnAllStay:SetSize(60, 20)
-    btnAllStay:SetPoint("LEFT", btnAllFollow, "RIGHT", 4, 0)
-    btnAllStay:SetText("All Stay")
-    btnAllStay:SetScript("OnClick", function()
-        for _, m in ipairs(activeMembers) do
-            SendBotCommand("STAY", m.lowGuid)
-        end
-    end)
-
-    local btnAllPull = CreateFrame("Button", nil, globalBar, "UIPanelButtonTemplate")
-    btnAllPull:SetSize(60, 20)
-    btnAllPull:SetPoint("LEFT", btnAllStay, "RIGHT", 4, 0)
-    btnAllPull:SetText("All Pull")
-    btnAllPull:SetScript("OnClick", function()
-        for _, m in ipairs(activeMembers) do
-            SendBotCommand("PULL", m.lowGuid)
-        end
-    end)
-
-    local btnAllStop = CreateFrame("Button", nil, globalBar, "UIPanelButtonTemplate")
-    btnAllStop:SetSize(60, 20)
-    btnAllStop:SetPoint("LEFT", btnAllPull, "RIGHT", 4, 0)
-    btnAllStop:SetText("All Stop")
-    btnAllStop:SetScript("OnClick", function()
-        for _, m in ipairs(activeMembers) do
-            SendBotCommand("STOPATTACK", m.lowGuid)
-        end
-    end)
-
+    lblAll:SetText("|cFF9CA3AFGroup|r")
+    local groupButtons = {
+        { label = "Follow", verb = "FOLLOW", width = 62 },
+        { label = "Stay", verb = "STAY", width = 54 },
+        { label = "Pull", verb = "PULL", width = 54 },
+        { label = "Stop", verb = "STOPATTACK", width = 54 },
+    }
+    local previous = lblAll
+    for i, def in ipairs(groupButtons) do
+        local verb = def.verb
+        local btn = CreateFrame("Button", nil, globalBar, "UIPanelButtonTemplate")
+        btn:SetSize(def.width, 20)
+        btn:SetPoint("LEFT", previous, "RIGHT", i == 1 and 10 or 4, 0)
+        btn:SetText(def.label)
+        btn:SetScript("OnClick", function()
+            for _, member in ipairs(activeMembers) do
+                SendBotCommand(verb, member.lowGuid)
+            end
+        end)
+        previous = btn
+    end
     frame.globalBar = globalBar
 
-    -- Utility Bar: group-wide/guild-wide actions that don't target one specific bot
-    local utilityBar = CreateFrame("Frame", nil, frame)
-    utilityBar:SetSize(536, 26)
-    utilityBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -64)
-
+    local utilityBar = CreateFrame("Frame", nil, squadPage)
+    utilityBar:SetSize(492, 24)
+    utilityBar:SetPoint("TOPLEFT", globalBar, "BOTTOMLEFT", 0, -4)
     local btnQuickFill = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
-    btnQuickFill:SetSize(110, 20)
+    btnQuickFill:SetSize(88, 20)
     btnQuickFill:SetPoint("LEFT", utilityBar, "LEFT", 4, 0)
-    btnQuickFill:SetText("Quick Fill Group")
+    btnQuickFill:SetText("Quick Fill")
     btnQuickFill:SetScript("OnClick", function()
         SendGroupCommand("QUICKFILL")
-        Log("Requested quick-fill (tank/healer/dps) for your group.")
+        Log("Requested quick-fill for your group.")
     end)
 
-    local btnGuildTasks = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
-    btnGuildTasks:SetSize(110, 20)
-    btnGuildTasks:SetPoint("LEFT", btnQuickFill, "RIGHT", 6, 0)
-    btnGuildTasks:SetText("Guild Tasks")
-    btnGuildTasks:SetScript("OnClick", function()
-        ShowGuildTaskBoard()
-    end)
-
-    -- Auto Dungeon Mode: while on, a grouped Tank bot pulls the nearest pack on its own inside
-    -- a dungeon/raid instead of waiting for the player to engage first (see BotMgr::
-    -- SetAutoDungeonMode / the AUTODUNGEON verb in docs/addon-protocol.md). Persisted in
-    -- CoABotUIDB so it survives a relog, but the *server*-side state is what actually matters
-    -- (re-sent here on login -- see the ADDON_LOADED handler) since the server has no memory of
-    -- a client-only setting across a restart of its own.
     local btnAutoDungeon = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
-    btnAutoDungeon:SetSize(130, 20)
-    btnAutoDungeon:SetPoint("LEFT", btnGuildTasks, "RIGHT", 6, 0)
+    btnAutoDungeon:SetSize(104, 20)
+    btnAutoDungeon:SetPoint("LEFT", btnQuickFill, "RIGHT", 4, 0)
     local function RefreshAutoDungeonButton()
-        if CoABotUIDB.autoDungeon then
-            btnAutoDungeon:SetText("|cFF44FF44Auto Dungeon: ON|r")
-        else
-            btnAutoDungeon:SetText("Auto Dungeon: OFF")
-        end
+        btnAutoDungeon:SetText(CoABotUIDB.autoDungeon and "|cFF44FF44Dungeon: ON|r" or "Dungeon: OFF")
     end
     btnAutoDungeon:SetScript("OnClick", function()
         CoABotUIDB.autoDungeon = not CoABotUIDB.autoDungeon
         SendRawBody("AUTODUNGEON:" .. (CoABotUIDB.autoDungeon and "1" or "0"))
-        Log(CoABotUIDB.autoDungeon
-            and "Auto Dungeon Mode enabled -- your Tank bot will pull on its own inside instances."
-            or "Auto Dungeon Mode disabled.")
         RefreshAutoDungeonButton()
     end)
     RefreshAutoDungeonButton()
     frame.RefreshAutoDungeonButton = RefreshAutoDungeonButton
 
-    frame.utilityBar = utilityBar
-
-    -- Second utility row: group formation picker + out-of-combat "bring bots to me".
-    local utilityBar2 = CreateFrame("Frame", nil, frame)
-    utilityBar2:SetSize(536, 26)
-    utilityBar2:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -92)
-
-    local btnFormation = CreateFrame("Button", nil, utilityBar2, "UIPanelButtonTemplate")
-    btnFormation:SetSize(150, 20)
-    btnFormation:SetPoint("LEFT", utilityBar2, "LEFT", 4, 0)
+    local btnFormation = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
+    btnFormation:SetSize(132, 20)
+    btnFormation:SetPoint("LEFT", btnAutoDungeon, "RIGHT", 4, 0)
     local function RefreshFormationButton()
-        local f = FORMATION_BY_ID[currentFormationId] or FORMATIONS[1]
-        btnFormation:SetText("Formation: " .. f.name)
+        local formation = FORMATION_BY_ID[currentFormationId] or FORMATIONS[1]
+        btnFormation:SetText("Form: " .. formation.name)
     end
+    btnFormation:SetScript("OnClick", function(self) OpenFormationMenu(self) end)
     RefreshFormationButton()
-    btnFormation:SetScript("OnClick", function(self)
-        OpenFormationMenu(self)
-    end)
     frame.RefreshFormationButton = RefreshFormationButton
 
-    -- Bring Bots to Me: only usable out of combat (server silently refuses otherwise, see
-    -- BotMgr::TeleportBotsToPlayer) -- greyed out client-side too so the disabled state is
-    -- visible before the player would even try, instead of clicking and wondering why nothing
-    -- happened.
-    local btnTeleport = CreateFrame("Button", nil, utilityBar2, "UIPanelButtonTemplate")
-    btnTeleport:SetSize(150, 20)
-    btnTeleport:SetPoint("LEFT", btnFormation, "RIGHT", 6, 0)
-    btnTeleport:SetText("Bring Bots to Me")
-    btnTeleport:SetScript("OnClick", function()
-        SendGroupCommand("TELEPORT")
-    end)
+    local btnTeleport = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
+    btnTeleport:SetSize(126, 20)
+    btnTeleport:SetPoint("LEFT", btnFormation, "RIGHT", 4, 0)
+    btnTeleport:SetScript("OnClick", function() SendGroupCommand("TELEPORT") end)
     local function RefreshTeleportButton()
         if UnitAffectingCombat("player") then
             btnTeleport:Disable()
-            btnTeleport:SetText("|cFF666666Bring Bots to Me|r")
+            btnTeleport:SetText("|cFF666666Bring to me|r")
         else
             btnTeleport:Enable()
-            btnTeleport:SetText("Bring Bots to Me")
+            btnTeleport:SetText("Bring to me")
         end
     end
     RefreshTeleportButton()
     frame.RefreshTeleportButton = RefreshTeleportButton
+    frame.utilityBar = utilityBar
 
-    frame.utilityBar2 = utilityBar2
+    local scrollFrame = CreateFrame("ScrollFrame", "CoABotUISquadScroll", squadPage, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", utilityBar, "BOTTOMLEFT", 4, -8)
+    scrollFrame:SetPoint("BOTTOMRIGHT", squadPage, "BOTTOMRIGHT", -28, 30)
+    local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+    scrollChild:SetSize(472, 1)
+    scrollFrame:SetScrollChild(scrollChild)
+    frame.squadScroll = scrollFrame
+    frame.squadScrollChild = scrollChild
 
-    -- Target Status Bar (Footer)
-    local statusBar = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    statusBar:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 14, 10)
+    local emptyNotice = CreateFrame("Frame", nil, squadPage)
+    emptyNotice:SetPoint("TOPLEFT", scrollFrame, "TOPLEFT", 0, 0)
+    emptyNotice:SetPoint("BOTTOMRIGHT", scrollFrame, "BOTTOMRIGHT", 0, 0)
+    local emptyText = emptyNotice:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    emptyText:SetPoint("CENTER", emptyNotice, "CENTER", 0, 10)
+    emptyText:SetText("|cFF9CA3AFNo companions in your party.\nUse Quick Fill or invite a bot, then this list updates automatically.|r")
+    emptyText:SetJustifyH("CENTER")
+    frame.emptyNotice = emptyNotice
+
+    local statusBar = squadPage:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    statusBar:SetPoint("BOTTOMLEFT", squadPage, "BOTTOMLEFT", 4, 5)
     statusBar:SetJustifyH("LEFT")
     frame.statusBar = statusBar
 
-    -- Empty Roster Notice
-    local emptyNotice = CreateFrame("Frame", nil, frame)
-    emptyNotice:SetSize(460, 80)
-    emptyNotice:SetPoint("CENTER", frame, "CENTER", 0, -15)
-
-    local emptyText = emptyNotice:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    emptyText:SetPoint("TOP", emptyNotice, "TOP", 0, 0)
-    emptyText:SetText("|cFF888888No companion bots found in your party or raid.\nJoin a group with bots to control them here.|r")
-    emptyText:SetJustifyH("CENTER")
-
-    frame.emptyNotice = emptyNotice
-
-    -- Width-only -- height is auto-managed by RefreshUI (fits the current roster), see
-    -- AddResizeGrip's comment for why letting the grip also drag height would just fight that.
-    AddResizeGrip(frame, 460, 32, 900, 32, "width", function(width)
-        frame.expandedWidth = width -- restored when un-collapsing, see btnCollapse's OnClick
-    end)
+    local function ApplyCollapsedState(collapsed)
+        CoABotUIDB.isCollapsed = collapsed
+        if collapsed then
+            btnCollapse:SetText("+")
+            btnClose:SetSize(28, 28)
+            btnClose:ClearAllPoints()
+            btnClose:SetPoint("RIGHT", frame, "RIGHT", -6, 0)
+            btnCollapse:SetSize(28, 28)
+            btnCollapse:ClearAllPoints()
+            btnCollapse:SetPoint("RIGHT", btnClose, "LEFT", -4, 0)
+            frame:SetSize(236, 48)
+            title:Hide()
+            titleAccent:Hide()
+            for _, tab in ipairs(frame.tabs) do tab:Hide() end
+            squadPage:Hide()
+            if taskBoardFrame then taskBoardFrame:Hide() end
+            if orderPickerFrame then orderPickerFrame:Hide() end
+            if gearPanelFrame then gearPanelFrame:Hide() end
+            for _, btn in ipairs(frame.compactButtons) do btn:Show() end
+        else
+            btnCollapse:SetText("-")
+            btnClose:SetSize(20, 20)
+            btnClose:ClearAllPoints()
+            btnClose:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
+            btnCollapse:SetSize(20, 20)
+            btnCollapse:ClearAllPoints()
+            btnCollapse:SetPoint("RIGHT", btnClose, "LEFT", -2, 0)
+            frame:SetSize(frame.expandedWidth, frame.expandedHeight)
+            title:Show()
+            titleAccent:Show()
+            for _, tab in ipairs(frame.tabs) do tab:Show() end
+            for _, btn in ipairs(frame.compactButtons) do btn:Hide() end
+            ShowMainPage(CoABotUIDB.activePage or "squad")
+        end
+    end
+    btnCollapse:SetScript("OnClick", function() ApplyCollapsedState(not CoABotUIDB.isCollapsed) end)
+    frame.ApplyCollapsedState = ApplyCollapsedState
 
     return frame
 end
@@ -1235,7 +1165,6 @@ end
 -- Guild Task Board (professions/skill/current task per guild bot, + craft orders)
 -------------------------------------------------------------------------------
 
-local taskBoardFrame
 local taskRows = {}
 local CLASS_FILE_NAMES_BY_ID = {
     [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "ROGUE", [5] = "PRIEST",
@@ -1283,7 +1212,7 @@ local MAX_PROFESSION_ICONS = 14
 local function CreateTaskRow(parent, index)
     local row = CreateFrame("Frame", nil, parent)
     row:SetSize(456, 40)
-    row:SetPoint("TOPLEFT", parent, "TOPLEFT", 12, -8 - (index - 1) * 44)
+    row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -8 - (index - 1) * 44)
 
     local bg = row:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
@@ -1412,6 +1341,8 @@ function RefreshTaskBoard()
         end
     end
 
+    taskBoardFrame.listArea:SetHeight(math.max(#guids * 44 + 8, 1))
+
     if #guids == 0 then
         taskBoardFrame.emptyText:Show()
     else
@@ -1420,60 +1351,42 @@ function RefreshTaskBoard()
 end
 
 local function CreateGuildTaskBoardFrame()
-    local frame = CreateFrame("Frame", "CoABotUITaskBoard", UIParent)
-    frame:SetSize(500, 420)
-    frame:SetPoint("CENTER", UIParent, "CENTER", 0, -40)
-    frame:SetFrameStrata("MEDIUM")
-    frame:SetClampedToScreen(true)
-    frame:SetMovable(true)
-    frame:EnableMouse(true)
-    frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", frame.StartMoving)
-    frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+    local frame = CreateFrame("Frame", "CoABotUITaskBoard", mainFrame)
+    frame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 12, -66)
+    frame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -12, 10)
     frame:Hide()
 
-    frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 14,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
-    })
-    frame:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
-    frame:SetBackdropBorderColor(0.35, 0.35, 0.42, 1.0)
-
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -10)
-    title:SetText("|cFFFFD100Guild Task Board|r")
-
-    local btnClose = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    btnClose:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
-    btnClose:SetScript("OnClick", function() frame:Hide() end)
+    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -7)
+    title:SetText("|cFFFFD100Guild activity|r |cFF8B93A3live bot tasks and professions|r")
 
     local btnRefresh = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     btnRefresh:SetSize(70, 20)
-    btnRefresh:SetPoint("RIGHT", btnClose, "LEFT", -4, 0)
+    btnRefresh:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -2)
     btnRefresh:SetText("Refresh")
     btnRefresh:SetScript("OnClick", function() RequestGuildRoster() end)
 
-    -- Roster/task list area
-    local listArea = CreateFrame("Frame", nil, frame)
-    listArea:SetSize(476, 260)
-    listArea:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -36)
+    local btnOrderMaterials = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    btnOrderMaterials:SetSize(112, 20)
+    btnOrderMaterials:SetPoint("RIGHT", btnRefresh, "LEFT", -4, 0)
+    btnOrderMaterials:SetText("New order")
+    btnOrderMaterials:SetScript("OnClick", function() ShowOrderPicker() end)
+
+    local scrollFrame = CreateFrame("ScrollFrame", "CoABotUITaskScroll", frame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -34)
+    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 4)
+
+    local listArea = CreateFrame("Frame", nil, scrollFrame)
+    listArea:SetSize(456, 1)
+    scrollFrame:SetScrollChild(listArea)
     frame.listArea = listArea
+    frame.scrollFrame = scrollFrame
 
     local emptyText = listArea:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     emptyText:SetPoint("TOP", listArea, "TOP", 0, -40)
     emptyText:SetText("|cFF888888No guild bots found. Make sure you're in a guild\nwith online companion bots, then click Refresh.|r")
     emptyText:SetJustifyH("CENTER")
     frame.emptyText = emptyText
-
-    -- Order Materials / Craft Order launcher -- opens the icon-menu picker (ShowOrderPicker)
-    -- instead of making the player type/shift-click a raw item id, per the user's explicit ask.
-    local btnOrderMaterials = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    btnOrderMaterials:SetSize(160, 24)
-    btnOrderMaterials:SetPoint("TOPLEFT", listArea, "BOTTOMLEFT", 12, -12)
-    btnOrderMaterials:SetText("|cFFFFD100Order Materials...|r")
-    btnOrderMaterials:SetScript("OnClick", function() ShowOrderPicker() end)
 
     local refreshTimer = 0
     frame:SetScript("OnUpdate", function(self, elapsed)
@@ -1484,18 +1397,11 @@ local function CreateGuildTaskBoardFrame()
         end
     end)
 
-    AddResizeGrip(frame, 500, 420, 900, 800)
-
     return frame
 end
 
 function ShowGuildTaskBoard()
-    if not taskBoardFrame then
-        taskBoardFrame = CreateGuildTaskBoardFrame()
-    end
-    taskBoardFrame:Show()
-    RequestGuildRoster()
-    RefreshTaskBoard()
+    ShowMainPage("tasks")
 end
 
 -------------------------------------------------------------------------------
@@ -1520,13 +1426,11 @@ for _, c in ipairs(ORDER_CATEGORIES) do
     ORDER_CATEGORY_BY_ID[c.id] = c
 end
 
-local orderPickerFrame
 local orderItemRows = {}
 local activeOrderCategoryId = "herb"
--- InputBoxTemplate's decorative border textures render taller than whatever height an EditBox
--- is given (confirmed live: at ROW_HEIGHT 24 with an 18px qtyBox, the border visibly bled into
--- neighboring rows as a stray horizontal bar) -- 30px matches CreateBotRow's own proven-safe
--- row height elsewhere in this file (32px rows comfortably fit a 22px-tall button there).
+local activeRecipeProfession = "All"
+local recipeProfessionMenu
+-- Thirty pixels keeps the icon, quantity field and action button comfortably separated.
 local ROW_HEIGHT = 30
 
 local function CreateOrderItemRow(parent, index)
@@ -1552,9 +1456,7 @@ local function CreateOrderItemRow(parent, index)
     row:EnableMouse(true)
     row:SetScript("OnEnter", function(self)
         if not self.entry then return end
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetItemByID(self.entry)
-        GameTooltip:Show()
+        ShowItemTooltip(self, self.entry, "ANCHOR_RIGHT")
     end)
     row:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
@@ -1564,9 +1466,20 @@ local function CreateOrderItemRow(parent, index)
     nameText:SetJustifyH("LEFT")
     row.nameText = nameText
 
-    local qtyBox = CreateFrame("EditBox", nil, row, "InputBoxTemplate")
-    qtyBox:SetSize(34, 20)
+    local qtyBox = CreateFrame("EditBox", nil, row)
+    qtyBox:SetSize(38, 22)
     qtyBox:SetPoint("LEFT", nameText, "RIGHT", 4, 0)
+    qtyBox:SetFontObject(GameFontHighlightSmall)
+    qtyBox:SetJustifyH("CENTER")
+    qtyBox:SetTextInsets(3, 3, 0, 0)
+    qtyBox:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 8, edgeSize = 8,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 }
+    })
+    qtyBox:SetBackdropColor(0.02, 0.02, 0.025, 0.95)
+    qtyBox:SetBackdropBorderColor(0.35, 0.37, 0.42, 1.0)
     qtyBox:SetAutoFocus(false)
     qtyBox:SetNumeric(true)
     qtyBox:SetMaxLetters(4)
@@ -1602,8 +1515,21 @@ function RefreshOrderPicker()
 
     local filtered = {}
     for _, item in ipairs(items) do
-        if filter == "" or item.name:lower():find(filter, 1, true) then
+        local professionMatches = activeOrderCategoryId ~= "recipe"
+            or activeRecipeProfession == "All"
+            or item.profession == activeRecipeProfession
+        if professionMatches and (filter == "" or item.name:lower():find(filter, 1, true)) then
             table.insert(filtered, item)
+        end
+    end
+
+    if orderPickerFrame.recipeProfessionBtn then
+        if activeOrderCategoryId == "recipe" then
+            orderPickerFrame.recipeProfessionBtn:SetText("Profession: " .. activeRecipeProfession)
+            orderPickerFrame.recipeProfessionBtn:Show()
+        else
+            orderPickerFrame.recipeProfessionBtn:Hide()
+            if recipeProfessionMenu then recipeProfessionMenu:Hide() end
         end
     end
 
@@ -1632,11 +1558,80 @@ function RefreshOrderPicker()
         orderPickerFrame.emptyText:SetText("|cFF888888Loading catalog from server...|r")
         orderPickerFrame.emptyText:Show()
     elseif #filtered == 0 then
-        orderPickerFrame.emptyText:SetText("|cFF888888No items match your search.|r")
+        local emptyReason = activeOrderCategoryId == "recipe" and activeRecipeProfession ~= "All"
+            and ("No " .. activeRecipeProfession .. " recipes match this filter.")
+            or "No items match your search."
+        orderPickerFrame.emptyText:SetText("|cFF888888" .. emptyReason .. "|r")
         orderPickerFrame.emptyText:Show()
     else
         orderPickerFrame.emptyText:Hide()
     end
+end
+
+local function OpenRecipeProfessionMenu(anchorButton)
+    if not recipeProfessionMenu then
+        recipeProfessionMenu = CreateFrame("Frame", "CoABotUIRecipeProfessionMenu", mainFrame)
+        recipeProfessionMenu:SetFrameStrata("DIALOG")
+        recipeProfessionMenu:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = true, tileSize = 8, edgeSize = 10,
+            insets = { left = 3, right = 3, top = 3, bottom = 3 }
+        })
+        recipeProfessionMenu:SetBackdropColor(0.035, 0.04, 0.055, 0.98)
+        recipeProfessionMenu:SetBackdropBorderColor(0.4, 0.42, 0.48, 1.0)
+        recipeProfessionMenu.buttons = {}
+    end
+
+    local professions, seen = { "All" }, { All = true }
+    for _, item in ipairs(orderCatalog.recipe or {}) do
+        local profession = item.profession or "Other"
+        if not seen[profession] then
+            seen[profession] = true
+            table.insert(professions, profession)
+        end
+    end
+    table.sort(professions, function(a, b)
+        if a == "All" then return b ~= "All" end
+        if b == "All" then return false end
+        return a < b
+    end)
+
+    for _, btn in ipairs(recipeProfessionMenu.buttons) do btn:Hide() end
+    local columns = (#professions > 8) and 2 or 1
+    local rowsPerColumn = math.ceil(#professions / columns)
+    recipeProfessionMenu:SetSize(columns * 138 + 8, rowsPerColumn * 24 + 8)
+    for i, profession in ipairs(professions) do
+        local professionId = profession
+        local btn = recipeProfessionMenu.buttons[i]
+        if not btn then
+            btn = CreateFrame("Button", nil, recipeProfessionMenu)
+            btn:SetSize(134, 22)
+            btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            btn.text:SetPoint("LEFT", btn, "LEFT", 7, 0)
+            local highlight = btn:CreateTexture(nil, "HIGHLIGHT")
+            highlight:SetAllPoints()
+            highlight:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+            highlight:SetBlendMode("ADD")
+            recipeProfessionMenu.buttons[i] = btn
+        end
+        local column = math.floor((i - 1) / rowsPerColumn)
+        local row = (i - 1) % rowsPerColumn
+        btn:ClearAllPoints()
+        btn:SetPoint("TOPLEFT", recipeProfessionMenu, "TOPLEFT", 4 + column * 138, -4 - row * 24)
+        btn.text:SetText(profession == activeRecipeProfession
+            and ("|cFFFFD100" .. profession .. "|r") or profession)
+        btn:SetScript("OnClick", function()
+            activeRecipeProfession = professionId
+            recipeProfessionMenu:Hide()
+            RefreshOrderPicker()
+        end)
+        btn:Show()
+    end
+
+    recipeProfessionMenu:ClearAllPoints()
+    recipeProfessionMenu:SetPoint("TOPRIGHT", anchorButton, "BOTTOMRIGHT", 0, -3)
+    recipeProfessionMenu:Show()
 end
 
 local function SelectOrderCategory(categoryId)
@@ -1655,49 +1650,23 @@ local function SelectOrderCategory(categoryId)
 end
 
 local function CreateOrderPickerFrame()
-    local frame = CreateFrame("Frame", "CoABotUIOrderPicker", UIParent)
-    frame:SetSize(500, 440)
-    frame:SetPoint("CENTER", UIParent, "CENTER", 0, -20)
-    frame:SetFrameStrata("DIALOG")
-    frame:SetClampedToScreen(true)
-    frame:SetMovable(true)
-    frame:EnableMouse(true)
-    frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", frame.StartMoving)
-    frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+    local frame = CreateFrame("Frame", "CoABotUIOrderPicker", mainFrame)
+    frame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 12, -66)
+    frame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -12, 10)
     frame:Hide()
 
-    frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 14,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
-    })
-    frame:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
-    frame:SetBackdropBorderColor(0.35, 0.35, 0.42, 1.0)
-
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -10)
-    title:SetText("|cFFFFD100Order Materials|r")
-
-    local btnClose = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    btnClose:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
-    btnClose:SetScript("OnClick", function()
-        frame:Hide()
-        -- Re-show the Guild Task Board this was opened from -- see ShowOrderPicker's comment on
-        -- why it's hidden while this panel is up (the two frames nearly coincide on screen).
-        if taskBoardFrame and frame.reopenTaskBoard then
-            taskBoardFrame:Show()
-        end
-    end)
+    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -7)
+    title:SetText("|cFFFFD100Orders|r |cFF8B93A3choose an item and quantity|r")
 
     -- Category sidebar
     local sidebar = CreateFrame("Frame", nil, frame)
-    sidebar:SetSize(90, 360)
-    sidebar:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -36)
+    sidebar:SetSize(90, 330)
+    sidebar:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -34)
 
     frame.categoryButtons = {}
     for i, category in ipairs(ORDER_CATEGORIES) do
+        local categoryId = category.id
         local btn = CreateFrame("Button", nil, sidebar, "UIPanelButtonTemplate")
         btn:SetSize(86, 24)
         btn:SetPoint("TOPLEFT", sidebar, "TOPLEFT", 0, -(i - 1) * 27)
@@ -1705,14 +1674,14 @@ local function CreateOrderPickerFrame()
         btn.categoryId = category.id
         btn.categoryLabel = category.label
         btn.text = btn:GetFontString()
-        btn:SetScript("OnClick", function() SelectOrderCategory(category.id) end)
+        btn:SetScript("OnClick", function() SelectOrderCategory(categoryId) end)
         frame.categoryButtons[i] = btn
     end
 
     -- Search box
     local searchBox = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
-    searchBox:SetSize(280, 20)
-    searchBox:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 14, -2)
+    searchBox:SetSize(180, 20)
+    searchBox:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 14, 0)
     searchBox:SetAutoFocus(false)
     searchBox:SetMaxLetters(40)
     searchBox:SetScript("OnTextChanged", function() RefreshOrderPicker() end)
@@ -1723,11 +1692,17 @@ local function CreateOrderPickerFrame()
     searchHint:SetPoint("LEFT", searchBox, "RIGHT", 8, 0)
     searchHint:SetText("Search")
 
-    -- Item list (scrollable) -- anchored to both corners (not just a fixed SetSize) so resizing
-    -- the window via AddResizeGrip actually grows the visible list instead of leaving dead space.
+    local recipeProfessionBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    recipeProfessionBtn:SetSize(144, 22)
+    recipeProfessionBtn:SetPoint("LEFT", searchHint, "RIGHT", 8, 0)
+    recipeProfessionBtn:SetScript("OnClick", function(self) OpenRecipeProfessionMenu(self) end)
+    recipeProfessionBtn:Hide()
+    frame.recipeProfessionBtn = recipeProfessionBtn
+
+    -- Item list fills the remaining page while the outer shell stays a predictable size.
     local scrollFrame = CreateFrame("ScrollFrame", "CoABotUIOrderScroll", frame, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", searchBox, "BOTTOMLEFT", -4, -10)
-    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 14)
+    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 4)
     frame.scrollFrame = scrollFrame
 
     local scrollChild = CreateFrame("Frame", nil, scrollFrame)
@@ -1740,30 +1715,11 @@ local function CreateOrderPickerFrame()
     emptyText:SetJustifyH("CENTER")
     frame.emptyText = emptyText
 
-    AddResizeGrip(frame, 420, 320, 900, 800)
-
     return frame
 end
 
 function ShowOrderPicker()
-    if not orderPickerFrame then
-        orderPickerFrame = CreateOrderPickerFrame()
-    end
-
-    -- The Guild Task Board and this picker are nearly the same size, centered only ~20px apart
-    -- -- left both open at once, the task board's text visibly bleeds around this panel's edges
-    -- (confirmed live, looked like a stray "stripe" of unrelated text). Only the task board's own
-    -- "Order Materials..." button ever opens this, so it's always the one to hide/restore here.
-    if taskBoardFrame and taskBoardFrame:IsShown() then
-        taskBoardFrame:Hide()
-        orderPickerFrame.reopenTaskBoard = true
-    else
-        orderPickerFrame.reopenTaskBoard = false
-    end
-
-    orderPickerFrame:Show()
-    RequestOrderCatalogs()
-    SelectOrderCategory(activeOrderCategoryId)
+    ShowMainPage("orders")
 end
 
 -------------------------------------------------------------------------------
@@ -1787,9 +1743,6 @@ local function Capitalize(s)
     return s:sub(1, 1):upper() .. s:sub(2)
 end
 
-local gearPanelFrame
-local gearPanelBotGuid
-
 local function CreateGearPreferenceRow(parent, yOffset, label, options)
     local lbl = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     lbl:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, yOffset)
@@ -1798,11 +1751,11 @@ local function CreateGearPreferenceRow(parent, yOffset, label, options)
     local row = { buttons = {}, options = options }
     for i, opt in ipairs(options) do
         local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-        btn:SetSize(62, 20)
+        btn:SetSize(54, 20)
         if i == 1 then
             btn:SetPoint("TOPLEFT", lbl, "BOTTOMLEFT", 0, -4)
         else
-            btn:SetPoint("LEFT", row.buttons[i - 1], "RIGHT", 4, 0)
+            btn:SetPoint("LEFT", row.buttons[i - 1], "RIGHT", 3, 0)
         end
         btn:SetText(Capitalize(opt))
         btn.optionId = opt
@@ -1811,86 +1764,110 @@ local function CreateGearPreferenceRow(parent, yOffset, label, options)
     return row
 end
 
--- Greys out any option this bot's class can't legally use at all (per GEARPREFS's legal-type
--- list) and highlights whichever one is the current preference -- same "grey out the
--- impossible, highlight the active" idea ApplyRoleAvailability/UpdateRoleButtonText use.
+-- Every preference remains clickable. Types the server has not confirmed yet are muted rather
+-- than disabled, so a stale/empty capability reply can never lock the whole control row.
 local function ApplyGearPreferenceRow(row, legalTypes, currentPref, botGuidLow, isWeapon)
-    local legalSet = { auto = true } -- "auto" is always a valid choice
+    local legalSet = { auto = true }
     for _, t in ipairs(legalTypes or {}) do
         legalSet[t] = true
     end
 
     for _, btn in ipairs(row.buttons) do
-        local legal = legalSet[btn.optionId]
         local isCurrent = btn.optionId == currentPref
-        if legal then btn:Enable() else btn:Disable() end
+        btn:Enable()
         if isCurrent then
             btn:SetText("|cFF44FF44" .. Capitalize(btn.optionId) .. "|r")
-        elseif legal then
+        elseif legalSet[btn.optionId] then
             btn:SetText(Capitalize(btn.optionId))
         else
-            btn:SetText("|cFF555555" .. Capitalize(btn.optionId) .. "|r")
+            btn:SetText("|cFF9A9A9A" .. Capitalize(btn.optionId) .. "|r")
         end
         btn:SetScript("OnClick", function()
+            local prefs = gearPrefsCache[botGuidLow]
+            if prefs then
+                if isWeapon then prefs.weaponPref = btn.optionId else prefs.armorPref = btn.optionId end
+                ApplyGearPreferenceRow(row, legalTypes, btn.optionId, botGuidLow, isWeapon)
+            end
             SendBotCommand("SETGEARPREF", botGuidLow, (isWeapon and "weapon" or "armor") .. ":" .. btn.optionId)
         end)
+        btn:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:AddLine(Capitalize(self.optionId))
+            if self.optionId ~= "auto" and not legalSet[self.optionId] then
+                GameTooltip:AddLine("The server has not confirmed this proficiency yet.", 0.75, 0.75, 0.75, true)
+            end
+            GameTooltip:Show()
+        end)
+        btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 end
 
 local function CreateGearPanelFrame()
-    local frame = CreateFrame("Frame", "CoABotUIGearPanel", UIParent)
-    frame:SetSize(500, 360)
-    frame:SetPoint("CENTER", UIParent, "CENTER", 0, 20)
-    frame:SetFrameStrata("DIALOG")
-    frame:SetClampedToScreen(true)
-    frame:SetMovable(true)
-    frame:EnableMouse(true)
-    frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", frame.StartMoving)
-    frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+    local frame = CreateFrame("Frame", "CoABotUIGearPanel", mainFrame)
+    frame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 12, -66)
+    frame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -12, 10)
     frame:Hide()
-
-    frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 14,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
-    })
-    frame:SetBackdropColor(0.06, 0.06, 0.08, 0.96)
-    frame:SetBackdropBorderColor(0.35, 0.35, 0.42, 1.0)
+    frame:SetScript("OnShow", function(self)
+        self.itemInfoElapsed = 0
+        self.itemInfoRetries = 6
+    end)
+    frame:SetScript("OnUpdate", function(self, elapsed)
+        if not self.itemInfoRetries or self.itemInfoRetries <= 0 then return end
+        self.itemInfoElapsed = (self.itemInfoElapsed or 0) + elapsed
+        if self.itemInfoElapsed >= 0.5 then
+            self.itemInfoElapsed = 0
+            self.itemInfoRetries = self.itemInfoRetries - 1
+            RefreshGearPanel()
+        end
+    end)
 
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -10)
+    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -7)
     frame.title = title
 
-    local btnClose = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    btnClose:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
-    btnClose:SetScript("OnClick", function() frame:Hide() end)
+    local averageItemLevel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    averageItemLevel:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -7)
+    averageItemLevel:SetText("|cFF8B93A3Average iLvl: --|r")
+    frame.averageItemLevel = averageItemLevel
 
-    -- Equipped items list -- plain fixed-size FontString pool (at most 17 real slots, see
-    -- GEAR_SLOT_ORDER), two columns to keep the panel a reasonable height.
-    frame.gearLines = {}
+    frame.gearSlots = {}
     for i = 1, #GEAR_SLOT_ORDER do
-        local line = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         local col = (i - 1) % 2
         local row = math.floor((i - 1) / 2)
-        line:SetPoint("TOPLEFT", frame, "TOPLEFT", 14 + col * 250, -36 - row * 16)
-        line:SetWidth(240)
-        line:SetJustifyH("LEFT")
-        frame.gearLines[i] = line
+        local itemButton = CreateFrame("Button", nil, frame)
+        itemButton:SetSize(236, 26)
+        itemButton:SetPoint("TOPLEFT", frame, "TOPLEFT", 4 + col * 242, -32 - row * 28)
+        itemButton:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = true, tileSize = 8, edgeSize = 8,
+            insets = { left = 2, right = 2, top = 2, bottom = 2 }
+        })
+        itemButton:SetBackdropColor(0.02, 0.02, 0.025, (row % 2 == 0) and 0.55 or 0.35)
+        itemButton:SetBackdropBorderColor(0.22, 0.24, 0.28, 0.9)
+
+        local icon = itemButton:CreateTexture(nil, "ARTWORK")
+        icon:SetSize(22, 22)
+        icon:SetPoint("LEFT", itemButton, "LEFT", 2, 0)
+        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        itemButton.icon = icon
+
+        local text = itemButton:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        text:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+        text:SetWidth(202)
+        text:SetJustifyH("LEFT")
+        itemButton.text = text
+        itemButton.slot = GEAR_SLOT_ORDER[i]
+        itemButton:SetScript("OnEnter", function(self)
+            if self.itemEntry then ShowItemTooltip(self, self.itemEntry, "ANCHOR_RIGHT") end
+        end)
+        itemButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        frame.gearSlots[i] = itemButton
     end
 
-    local prefY = -36 - math.ceil(#GEAR_SLOT_ORDER / 2) * 16 - 16
+    local prefY = -286
     frame.armorRow = CreateGearPreferenceRow(frame, prefY, "Preferred Armor Type", ARMOR_TYPE_OPTIONS)
-    frame.weaponRow = CreateGearPreferenceRow(frame, prefY - 56, "Preferred Weapon Type", WEAPON_TYPE_OPTIONS)
-
-    local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    hint:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 14, 10)
-    hint:SetText("|cFF888888Greyed = this class can't use that type at all. \"Auto\" greeds/equips whatever's legal.|r")
-    hint:SetWidth(472)
-    hint:SetJustifyH("LEFT")
-
-    AddResizeGrip(frame, 500, 360, 800, 700)
+    frame.weaponRow = CreateGearPreferenceRow(frame, prefY - 40, "Preferred Weapon Type", WEAPON_TYPE_OPTIONS)
 
     return frame
 end
@@ -1899,14 +1876,44 @@ RefreshGearPanel = function()
     if not gearPanelFrame or not gearPanelFrame:IsShown() or not gearPanelBotGuid then return end
 
     local gear = gearCache[gearPanelBotGuid] or {}
+    local totalItemLevel, resolvedItems = 0, 0
     for i, slot in ipairs(GEAR_SLOT_ORDER) do
         local entry = gear[slot]
-        local line = gearPanelFrame.gearLines[i]
+        local itemButton = gearPanelFrame.gearSlots[i]
         if entry then
-            line:SetText("|cFFCCCCCC" .. GEAR_SLOT_NAMES[slot] .. ":|r " .. entry.name)
+            local _, _, quality, clientItemLevel, _, itemType, itemSubType, _, _, icon = GetItemInfo(entry.entry)
+            local itemLevel = entry.itemLevel > 0 and entry.itemLevel or clientItemLevel
+            local detail = itemSubType or itemType or "Item"
+            itemButton.itemEntry = entry.entry
+            itemButton.icon:SetTexture(icon or (GetItemIcon and GetItemIcon(entry.entry))
+                or "Interface\\Icons\\INV_Misc_QuestionMark")
+            itemButton.icon:SetVertexColor(1, 1, 1, 1)
+            if itemLevel then
+                totalItemLevel = totalItemLevel + itemLevel
+                resolvedItems = resolvedItems + 1
+            end
+            itemButton.text:SetText("|cFFB8BEC9" .. GEAR_SLOT_NAMES[slot] .. "|r  " .. detail
+                .. (itemLevel and ("  |cFFFFD100i" .. itemLevel .. "|r") or "  |cFF777777i...|r"))
+            local qualityColor = quality and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[quality]
+            if qualityColor then
+                itemButton:SetBackdropBorderColor(qualityColor.r, qualityColor.g, qualityColor.b, 0.95)
+            else
+                itemButton:SetBackdropBorderColor(0.32, 0.34, 0.38, 0.9)
+            end
         else
-            line:SetText("|cFF666666" .. GEAR_SLOT_NAMES[slot] .. ":|r |cFF444444(empty)|r")
+            itemButton.itemEntry = nil
+            itemButton.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+            itemButton.icon:SetVertexColor(0.35, 0.35, 0.35, 0.7)
+            itemButton.text:SetText("|cFF666666" .. GEAR_SLOT_NAMES[slot] .. "  Empty|r")
+            itemButton:SetBackdropBorderColor(0.18, 0.2, 0.24, 0.8)
         end
+    end
+
+    if resolvedItems > 0 then
+        gearPanelFrame.averageItemLevel:SetText("|cFFB8BEC9Average iLvl:|r |cFFFFD100"
+            .. math.floor(totalItemLevel / resolvedItems + 0.5) .. "|r")
+    else
+        gearPanelFrame.averageItemLevel:SetText("|cFF8B93A3Average iLvl: loading...|r")
     end
 
     local prefs = gearPrefsCache[gearPanelBotGuid]
@@ -1921,17 +1928,65 @@ ShowGearPanel = function(botGuidLow, botName)
         gearPanelFrame = CreateGearPanelFrame()
     end
     gearPanelBotGuid = botGuidLow
-    gearPanelFrame.title:SetText("|cFFFFD100Gear|r -- " .. tostring(botName or "?"))
+    gearPanelFrame.title:SetText("|cFFFFD100Gear|r  " .. tostring(botName or "?"))
 
     -- Clear stale text from whichever bot's gear was shown last, until the fresh GETGEAR replies
     -- land -- avoids briefly showing a *different* bot's equipment under this one's name.
-    for _, line in ipairs(gearPanelFrame.gearLines) do
-        line:SetText("|cFF666666...|r")
+    for _, itemButton in ipairs(gearPanelFrame.gearSlots) do
+        itemButton.itemEntry = nil
+        itemButton.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+        itemButton.text:SetText("|cFF666666Loading...|r")
     end
 
-    gearPanelFrame:Show()
+    ShowMainPage("gear")
     RequestGear(botGuidLow)
     RefreshGearPanel()
+end
+
+ShowMainPage = function(pageId)
+    if not mainFrame then return end
+    if pageId ~= "squad" and pageId ~= "tasks" and pageId ~= "orders" and pageId ~= "gear" then
+        pageId = "squad"
+    end
+
+    CoABotUIDB.activePage = pageId
+    mainFrame.activePage = pageId
+    mainFrame.squadPage:Hide()
+    if taskBoardFrame then taskBoardFrame:Hide() end
+    if orderPickerFrame then orderPickerFrame:Hide() end
+    if gearPanelFrame then gearPanelFrame:Hide() end
+
+    for _, tab in ipairs(mainFrame.tabs) do
+        if tab.pageId == pageId then
+            tab:LockHighlight()
+            tab:SetText("|cFFFFD100" .. tab.label .. "|r")
+        else
+            tab:UnlockHighlight()
+            tab:SetText(tab.label)
+        end
+    end
+
+    if pageId == "squad" then
+        mainFrame.squadPage:Show()
+        RefreshUI()
+    elseif pageId == "tasks" then
+        if not taskBoardFrame then taskBoardFrame = CreateGuildTaskBoardFrame() end
+        taskBoardFrame:Show()
+        RequestGuildRoster()
+        RefreshTaskBoard()
+    elseif pageId == "orders" then
+        if not orderPickerFrame then orderPickerFrame = CreateOrderPickerFrame() end
+        orderPickerFrame:Show()
+        RequestOrderCatalogs()
+        SelectOrderCategory(activeOrderCategoryId)
+    else
+        if not gearPanelFrame then gearPanelFrame = CreateGearPanelFrame() end
+        gearPanelFrame:Show()
+        if not gearPanelBotGuid then
+            gearPanelFrame.title:SetText("|cFFFFD100Gear|r  |cFF8B93A3select Gear on a companion row|r")
+        end
+        RefreshGearPanel()
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -1965,7 +2020,9 @@ local function CreateMinimapButton()
                 else
                     mainFrame:Show()
                     CoABotUIDB.isShown = true
-                    RefreshUI()
+                    if not CoABotUIDB.isCollapsed then
+                        ShowMainPage(CoABotUIDB.activePage or "squad")
+                    end
                 end
             end
         end,
@@ -2019,8 +2076,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         end
 
         CreateMinimapButton()
-
-        RefreshUI()
+        mainFrame.ApplyCollapsedState(CoABotUIDB.isCollapsed)
         Log("Loaded v" .. VERSION .. ". Type |cFFFFD100/coabot|r for commands.")
 
     elseif event == "PARTY_MEMBERS_CHANGED" or event == "RAID_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
@@ -2074,12 +2130,16 @@ SlashCmdList["COABOT"] = function(msg)
         else
             mainFrame:Show()
             CoABotUIDB.isShown = true
-            RefreshUI()
+            if not CoABotUIDB.isCollapsed then
+                ShowMainPage(CoABotUIDB.activePage or "squad")
+            end
         end
     elseif cmd == "show" then
         mainFrame:Show()
         CoABotUIDB.isShown = true
-        RefreshUI()
+        if not CoABotUIDB.isCollapsed then
+            ShowMainPage(CoABotUIDB.activePage or "squad")
+        end
     elseif cmd == "hide" then
         mainFrame:Hide()
         CoABotUIDB.isShown = false

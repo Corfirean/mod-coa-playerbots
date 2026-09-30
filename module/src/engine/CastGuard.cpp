@@ -5,6 +5,7 @@
  */
 
 #include "engine/CastGuard.h"
+#include "engine/BotDebugLog.h"
 #include "engine/CombatContext.h"
 #include "engine/CombatReservations.h"
 #include "engine/SpellPredicates.h"
@@ -19,25 +20,22 @@
 
 namespace BotAI
 {
-    bool CastGuard::IsCurrentlyCasting(Player const* bot)
-    {
-        if (!bot)
-            return false;
-
-        // withDelayed = false, skipChanneled = false, skipAutorepeat = true, isAutoshoot = false, skipInstant = true
-        return bot->IsNonMeleeSpellCast(false, false, true, false, true);
-    }
-
     namespace
     {
-        Spell* GetProtectedSpell(Player const* bot)
+        Spell* GetProtectedSpell(Player* bot)
         {
             if (!bot)
                 return nullptr;
 
             if (Spell* generic = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
-                if (generic->getState() != SPELL_STATE_FINISHED && generic->GetCastTime() > 0)
+            {
+                // Matches the original IsNonMeleeSpellCast(withDelayed=false, ..., skipInstant=true)
+                // semantics this replaced: a pushback-delayed cast does not count as "protected" --
+                // only genuinely in-flight or abandoned casts do.
+                if (generic->getState() != SPELL_STATE_FINISHED && generic->getState() != SPELL_STATE_DELAYED &&
+                    generic->GetCastTime() > 0)
                     return generic;
+            }
 
             if (Spell* channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
                 if (channel->getState() != SPELL_STATE_FINISHED)
@@ -46,20 +44,53 @@ namespace BotAI
             return nullptr;
         }
 
-        bool IsCurrentHeal(Player const* bot)
+        bool IsCurrentHeal(Player* bot)
         {
             Spell* spell = GetProtectedSpell(bot);
             return spell && IsUsableHealSpell(spell->GetSpellInfo());
         }
     }
 
-    uint32 CastGuard::CurrentSpellId(Player const* bot)
+    bool CastGuard::IsCurrentlyCasting(Player* bot)
+    {
+        return GetProtectedSpell(bot) != nullptr;
+    }
+
+    // A generic cast whose remaining time has sat at (clamped) zero for longer than this is
+    // abandoned: Spell::update() clamps m_timer to 0 and calls cast()/finish() the same tick it
+    // reaches zero in the normal case, so a Spell* that is still non-finished with 0ms remaining
+    // this long means the core failed to finish it (interrupted-but-not-cleared, a failed
+    // LoS/target recheck, etc.) -- confirmed live as the root cause of a bot freezing indefinitely
+    // (no attack, no cast, no movement) while a target keeps hitting it, since IsNonMeleeSpellCast
+    // has no timeout of its own and reports "casting" as long as the Spell* is non-null and
+    // non-finished.
+    constexpr uint32 STALE_CAST_GRACE_MS = 1500;
+
+    bool CastGuard::ForceClearIfStaleCast(Player* bot, uint32 heldZeroMs)
+    {
+        if (heldZeroMs <= STALE_CAST_GRACE_MS)
+            return false;
+
+        Spell* spell = GetProtectedSpell(bot);
+        if (!spell)
+            return false;
+
+        LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+            "CastGuard: bot '{}' force-cleared a stale generic/channeled "
+            "cast (spell {}) that sat at 0ms remaining for {}ms without the core ever finishing it.",
+            bot->GetName(), spell->GetSpellInfo()->Id, heldZeroMs);
+        bot->InterruptSpell(CURRENT_GENERIC_SPELL, false, true, true);
+        bot->InterruptSpell(CURRENT_CHANNELED_SPELL, true, true, true);
+        return true;
+    }
+
+    uint32 CastGuard::CurrentSpellId(Player* bot)
     {
         Spell* spell = GetProtectedSpell(bot);
         return spell ? spell->GetSpellInfo()->Id : 0;
     }
 
-    uint32 CastGuard::CurrentSpellRemainingMs(Player const* bot)
+    uint32 CastGuard::CurrentSpellRemainingMs(Player* bot)
     {
         Spell* spell = GetProtectedSpell(bot);
         return spell ? static_cast<uint32>(std::max<int32>(0, spell->GetCastTimeRemaining())) : 0;
@@ -73,9 +104,17 @@ namespace BotAI
         // Only critical movement owns the right to break the atomic cast. Ordinary hostile
         // puddles and formation/facing corrections wait until the cast naturally releases.
         if (BotAvoidance::GetGroundHazardSeverity(bot) == BotAvoidance::GroundHazardSeverity::Critical)
+        {
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                "CastGuard: bot '{}' preemption = LethalGroundHazard.", bot->GetName());
             return CastInterruptReason::LethalGroundHazard;
+        }
         if (BotAvoidance::HasCriticalBossMechanic(bot, ctx.victim))
+        {
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                "CastGuard: bot '{}' preemption = LethalBossMechanic.", bot->GetName());
             return CastInterruptReason::LethalBossMechanic;
+        }
 
         // Do not turn every low-health snapshot into a cancel loop. There must be a living ally
         // in immediate danger, an actually castable heal, and the current cast must not already
@@ -99,7 +138,12 @@ namespace BotAI
                 (criticalHp < 25.0f && !criticalTarget->getAttackers().empty()));
             if (immediateDanger && SelectHealSpell(bot, criticalTarget) != 0 &&
                 !(IsCurrentHeal(bot) && CurrentSpellRemainingMs(bot) <= 800))
+            {
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                    "CastGuard: bot '{}' preemption = EmergencyTankSave (target '{}', {:.1f}% HP).",
+                    bot->GetName(), criticalTarget->GetName(), criticalHp);
                 return CastInterruptReason::EmergencyTankSave;
+            }
         }
 
         // Interrupt only when it is both important and still feasible. A cast with <=150 ms left
@@ -116,7 +160,12 @@ namespace BotAI
             bool ownCastCanFinishFirst = ownRemainingMs <= 250 && enemyRemainingMs > ownRemainingMs + 200;
             if (dangerousTarget && enemyRemainingMs > 150 && !ownCastCanFinishFirst &&
                 SelectInterruptSpell(bot, ctx.victim) != 0)
+            {
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                    "CastGuard: bot '{}' preemption = HighPriorityInterrupt (victim '{}', {}ms left on its cast).",
+                    bot->GetName(), ctx.victim->GetName(), enemyRemainingMs);
                 return CastInterruptReason::HighPriorityInterrupt;
+            }
         }
 
         // Taunt preemption is reserved for a boss/elite or a genuinely endangered non-tank.
@@ -125,7 +174,11 @@ namespace BotAI
             Unit* currentTarget = ctx.victim->GetVictim();
             bool urgent = ctx.targetIsBossOrElite || (currentTarget && currentTarget->GetHealthPct() < 50.0f);
             if (urgent && SelectTauntSpell(bot, ctx.victim) != 0)
+            {
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                    "CastGuard: bot '{}' preemption = CriticalTaunt (victim '{}').", bot->GetName(), ctx.victim->GetName());
                 return CastInterruptReason::CriticalTaunt;
+            }
         }
 
         return CastInterruptReason::None;
@@ -150,7 +203,8 @@ namespace BotAI
 
         uint32 spellId = CurrentSpellId(bot);
         uint32 remainingMs = CurrentSpellRemainingMs(bot);
-        LOG_DEBUG("module.coa-playerbots", "CastGuard: bot '{}' deliberately interrupted spell {} with {}ms remaining: {}.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+            "CastGuard: bot '{}' deliberately interrupted spell {} with {}ms remaining: {}.",
             bot->GetName(), spellId, remainingMs, str);
 
         // Do not cancel CURRENT_AUTOREPEAT_SPELL here. It is not the cast we own and the core

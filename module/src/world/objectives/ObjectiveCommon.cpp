@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "ObjectiveCommon.h"
 #include "CellImpl.h"
 #include "Creature.h"
@@ -224,7 +225,7 @@ namespace ObjectiveCommon
         ctx.task.quest.lastFailure = reason;
         ++ctx.task.quest.badClusters;
 
-        LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' gives up on area {} for quest {} objective {} ({}), {} bad areas so far.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' gives up on area {} for quest {} objective {} ({}), {} bad areas so far.",
             ctx.bot->GetName(), oldArea, ctx.task.quest.questId, uint32(ctx.task.quest.objectiveIndex),
             FailureReasonName(reason), ctx.task.quest.badClusters);
 
@@ -441,7 +442,7 @@ namespace ObjectiveCommon
             bool object = target.IsGameObject();
             ctx.state.failures.Remember(object ? FailKind::GameObject : FailKind::Target, target.GetRawValue(), ctx.now,
                 object ? ctx.cfg.objectFailMs : ctx.cfg.targetFailMs, uint8(reason));
-            LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' lost target {} ({}).", ctx.bot->GetName(), target.ToString(),
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' lost target {} ({}).", ctx.bot->GetName(), target.ToString(),
                 FailureReasonName(reason));
         }
         ReleaseTarget(ctx);
@@ -477,7 +478,7 @@ namespace ObjectiveCommon
             Count(ctx.state.metrics, &WorldMetrics::objectiveProgress, progress - ctx.task.quest.progressMark);
             ctx.task.quest.dryAttempts = 0;
             ctx.task.quest.retryCount = 0;
-            LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' ObjectiveProgress quest {} objective {}: {}/{}.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' ObjectiveProgress quest {} objective {}: {}/{}.",
                 ctx.bot->GetName(), ctx.task.quest.questId, uint32(ctx.task.quest.objectiveIndex),
                 CurrentCount(ctx.bot, ctx.task.quest.questId, ctx.def), ctx.def.requiredCount);
         }

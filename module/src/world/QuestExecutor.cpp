@@ -1,4 +1,5 @@
 #include "QuestExecutor.h"
+#include "engine/BotDebugLog.h"
 #include "IQuestObjectiveHandler.h"
 #include "ObjectiveCommon.h"
 #include "Player.h"
@@ -55,6 +56,9 @@ namespace QuestExecutor
         if (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE)
         {
             task.quest.lastFailure = FailureReason::QuestGone;
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                "QuestExecutor: bot '{}' quest {} failed -- {} (status {}).",
+                bot->GetName(), questId, FailureReasonName(task.quest.lastFailure), uint32(status));
             return ExecResult::Failed;
         }
 
@@ -62,6 +66,9 @@ namespace QuestExecutor
         if (!quest || task.quest.objectiveIndex >= quest->objectives.size())
         {
             task.quest.lastFailure = FailureReason::Unsupported;
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                "QuestExecutor: bot '{}' quest {} failed -- {} (objective index {}).",
+                bot->GetName(), questId, FailureReasonName(task.quest.lastFailure), uint32(task.quest.objectiveIndex));
             return ExecResult::Failed;
         }
         ObjectiveDef const& def = quest->objectives[task.quest.objectiveIndex];
@@ -72,9 +79,9 @@ namespace QuestExecutor
             if (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE)
             {
                 Count(state.metrics, &WorldMetrics::questsCompleted);
-                LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' QuestCompleted {}.", bot->GetName(), questId);
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' QuestCompleted {}.", bot->GetName(), questId);
             }
-            LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' ObjectiveCompleted quest {} objective {} ({}).", bot->GetName(),
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' ObjectiveCompleted quest {} objective {} ({}).", bot->GetName(),
                 questId, uint32(task.quest.objectiveIndex), ObjectiveTypeName(def.type));
             return ExecResult::Completed;
         }
@@ -83,6 +90,9 @@ namespace QuestExecutor
         if (!handler)
         {
             task.quest.lastFailure = FailureReason::Unsupported;
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                "QuestExecutor: bot '{}' quest {} objective {} ({}) has no handler.",
+                bot->GetName(), questId, uint32(task.quest.objectiveIndex), ObjectiveTypeName(def.type));
             return ExecResult::Failed;
         }
 
@@ -96,14 +106,18 @@ namespace QuestExecutor
                 if (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE)
                 {
                     Count(state.metrics, &WorldMetrics::questsCompleted);
-                    LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' QuestCompleted {}.", bot->GetName(), questId);
+                    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' QuestCompleted {}.", bot->GetName(), questId);
                 }
-                LOG_DEBUG("module.coa-playerbots.quest", "Bot '{}' ObjectiveCompleted quest {} objective {} ({}).", bot->GetName(),
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' ObjectiveCompleted quest {} objective {} ({}).", bot->GetName(),
                     questId, uint32(task.quest.objectiveIndex), ObjectiveTypeName(def.type));
                 return ExecResult::Completed;
             case ObjectiveResult::Failed:
             default:
                 Count(state.metrics, &WorldMetrics::failedObjectives);
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                    "QuestExecutor: bot '{}' quest {} objective {} ({}, handler '{}') failed -- {}.",
+                    bot->GetName(), questId, uint32(task.quest.objectiveIndex), ObjectiveTypeName(def.type),
+                    handler->Name(), FailureReasonName(task.quest.lastFailure));
                 return ExecResult::Failed;
         }
     }

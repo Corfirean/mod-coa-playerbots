@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "BotZoneProgression.h"
 #include "BotMgr.h"
 #include "BotWorldBehavior.h"
@@ -415,7 +416,7 @@ namespace BotZoneProgression
         // stays for creation (force) and as the fallback when no route exists.
         if (!force && BotWorldBehavior::RequestTravel(bot, dest->mapId, dest->x, dest->y, dest->z))
         {
-            LOG_INFO("module.coa-playerbots", "BotZoneProgression: bot '{}' (level {}) will fly to {} instead of teleporting.",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotZoneProgression: bot '{}' (level {}) will fly to {} instead of teleporting.",
                 bot->GetName(), level, dest->name);
             bot->SetHomebind(WorldLocation(dest->mapId, dest->x, dest->y, dest->z, dest->o), dest->zoneId);
             return true;
@@ -425,7 +426,7 @@ namespace BotZoneProgression
         bot->StopMoving();
         bot->GetMotionMaster()->Clear();
 
-        LOG_INFO("module.coa-playerbots", "BotZoneProgression: relocating bot '{}' (level {}, race {}) from map {} zone {} to {} (map {}, x {:.1f}, y {:.1f}, z {:.1f}, zone {}).",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotZoneProgression: relocating bot '{}' (level {}, race {}) from map {} zone {} to {} (map {}, x {:.1f}, y {:.1f}, z {:.1f}, zone {}).",
             bot->GetName(), level, uint32(bot->getRace()), bot->GetMapId(), bot->GetZoneId(), dest->name, dest->mapId, dest->x, dest->y, dest->z, dest->zoneId);
 
         // Update homebind with real destination WorldLocation and real areaId

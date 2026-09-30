@@ -31,6 +31,7 @@ public:
             { "spawnbot",     HandleBotSpawnCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "spawnrandom",  HandleBotSpawnRandomCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "spawnleveled", HandleBotSpawnLeveledCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "spawnfleet",   HandleBotSpawnFleetCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "acceptinvite",      HandleBotAcceptInviteCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "acceptguildinvite", HandleBotAcceptGuildInviteCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "invite",            HandleBotInviteCommand,            rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -102,6 +103,15 @@ public:
     static bool HandleBotSpawnLeveledCommand(ChatHandler* handler, uint32 count)
     {
         BotSpawn::SpawnLeveledBots(count, handler);
+        return true;
+    }
+
+    // Debugging population: one bot per custom class (21 total), same race and level, logged in
+    // synchronously -- see BotSpawnRandom.h/.cpp's SpawnClassFleet. `.botcmd spawnfleet 1 1` for
+    // 21 Human level-1 bots.
+    static bool HandleBotSpawnFleetCommand(ChatHandler* handler, uint8 race, uint8 level)
+    {
+        BotSpawn::SpawnClassFleet(race, level, handler);
         return true;
     }
 

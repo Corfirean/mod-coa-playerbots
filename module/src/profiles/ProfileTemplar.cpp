@@ -203,10 +203,15 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
+                // Confirmed live (2026-09-26, `.spellinfo targets 801448`): spell 801448's own
+                // implicit target is TARGET_UNIT_TARGET_ALLY (a self/ally heal), not the hostile
+                // combat target -- tagging it MeleeAttack/CurrentTarget made every attempt fail
+                // SPELL_FAILED_BAD_TARGETS against the enemy, every time (Finding 2 in
+                // docs/research/bot-fleet-combat-findings.md).
                 d.name = "Benediction (Holy Burst)";
                 d.rootSpellId = 801448;
-                d.tags = AbilityTag::MeleeAttack;
-                d.targetType = TargetType::CurrentTarget;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::Self;
                 d.internalThrottleMs = 4000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
@@ -431,10 +436,15 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
+                // Confirmed live (2026-09-26, `.spellinfo targets 801448`): spell 801448's own
+                // implicit target is TARGET_UNIT_TARGET_ALLY (a self/ally heal), not the hostile
+                // combat target -- tagging it MeleeAttack/CurrentTarget made every attempt fail
+                // SPELL_FAILED_BAD_TARGETS against the enemy, every time (Finding 2 in
+                // docs/research/bot-fleet-combat-findings.md).
                 d.name = "Benediction";
                 d.rootSpellId = 801448;
-                d.tags = AbilityTag::MeleeAttack;
-                d.targetType = TargetType::CurrentTarget;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::Self;
                 d.internalThrottleMs = 4000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
@@ -669,10 +679,15 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
+                // Confirmed live (2026-09-26, `.spellinfo targets 801448`): spell 801448's own
+                // implicit target is TARGET_UNIT_TARGET_ALLY (a self/ally heal), not the hostile
+                // combat target -- tagging it MeleeAttack/CurrentTarget made every attempt fail
+                // SPELL_FAILED_BAD_TARGETS against the enemy, every time (Finding 2 in
+                // docs/research/bot-fleet-combat-findings.md).
                 d.name = "Benediction";
                 d.rootSpellId = 801448;
-                d.tags = AbilityTag::MeleeAttack;
-                d.targetType = TargetType::CurrentTarget;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::Self;
                 d.internalThrottleMs = 4000;
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);

@@ -45,6 +45,13 @@ enum class WorldTaskType : uint8
     Repair,
     Travel,
     Social,
+    // Bookkeeping value only, set purely for `.botcmd brain`/log visibility while a bot is off
+    // on a self-queued dungeon expedition (BotDungeonQueue.cpp, CoaBots.AutoQueueDungeon.Enable)
+    // -- unlike every other WorldTaskType above, the planner/executor here never drives its
+    // phases: BotDungeonQueue's own WorldScript tick owns that bot end to end (LFG join, entry
+    // check, AutoDungeon boss clearing, exit, disband), the same way a grouped bot's own quest
+    // task is suspended (SuspendReason::Grouped) rather than executed while it follows a leader.
+    VisitDungeon,
 };
 
 enum class TaskPhase : uint8

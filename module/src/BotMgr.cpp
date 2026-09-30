@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "BotMgr.h"
 #include <algorithm>
 #include <array>
@@ -174,79 +175,88 @@ std::unordered_map<std::string, std::vector<GatherCategoryItem>> const& Gatherab
     return catalog;
 }
 
-bool ResolveGatherLocationForItem(uint32 itemEntry, uint32& mapId, float& x, float& y, float& z)
+// Tries `fromWhereSql` (a full FROM..WHERE clause selecting map/position_x/position_y/position_z
+// as its first four columns, table aliased __t, any item-entry placeholder already substituted)
+// restricted to the bot's own current map
+// first, closest candidate to its current position -- so the order this feeds into ends up
+// something a bot can walk to, not a random jump to the far side of the same continent. Only
+// falls back to a random spot on any of the other three continents if nothing on the current map
+// qualifies at all, since a cross-map trip has no walkable equivalent (no automated boat/zeppelin
+// travel exists here) and a teleport is genuinely the only option left.
+bool PickNearestThenAnyLocation(std::string const& fromWhereSql, uint32 currentMapId, float currentX, float currentY,
+    uint32& mapId, float& x, float& y, float& z)
+{
+    QueryResult nearRes = WorldDatabase.Query(
+        (fromWhereSql + " AND __t.map = {} ORDER BY POW(__t.position_x - {}, 2) + POW(__t.position_y - {}, 2) ASC LIMIT 1").c_str(),
+        currentMapId, currentX, currentY);
+    QueryResult res = nearRes ? std::move(nearRes) : WorldDatabase.Query(
+        (fromWhereSql + " AND __t.map IN (0, 1, 530, 571) ORDER BY RAND() LIMIT 1").c_str());
+    if (!res)
+        return false;
+
+    Field* fields = res->Fetch();
+    mapId = fields[0].Get<uint32>();
+    x = fields[1].Get<float>();
+    y = fields[2].Get<float>();
+    z = fields[3].Get<float>();
+    return true;
+}
+
+// currentMapId/currentX/currentY: the bot's own position right now, so a same-continent result
+// can be walked to instead of always being a fresh teleport (see PickNearestThenAnyLocation and,
+// for the caller side, GuildGather/RetryGuildGatherLocation only teleporting on an actual map
+// change now). Confirmed live 2026-09-29 as a real problem: re-resolving on every retry with a
+// pure `ORDER BY RAND()` had bots (and, at fleet scale, dozens of them) teleport-hopping node to
+// node/hole to hole instantly with no travel time at all.
+bool ResolveGatherLocationForItem(uint32 itemEntry, uint32 currentMapId, float currentX, float currentY,
+    uint32& mapId, float& x, float& y, float& z)
 {
     // 1. Try gameobject loot (mining, herbalism, chests)
-    QueryResult goRes = WorldDatabase.Query(
-        "SELECT g.map, g.position_x, g.position_y, g.position_z "
-        "FROM gameobject g "
-        "JOIN gameobject_template gt ON g.id = gt.entry "
-        "JOIN gameobject_loot_template glt ON gt.data1 = glt.Entry "
-        "WHERE glt.Item = {} AND g.map IN (0, 1, 530, 571) "
-        "ORDER BY RAND() LIMIT 1", itemEntry);
-    if (goRes)
-    {
-        Field* fields = goRes->Fetch();
-        mapId = fields[0].Get<uint32>();
-        x = fields[1].Get<float>();
-        y = fields[2].Get<float>();
-        z = fields[3].Get<float>();
+    if (PickNearestThenAnyLocation(
+            "SELECT __t.map, __t.position_x, __t.position_y, __t.position_z "
+            "FROM gameobject __t "
+            "JOIN gameobject_template gt ON __t.id = gt.entry "
+            "JOIN gameobject_loot_template glt ON gt.data1 = glt.Entry "
+            "WHERE glt.Item = " + std::to_string(itemEntry),
+        currentMapId, currentX, currentY, mapId, x, y, z))
         return true;
-    }
 
     // 2. Try creature loot (cloth, meat)
-    QueryResult crRes = WorldDatabase.Query(
-        "SELECT c.map, c.position_x, c.position_y, c.position_z "
-        "FROM creature c "
-        "JOIN creature_template ct ON c.id = ct.entry "
-        "JOIN creature_loot_template clt ON ct.lootid = clt.Entry "
-        "WHERE clt.Item = {} AND c.map IN (0, 1, 530, 571) "
-        "ORDER BY RAND() LIMIT 1", itemEntry);
-    if (crRes)
-    {
-        Field* fields = crRes->Fetch();
-        mapId = fields[0].Get<uint32>();
-        x = fields[1].Get<float>();
-        y = fields[2].Get<float>();
-        z = fields[3].Get<float>();
+    if (PickNearestThenAnyLocation(
+            "SELECT __t.map, __t.position_x, __t.position_y, __t.position_z "
+            "FROM creature __t "
+            "JOIN creature_template ct ON __t.id = ct.entry "
+            "JOIN creature_loot_template clt ON ct.lootid = clt.Entry "
+            "WHERE clt.Item = " + std::to_string(itemEntry),
+        currentMapId, currentX, currentY, mapId, x, y, z))
         return true;
-    }
 
     // 3. Try skinning loot (leather)
-    QueryResult skRes = WorldDatabase.Query(
-        "SELECT c.map, c.position_x, c.position_y, c.position_z "
-        "FROM creature c "
-        "JOIN creature_template ct ON c.id = ct.entry "
-        "JOIN skinning_loot_template slt ON ct.skinloot = slt.Entry "
-        "WHERE slt.Item = {} AND c.map IN (0, 1, 530, 571) "
-        "ORDER BY RAND() LIMIT 1", itemEntry);
-    if (skRes)
-    {
-        Field* fields = skRes->Fetch();
-        mapId = fields[0].Get<uint32>();
-        x = fields[1].Get<float>();
-        y = fields[2].Get<float>();
-        z = fields[3].Get<float>();
+    if (PickNearestThenAnyLocation(
+            "SELECT __t.map, __t.position_x, __t.position_y, __t.position_z "
+            "FROM creature __t "
+            "JOIN creature_template ct ON __t.id = ct.entry "
+            "JOIN skinning_loot_template slt ON ct.skinloot = slt.Entry "
+            "WHERE slt.Item = " + std::to_string(itemEntry),
+        currentMapId, currentX, currentY, mapId, x, y, z))
         return true;
-    }
 
-    // 4. Try fishing loot
+    // 4. Try fishing loot. A `game_tele` entry (the old fallback here) is just "somewhere someone
+    // once wanted to teleport to" -- no guarantee of being anywhere near water, which is the one
+    // thing TryStartFishing's own FindNearbyWater can't fix (it only samples a ring around
+    // wherever the bot already is). A real GameObjectTemplate type 25 (FISHINGHOLE) spawn is
+    // guaranteed to actually sit in water, so use one of those instead. It doesn't need to be a
+    // hole that happens to yield this exact item -- open-water fishing (the real SPELL_FISHING
+    // cast TryStartFishing uses) resolves its own loot from the zone the bobber lands in, same as
+    // a real player fishing there, regardless of which pool (if any) is nearby.
     QueryResult fiRes = WorldDatabase.Query(
         "SELECT entry FROM fishing_loot_template WHERE item = {} LIMIT 1", itemEntry);
-    if (fiRes)
-    {
-        QueryResult teleRes = WorldDatabase.Query(
-            "SELECT map, position_x, position_y, position_z FROM game_tele WHERE map IN (0, 1) LIMIT 1");
-        if (teleRes)
-        {
-            Field* fields = teleRes->Fetch();
-            mapId = fields[0].Get<uint32>();
-            x = fields[1].Get<float>();
-            y = fields[2].Get<float>();
-            z = fields[3].Get<float>();
-            return true;
-        }
-    }
+    if (fiRes && PickNearestThenAnyLocation(
+            "SELECT __t.map, __t.position_x, __t.position_y, __t.position_z "
+            "FROM gameobject __t JOIN gameobject_template gt ON gt.entry = __t.id "
+            "WHERE gt.type = 25",
+            currentMapId, currentX, currentY, mapId, x, y, z))
+        return true;
 
     return false;
 }
@@ -384,7 +394,7 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
 
             if (Player* bot = botSession->GetPlayer())
             {
-                LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' ({}) logged in successfully.",
+                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' ({}) logged in successfully.",
                     bot->GetName(), bot->GetGUID().ToString());
 
                 // Ensure all newly spawned bots relocate to appropriate zones (fixes bots clustering at spawn points).
@@ -405,6 +415,25 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
         handler->PSendSysMessage("BotMgr: login query issued for guid {}, watch the server log for the result.", charLowGuid);
 }
 
+namespace
+{
+    // Confirmed live (2026-09-27): a bot standing right next to its leader -- same map, same
+    // instance, a few yards apart -- still got hard-teleported on every invite accept and every
+    // follow-across-maps tick, exactly the "poltergeist" symptom the wall-clip investigation
+    // traced back to a bad landing spot. A real player who's already there just walks over; only
+    // a genuinely different map/instance (can't walk there at all) or a real gap on the same map
+    // (fell behind, needs more than a plain MoveFollow tick to close) justifies a teleport.
+    constexpr float LEADER_TELEPORT_DISTANCE_YD = 100.0f;
+
+    bool NeedsTeleportToLeader(Player const* bot, Player const* leader)
+    {
+        if (bot->GetMapId() != leader->GetMapId() || bot->GetInstanceId() != leader->GetInstanceId())
+            return true; // different map/instance: no walkable route exists at all, must teleport
+
+        return bot->GetDistance(leader) > LEADER_TELEPORT_DISTANCE_YD;
+    }
+}
+
 void BotMgr::DoAcceptInvite(WorldSession* session)
 {
     // HandleGroupAcceptOpcode only does recvData.read_skip<uint32>() before the real logic
@@ -418,25 +447,25 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
     Player* bot = session->GetPlayer();
     if (!bot)
     {
-        LOG_ERROR("module.coa-playerbots", "BotMgr: DoAcceptInvite: session has no Player after HandleGroupAcceptOpcode.");
+        LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: DoAcceptInvite: session has no Player after HandleGroupAcceptOpcode.");
         return;
     }
 
     Group* group = bot->GetGroup();
     if (!group)
     {
-        LOG_ERROR("module.coa-playerbots", "BotMgr: DoAcceptInvite: bot '{}' has no group after HandleGroupAcceptOpcode -- AddMember must have failed or returned early.", bot->GetName());
+        LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: DoAcceptInvite: bot '{}' has no group after HandleGroupAcceptOpcode -- AddMember must have failed or returned early.", bot->GetName());
         return;
     }
 
-    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' is now in a group, leader guid {}.", bot->GetName(), group->GetLeaderGUID().ToString());
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' is now in a group, leader guid {}.", bot->GetName(), group->GetLeaderGUID().ToString());
 
     if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
     {
-        LOG_INFO("module.coa-playerbots", "BotMgr: resolved leader '{}' (in world: {}).", leader->GetName(), leader->IsInWorld());
-        if (leader != bot)
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: resolved leader '{}' (in world: {}).", leader->GetName(), leader->IsInWorld());
+        if (leader != bot && NeedsTeleportToLeader(bot, leader))
         {
-            LOG_INFO("module.coa-playerbots", "BotMgr: teleporting bot '{}' to group leader '{}'.",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: teleporting bot '{}' to group leader '{}'.",
                 bot->GetName(), leader->GetName());
             bot->TeleportTo(leader->GetWorldLocation());
 
@@ -444,6 +473,9 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
             // header for why doing it in the same tick as TeleportTo() crashes.
             _pendingTeleportAck.push_back(session);
         }
+        // Already close enough on the same map: no teleport needed at all -- the bot's normal
+        // ResumeFollowingLeader tick (BotAI.cpp) picks up the freshly-joined group and MoveFollows
+        // the leader like any other out-of-combat bot, walking over instead of popping in place.
     }
     else
     {
@@ -457,14 +489,16 @@ void BotMgr::EnsureBotBankRights(Player* bot, Guild* guild)
     if (!guild || !bot)
         return;
 
-    // If guild has no tabs yet, and bot is the Guild Master, create initial tab 0
+    // If guild has no tabs yet, create initial tab 0 regardless of who's asking -- gating this on
+    // "only if the calling bot happens to be the Guild Master" meant a guild led by the real human
+    // player (the normal case) could never get its first tab from bot activity at all: every
+    // GuildDepositItem/GuildGather call would silently deposit 0 forever, with no error anywhere,
+    // until the human manually bought a tab in the real bank UI. Confirmed live 2026-09-29: a
+    // freshly bot-populated guild with a human leader had zero bank tabs and every one of 21
+    // guildgather orders "completed" by depositing nothing. BotMgr is a declared friend of Guild
+    // (see Guild.h) specifically so this self-heal can create the tab on any member's behalf.
     if (guild->_GetPurchasedTabsSize() == 0)
-    {
-        if (guild->GetLeaderGUID() == bot->GetGUID())
-            guild->_CreateNewBankTab();
-        else
-            return;
-    }
+        guild->_CreateNewBankTab();
 
     uint8 rankId = bot->GetRank();
     Guild::RankInfo* rankInfo = guild->GetRankInfo(rankId);
@@ -508,14 +542,14 @@ void BotMgr::DoAcceptGuildInvite(WorldSession* session)
     Player* bot = session->GetPlayer();
     if (!bot)
     {
-        LOG_ERROR("module.coa-playerbots", "BotMgr: DoAcceptGuildInvite: session has no Player.");
+        LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: DoAcceptGuildInvite: session has no Player.");
         return;
     }
 
     uint32 invitedGuildId = bot->GetGuildIdInvited();
     if (!invitedGuildId)
     {
-        LOG_WARN("module.coa-playerbots", "BotMgr: DoAcceptGuildInvite: bot '{}' has no pending guild invite.", bot->GetName());
+        LOG_WARN(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: DoAcceptGuildInvite: bot '{}' has no pending guild invite.", bot->GetName());
         return;
     }
 
@@ -527,13 +561,13 @@ void BotMgr::DoAcceptGuildInvite(WorldSession* session)
     // so the auto-accept loop doesn't spin forever.
     if (bot->GetGuildIdInvited() == invitedGuildId && !bot->GetGuildId())
     {
-        LOG_WARN("module.coa-playerbots", "BotMgr: DoAcceptGuildInvite: failed to join guild {} for bot '{}', clearing invite.",
+        LOG_WARN(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: DoAcceptGuildInvite: failed to join guild {} for bot '{}', clearing invite.",
             invitedGuildId, bot->GetName());
         bot->SetGuildIdInvited(0);
     }
     else
     {
-        LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' successfully joined guild '{}' (id {}).",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' successfully joined guild '{}' (id {}).",
             bot->GetName(), bot->GetGuildName(), bot->GetGuildId());
         if (Guild* guild = bot->GetGuild())
             EnsureBotBankRights(bot, guild);
@@ -567,7 +601,7 @@ void BotMgr::FinishPendingTeleport(WorldSession* session)
         return;
     }
 
-    LOG_INFO("module.coa-playerbots", "BotMgr: finished pending teleport for bot '{}'.", bot->GetName());
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: finished pending teleport for bot '{}'.", bot->GetName());
 
     // Bots have no client to simulate gravity or emit falling/landing packets.
     // Snap the bot's Z to walkable terrain/water surface and broadcast the corrected position
@@ -609,7 +643,7 @@ void BotMgr::TryReturnGhostToCorpseMap(WorldSession* session)
     if (!corpse || corpse->GetMapId() == bot->GetMapId())
         return;
 
-    LOG_INFO("module.coa-playerbots", "BotMgr: ghost '{}' is on map {} but its corpse is on map {} -- teleporting to the corpse's map.",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: ghost '{}' is on map {} but its corpse is on map {} -- teleporting to the corpse's map.",
         bot->GetName(), bot->GetMapId(), corpse->GetMapId());
 
     bot->TeleportTo(corpse->GetMapId(), corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), bot->GetOrientation());
@@ -661,11 +695,12 @@ void BotMgr::TryFollowLeaderAcrossMaps(WorldSession* session)
     if (!leader || leader == bot || !leader->IsInWorld())
         return;
 
-    if (bot->GetMapId() == leader->GetMapId() && bot->GetInstanceId() == leader->GetInstanceId())
-        return;
+    if (!NeedsTeleportToLeader(bot, leader))
+        return; // same map, close enough -- ResumeFollowingLeader's plain MoveFollow closes this
 
-    LOG_INFO("module.coa-playerbots", "BotMgr: leader '{}' is on map {} (instance {}), bot '{}' is on map {} (instance {}) -- teleporting bot to leader.",
-        leader->GetName(), leader->GetMapId(), leader->GetInstanceId(), bot->GetName(), bot->GetMapId(), bot->GetInstanceId());
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: leader '{}' is on map {} (instance {}), bot '{}' is on map {} (instance {}), {:.0f}yd away -- teleporting bot to leader.",
+        leader->GetName(), leader->GetMapId(), leader->GetInstanceId(), bot->GetName(), bot->GetMapId(), bot->GetInstanceId(),
+        bot->GetMapId() == leader->GetMapId() && bot->GetInstanceId() == leader->GetInstanceId() ? bot->GetDistance(leader) : 0.0f);
 
     bot->TeleportTo(leader->GetWorldLocation());
     _pendingTeleportAck.push_back(session);
@@ -835,7 +870,7 @@ void BotMgr::GuildCreate(ObjectGuid::LowType charLowGuid, std::string const& gui
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' created guild '{}' (id {}).",
             bot->GetName(), guild->GetName(), guild->GetId());
-    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' created guild '{}' (id {}).",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' created guild '{}' (id {}).",
         bot->GetName(), guild->GetName(), guild->GetId());
 }
 
@@ -938,12 +973,42 @@ uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntr
             break;
 
         uint32 inStack = matchingItem->GetCount();
+        ObjectGuid matchingItemGuid = matchingItem->GetGUID();
         uint32 remainingNeeded = targetToDeposit - totalDeposited;
         uint32 moveAmount = (remainingNeeded < inStack) ? remainingNeeded : 0; // 0 = entire stack
         uint32 actualMoved = (moveAmount > 0) ? moveAmount : inStack;
 
-        // Deposit into tab 0
-        guild->SwapItemsWithInventory(bot, false, 0, NULL_SLOT, foundBag, foundSlot, moveAmount);
+        // Try tab 0 first (merges into an existing stack there if one exists), then each
+        // further purchased tab in order -- a multi-tab guild bank must not leave everything
+        // after tab 0 untouched just because tab 0 personally happens to be full. Stops at the
+        // first tab that actually accepts it.
+        bool moved = false;
+        for (uint8 tabId = 0; tabId < guild->_GetPurchasedTabsSize(); ++tabId)
+        {
+            guild->SwapItemsWithInventory(bot, false, tabId, NULL_SLOT, foundBag, foundSlot, moveAmount);
+
+            // SwapItemsWithInventory returns void and silently does nothing if this tab has no
+            // room left (full, or every free slot already holds something else) -- without this
+            // check the exact same stack gets "found" again next iteration and totalDeposited
+            // keeps climbing while nothing actually moves, looping until it wraps a uint32
+            // (targetToDeposit is 0xFFFFFFFF for a "deposit everything" call). Confirmed live
+            // 2026-09-29: banking every resource type across 21 bots eventually filled the
+            // guild's one tab and the next deposit call hung the entire world thread for good.
+            Item* stillThere = (foundBag == INVENTORY_SLOT_BAG_0)
+                ? bot->GetItemByPos(INVENTORY_SLOT_BAG_0, foundSlot)
+                : (bot->GetBagByPos(foundBag) ? bot->GetBagByPos(foundBag)->GetItemByPos(foundSlot) : nullptr);
+            if (!(stillThere && stillThere->GetGUID() == matchingItemGuid && stillThere->GetCount() == inStack))
+            {
+                moved = true;
+                break;
+            }
+            // This tab had no room for it -- fall through and try the next one.
+        }
+
+        // No tab in the whole bank had room for this stack: stop instead of retrying it forever.
+        if (!moved)
+            break;
+
         totalDeposited += actualMoved;
     }
 
@@ -956,7 +1021,7 @@ uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntr
             handler->PSendSysMessage("BotMgr: bot '{}' has no item {} in inventory to deposit.",
                 bot->GetName(), itemEntry);
     }
-    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' deposited {}x item {} into guild bank (guild '{}').",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' deposited {}x item {} into guild bank (guild '{}').",
         bot->GetName(), totalDeposited, itemEntry, guild->GetName());
 
     return totalDeposited;
@@ -1023,7 +1088,7 @@ uint32 BotMgr::GuildWithdrawItem(ObjectGuid::LowType charLowGuid, uint32 itemEnt
         else
             handler->PSendSysMessage("BotMgr: item {} not found in guild bank (or no withdraw rights).", itemEntry);
     }
-    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' withdrew {}x item {} from guild bank (guild '{}').",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' withdrew {}x item {} from guild bank (guild '{}').",
         bot->GetName(), totalWithdrawn, itemEntry, guild->GetName());
 
     return totalWithdrawn;
@@ -1088,6 +1153,32 @@ void BotMgr::GuildWithdrawMoney(ObjectGuid::LowType charLowGuid, uint32 copper, 
     }
 }
 
+void BotMgr::DepositLooseResourcesToGuildBank(Player* bot)
+{
+    if (!bot || !bot->GetGuild())
+        return;
+
+    std::unordered_set<uint32> resourceEntries;
+    auto collect = [&](Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (proto && proto->Class == ITEM_CLASS_TRADE_GOODS)
+            resourceEntries.insert(proto->ItemId);
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        collect(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = bot->GetBagByPos(bagSlot))
+            for (uint8 slot = 0; slot < bag->GetBagSize(); ++slot)
+                collect(bag->GetItemByPos(slot));
+
+    // GuildDepositItem already refuses profession tools on its own; every entry collected above is
+    // Trade Goods, never a tool, so no extra filtering needed here.
+    for (uint32 itemEntry : resourceEntries)
+        GuildDepositItem(bot->GetGUID().GetCounter(), itemEntry, 0, nullptr);
+}
+
 void BotMgr::GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 targetCount, ChatHandler* handler)
 {
     WorldSession* session = FindBotSession(charLowGuid);
@@ -1114,6 +1205,14 @@ void BotMgr::GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint
 
     EnsureBotBankRights(bot, guild);
 
+    // Hand out a task with clean bags: bank whatever raw materials it's already carrying (worth
+    // more in the guild bank than sold for coppers or just sitting there) and clear out grey
+    // vendor trash / gear this bot has already outgrown. Without this, a bot that had been
+    // leveling unattended for a long time could have zero room left for the very thing it's about
+    // to be sent to fetch -- confirmed live 2026-09-29 across several of 21 bots.
+    DepositLooseResourcesToGuildBank(bot);
+    BotAI::PrepareBagsForTask(bot);
+
     // 1. Immediately deposit any matching items already held in inventory
     uint32 deposited = GuildDepositItem(charLowGuid, itemEntry, targetCount, nullptr);
 
@@ -1136,7 +1235,7 @@ void BotMgr::GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint
 
     uint32 locMap = 0;
     float locX = 0.0f, locY = 0.0f, locZ = 0.0f;
-    if (ResolveGatherLocationForItem(itemEntry, locMap, locX, locY, locZ))
+    if (ResolveGatherLocationForItem(itemEntry, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), locMap, locX, locY, locZ))
     {
         order.targetMapId = locMap;
         order.targetX = locX;
@@ -1156,7 +1255,7 @@ void BotMgr::GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint
     if (handler)
         handler->PSendSysMessage("BotMgr: guildgather order placed for bot '{}': need {}x item {} (already deposited {}x).",
             bot->GetName(), remaining, itemEntry, deposited);
-    LOG_INFO("module.coa-playerbots", "BotMgr: guildgather order for bot '{}': item {} need {} (already deposited {}).",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: guildgather order for bot '{}': item {} need {} (already deposited {}).",
         bot->GetName(), itemEntry, remaining, deposited);
 }
 
@@ -1210,6 +1309,50 @@ BotMgr::GuildGatherOrder const* BotMgr::GetGuildGatherOrder(ObjectGuid const& gu
 {
     auto it = _guildGatherOrders.find(guid);
     return it != _guildGatherOrders.end() ? &it->second : nullptr;
+}
+
+void BotMgr::RetryGuildGatherLocation(ObjectGuid const& guid)
+{
+    auto it = _guildGatherOrders.find(guid);
+    if (it == _guildGatherOrders.end())
+        return;
+
+    WorldSession* session = FindBotSession(guid.GetCounter());
+    Player* bot = session ? session->GetPlayer() : nullptr;
+    if (!bot)
+        return;
+
+    uint32 locMap = 0;
+    float locX = 0.0f, locY = 0.0f, locZ = 0.0f;
+    if (!ResolveGatherLocationForItem(it->second.itemEntry, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), locMap, locX, locY, locZ))
+        return;
+
+    it->second.targetMapId = locMap;
+    it->second.targetX = locX;
+    it->second.targetY = locY;
+    it->second.targetZ = locZ;
+    it->second.hasTargetLocation = true;
+    SaveGuildGatherOrder(guid, it->second);
+
+    // Only actually teleport on a real map change (no automated cross-continent travel exists
+    // here, so that one genuinely has no walkable alternative). Same map: just point the order at
+    // the new spot and let UpdateSoloWorld's own "dist > 40 -> mount up and walk" logic (already
+    // used for the very first assignment) carry the bot there like it would anywhere else --
+    // confirmed live 2026-09-29 as a real problem at fleet scale: every retry teleporting
+    // unconditionally had bots instantly hopping node to node / fishing hole to fishing hole with
+    // no travel time at all, however far apart they actually were.
+    if (bot->GetMapId() != locMap)
+    {
+        bot->TeleportTo(locMap, locX, locY, locZ, 0.0f);
+        QueueTeleportAck(session);
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(guid), "BotMgr: guild gather order for bot '{}' found no matching node nearby -- re-teleporting to a fresh location on a different continent for item {}.",
+            bot->GetName(), it->second.itemEntry);
+    }
+    else
+    {
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(guid), "BotMgr: guild gather order for bot '{}' found no matching node nearby -- walking to a fresh location for item {}.",
+            bot->GetName(), it->second.itemEntry);
+    }
 }
 
 void BotMgr::LoadGuildGatherOrders()
@@ -1435,6 +1578,19 @@ void AppendCatalogChunks(std::vector<std::string>& lines, std::string const& pre
     if (!body.empty())
         lines.push_back(prefix + body);
 }
+
+std::string RecipeProfessionName(uint32 spellId)
+{
+    auto bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+    for (auto itr = bounds.first; itr != bounds.second; ++itr)
+    {
+        uint32 skillLine = itr->second->SkillLine;
+        for (ProfessionSkillEntry const& profession : PROFESSION_SKILLS)
+            if (profession.skillId == skillLine)
+                return profession.name;
+    }
+    return {};
+}
 }
 
 std::vector<std::string> BotMgr::GetGatherCatalog() const
@@ -1455,37 +1611,57 @@ std::vector<std::string> BotMgr::GetRecipeCatalog(Player* commander) const
     // Same "knows a recipe" definition CraftOrder itself uses (Player::HasSpell on a real
     // SPELL_EFFECT_CREATE_ITEM spell) -- only offer the addon items a guild-mate bot can
     // *actually* craft right now, per the user's explicit ask, not every recipe that exists.
-    std::vector<GatherCategoryItem> known;
+    std::unordered_map<std::string, std::vector<GatherCategoryItem>> knownByProfession;
     std::unordered_set<uint32> seen;
     for (auto const& [itemEntry, spellIds] : CraftingRecipeIndex())
     {
         if (seen.count(itemEntry))
             continue;
+        bool knownByGuildBot = false;
+        std::string professionName;
         for (Player* bot : GetOnlineBots())
         {
             if (bot->GetGuildId() != guildId)
                 continue;
-            bool knows = false;
             for (uint32 spellId : spellIds)
             {
                 if (bot->HasSpell(spellId))
                 {
-                    knows = true;
-                    break;
+                    knownByGuildBot = true;
+                    std::string resolvedProfession = RecipeProfessionName(spellId);
+                    if (!resolvedProfession.empty())
+                        professionName = resolvedProfession;
+                    if (!professionName.empty())
+                        break;
                 }
             }
-            if (knows)
-            {
-                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemEntry);
-                known.push_back({ itemEntry, proto ? proto->Name1 : ("item " + std::to_string(itemEntry)) });
-                seen.insert(itemEntry);
+            if (!professionName.empty())
                 break;
-            }
+        }
+        if (knownByGuildBot)
+        {
+            if (professionName.empty())
+                professionName = "Other";
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemEntry);
+            knownByProfession[professionName].push_back(
+                { itemEntry, proto ? proto->Name1 : ("item " + std::to_string(itemEntry)) });
+            seen.insert(itemEntry);
         }
     }
-    std::sort(known.begin(), known.end(), [](GatherCategoryItem const& a, GatherCategoryItem const& b) { return a.name < b.name; });
 
-    AppendCatalogChunks(lines, "RCAT:", known);
+    auto appendProfession = [&](std::string const& professionName)
+    {
+        auto itr = knownByProfession.find(professionName);
+        if (itr == knownByProfession.end())
+            return;
+        std::vector<GatherCategoryItem>& items = itr->second;
+        std::sort(items.begin(), items.end(),
+            [](GatherCategoryItem const& a, GatherCategoryItem const& b) { return a.name < b.name; });
+        AppendCatalogChunks(lines, "RCAT:" + professionName + ":", items);
+    };
+    for (ProfessionSkillEntry const& profession : PROFESSION_SKILLS)
+        appendProfession(profession.name);
+    appendProfession("Other");
     return lines;
 }
 
@@ -1928,7 +2104,7 @@ void BotMgr::AttackNearestHostile(ObjectGuid::LowType charLowGuid, float range, 
         bot->GetPhaseMask(), target->GetPhaseMask(), bot->IsMounted(),
         bot->GetVictim() ? bot->GetVictim()->GetName() : "<null>");
     bool attacked = bot->Attack(target, true);
-    LOG_INFO("module.coa-playerbots", "BotMgr: Attack() on '{}' returned {}; GetVictim() is now {}; attackers count {}.",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: Attack() on '{}' returned {}; GetVictim() is now {}; attackers count {}.",
         target->GetName(), attacked, bot->GetVictim() ? bot->GetVictim()->GetName() : "<null>", bot->getAttackers().size());
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' is now attacking '{}' (Attack() returned {}).", bot->GetName(), target->GetName(), attacked);
@@ -1955,7 +2131,7 @@ void BotMgr::SetRole(ObjectGuid::LowType charLowGuid, std::string const& roleNam
         BotRole autoRole = BotAI::GetRoleForClassSpec(bot->getClass(), activeSpec);
         char const* specName = BotAI::GetSpecName(bot->getClass(), activeSpec);
         char const* roleStr = RoleToString(autoRole);
-        LOG_INFO("module.coa-playerbots", "BotMgr::SetRole: bot '{}' role reset to auto (detected {} from spec {} '{}').",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::SetRole: bot '{}' role reset to auto (detected {} from spec {} '{}').",
             bot->GetName(), roleStr, activeSpec, specName ? specName : "unknown");
         if (handler)
             handler->PSendSysMessage("BotMgr: bot '{}' role reset to auto (detected {} from spec {} '{}').",
@@ -1989,7 +2165,7 @@ void BotMgr::SetRole(ObjectGuid::LowType charLowGuid, std::string const& roleNam
     uint32 targetSpec = BotAI::FindSpecForRole(bot->getClass(), role, currentSpec);
     if (!targetSpec)
     {
-        LOG_INFO("module.coa-playerbots", "BotMgr::SetRole: bot '{}' (class {}) has no {} spec available -- role change refused.",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::SetRole: bot '{}' (class {}) has no {} spec available -- role change refused.",
             bot->GetName(), uint32(bot->getClass()), normalized);
         if (handler)
             handler->PSendSysMessage("BotMgr: bot '{}' has no {} spec available for its class -- role change refused.",
@@ -2001,7 +2177,7 @@ void BotMgr::SetRole(ObjectGuid::LowType charLowGuid, std::string const& roleNam
         LearnSpecialization(charLowGuid, targetSpec, handler);
 
     BotAI::SetRole(bot->GetGUID(), role);
-    LOG_INFO("module.coa-playerbots", "BotMgr::SetRole: bot '{}' role manually set to {} (guid {}).",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::SetRole: bot '{}' role manually set to {} (guid {}).",
         bot->GetName(), normalized, charLowGuid);
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' role manually set to {}.", bot->GetName(), normalized);
@@ -2056,7 +2232,7 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
             if (handler)
                 handler->PSendSysMessage("BotMgr: specialization {} is not valid for bot '{}' (class {}).",
                     specId, bot->GetName(), uint32(bot->getClass()));
-            LOG_ERROR("module.coa-playerbots", "BotMgr: SwitchSpecialization rejected spec {} for bot '{}' (class {}).",
+            LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: SwitchSpecialization rejected spec {} for bot '{}' (class {}).",
                 specId, bot->GetName(), uint32(bot->getClass()));
             return;
         }
@@ -2123,7 +2299,7 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' spent {} talent(s) ({} skipped, budget or other limit) for specialization {} '{}' (detected role: {}).",
             bot->GetName(), learned, skipped, specId, specName ? specName : "unknown", roleStr);
-    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' (class {}) spent {} talent(s), skipped {}, for spec {} '{}' (role: {}).",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' (class {}) spent {} talent(s), skipped {}, for spec {} '{}' (role: {}).",
         bot->GetName(), uint32(bot->getClass()), learned, skipped, specId, specName ? specName : "unknown", roleStr);
 }
 
@@ -2264,7 +2440,7 @@ void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
             if (targetSpec != currentSpec)
                 LearnSpecialization(bot->GetGUID().GetCounter(), targetSpec, nullptr);
             BotAI::SetRole(bot->GetGUID(), role);
-            LOG_INFO("module.coa-playerbots", "BotMgr::QuickFillGroup: switched '{}' to {} (spec {}) to fill an empty slot.",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::QuickFillGroup: switched '{}' to {} (spec {}) to fill an empty slot.",
                 bot->GetName(), RoleToString(role), targetSpec);
             selected.push_back(bot);
             pool.erase(std::remove(pool.begin(), pool.end(), bot), pool.end());
@@ -2283,7 +2459,7 @@ void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
         packet << bot->GetName();
         packet << uint32(0);
         commander->GetSession()->HandleGroupInviteOpcode(packet);
-        LOG_INFO("module.coa-playerbots", "BotMgr::QuickFillGroup: '{}' invited bot '{}' (role {}).",
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::QuickFillGroup: '{}' invited bot '{}' (role {}).",
             commander->GetName(), bot->GetName(), RoleToString(BotAI::GetRole(bot->GetGUID())));
     }
 
@@ -2398,26 +2574,26 @@ void BotMgr::TeleportBotsToPlayer(Player* commander, ChatHandler* handler)
 
 namespace
 {
-struct GearProbeItem
+struct GearTypeSkill
 {
     uint32 subclass;
-    uint32 itemId;
+    uint32 skill;
 };
 
-constexpr GearProbeItem ARMOR_PROBES[4] = {
-    { ITEM_SUBCLASS_ARMOR_CLOTH,   37222 },
-    { ITEM_SUBCLASS_ARMOR_LEATHER, 37165 },
-    { ITEM_SUBCLASS_ARMOR_MAIL,    37144 },
-    { ITEM_SUBCLASS_ARMOR_PLATE,   37395 },
+constexpr GearTypeSkill ARMOR_SKILLS[4] = {
+    { ITEM_SUBCLASS_ARMOR_CLOTH,   SKILL_CLOTH },
+    { ITEM_SUBCLASS_ARMOR_LEATHER, SKILL_LEATHER },
+    { ITEM_SUBCLASS_ARMOR_MAIL,    SKILL_MAIL },
+    { ITEM_SUBCLASS_ARMOR_PLATE,   SKILL_PLATE_MAIL },
 };
 
-constexpr GearProbeItem WEAPON_PROBES[6] = {
-    { ITEM_SUBCLASS_WEAPON_SWORD, 37179 },
-    { ITEM_SUBCLASS_WEAPON_MACE,  37681 },
-    { ITEM_SUBCLASS_WEAPON_AXE,   37260 },
-    { ITEM_SUBCLASS_WEAPON_FIST,  37631 },
-    { ITEM_SUBCLASS_WEAPON_DAGGER,37181 },
-    { ITEM_SUBCLASS_WEAPON_STAFF, 37190 },
+constexpr GearTypeSkill WEAPON_SKILLS[6] = {
+    { ITEM_SUBCLASS_WEAPON_SWORD, SKILL_SWORDS },
+    { ITEM_SUBCLASS_WEAPON_MACE,  SKILL_MACES },
+    { ITEM_SUBCLASS_WEAPON_AXE,   SKILL_AXES },
+    { ITEM_SUBCLASS_WEAPON_FIST,  SKILL_FIST_WEAPONS },
+    { ITEM_SUBCLASS_WEAPON_DAGGER,SKILL_DAGGERS },
+    { ITEM_SUBCLASS_WEAPON_STAFF, SKILL_STAVES },
 };
 }
 
@@ -2429,12 +2605,12 @@ uint32 BotMgr::GetGearPreference(Player* bot, bool weapon) const
     return bot->GetPlayerSetting(key, 0).value;
 }
 
-void BotMgr::SetGearPreference(Player* bot, bool weapon, uint32 subclass)
+void BotMgr::SetGearPreference(Player* bot, bool weapon, uint32 subclass, bool automatic)
 {
     if (!bot)
         return;
     char const* key = weapon ? "coa.gear_pref_weapon" : "coa.gear_pref_armor";
-    bot->UpdatePlayerSetting(key, 0, weapon ? subclass + 1 : subclass);
+    bot->UpdatePlayerSetting(key, 0, automatic ? 0 : (weapon ? subclass + 1 : subclass));
 }
 
 std::vector<uint32> BotMgr::GetLegalArmorSubclasses(Player* bot) const
@@ -2442,12 +2618,9 @@ std::vector<uint32> BotMgr::GetLegalArmorSubclasses(Player* bot) const
     std::vector<uint32> legal;
     if (!bot)
         return legal;
-    for (GearProbeItem const& probe : ARMOR_PROBES)
-    {
-        uint16 dest = uint16(EQUIPMENT_SLOT_CHEST) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
-        if (bot->CanEquipNewItem(NULL_SLOT, dest, probe.itemId, true) == EQUIP_ERR_OK)
-            legal.push_back(probe.subclass);
-    }
+    for (GearTypeSkill const& type : ARMOR_SKILLS)
+        if (bot->GetSkillValue(type.skill) > 0)
+            legal.push_back(type.subclass);
     return legal;
 }
 
@@ -2456,12 +2629,9 @@ std::vector<uint32> BotMgr::GetLegalWeaponSubclasses(Player* bot) const
     std::vector<uint32> legal;
     if (!bot)
         return legal;
-    for (GearProbeItem const& probe : WEAPON_PROBES)
-    {
-        uint16 dest = uint16(EQUIPMENT_SLOT_MAINHAND) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
-        if (bot->CanEquipNewItem(NULL_SLOT, dest, probe.itemId, true) == EQUIP_ERR_OK)
-            legal.push_back(probe.subclass);
-    }
+    for (GearTypeSkill const& type : WEAPON_SKILLS)
+        if (bot->GetSkillValue(type.skill) > 0)
+            legal.push_back(type.subclass);
     return legal;
 }
 
@@ -2520,7 +2690,8 @@ std::vector<std::string> BotMgr::GetEquippedGearInfo(Player* bot) const
         ItemTemplate const* proto = item->GetTemplate();
         std::string name = proto ? proto->Name1 : ("item " + std::to_string(item->GetEntry()));
         lines.push_back("GEAR:" + std::to_string(bot->GetGUID().GetCounter()) + ":" + std::to_string(uint32(slot)) +
-            ":" + std::to_string(item->GetEntry()) + ":" + name);
+            ":" + std::to_string(item->GetEntry()) + ":" + name + ":" +
+            std::to_string(proto ? proto->ItemLevel : 0));
     }
     return lines;
 }
@@ -2620,7 +2791,7 @@ void BotMgr::GearUpBot(Player* bot, ChatHandler* handler)
             InventoryResult canEquip = bot->CanEquipNewItem(NULL_SLOT, dest, itemId, true);
             if (canEquip != EQUIP_ERR_OK)
             {
-                LOG_INFO("module.coa-playerbots", "BotMgr::GearUpBot diag: '{}' (class {}) can't equip item {} in slot {} -- CanEquipNewItem result {}.",
+                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::GearUpBot diag: '{}' (class {}) can't equip item {} in slot {} -- CanEquipNewItem result {}.",
                     bot->GetName(), uint32(bot->getClass()), itemId, uint32(slot), uint32(canEquip));
                 continue; // this class/spec can't use this candidate -- try the next one
             }
@@ -2667,7 +2838,7 @@ void BotMgr::GearUpBot(Player* bot, ChatHandler* handler)
     if (handler)
         handler->PSendSysMessage("BotMgr: gave '{}' {} baseline item(s) (avg item level now {:.0f}).",
             bot->GetName(), given, bot->GetAverageItemLevel());
-    LOG_INFO("module.coa-playerbots", "BotMgr::GearUpBot: gave '{}' {} baseline item(s), avg item level now {:.0f}.",
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::GearUpBot: gave '{}' {} baseline item(s), avg item level now {:.0f}.",
         bot->GetName(), given, bot->GetAverageItemLevel());
 }
 
@@ -2825,7 +2996,7 @@ void BotMgr::Update(uint32 diff)
             Player* bot = FindBotPlayer(botGuid.GetCounter());
             if (bot && bot->GetGroup())
             {
-                LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' leaving its group -- no real player left in it.", bot->GetName());
+                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' leaving its group -- no real player left in it.", bot->GetName());
                 bot->RemoveFromGroup(GROUP_REMOVEMETHOD_LEAVE);
             }
         }
@@ -2841,13 +3012,13 @@ void BotMgr::Update(uint32 diff)
 
         if (bot->GetGroupInvite())
         {
-            LOG_INFO("module.coa-playerbots", "BotMgr: auto-accepting pending group invite for bot '{}'.", bot->GetName());
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: auto-accepting pending group invite for bot '{}'.", bot->GetName());
             DoAcceptInvite(session);
         }
 
         if (bot->GetGuildIdInvited() && !bot->GetGuildId())
         {
-            LOG_INFO("module.coa-playerbots", "BotMgr: auto-accepting pending guild invite for bot '{}' (guild id {}).",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: auto-accepting pending guild invite for bot '{}' (guild id {}).",
                 bot->GetName(), bot->GetGuildIdInvited());
             DoAcceptGuildInvite(session);
         }
@@ -2886,13 +3057,13 @@ void BotMgr::Update(uint32 diff)
             {
                 if (MatchesGearPreference(bot, roll->itemid))
                 {
-                    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' rolling Greed on item {} (slot {}).",
+                    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Greed on item {} (slot {}).",
                         bot->GetName(), roll->itemid, roll->itemSlot);
                     DoRollGreed(session, roll);
                 }
                 else
                 {
-                    LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' rolling Pass on item {} (slot {}) -- wrong armor/weapon type for its class/preference.",
+                    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Pass on item {} (slot {}) -- wrong armor/weapon type for its class/preference.",
                         bot->GetName(), roll->itemid, roll->itemSlot);
                     DoRollPass(session, roll);
                 }
@@ -2939,7 +3110,7 @@ void BotMgr::Update(uint32 diff)
                     itr->second.gatheredCount += deposited;
                     if (deposited >= remaining)
                     {
-                        LOG_INFO("module.coa-playerbots", "BotMgr: guildgather order completed for bot '{}' (item {}).",
+                        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: guildgather order completed for bot '{}' (item {}).",
                             bot->GetName(), itemEntry);
                         DeleteGuildGatherOrder(itr->first);
                         itr = _guildGatherOrders.erase(itr);
@@ -2975,7 +3146,7 @@ void BotMgr::Update(uint32 diff)
         if (currentMoney > goldLimit)
         {
             uint32 excess = currentMoney - goldLimit;
-            LOG_INFO("module.coa-playerbots", "BotMgr: bot '{}' auto-depositing excess gold ({} copper) to guild bank.",
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' auto-depositing excess gold ({} copper) to guild bank.",
                 bot->GetName(), excess);
             GuildDepositMoney(bot->GetGUID().GetCounter(), excess, nullptr);
         }

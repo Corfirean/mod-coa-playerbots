@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "WorldParties.h"
 #include "BotAI.h"
 #include "CellImpl.h"
@@ -370,8 +371,8 @@ namespace WorldParties
 
         Count(state.metrics, &WorldMetrics::partiesFormed);
         NoteEvent(state, Acore::StringFormat("formed a party with {} for quest {}", names, task.quest.questId));
-        LOG_DEBUG("module.coa-playerbots.world", "Bot '{}' formed temporary party {} with {} for quest {}.", leader->GetName(), id,
-            names, task.quest.questId);
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(leader->GetGUID()), "Bot '{}' formed temporary party {} with {} for quest {}.",
+            leader->GetName(), id, names, task.quest.questId);
     }
 
     bool IsLeader(ObjectGuid bot)

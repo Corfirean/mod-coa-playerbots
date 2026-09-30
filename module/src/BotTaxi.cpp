@@ -1,3 +1,4 @@
+#include "engine/BotDebugLog.h"
 #include "BotTaxi.h"
 #include "BotZoneProgression.h"
 #include "DBCStores.h"
@@ -99,7 +100,7 @@ namespace BotTaxi
         }
 
         if (granted)
-            LOG_INFO("module.coa-playerbots", "BotTaxi: '{}' knows {} flight path(s) for level {}.", bot->GetName(),
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotTaxi: '{}' knows {} flight path(s) for level {}.", bot->GetName(),
                 granted, bot->GetLevel());
     }
 

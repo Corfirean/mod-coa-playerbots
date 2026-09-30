@@ -81,6 +81,13 @@ namespace BotAI
     bool IsInCity(Player const* bot);
     void TryMountForTravel(Player* bot);
 
+    // Forces an immediate junk/obsolete-gear sweep (sell to a vendor standing right there, else
+    // destroy only if bags are truly out of room), skipping MaintainEquipmentNow's "only bother
+    // once nearly full" opportunistic gate. For a caller that needs bag space *now* rather than
+    // whenever the bot next happens to wander near a vendor -- BotMgr::GuildGather calls this
+    // before handing out a task, so the bot starts with room to actually carry the result.
+    void PrepareBagsForTask(Player* bot);
+
     // The bot's persistent personality preferences for gathering and fishing (0-100), used to
     // shape its profession skills at creation the same way they shape its solo intent.
     void GetProfessionLeans(Player* bot, uint8& gathering, uint8& fishing);

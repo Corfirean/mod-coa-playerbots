@@ -11,6 +11,8 @@
 #include "Define.h"
 #include "ObjectGuid.h"
 
+enum SpellCastResult : uint8;
+
 class Player;
 class Unit;
 
@@ -26,6 +28,14 @@ namespace BotAI
 
     // Records a cast failure so this spell is temporarily blacklisted for this bot to avoid infinite retry loops.
     void RecordSpellCastFailure(ObjectGuid botGuid, uint32 spellId);
+
+    // Same as RecordSpellCastFailure, but for a failed cast whose actual SpellCastResult is known.
+    // A range/facing failure (SPELL_FAILED_TOO_CLOSE / _OUT_OF_RANGE / _UNIT_NOT_INFRONT) gets a
+    // longer backoff than a generic failure and an active reaction (back away / re-face) instead of
+    // just being blacklisted and retried from the same spot -- confirmed live that the 2s generic
+    // cooldown alone lets a bot get stuck retrying an unreachable min-range ability forever. Prefer
+    // this over the plain overload at any call site that already has the target and result handy.
+    void HandleSpellCastFailure(Player* bot, Unit* target, uint32 spellId, SpellCastResult result);
 
     // Checks if a spell is currently on failure backoff cooldown for this bot.
     bool IsSpellInFailureCooldown(ObjectGuid botGuid, uint32 spellId);

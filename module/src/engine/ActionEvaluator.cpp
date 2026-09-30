@@ -5,6 +5,7 @@
  */
 
 #include "engine/ActionEvaluator.h"
+#include "engine/BotDebugLog.h"
 #include "engine/CombatResource.h"
 #include "engine/HealEvaluator.h"
 #include "engine/SpellPredicates.h"
@@ -14,6 +15,7 @@
 #include "BotClassRotations.h"
 #include "Creature.h"
 #include "Group.h"
+#include "Log.h"
 #include "ObjectAccessor.h"
 #include "Pet.h"
 #include "Player.h"
@@ -235,39 +237,59 @@ namespace BotAI
         if (!bot || !target || !resolvedSpellId)
             return false;
 
-        if (IsThrottled(bot->GetGUID(), desc.rootSpellId))
+        // Temporary diagnostic (2026-09-26, Runemaster/Traeminotham investigation -- see
+        // docs/research/bot-fleet-combat-findings.md): every rejection below logs which specific
+        // gate fired, so a bot with literally zero castable candidates for an extended period can
+        // be root-caused from the log instead of guessed at. Cheap (one string compare + an
+        // already-throttled-by-caller LOG_DEBUG) and useful long-term for any future "no usable
+        // action" mystery, so left in rather than ripped out once this investigation is done.
+        auto reject = [&](char const* reason) -> bool
+        {
+            LOG_DEBUG(BotDebugLog::LoggerName(bot->GetGUID()),
+                "ActionEvaluator: bot '{}' can't cast '{}' (spell {}) -- {}.",
+                bot->GetName(), desc.name, resolvedSpellId, reason);
             return false;
+        };
+
+        if (IsThrottled(bot->GetGUID(), desc.rootSpellId))
+            return reject("internal throttle");
 
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(resolvedSpellId);
         if (!spellInfo)
-            return false;
+            return reject("no SpellInfo");
+
+        // See SpellPredicates.cpp's IsKnownSpellCastable for the matching check on the legacy
+        // path -- a genuinely stunned bot cannot cast anything, so don't offer a candidate at all
+        // rather than let it fail SPELL_FAILED_STUNNED every tick until the stun wears off.
+        if (bot->HasUnitState(UNIT_STATE_STUNNED))
+            return reject("stunned");
 
         // Native GCD check
         if (bot->GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo))
-            return false;
+            return reject("global cooldown");
 
         if (IsSpellInFailureCooldown(bot->GetGUID(), resolvedSpellId))
-            return false;
+            return reject("recent-failure backoff");
 
         if (bot->HasSpellCooldown(resolvedSpellId))
-            return false;
+            return reject("spell cooldown");
 
         // Breakable CC protection
         if (WouldAoEHitBreakableCrowdControl(bot, target, spellInfo))
-            return false;
+            return reject("would break a party CC");
 
         // State requirement check
         if (desc.stateRequirement == StateRequirement::EmergencyOnly)
         {
             if (ctx.botHpPct > 35.0f && (!ctx.lowestAlly || ctx.lowestAllyHpPct > 35.0f))
-                return false;
+                return reject("emergency-only, nobody critical");
         }
 
         // Persistent entity tracking (Pets, Minions, Turrets, Wards)
         if (desc.trackedEntityType == TrackedEntityType::Pet)
         {
             if (bot->GetPet())
-                return false;
+                return reject("already has a pet");
         }
         else if (desc.trackedEntityType == TrackedEntityType::Turret ||
                  desc.trackedEntityType == TrackedEntityType::Ward ||
@@ -285,13 +307,13 @@ namespace BotAI
                     }
                 }
                 if (liveCount >= (desc.maxActiveEntities ? desc.maxActiveEntities : 1))
-                    return false;
+                    return reject("tracked entity cap reached");
             }
         }
 
         // Caster aura state & requirements (chain-aware: Round 3.2.2)
         if (desc.requiredAuraOnCaster && !bot->HasAura(desc.requiredAuraOnCaster))
-            return false;
+            return reject("missing required caster aura");
 
         // missingAuraOnCaster: block cast if the aura IS present (rank-chain aware)
         if (desc.missingAuraOnCaster)
@@ -303,7 +325,7 @@ namespace BotAI
             missingCheck.casterAuraId = desc.missingAuraOnCaster;
             uint32 missingResolved = SpellResolver::ResolveSpell(bot, desc.missingAuraOnCaster);
             if (FindCasterAuraForDescriptor(bot, missingCheck, missingResolved ? missingResolved : desc.missingAuraOnCaster))
-                return false;
+                return reject("blocking caster aura present");
         }
 
         // casterAuraId: if aura is active, apply refresh policy; if no policy → block cast
@@ -311,13 +333,13 @@ namespace BotAI
         {
             Aura const* cAura = FindCasterAuraForDescriptor(bot, desc, resolvedSpellId);
             if (cAura && !ShouldRefreshCasterAura(cAura, desc))
-                return false;
+                return reject("caster aura already up, not due for refresh");
         }
 
         if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
-            return false;
+            return reject("missing spell-defined caster aura state");
         if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
-            return false;
+            return reject("missing spell-defined caster aura");
 
         // Target aura requirements with refresh policies
         uint32 auraIdToCheck = desc.targetAuraId ? desc.targetAuraId : resolvedSpellId;
@@ -328,32 +350,32 @@ namespace BotAI
                 if (desc.refreshBelowMs > 0)
                 {
                     if (aura->GetDuration() > static_cast<int32>(desc.refreshBelowMs))
-                        return false;
+                        return reject("target aura not due for refresh yet");
                 }
                 else if (desc.refreshBelowStacks > 0)
                 {
                     if (aura->GetStackAmount() >= desc.refreshBelowStacks)
-                        return false;
+                        return reject("target aura stacks not due for refresh yet");
                 }
                 else
                 {
-                    return false;
+                    return reject("target aura already present");
                 }
             }
         }
 
         if (spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
-            return false;
+            return reject("missing spell-defined target aura state");
         if (spellInfo->TargetAuraSpell && !target->HasAura(spellInfo->TargetAuraSpell))
-            return false;
+            return reject("missing spell-defined target aura");
 
         // Resource management hard floor
         if (desc.minPowerPct > 0.0f && ctx.botPowerPct < desc.minPowerPct)
-            return false;
+            return reject("below minPowerPct floor");
 
         // Universal resource-management engine
         if (!CombatResourceEvaluator::CanAfford(ctx.resources, bot, resolvedSpellId))
-            return false;
+            return reject("can't afford (see CombatResource log line above for which resource)");
 
         // Range check
         bool positiveRange = spellInfo->IsPositive();
@@ -362,11 +384,11 @@ namespace BotAI
             float dist = bot->GetDistance(target);
             float maxRange = spellInfo->GetMaxRange(positiveRange, bot);
             if (maxRange > 0.0f && dist > maxRange)
-                return false;
+                return reject("out of max range");
 
             float minRange = spellInfo->GetMinRange(positiveRange);
             if (minRange > 0.0f && bot->IsWithinRange(target, minRange + bot->GetMeleeRange(target)))
-                return false;
+                return reject("inside min range");
         }
 
         return true;
@@ -735,30 +757,60 @@ namespace BotAI
             if (stateStatus != CombatStateStatus::Ready)
             {
                 if (effReq == StateRequirement::BaselineOnly)
+                {
+                    if (ctx.bot)
+                        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()),
+                            "ActionEvaluator: bot '{}' skipping '{}' (root spell {}) -- state requirement BaselineOnly, state not Ready.",
+                            ctx.bot->GetName(), desc.name, desc.rootSpellId);
                     continue;
+                }
             }
             if (stateStatus == CombatStateStatus::TemporaryAlternate)
             {
                 if (effReq != StateRequirement::AllowedInTemporary &&
                     effReq != StateRequirement::EmergencyOnly &&
                     effReq != StateRequirement::Any)
+                {
+                    if (ctx.bot)
+                        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()),
+                            "ActionEvaluator: bot '{}' skipping '{}' (root spell {}) -- state requirement disallows TemporaryAlternate.",
+                            ctx.bot->GetName(), desc.name, desc.rootSpellId);
                     continue;
+                }
             }
 
             uint32 resolvedSpellId = SpellResolver::ResolveSpell(ctx.bot, desc.rootSpellId);
             if (!resolvedSpellId)
+            {
+                if (ctx.bot)
+                    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()),
+                        "ActionEvaluator: bot '{}' skipping '{}' (root spell {}) -- SpellResolver::ResolveSpell returned 0 (not known/resolvable).",
+                        ctx.bot->GetName(), desc.name, desc.rootSpellId);
                 continue;
+            }
 
             Unit* target = ResolveTarget(ctx, desc.targetType, desc, resolvedSpellId);
             if (!target || !target->IsAlive())
+            {
+                if (ctx.bot)
+                    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()),
+                        "ActionEvaluator: bot '{}' skipping '{}' (spell {}) -- ResolveTarget found {} (targetType {}).",
+                        ctx.bot->GetName(), desc.name, resolvedSpellId, target ? "a dead target" : "no target",
+                        uint32(desc.targetType));
                 continue;
+            }
 
             if (!CanCast(ctx, desc, resolvedSpellId, target))
                 continue;
 
             float score = ScoreAbility(ctx, desc, target, strategy, phase);
             if (score <= 0.0f)
+            {
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()),
+                    "ActionEvaluator: bot '{}' skipping '{}' (spell {}) -- score <= 0.",
+                    ctx.bot->GetName(), desc.name, resolvedSpellId);
                 continue;
+            }
 
             // Apply phase score modifiers from strategy
             if (strategy)
@@ -788,6 +840,19 @@ namespace BotAI
                 bestAction.reason = "highest utility score";
                 bestAction.internalThrottleMs = desc.internalThrottleMs;
             }
+        }
+
+        if (ctx.bot)
+        {
+            if (bestAction.IsValid())
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()),
+                    "ActionEvaluator: bot '{}' chose '{}' (spell {}, score {:.1f}, reason: {}) on target '{}'.",
+                    ctx.bot->GetName(), bestAction.name, bestAction.spellId, bestAction.score, bestAction.reason,
+                    bestAction.target ? bestAction.target->GetName() : "<none>");
+            else
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()),
+                    "ActionEvaluator: bot '{}' found no usable action among {} candidate abilities.",
+                    ctx.bot->GetName(), abilities.size());
         }
 
         return bestAction;
