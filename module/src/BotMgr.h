@@ -542,6 +542,10 @@ private:
     uint32 _aiCombatIntervalMs = 100;
     uint32 _aiIdleIntervalMs = 250;
     uint32 _aiConfigAgeMs = 10000;
+    // Trading with a player: how long each bot's open trade window has existed, and whether bots take part at all.
+    std::unordered_map<ObjectGuid, uint32> _tradeAgeMs;
+    bool _tradeEnabled = true;
+    void UpdateTrades(uint32 diff);
     std::mutex _killEventLock;
     std::vector<KillEvent> _killEvents;
     void ProcessKillEvents();

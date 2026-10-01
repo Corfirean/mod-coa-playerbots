@@ -239,6 +239,16 @@ CoaBots.AI.CombatIntervalMs = 100
 CoaBots.AI.IdleIntervalMs = 250
 
 #
+#    CoaBots.Trade.Enable
+#        Description: Bots take part in trades. Open a trade window with a bot, put items or gold in it and accept;
+#                     the bot accepts too and keeps what you gave it (it equips anything better than its own gear).
+#                     A bot never offers anything of its own. A window nobody confirms is closed after two minutes.
+#        Default:     1
+#
+
+CoaBots.Trade.Enable = 1
+
+#
 #    CoaBots.MarkSessionsAsBots
 #        Description: Mark companion sessions as bots, so the server skips per-client work they have no client for
 #                     (login queries, view refreshes, reward trackers) and bots are left out of /who (see

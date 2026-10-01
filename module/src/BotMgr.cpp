@@ -38,6 +38,7 @@
 #include "QueryHolder.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
+#include "TradeData.h"
 #include "SpellAuraDefines.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
@@ -2988,6 +2989,56 @@ void BotMgr::QueueAllBotsForAutoLogin()
     LOG_INFO("module.coa-playerbots", "BotMgr: queued {} bot(s) for gradual auto-login (cap: {}).", queued, maxBots);
 }
 
+// A player who opens a trade window with a bot gets a bot that takes part: it opens its side, offers nothing and
+// accepts once the player has accepted, so items and gold can be handed to a bot. What it receives goes into its
+// bags, and the gear-upgrade pass equips anything that is better than what it wears. A window nobody confirms is
+// closed after two minutes so the bot does not stay "busy" for everyone else.
+void BotMgr::UpdateTrades(uint32 diff)
+{
+    if (!_tradeEnabled)
+    {
+        _tradeAgeMs.clear();
+        return;
+    }
+
+    for (WorldSession* session : _botSessions)
+    {
+        Player* bot = session->GetPlayer();
+        if (!bot)
+            continue;
+
+        TradeData* mine = bot->GetTradeData();
+        if (!mine)
+        {
+            if (!_tradeAgeMs.empty())
+                _tradeAgeMs.erase(bot->GetGUID());
+            continue;
+        }
+
+        Player* other = mine->GetTrader();
+        TradeData* theirs = other ? other->GetTradeData() : nullptr;
+        if (!theirs)
+            continue;
+
+        auto [age, isNew] = _tradeAgeMs.try_emplace(bot->GetGUID(), 0u);
+        if (isNew)
+        {
+            WorldPacket begin(CMSG_BEGIN_TRADE);
+            session->HandleBeginTradeOpcode(begin);
+            continue;
+        }
+
+        age->second += diff;
+        if (theirs->IsAccepted() && !mine->IsAccepted())
+        {
+            WorldPacket accept(CMSG_ACCEPT_TRADE);
+            session->HandleAcceptTradeOpcode(accept);
+        }
+        else if (age->second > 120000)
+            bot->TradeCancel(true);
+    }
+}
+
 void BotMgr::Update(uint32 diff)
 {
     ProcessKillEvents();
@@ -3159,7 +3210,9 @@ void BotMgr::Update(uint32 diff)
         _aiConfigAgeMs = 0;
         _aiCombatIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.CombatIntervalMs", 100);
         _aiIdleIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.IdleIntervalMs", 250);
+        _tradeEnabled = sConfigMgr->GetOption<bool>("CoaBots.Trade.Enable", true);
     }
+    UpdateTrades(diff);
     uint32 const combatIntervalMs = _aiCombatIntervalMs;
     uint32 const idleIntervalMs = _aiIdleIntervalMs;
     for (WorldSession* session : _botSessions)

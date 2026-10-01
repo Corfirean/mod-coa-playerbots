@@ -721,7 +721,7 @@ constexpr uint32 PROFESSION_SKILLS[] = {
     732, 757,                                               // Woodcutting, Woodworking (CoA custom)
 };
 
-constexpr uint32 BAG_ITEM_ID = 1977;   // "20-slot Bag" -- plain, no class/level restriction
+constexpr uint32 BAG_ITEM_ID = 54443;  // "Embersilk Bag" -- 22 slots, not soulbound, no class/level restriction (the largest plain bag)
 
 // Candidate pool for one (class, subclass, InventoryType) combination, cached after its first
 // query -- see CandidatePool's comment for why. {requiredLevel, itemLevel, entry, quality}.
