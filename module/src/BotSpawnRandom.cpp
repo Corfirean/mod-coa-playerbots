@@ -1040,9 +1040,10 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
     if (!bot)
         return;
 
-    // Sanity check: bot level should never exceed server max level
+    // A level above the server's cap (spawnrandom clones level-80 templates; the cap can be lowered in worldserver.conf)
+    // is brought down to the cap instead of stopping the server.
     uint8 serverMaxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
-    ASSERT(level <= serverMaxLevel && level >= 1);
+    level = std::max<uint8>(1, std::min(level, serverMaxLevel));
 
     // Normally already true, since the level is written into the cloned row; kept for a bot whose
     // row predates that or was edited by hand.
