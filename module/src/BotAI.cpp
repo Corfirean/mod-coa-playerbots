@@ -528,7 +528,7 @@ void EnsurePersonality(Player* bot, BotAIState& state)
         profile.sociability = ProfileValue(seed, 45);
         SavePersonality(bot, profile);
         state.personality = profile;
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: assigned {} profile to '{}' (guid {}, seed {}).", ArchetypeName(profile.archetype), bot->GetName(), bot->GetGUID().GetCounter(), profile.seed);
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: assigned {} profile to '{}' (guid {}, seed {}).", ArchetypeName(profile.archetype), bot->GetName(), bot->GetGUID().GetCounter(), profile.seed);
     }
     state.hasPersonality = true;
 }
@@ -703,7 +703,7 @@ void ResolvePendingMountCast(Player* bot, BotAIState& state)
 
     if (bot->IsMounted())
     {
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' confirmed mounted (spell {}).", bot->GetName(), justTried);
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' confirmed mounted (spell {}).", bot->GetName(), justTried);
     }
     else
     {
@@ -714,7 +714,7 @@ void ResolvePendingMountCast(Player* bot, BotAIState& state)
             justTried != DefaultFlyingMountSpellFor(bot))
         {
             state.knownBadMountSpells.insert(justTried);
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                 "BotAI: bot '{}' mount spell {} finished cast but bot is not mounted -- marking bad.",
                 bot->GetName(), justTried);
         }
@@ -776,7 +776,7 @@ bool TryMount(Player* bot, BotAIState& state, bool wantFlying = false)
     ClearActiveFollow(bot);
     bot->StopMoving();
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' attempting to mount spell {} (wantFlying={}).",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' attempting to mount spell {} (wantFlying={}).",
         bot->GetName(), spellId, wantFlying);
 
     SpellCastResult result = bot->CastSpell(bot, spellId, false);
@@ -786,7 +786,7 @@ bool TryMount(Player* bot, BotAIState& state, bool wantFlying = false)
         return true;
     }
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
         "BotAI: bot '{}' mount spell {} failed to cast (result {}).",
         bot->GetName(), spellId, uint32(result));
 
@@ -817,7 +817,7 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
     {
         if (bot->IsMounted())
         {
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' dismounting (leader '{}' is no longer mounted).",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' dismounting (leader '{}' is no longer mounted).",
                 bot->GetName(), leader->GetName());
             bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
         }
@@ -838,7 +838,7 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
         bool botFlying = IsUnitOnFlyingMount(bot);
         if (leaderFlying != botFlying)
         {
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' switching mount type (botFlying={} vs leaderFlying={}).",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' switching mount type (botFlying={} vs leaderFlying={}).",
                 bot->GetName(), botFlying, leaderFlying);
             bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
         }
@@ -978,7 +978,7 @@ void TryUpgradeGearOnce(Player* bot, BotRole role)
             return false; // class/race/level can't actually use this one
 
         bot->SwapItem(item->GetPos(), dest);
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' equipped '{}' (score {:.0f}) over slot {} (was score {:.0f}).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' equipped '{}' (score {:.0f}) over slot {} (was score {:.0f}).",
             bot->GetName(), proto->Name1, newScore, uint32(eslot), current ? ScoreItemForBot(bot, current->GetTemplate(), role) : 0.0f);
         return true;
     };
@@ -1135,7 +1135,7 @@ void TryMaintainEquipment(Player* bot, BotRole role, bool force)
         if (repairNpc)
         {
             uint32 cost = bot->DurabilityRepairAll(true, 1.0f, false);
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' repaired gear at '{}' for {} copper.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' repaired gear at '{}' for {} copper.",
                 bot->GetName(), repairNpc->GetName(), cost);
         }
     }
@@ -1192,10 +1192,10 @@ void TryMaintainEquipment(Player* bot, BotRole role, bool force)
     if (itemsCleared)
     {
         if (vendorNpc)
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' sold {} junk item stack(s) to '{}' for {} copper.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' sold {} junk item stack(s) to '{}' for {} copper.",
                 bot->GetName(), itemsCleared, vendorNpc->GetName(), totalEarned);
         else
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' destroyed {} junk item stack(s) (bags full, no vendor nearby).",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' destroyed {} junk item stack(s) (bags full, no vendor nearby).",
                 bot->GetName(), itemsCleared);
     }
 }
@@ -1294,7 +1294,7 @@ void TryAutoSignLeaderPetition(Player* bot)
 
     if (actuallySigned)
     {
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' signed '{}'s guild charter for '{}'.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' signed '{}'s guild charter for '{}'.",
             bot->GetName(), leader->GetName(), petition->petitionName);
         return;
     }
@@ -1318,7 +1318,7 @@ void TryAutoSignLeaderPetition(Player* bot)
         CharacterDatabase.Execute(stmt);
         sPetitionMgr->AddSignature(petition->petitionGuid, bot->GetSession()->GetAccountId(), bot->GetGUID());
 
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
             "BotAI: bot '{}' signed '{}'s guild charter for '{}' directly -- shares a hosting account with an already-signed bot.",
             bot->GetName(), leader->GetName(), petition->petitionName);
         return;
@@ -1759,7 +1759,7 @@ bool TryProcessPendingLoot(Player* bot, uint32 /*diff*/, BotAIState& state)
                 releasePacket << creature->GetGUID();
                 bot->GetSession()->HandleLootReleaseOpcode(releasePacket);
 
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' auto-looted '{}'.", bot->GetName(), creature->GetName());
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' auto-looted '{}'.", bot->GetName(), creature->GetName());
             }
         }
 
@@ -2043,7 +2043,7 @@ void TryAutoPullInInstance(Player* bot)
     {
         if (sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID()))
         {
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                 "AutoDungeon: bot '{}' -- every boss on this map is cleared, standing down (not pulling trash).",
                 bot->GetName());
             sBotMgr->SetAutoDungeonMode(leader->GetGUID(), false);
@@ -2092,7 +2092,7 @@ void TryAutoPullInInstance(Player* bot)
             {
                 tankRuntime.lastLogTimeMs = now;
                 tankRuntime.lastLoggedPullReason = pullInfo.reason;
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "PullAI: tank='{}' spec={} TankReady={} HealerReady={} PullReady=false reason='{}'",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "PullAI: tank='{}' spec={} TankReady={} HealerReady={} PullReady=false reason='{}'",
                     bot->GetName(), activeSpec, pullInfo.tankReady, pullInfo.healerReady, pullInfo.reason);
             }
             return;
@@ -2102,7 +2102,7 @@ void TryAutoPullInInstance(Player* bot)
         {
             tankRuntime.lastLogTimeMs = now;
             tankRuntime.lastLoggedPullReason = "Ready";
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "PullAI: tank='{}' spec={} TankReady=true HealerReady=true PullReady=true target='{}'",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "PullAI: tank='{}' spec={} TankReady=true HealerReady=true PullReady=true target='{}'",
                 bot->GetName(), activeSpec, target->GetName());
         }
 
@@ -2439,7 +2439,7 @@ void TryFinishGathering(Player* bot, BotAIState& state)
         // A cast that started fine can still end without opening anything -- interrupted, or the
         // node despawned mid-cast. Without the cooldown the next scan re-picks the same node.
         SetGatherNodeRetryCooldown(state, nodeGuid);
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' got nothing from node {} ({}).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' got nothing from node {} ({}).",
             bot->GetName(), nodeGuid.ToString(), node ? "cast ended without opening the node" : "node gone");
         return;
     }
@@ -2462,12 +2462,12 @@ void TryFinishGathering(Player* bot, BotAIState& state)
     if (wasAlreadyLooted)
     {
         SetGatherNodeRetryCooldown(state, nodeGuid);
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' got nothing from node {} (already looted, released).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' got nothing from node {} (already looted, released).",
             bot->GetName(), nodeGuid.ToString());
         return;
     }
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' gathered from node {} {}.", bot->GetName(), node->GetEntry(),
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' gathered from node {} {}.", bot->GetName(), node->GetEntry(),
         nodeGuid.ToString());
 }
 
@@ -2504,13 +2504,13 @@ void CastGatherAt(Player* bot, BotAIState& state, GameObject* node, uint32 gathe
     if (result == SPELL_CAST_OK)
     {
         state.gatherTargetGuid = node->GetGUID();
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' cast gathering spell {} on node {} {}.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' cast gathering spell {} on node {} {}.",
             bot->GetName(), gatherSpellId, node->GetEntry(), node->GetGUID().ToString());
         return;
     }
 
     SetGatherNodeRetryCooldown(state, node->GetGUID());
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' failed gathering spell {} on node {} (result {}), "
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' failed gathering spell {} on node {} (result {}), "
         "skipping it for {}s.", bot->GetName(), gatherSpellId, node->GetEntry(), uint32(result),
         GATHER_NODE_RETRY_MS / IN_MILLISECONDS);
 }
@@ -2853,7 +2853,7 @@ void TryFinishFishing(Player* bot, uint32 diff, BotAIState& state)
         releasePacket << bobber->GetGUID();
         bot->GetSession()->HandleLootReleaseOpcode(releasePacket);
 
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' caught something fishing.", bot->GetName());
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' caught something fishing.", bot->GetName());
         state.fishlessCastStreak = 0;
     }
 
@@ -2890,7 +2890,7 @@ bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
     bot->SetOrientation(bot->GetAngle(waterX, waterY));
 
     SpellCastResult result = bot->CastSpell(bot, SPELL_FISHING, false);
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' cast Fishing (result {}).", bot->GetName(), uint32(result));
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' cast Fishing (result {}).", bot->GetName(), uint32(result));
     if (result != SPELL_CAST_OK)
         return false;
 
@@ -3070,7 +3070,7 @@ SpellCastResult LogCastAttempt(Player* bot, uint32 spellId, Unit* target, char c
         bot->SetFacingToObject(target);
     }
     SpellCastResult result = bot->CastSpell(target, spellId, false);
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' {} spell {} on '{}' (result {}).",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' {} spell {} on '{}' (result {}).",
         bot->GetName(), verb, spellId, target->GetName(), uint32(result));
     BotAI::SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
     if (result != SPELL_CAST_OK)
@@ -3644,7 +3644,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             allyThreat = FindAllyThreatenedTarget(bot); // plain first-match fallback, item 23
         if (allyThreat && allyThreat != target)
         {
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' picked up threat target '{}', reason=ally_threatened.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' picked up threat target '{}', reason=ally_threatened.",
                 bot->GetName(), allyThreat->GetName());
         }
         if (allyThreat)
@@ -3665,7 +3665,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         if (Unit* refined = TargetEvaluator::RefineTarget(bot, target))
         {
             if (refined != target)
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' switched target '{}' -> '{}', reason=target_score.",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' switched target '{}' -> '{}', reason=target_score.",
                     bot->GetName(), target->GetName(), refined->GetName());
             target = refined;
         }
@@ -3916,7 +3916,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     {
         if (Unit* alternative = TargetEvaluator::FindEngagedAlternative(bot, target))
         {
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' switched off breakable-CC'd target '{}' onto '{}'.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' switched off breakable-CC'd target '{}' onto '{}'.",
                 bot->GetName(), target->GetName(), alternative->GetName());
             target = alternative;
         }
@@ -3924,7 +3924,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         {
             if (bot->GetVictim())
                 bot->AttackStop();
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' holding damage -- target '{}' is breakable-CC'd and no other engaged target exists.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' holding damage -- target '{}' is breakable-CC'd and no other engaged target exists.",
                 bot->GetName(), target->GetName());
             return;
         }
@@ -4002,7 +4002,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         // Item 12/#25: makes it possible to confirm via logs alone that a Support bot's own
         // Support-tagged profile was actually used, not a silent Dps-role lookup failure that
         // happened to still produce a cast via the generic fallback further down.
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' used its {} profile (fighting as {}).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' used its {} profile (fighting as {}).",
             bot->GetName(), profileRole == BotRole::Support ? "Support" : "non-combat-role", combatRole == BotRole::Tank ? "Tank" : "Dps");
     }
     if (ddResult != BotAI::CombatResult::NoAction)
@@ -4130,7 +4130,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     // attacks at all), so only log it occasionally as a "still no candidate" signal.
     if (state.noCandidateLogMs <= diff)
     {
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' has no usable offensive spell ready right now (target '{}').",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' has no usable offensive spell ready right now (target '{}').",
             bot->GetName(), target->GetName());
         state.noCandidateLogMs = 4000;
     }
@@ -4422,7 +4422,7 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
         uint32 healCastTimeMs = healSpellInfo ? healSpellInfo->CalcCastTime(bot) : 0;
         uint32 expectedLegacyHeal = uint32(healTarget->GetMaxHealth() * 0.20f);
         CombatReservations::ReserveHeal(bot->GetGUID(), healTarget->GetGUID(), spellId, expectedLegacyHeal, healCastTimeMs);
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' reserved ~{} heal on '{}' (spell {}, cast {}ms).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' reserved ~{} heal on '{}' (spell {}, cast {}ms).",
             bot->GetName(), expectedLegacyHeal, healTarget->GetName(), spellId, healCastTimeMs);
 
         // LogCastAttempt already records the failure itself (with the range/facing-aware backoff
@@ -4441,7 +4441,7 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 
     if (state.noCandidateLogMs <= diff)
     {
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' has no usable heal spell ready right now (target '{}' at {:.0f}% health).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' has no usable heal spell ready right now (target '{}' at {:.0f}% health).",
             bot->GetName(), healTarget->GetName(), healTarget->GetHealthPct());
         state.noCandidateLogMs = 4000;
     }
@@ -5160,7 +5160,7 @@ void ReportSpellbookRoleSignals(Player* bot, ChatHandler* handler)
             "BotAI: '{}' role signals -- off={} (e.g. {}), taunt={} (e.g. {}), heal={} (e.g. {}), buff={} (e.g. {}), int={} (e.g. {}), aoe={} (e.g. {}), burst={} (e.g. {}), dist={:.1f}yd.",
             bot->GetName(), offensive, exampleOffensive, taunt, exampleTaunt, heal, exampleHeal, buff, exampleBuff,
             interrupt, exampleInterrupt, aoe, exampleAoe, burst, exampleBurst, preferredDist);
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
         "BotAI: '{}' (class {}) spellbook role signals -- off={} taunt={} heal={} buff={} int={} aoe={} burst={} dist={:.1f}yd.",
         bot->GetName(), uint32(bot->getClass()), offensive, taunt, heal, buff, interrupt, aoe, burst, preferredDist);
 }

@@ -293,7 +293,7 @@ uint32 ChooseSpecForBot(Player* bot)
         BotRole role = BotAI::GetRoleForClassSpec(classId, chosenSpec);
         BotAI::SetRole(bot->GetGUID(), role);
 
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotTalentBuilds: assigned spec {} ('{}') to bot '{}' (class {}, role {}).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotTalentBuilds: assigned spec {} ('{}') to bot '{}' (class {}, role {}).",
             chosenSpec, BotAI::GetSpecName(classId, chosenSpec) ? BotAI::GetSpecName(classId, chosenSpec) : "unknown",
             bot->GetName(), uint32(classId), uint32(role));
     }

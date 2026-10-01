@@ -222,3 +222,28 @@ CoaBots.WorldBrain.Weight.TurnIn = 120
 CoaBots.WorldBrain.Weight.Accept = 55
 CoaBots.WorldBrain.Weight.AreaOccupancy = 12
 CoaBots.WorldBrain.Weight.TargetReserved = 200
+
+#
+#    CoaBots.AI.CombatIntervalMs
+#        Description: How often (ms) a bot that is fighting, in a group or in a battleground makes a decision.
+#                     Lower is more responsive and costs more world-thread time.
+#        Default:     100
+#
+#    CoaBots.AI.IdleIntervalMs
+#        Description: How often (ms) a bot that is on its own and not fighting makes a decision. With hundreds of
+#                     bots this is what keeps the world loop fast. 0 = every tick.
+#        Default:     250
+#
+
+CoaBots.AI.CombatIntervalMs = 100
+CoaBots.AI.IdleIntervalMs = 250
+
+#
+#    CoaBots.MarkSessionsAsBots
+#        Description: Mark companion sessions as bots, so the server skips per-client work they have no client for
+#                     (login queries, view refreshes, reward trackers) and bots are left out of /who (see
+#                     WhoList.ShowBots). Turn off only to compare behaviour.
+#        Default:     1
+#
+
+CoaBots.MarkSessionsAsBots = 1

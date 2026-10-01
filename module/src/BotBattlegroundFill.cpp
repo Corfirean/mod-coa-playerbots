@@ -181,7 +181,7 @@ void PortBotIntoBattleground(Player* bot, BattlegroundQueueTypeId bgQueueTypeId)
     // bookkeeping, but never actually landed.
     sBotMgr->QueueTeleportAck(bot->GetSession());
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotBGFill: bot '{}' ported into battleground (type {}, instance {}, team {}).",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotBGFill: bot '{}' ported into battleground (type {}, instance {}, team {}).",
         bot->GetName(), uint32(bgTypeId), bg->GetInstanceID(), uint32(teamId));
 }
 
@@ -220,7 +220,7 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
     bot->AddBattlegroundQueueId(bgQueueTypeId);
     sBattlegroundMgr->ScheduleQueueUpdate(0, 0, bgQueueTypeId, bgTypeId, bracketEntry->GetBracketId());
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotBGFill: bot '{}' (team {}) queued for bg type {}.",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotBGFill: bot '{}' (team {}) queued for bg type {}.",
         bot->GetName(), uint32(bot->GetTeamId()), uint32(bgTypeId));
 
     queuedBots.push_back({ bot->GetGUID().GetCounter(), bgTypeId, bgQueueTypeId, bracketEntry->GetBracketId() });

@@ -123,13 +123,13 @@ bool JoinBotToLfg(Player* bot, uint8 roleBit, lfg::LfgDungeonSet dungeons)
 
     if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_QUEUED)
     {
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
             "BotLfgFill: bot '{}' (role {}) was rejected from the LFG queue (not eligible for this dungeon?).",
             bot->GetName(), roleBit);
         return false;
     }
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (role {}) joined the LFG queue.",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (role {}) joined the LFG queue.",
         bot->GetName(), roleBit);
     queuedBots.push_back(bot->GetGUID().GetCounter());
     return true;
@@ -282,7 +282,7 @@ void ProcessQueuedBots()
             if (proposalId)
             {
                 sLFGMgr->UpdateProposal(proposalId, bot->GetGUID(), true);
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' accepted LFG proposal {}.",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' accepted LFG proposal {}.",
                     bot->GetName(), proposalId);
             }
             it = queuedBots.erase(it);
@@ -364,7 +364,7 @@ void ProcessGroupRoleChecks()
             {
                 sLFGMgr->UpdateProposal(proposalId, bot->GetGUID(), true);
                 proposalAccepted.insert(lowGuid);
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (grouped) accepted LFG proposal {}.",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (grouped) accepted LFG proposal {}.",
                     bot->GetName(), proposalId);
             }
             continue;
@@ -385,7 +385,7 @@ void ProcessGroupRoleChecks()
         bot->GetSession()->HandleLfgSetRolesOpcode(packet);
         roleCheckAnswered.insert(lowGuid);
 
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' answered a group LFG role check as role {}.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' answered a group LFG role check as role {}.",
             bot->GetName(), roleBit);
     }
 }

@@ -368,8 +368,16 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
     // exactly as-is (see mod-coa-playerbots' core-diff-analysis.md for why
     // playerbots-fork's own constructor adds one and why this project
     // deliberately doesn't, yet).
+    //
+    // The last argument marks the session as a companion's. The core and the CoA modules key a lot of
+    // per-client work off it - the client-side view refresh of Destiny Weaver (which otherwise walks every
+    // player of the map for every creature update while any bot group changes), the account roster query
+    // and collection state sent at login, the Welcome Warchest, the Path to Ascension and item-recovery
+    // trackers, the stricter walkable-terrain filter in PathGenerator - none of which a companion has a client
+    // for. Setting CoaBots.MarkSessionsAsBots = 0 restores the previous behaviour.
+    bool const markAsBot = sConfigMgr->GetOption<bool>("CoaBots.MarkSessionsAsBots", true);
     WorldSession* botSession = new WorldSession(accountId, "", 0x0, nullptr, SEC_PLAYER,
-        EXPANSION_WRATH_OF_THE_LICH_KING, time_t(0), sWorld->GetDefaultDbcLocale(), 0, false, false, 0);
+        EXPANSION_WRATH_OF_THE_LICH_KING, time_t(0), sWorld->GetDefaultDbcLocale(), 0, false, false, 0, markAsBot);
 
     std::shared_ptr<LoginQueryHolder> holder = std::make_shared<LoginQueryHolder>(accountId, playerGuid);
     if (!holder->Initialize())
@@ -394,7 +402,7 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
 
             if (Player* bot = botSession->GetPlayer())
             {
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' ({}) logged in successfully.",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' ({}) logged in successfully.",
                     bot->GetName(), bot->GetGUID().ToString());
 
                 // Ensure all newly spawned bots relocate to appropriate zones (fixes bots clustering at spawn points).
@@ -458,14 +466,14 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
         return;
     }
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' is now in a group, leader guid {}.", bot->GetName(), group->GetLeaderGUID().ToString());
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' is now in a group, leader guid {}.", bot->GetName(), group->GetLeaderGUID().ToString());
 
     if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
     {
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: resolved leader '{}' (in world: {}).", leader->GetName(), leader->IsInWorld());
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: resolved leader '{}' (in world: {}).", leader->GetName(), leader->IsInWorld());
         if (leader != bot && NeedsTeleportToLeader(bot, leader))
         {
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: teleporting bot '{}' to group leader '{}'.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: teleporting bot '{}' to group leader '{}'.",
                 bot->GetName(), leader->GetName());
             bot->TeleportTo(leader->GetWorldLocation());
 
@@ -567,7 +575,7 @@ void BotMgr::DoAcceptGuildInvite(WorldSession* session)
     }
     else
     {
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' successfully joined guild '{}' (id {}).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' successfully joined guild '{}' (id {}).",
             bot->GetName(), bot->GetGuildName(), bot->GetGuildId());
         if (Guild* guild = bot->GetGuild())
             EnsureBotBankRights(bot, guild);
@@ -601,7 +609,7 @@ void BotMgr::FinishPendingTeleport(WorldSession* session)
         return;
     }
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: finished pending teleport for bot '{}'.", bot->GetName());
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: finished pending teleport for bot '{}'.", bot->GetName());
 
     // Bots have no client to simulate gravity or emit falling/landing packets.
     // Snap the bot's Z to walkable terrain/water surface and broadcast the corrected position
@@ -643,7 +651,7 @@ void BotMgr::TryReturnGhostToCorpseMap(WorldSession* session)
     if (!corpse || corpse->GetMapId() == bot->GetMapId())
         return;
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: ghost '{}' is on map {} but its corpse is on map {} -- teleporting to the corpse's map.",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: ghost '{}' is on map {} but its corpse is on map {} -- teleporting to the corpse's map.",
         bot->GetName(), bot->GetMapId(), corpse->GetMapId());
 
     bot->TeleportTo(corpse->GetMapId(), corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), bot->GetOrientation());
@@ -698,7 +706,7 @@ void BotMgr::TryFollowLeaderAcrossMaps(WorldSession* session)
     if (!NeedsTeleportToLeader(bot, leader))
         return; // same map, close enough -- ResumeFollowingLeader's plain MoveFollow closes this
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: leader '{}' is on map {} (instance {}), bot '{}' is on map {} (instance {}), {:.0f}yd away -- teleporting bot to leader.",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: leader '{}' is on map {} (instance {}), bot '{}' is on map {} (instance {}), {:.0f}yd away -- teleporting bot to leader.",
         leader->GetName(), leader->GetMapId(), leader->GetInstanceId(), bot->GetName(), bot->GetMapId(), bot->GetInstanceId(),
         bot->GetMapId() == leader->GetMapId() && bot->GetInstanceId() == leader->GetInstanceId() ? bot->GetDistance(leader) : 0.0f);
 
@@ -870,7 +878,7 @@ void BotMgr::GuildCreate(ObjectGuid::LowType charLowGuid, std::string const& gui
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' created guild '{}' (id {}).",
             bot->GetName(), guild->GetName(), guild->GetId());
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' created guild '{}' (id {}).",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' created guild '{}' (id {}).",
         bot->GetName(), guild->GetName(), guild->GetId());
 }
 
@@ -1021,7 +1029,7 @@ uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntr
             handler->PSendSysMessage("BotMgr: bot '{}' has no item {} in inventory to deposit.",
                 bot->GetName(), itemEntry);
     }
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' deposited {}x item {} into guild bank (guild '{}').",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' deposited {}x item {} into guild bank (guild '{}').",
         bot->GetName(), totalDeposited, itemEntry, guild->GetName());
 
     return totalDeposited;
@@ -1088,7 +1096,7 @@ uint32 BotMgr::GuildWithdrawItem(ObjectGuid::LowType charLowGuid, uint32 itemEnt
         else
             handler->PSendSysMessage("BotMgr: item {} not found in guild bank (or no withdraw rights).", itemEntry);
     }
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' withdrew {}x item {} from guild bank (guild '{}').",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' withdrew {}x item {} from guild bank (guild '{}').",
         bot->GetName(), totalWithdrawn, itemEntry, guild->GetName());
 
     return totalWithdrawn;
@@ -1255,7 +1263,7 @@ void BotMgr::GuildGather(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint
     if (handler)
         handler->PSendSysMessage("BotMgr: guildgather order placed for bot '{}': need {}x item {} (already deposited {}x).",
             bot->GetName(), remaining, itemEntry, deposited);
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: guildgather order for bot '{}': item {} need {} (already deposited {}).",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: guildgather order for bot '{}': item {} need {} (already deposited {}).",
         bot->GetName(), itemEntry, remaining, deposited);
 }
 
@@ -1345,12 +1353,12 @@ void BotMgr::RetryGuildGatherLocation(ObjectGuid const& guid)
     {
         bot->TeleportTo(locMap, locX, locY, locZ, 0.0f);
         QueueTeleportAck(session);
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(guid), "BotMgr: guild gather order for bot '{}' found no matching node nearby -- re-teleporting to a fresh location on a different continent for item {}.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(guid), "BotMgr: guild gather order for bot '{}' found no matching node nearby -- re-teleporting to a fresh location on a different continent for item {}.",
             bot->GetName(), it->second.itemEntry);
     }
     else
     {
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(guid), "BotMgr: guild gather order for bot '{}' found no matching node nearby -- walking to a fresh location for item {}.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(guid), "BotMgr: guild gather order for bot '{}' found no matching node nearby -- walking to a fresh location for item {}.",
             bot->GetName(), it->second.itemEntry);
     }
 }
@@ -1900,6 +1908,7 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
     session->LogoutPlayer(true);
     delete session;
     _botSessions.erase(itr);
+    _aiWaitMs.erase(botGuid);
     // Also drop it from the pending-teleport-ack queue if it's there -- otherwise
     // the next Update() tick would call FinishPendingTeleport on a freed session.
     _pendingTeleportAck.erase(std::remove(_pendingTeleportAck.begin(), _pendingTeleportAck.end(), session), _pendingTeleportAck.end());
@@ -1908,6 +1917,24 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
     LOG_INFO("module.coa-playerbots", "BotMgr: despawned bot '{}' (guid {}).", name, charLowGuid);
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' despawned.", name);
+}
+
+uint32 BotMgr::LogoutAllBots()
+{
+    _pendingAutoLoginQueue.clear();
+    uint32 saved = 0;
+    // The sessions themselves are left alone: a login still in flight holds a pointer to its session, and the
+    // process is about to end anyway.
+    for (WorldSession* session : _botSessions)
+    {
+        if (!session->GetPlayer())
+            continue;
+        session->LogoutPlayer(true);
+        ++saved;
+    }
+    _aiWaitMs.clear();
+    LOG_INFO("module.coa-playerbots", "BotMgr: saved and logged out {} companion(s) for shutdown.", saved);
+    return saved;
 }
 
 uint32 BotMgr::DespawnAllBots()
@@ -2117,7 +2144,7 @@ void BotMgr::AttackNearestHostile(ObjectGuid::LowType charLowGuid, float range, 
         bot->GetPhaseMask(), target->GetPhaseMask(), bot->IsMounted(),
         bot->GetVictim() ? bot->GetVictim()->GetName() : "<null>");
     bool attacked = bot->Attack(target, true);
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: Attack() on '{}' returned {}; GetVictim() is now {}; attackers count {}.",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: Attack() on '{}' returned {}; GetVictim() is now {}; attackers count {}.",
         target->GetName(), attacked, bot->GetVictim() ? bot->GetVictim()->GetName() : "<null>", bot->getAttackers().size());
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' is now attacking '{}' (Attack() returned {}).", bot->GetName(), target->GetName(), attacked);
@@ -2144,7 +2171,7 @@ void BotMgr::SetRole(ObjectGuid::LowType charLowGuid, std::string const& roleNam
         BotRole autoRole = BotAI::GetRoleForClassSpec(bot->getClass(), activeSpec);
         char const* specName = BotAI::GetSpecName(bot->getClass(), activeSpec);
         char const* roleStr = RoleToString(autoRole);
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::SetRole: bot '{}' role reset to auto (detected {} from spec {} '{}').",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::SetRole: bot '{}' role reset to auto (detected {} from spec {} '{}').",
             bot->GetName(), roleStr, activeSpec, specName ? specName : "unknown");
         if (handler)
             handler->PSendSysMessage("BotMgr: bot '{}' role reset to auto (detected {} from spec {} '{}').",
@@ -2178,7 +2205,7 @@ void BotMgr::SetRole(ObjectGuid::LowType charLowGuid, std::string const& roleNam
     uint32 targetSpec = BotAI::FindSpecForRole(bot->getClass(), role, currentSpec);
     if (!targetSpec)
     {
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::SetRole: bot '{}' (class {}) has no {} spec available -- role change refused.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::SetRole: bot '{}' (class {}) has no {} spec available -- role change refused.",
             bot->GetName(), uint32(bot->getClass()), normalized);
         if (handler)
             handler->PSendSysMessage("BotMgr: bot '{}' has no {} spec available for its class -- role change refused.",
@@ -2190,7 +2217,7 @@ void BotMgr::SetRole(ObjectGuid::LowType charLowGuid, std::string const& roleNam
         LearnSpecialization(charLowGuid, targetSpec, handler);
 
     BotAI::SetRole(bot->GetGUID(), role);
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::SetRole: bot '{}' role manually set to {} (guid {}).",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::SetRole: bot '{}' role manually set to {} (guid {}).",
         bot->GetName(), normalized, charLowGuid);
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' role manually set to {}.", bot->GetName(), normalized);
@@ -2312,7 +2339,7 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
     if (handler)
         handler->PSendSysMessage("BotMgr: bot '{}' spent {} talent(s) ({} skipped, budget or other limit) for specialization {} '{}' (detected role: {}).",
             bot->GetName(), learned, skipped, specId, specName ? specName : "unknown", roleStr);
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' (class {}) spent {} talent(s), skipped {}, for spec {} '{}' (role: {}).",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' (class {}) spent {} talent(s), skipped {}, for spec {} '{}' (role: {}).",
         bot->GetName(), uint32(bot->getClass()), learned, skipped, specId, specName ? specName : "unknown", roleStr);
 }
 
@@ -2453,7 +2480,7 @@ void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
             if (targetSpec != currentSpec)
                 LearnSpecialization(bot->GetGUID().GetCounter(), targetSpec, nullptr);
             BotAI::SetRole(bot->GetGUID(), role);
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::QuickFillGroup: switched '{}' to {} (spec {}) to fill an empty slot.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::QuickFillGroup: switched '{}' to {} (spec {}) to fill an empty slot.",
                 bot->GetName(), RoleToString(role), targetSpec);
             selected.push_back(bot);
             pool.erase(std::remove(pool.begin(), pool.end(), bot), pool.end());
@@ -2472,7 +2499,7 @@ void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
         packet << bot->GetName();
         packet << uint32(0);
         commander->GetSession()->HandleGroupInviteOpcode(packet);
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::QuickFillGroup: '{}' invited bot '{}' (role {}).",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::QuickFillGroup: '{}' invited bot '{}' (role {}).",
             commander->GetName(), bot->GetName(), RoleToString(BotAI::GetRole(bot->GetGUID())));
     }
 
@@ -2504,6 +2531,37 @@ bool BotMgr::IsAutoDungeonModeEnabled(ObjectGuid leaderGuid) const
 void BotMgr::MarkBossCleared(ObjectGuid leaderGuid, uint32 bossEntry)
 {
     _clearedBosses[leaderGuid].insert(bossEntry);
+}
+
+void BotMgr::PostKillEvent(KillEvent const& event)
+{
+    std::lock_guard<std::mutex> guard(_killEventLock);
+    // A bot-less server never drains this, so keep it bounded.
+    if (_killEvents.size() < 4096)
+        _killEvents.push_back(event);
+}
+
+void BotMgr::ProcessKillEvents()
+{
+    std::vector<KillEvent> events;
+    {
+        std::lock_guard<std::mutex> guard(_killEventLock);
+        if (_killEvents.empty())
+            return;
+        events.swap(_killEvents);
+    }
+
+    for (KillEvent const& event : events)
+    {
+        if (event.bossEntry)
+            MarkBossCleared(event.bossLeader, event.bossEntry);
+
+        if (_botSessions.empty())
+            continue;
+
+        if (Player* killer = ObjectAccessor::FindPlayer(event.killer))
+            BotAI::EnqueuePendingLoot(killer, event.victim);
+    }
 }
 
 bool BotMgr::IsBossCleared(ObjectGuid leaderGuid, uint32 bossEntry) const
@@ -2804,7 +2862,7 @@ void BotMgr::GearUpBot(Player* bot, ChatHandler* handler)
             InventoryResult canEquip = bot->CanEquipNewItem(NULL_SLOT, dest, itemId, true);
             if (canEquip != EQUIP_ERR_OK)
             {
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::GearUpBot diag: '{}' (class {}) can't equip item {} in slot {} -- CanEquipNewItem result {}.",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::GearUpBot diag: '{}' (class {}) can't equip item {} in slot {} -- CanEquipNewItem result {}.",
                     bot->GetName(), uint32(bot->getClass()), itemId, uint32(slot), uint32(canEquip));
                 continue; // this class/spec can't use this candidate -- try the next one
             }
@@ -2851,7 +2909,7 @@ void BotMgr::GearUpBot(Player* bot, ChatHandler* handler)
     if (handler)
         handler->PSendSysMessage("BotMgr: gave '{}' {} baseline item(s) (avg item level now {:.0f}).",
             bot->GetName(), given, bot->GetAverageItemLevel());
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::GearUpBot: gave '{}' {} baseline item(s), avg item level now {:.0f}.",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::GearUpBot: gave '{}' {} baseline item(s), avg item level now {:.0f}.",
         bot->GetName(), given, bot->GetAverageItemLevel());
 }
 
@@ -2932,6 +2990,8 @@ void BotMgr::QueueAllBotsForAutoLogin()
 
 void BotMgr::Update(uint32 diff)
 {
+    ProcessKillEvents();
+
     // Must run even with zero bots currently online (e.g. right after a fresh restart, before
     // anything has spawned yet) -- otherwise a `.botcmd spawnrandom` issued at that point would
     // queue a batch that never starts draining until some unrelated bot happens to log in.
@@ -3009,7 +3069,7 @@ void BotMgr::Update(uint32 diff)
             Player* bot = FindBotPlayer(botGuid.GetCounter());
             if (bot && bot->GetGroup())
             {
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' leaving its group -- no real player left in it.", bot->GetName());
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' leaving its group -- no real player left in it.", bot->GetName());
                 bot->RemoveFromGroup(GROUP_REMOVEMETHOD_LEAVE);
             }
         }
@@ -3025,13 +3085,13 @@ void BotMgr::Update(uint32 diff)
 
         if (bot->GetGroupInvite())
         {
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: auto-accepting pending group invite for bot '{}'.", bot->GetName());
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: auto-accepting pending group invite for bot '{}'.", bot->GetName());
             DoAcceptInvite(session);
         }
 
         if (bot->GetGuildIdInvited() && !bot->GetGuildId())
         {
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: auto-accepting pending guild invite for bot '{}' (guild id {}).",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: auto-accepting pending guild invite for bot '{}' (guild id {}).",
                 bot->GetName(), bot->GetGuildIdInvited());
             DoAcceptGuildInvite(session);
         }
@@ -3070,13 +3130,13 @@ void BotMgr::Update(uint32 diff)
             {
                 if (MatchesGearPreference(bot, roll->itemid))
                 {
-                    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Greed on item {} (slot {}).",
+                    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Greed on item {} (slot {}).",
                         bot->GetName(), roll->itemid, roll->itemSlot);
                     DoRollGreed(session, roll);
                 }
                 else
                 {
-                    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Pass on item {} (slot {}) -- wrong armor/weapon type for its class/preference.",
+                    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Pass on item {} (slot {}) -- wrong armor/weapon type for its class/preference.",
                         bot->GetName(), roll->itemid, roll->itemSlot);
                     DoRollPass(session, roll);
                 }
@@ -3087,9 +3147,32 @@ void BotMgr::Update(uint32 diff)
     // Combat AI: chase/engage/cast for every active bot. See BotAI.cpp for why this is a
     // generic, class-agnostic "press known offensive spells" engine rather than a
     // hand-tuned per-class rotation.
+    //
+    // A bot does not need to think thirty times a second: a decision every 100 ms while it fights, follows a
+    // group or sits in a battleground, and every 250 ms while it wanders alone, is indistinguishable in play and
+    // costs a fraction of the world thread (a thousand bots made this loop most of the tick). The time a bot waited
+    // is handed to the AI as its `diff`, so every timer inside it keeps running at the right speed, and the first
+    // decision of each bot is offset by its guid so they do not all think on the same tick.
+    uint32 const combatIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.CombatIntervalMs", 100);
+    uint32 const idleIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.IdleIntervalMs", 250);
     for (WorldSession* session : _botSessions)
-        if (Player* bot = session->GetPlayer())
-            BotAI::Update(bot, diff);
+    {
+        Player* bot = session->GetPlayer();
+        if (!bot)
+            continue;
+
+        uint32 const interval = (bot->IsInCombat() || bot->GetGroup() || bot->InBattleground()) ? combatIntervalMs : idleIntervalMs;
+        auto [waiting, isNew] = _aiWaitMs.try_emplace(bot->GetGUID(), 0u);
+        if (isNew && interval)
+            waiting->second = uint32(bot->GetGUID().GetCounter() * 37u) % interval;
+        waiting->second += diff;
+        if (waiting->second < interval)
+            continue;
+
+        uint32 const elapsed = waiting->second;
+        waiting->second = 0;
+        BotAI::Update(bot, elapsed);
+    }
 
     // Active guild gather orders: check if bot collected the requested item, deposit into guild bank
     if (!_guildGatherOrders.empty())
@@ -3123,7 +3206,7 @@ void BotMgr::Update(uint32 diff)
                     itr->second.gatheredCount += deposited;
                     if (deposited >= remaining)
                     {
-                        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: guildgather order completed for bot '{}' (item {}).",
+                        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: guildgather order completed for bot '{}' (item {}).",
                             bot->GetName(), itemEntry);
                         DeleteGuildGatherOrder(itr->first);
                         itr = _guildGatherOrders.erase(itr);
@@ -3159,7 +3242,7 @@ void BotMgr::Update(uint32 diff)
         if (currentMoney > goldLimit)
         {
             uint32 excess = currentMoney - goldLimit;
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' auto-depositing excess gold ({} copper) to guild bank.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' auto-depositing excess gold ({} copper) to guild bank.",
                 bot->GetName(), excess);
             GuildDepositMoney(bot->GetGUID().GetCounter(), excess, nullptr);
         }

@@ -98,7 +98,7 @@ namespace BotAI
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
 
             nextCastAllowedMs = AI_REACTION_GATE_MS;
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [DPS]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [DPS]: bot '{}' cast '{}' (spell {}) on '{}' [score {:.1f}].",
                 bot->GetName(), action.name, action.spellId, action.target->GetName(), action.score);
             return CombatResult::Cast;
         }
@@ -110,7 +110,7 @@ namespace BotAI
         // interrupted) -- falling through to the legacy chain would likely hit the same wall.
         BotAI::HandleSpellCastFailure(bot, action.target, action.spellId, result);
         nextCastAllowedMs = RETRY_GATE_MS;
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [DPS]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "DataDrivenAI [DPS]: bot '{}' failed '{}' (spell {}) on '{}': result {}.",
             bot->GetName(), action.name, action.spellId, action.target->GetName(), static_cast<uint32>(result));
         return CombatResult::Busy;
     }

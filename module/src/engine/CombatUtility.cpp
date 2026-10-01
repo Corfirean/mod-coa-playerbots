@@ -70,7 +70,7 @@ namespace BotAI
             if (result == SPELL_CAST_OK)
             {
                 nextCastAllowedMs = UTILITY_REACTION_GATE_MS;
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' {} (spell {}) on '{}'.",
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "CombatAI: bot '{}' {} (spell {}) on '{}'.",
                     bot->GetName(), verb, spellId, target->GetName());
                 return true;
             }

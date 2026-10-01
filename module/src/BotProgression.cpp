@@ -211,7 +211,7 @@ namespace BotProgression
 
         uint32 after = uint32(bot->GetSpellMap().size());
         if (after > before)
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                 "BotProgression: '{}' learned {} spell(s) from its Book of Ascension at level {}.",
                 bot->GetName(), after - before, bot->GetLevel());
     }
@@ -249,7 +249,7 @@ namespace BotProgression
         }
 
         if (learned)
-            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotProgression: '{}' learned {} recipe(s) from its Book of Artisans.",
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotProgression: '{}' learned {} recipe(s) from its Book of Artisans.",
                 bot->GetName(), learned);
         return learned;
     }

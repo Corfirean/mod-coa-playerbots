@@ -15,11 +15,20 @@
 class coa_playerbots_worldscript : public WorldScript
 {
 public:
-    coa_playerbots_worldscript() : WorldScript("coa_playerbots_worldscript", { WORLDHOOK_ON_UPDATE, WORLDHOOK_ON_STARTUP }) { }
+    coa_playerbots_worldscript() : WorldScript("coa_playerbots_worldscript", { WORLDHOOK_ON_UPDATE, WORLDHOOK_ON_STARTUP, WORLDHOOK_ON_SHUTDOWN }) { }
 
     void OnUpdate(uint32 diff) override
     {
         sBotMgr->Update(diff);
+    }
+
+    // Called by the world server's main function as soon as the world loop has ended, while the databases are still
+    // open and the maps still exist: the one moment every companion can be saved and taken out of the world. (The
+    // core also has a "log the bots out" call in its kick-all-players pass, but that one is compiled in only for the
+    // upstream playerbots module, which brings a database of its own that this server does not use.)
+    void OnShutdown() override
+    {
+        sBotMgr->LogoutAllBots();
     }
 
     // User-requested standing behavior: every known bot character logs itself back in on
@@ -59,6 +68,12 @@ public:
         if (!creature)
             return;
 
+        // This hook runs on a map thread. Only read what belongs to this creature's own map here and
+        // hand the rest to the world thread through the bot manager's locked queue.
+        BotMgr::KillEvent event;
+        event.killer = player->GetGUID();
+        event.victim = creature->GetGUID();
+
         // In auto-dungeon mode, if this creature was a dungeon boss, record it as cleared
         if (creature->GetMap() && (creature->GetMap()->IsDungeon() || creature->GetMap()->IsRaid()))
         {
@@ -67,13 +82,13 @@ public:
                 if (cinfo->HasFlagsExtra(CREATURE_FLAG_EXTRA_DUNGEON_BOSS) || cinfo->rank == CREATURE_ELITE_WORLDBOSS)
                 {
                     Group* group = player->GetGroup();
-                    ObjectGuid leaderGuid = group ? group->GetLeaderGUID() : player->GetGUID();
-                    sBotMgr->MarkBossCleared(leaderGuid, cinfo->Entry);
+                    event.bossLeader = group ? group->GetLeaderGUID() : player->GetGUID();
+                    event.bossEntry = cinfo->Entry;
                 }
             }
         }
 
-        BotAI::EnqueuePendingLoot(player, creature->GetGUID());
+        sBotMgr->PostKillEvent(event);
     }
 };
 

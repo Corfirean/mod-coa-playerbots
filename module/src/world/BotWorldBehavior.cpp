@@ -210,7 +210,7 @@ namespace
     {
         if (!_config.verbose)
             return;
-        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' {}", bot->GetName(),
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' {}", bot->GetName(),
             Acore::StringFormat(fmt, std::forward<Args>(args)...));
     }
 

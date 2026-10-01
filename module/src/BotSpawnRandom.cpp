@@ -1086,7 +1086,7 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
     // Relocate fresh bot to a level-appropriate zone hub instead of leaving it at the cloned template's coordinates
     BotZoneProgression::RelocateBot(bot, true /*force initial relocation*/);
 
-    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: applied fresh-bot setup (level {}, spec {}, {} spells) to '{}'.",
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: applied fresh-bot setup (level {}, spec {}, {} spells) to '{}'.",
         level, bot->GetPlayerSetting("core.ascension_active_spec", 0).value, bot->GetSpellMap().size(),
         bot->GetName());
 }

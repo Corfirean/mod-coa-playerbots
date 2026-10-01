@@ -17,6 +17,7 @@
 #include "ObjectGuid.h"
 #include "BotFormations.h"
 #include <functional>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -171,6 +172,11 @@ public:
     // short of restarting the whole server.
     void DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler);
 
+    // Server shutdown: save every companion and take it out of the world while the database is still accepting
+    // work. Companions live in this manager, not in the world's session list, so the normal "save and kick all
+    // players" pass never reaches them. Returns how many were saved.
+    uint32 LogoutAllBots();
+
     // Despawns every online bot and permanently deletes every bot character row (any account
     // matching CoaBots.RandomSpawn.AccountPrefix, online or not) via the real
     // Player::DeleteFromDB, so nothing gets left behind for a name/guid collision on the next
@@ -282,6 +288,19 @@ public:
     void SetAutoDungeonMode(ObjectGuid leaderGuid, bool enabled);
     bool IsAutoDungeonModeEnabled(ObjectGuid leaderGuid) const;
     void MarkBossCleared(ObjectGuid leaderGuid, uint32 bossEntry);
+
+    // A creature a bot (or a bot's group) killed. PostKillEvent may be called from any map thread
+    // (the reward-kill hook runs inside Map::Update, and with MapUpdate.Threads > 1 several maps do
+    // that at once); everything it records is applied on the world thread by Update(), where all the
+    // other bot state lives, so none of it needs its own locking.
+    struct KillEvent
+    {
+        ObjectGuid killer;
+        ObjectGuid victim;
+        ObjectGuid bossLeader; // set (with bossEntry) when the victim was a dungeon boss
+        uint32 bossEntry = 0;
+    };
+    void PostKillEvent(KillEvent const& event);
     bool IsBossCleared(ObjectGuid leaderGuid, uint32 bossEntry) const;
     void ClearBosses(ObjectGuid leaderGuid);
 
@@ -516,6 +535,11 @@ private:
     uint32 _heartbeatTimer = 0;
     std::unordered_set<ObjectGuid> _autoDungeonLeaders;
     std::unordered_map<ObjectGuid, std::unordered_set<uint32>> _clearedBosses;
+    // How long each bot's AI has been waiting for its next decision (see the combat-AI loop in Update).
+    std::unordered_map<ObjectGuid, uint32> _aiWaitMs;
+    std::mutex _killEventLock;
+    std::vector<KillEvent> _killEvents;
+    void ProcessKillEvents();
     std::unordered_map<ObjectGuid, BotGroupFormation> _groupFormations;
 
 public:
