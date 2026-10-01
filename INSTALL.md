@@ -1,5 +1,30 @@
 # Install & setup
 
+## Install through CoA Server Manager (Windows)
+
+[CoA Server Manager](https://github.com/Corfirean/coa-server-manager) provides
+a graphical setup for the server, companion population, and client addon.
+Follow its repository's instructions to obtain and run the manager.
+
+1. Choose **Install new server** and select an installation folder, or
+   choose **I already have a server** to add your existing CoA repack.
+2. For a new installation, complete the server installation wizard. For an
+   existing supported server, open **Settings > Server updates** and apply
+   the available update. The bot module is delivered with the server
+   package and updated through this flow.
+3. Start the server, then use **AI companions** to choose a population size
+   and add companions. The manager offers sizes based on your hardware;
+   companions are created gradually.
+4. Under **Game client**, choose your CoA client folder and use the companion
+   addon install/update action to install `CoABotUI`.
+5. Point the game at this server from the same client section, then launch
+   the client and enable `CoABotUI` in the character-selection AddOns menu.
+
+Importing an existing server only registers it with the manager; it does
+not install the bot module by itself. Unrecognised custom builds may have
+install/update features disabled — use the manual or source instructions
+below if your build is not supported.
+
 ## Quick install (precompiled, for a CoA-Repack user — no building required)
 
 1. Download the latest `dist/` release package (zip) from this repo's

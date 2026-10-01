@@ -18,13 +18,32 @@ Every companion is driven by a data-driven Utility AI combat engine with strict 
 
 ## Screenshots
 
-### Companion Control UI (CoABotUI)
-Real-time floating control HUD for companion orders, formations, stances, and direct combat commands.
-![Companion Control HUD](docs/screenshots/bot_companion_control.png)
+### Squad
+Manage companion roles, fill your group, choose a formation, and issue group or individual commands.
 
-### Guild Roster & Taskboard
-Guild taskboard and management interface showing companions participating in guild progression.
-![Guild Taskboard](docs/screenshots/guild_taskboard_live.png)
+![CoA Companions — Squad tab](docs/screenshots/addon_squad.png)
+
+### Tasks
+View guild companions, their professions, and current gathering progress.
+
+![CoA Companions — Tasks tab](docs/screenshots/addon_tasks.png)
+![Active gathering tasks and progress](docs/screenshots/addon_task_progress.png)
+
+### Orders
+Order gathered materials or crafted items, with search, quantities, and profession filtering for recipes.
+
+![CoA Companions — material orders](docs/screenshots/addon_orders_materials.png)
+![CoA Companions — crafting recipes](docs/screenshots/addon_orders_recipes.png)
+
+### Gear
+Inspect a companion's equipment and average item level, and set preferred armor and weapon types.
+
+![CoA Companions — Gear tab](docs/screenshots/addon_gear.png)
+
+### Guild Charter
+Companions can sign your guild charter.
+
+![Guild charter with companion signatures](docs/screenshots/guild_charter.png)
 
 ---
 
@@ -79,7 +98,9 @@ CoA Companions provides dedicated AI combat profiles for all **21 Conquest of Az
 
 ## Installation
 
-See [INSTALL.md](INSTALL.md) for full setup instructions, including precompiled quick-install for repack users and source build instructions for core developers.
+For a managed Windows setup, use [CoA Server Manager](https://github.com/Corfirean/coa-server-manager) to install or update the server, create companions, and install the client addon.
+
+See [INSTALL.md](INSTALL.md) for the manager walkthrough, manual precompiled installation for repack users, and source build instructions for core developers.
 
 ---
 
