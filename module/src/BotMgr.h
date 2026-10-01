@@ -537,6 +537,11 @@ private:
     std::unordered_map<ObjectGuid, std::unordered_set<uint32>> _clearedBosses;
     // How long each bot's AI has been waiting for its next decision (see the combat-AI loop in Update).
     std::unordered_map<ObjectGuid, uint32> _aiWaitMs;
+    // The AI cadence settings, re-read every few seconds: the config manager logs a warning on every lookup of a key
+    // that is absent from the active config file, and servers updated from older packages do not have these keys.
+    uint32 _aiCombatIntervalMs = 100;
+    uint32 _aiIdleIntervalMs = 250;
+    uint32 _aiConfigAgeMs = 10000;
     std::mutex _killEventLock;
     std::vector<KillEvent> _killEvents;
     void ProcessKillEvents();

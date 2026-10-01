@@ -3153,8 +3153,15 @@ void BotMgr::Update(uint32 diff)
     // costs a fraction of the world thread (a thousand bots made this loop most of the tick). The time a bot waited
     // is handed to the AI as its `diff`, so every timer inside it keeps running at the right speed, and the first
     // decision of each bot is offset by its guid so they do not all think on the same tick.
-    uint32 const combatIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.CombatIntervalMs", 100);
-    uint32 const idleIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.IdleIntervalMs", 250);
+    _aiConfigAgeMs += diff;
+    if (_aiConfigAgeMs >= 10000)
+    {
+        _aiConfigAgeMs = 0;
+        _aiCombatIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.CombatIntervalMs", 100);
+        _aiIdleIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.IdleIntervalMs", 250);
+    }
+    uint32 const combatIntervalMs = _aiCombatIntervalMs;
+    uint32 const idleIntervalMs = _aiIdleIntervalMs;
     for (WorldSession* session : _botSessions)
     {
         Player* bot = session->GetPlayer();
