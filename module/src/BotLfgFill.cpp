@@ -1,41 +1,14 @@
 /*
  * mod-coa-playerbots
  *
- * A real client's Dungeon Finder join (WorldSession::HandleLfgJoinOpcode, LFGHandler.cpp) is
- * just `sLFGMgr->JoinLfg(player, roles, dungeons, comment)` -- a single call, no packet
- * assembly needed to replicate it for a bot. For a *solo* join (not already in a group -- see
- * LFGMgr::JoinLfg's own `if (grp) {...} else { add player to queue directly }` branch) it also
- * skips the group-only role-check phase entirely and goes straight to LFG_STATE_QUEUED, so a
- * solo bot's join is just that one call plus, later, accepting whatever proposal forms
- * (LFGMgr::UpdateProposal, again just a direct call -- HandleLfgProposalResultOpcode does
- * nothing else). Once every member of a proposal accepts, LFGMgr::MakeNewGroup creates the
- * real group *and teleports everyone itself* -- unlike Battlegrounds, there's no port step for
- * this file to replicate at all.
- *
- * The one piece with no existing public accessor: a client learns its own proposal id from the
- * SMSG_LFG_PROPOSAL_UPDATE packet it received, which a bot's null-socket session never gets.
- * Added LFGMgr::GetProposalIdForPlayer(guid) (small patch to the real engine's LFGMgr.h/.cpp,
- * a straightforward scan of the already-existing private ProposalsStore -- this project's
- * mod-ascension-compat sibling already patches core where a module genuinely can't reach
- * something otherwise) so this file can find it the same way UpdateProposal itself expects.
- *
- * The actual feature, and its v1 scope: the moment a *solo* player (real or bot) queues for a
- * *dungeon* (not raid -- composition there is a different, bigger problem) via
- * PLAYERHOOK_CAN_JOIN_LFG (a permission-gate hook this file always allows, using it purely for
- * the "someone just queued" signal), fill whichever of Tank/Healer/3x Damage their own role
- * selection doesn't already cover with bots, so a full 5-man is ready immediately. Deliberately
- * NOT handling group joins (a partial group already has some real members' roles to account
- * for, which aren't knowable until the group-only role-check phase -- meaningfully more state
- * to track for a "nice to have" pass) or raids (5+ role slots, different composition rules
- * entirely).
- *
- * Bot sourcing mirrors BotBattlegroundFill.cpp: prefers an already-online, idle bot of the
- * right faction with the right role (BotAI::GetRole(), this module's own existing
- * spec-derived role detection) over creating a new one. Tank and Healer specifically are NOT
- * auto-created on demand -- unlike a Battleground team slot, a freshly cloned random-class bot
- * has no guarantee of actually being tank/healer-capable, so those slots simply stay open
- * (logged) if no suitable bot is already online; only Damage slots fall back to creating a new
- * bot, since any class defaults to a Dps-shaped BotRole.
+ * BotLfgFill: Intelligent auto-fill for Dungeon Finder queues.
+ * Hardened for Round 2.1:
+ * - Strict intent gating (BOT_FILL only; MATCHMAKING & CURRENT_PARTY bypass bots)
+ * - Multi-role player assignment solver
+ * - Partial group role-aware fill (1 Tank, 1 Healer, 3 DPS)
+ * - Operation ownership and cleanup tracking (LfgFillOperationId)
+ * - Bot creation attempt limits
+ * - GlobalScript registration with HasLfgAutoFillProvider()
  */
 
 #include "engine/BotDebugLog.h"
@@ -51,11 +24,14 @@
 #include "Log.h"
 #include "Player.h"
 #include "PlayerScript.h"
+#include "ScriptMgr.h"
 #include "WorldPacket.h"
 #include "WorldScript.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <random>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -74,12 +50,28 @@ struct PendingLfgBotJoin
     uint8 roleBit;
     lfg::LfgDungeonSet dungeons;
     uint32 ageMs = 0;
+    uint64 opId = 0;
 };
 std::vector<PendingLfgBotJoin> pendingLogins;
 
 // A bot that has joined the LFG queue -- watched every tick until it either enters
 // LFG_STATE_PROPOSAL (accepted immediately) or leaves LFG_STATE_NONE some other way (dropped).
 std::vector<ObjectGuid::LowType> queuedBots;
+
+struct LfgFillOperation
+{
+    uint64 id{0};
+    ObjectGuid initiator;
+    ObjectGuid groupGuid;
+    std::unordered_set<ObjectGuid::LowType> spawnedBotGuids;
+    std::unordered_set<ObjectGuid::LowType> queuedBotGuids;
+    uint32 creationAttempts{0};
+    uint32 ageMs{0};
+};
+
+std::atomic<uint64> s_nextOpId{1};
+std::unordered_map<uint64, LfgFillOperation> activeOperations;
+std::unordered_map<ObjectGuid, uint64> initiatorToOpId;
 
 std::mt19937& Rng()
 {
@@ -106,16 +98,7 @@ bool BotMatchesRole(Player* bot, uint8 roleBit)
     }
 }
 
-// Returns true only if the bot's LFG state actually became QUEUED -- JoinLfg silently returns
-// without changing any state at all when its own eligibility checks reject the join (e.g.
-// LFG_JOIN_NOT_MEET_REQS for a dungeon this specific character is locked out of, or
-// LFG_JOIN_DISCONNECTED for a bot in some other transient bad state) instead of throwing or
-// reporting a result this file can inspect directly, so the *state* is the only reliable signal
-// that anything actually happened. Confirmed live: without this check, a rejected join looked
-// identical to a successful one from this file's side, and a candidate that keeps failing (still
-// LFG_STATE_NONE) could get redundantly re-selected on a later same-pass role slot instead of
-// this file trying a different bot.
-bool JoinBotToLfg(Player* bot, uint8 roleBit, lfg::LfgDungeonSet dungeons)
+bool JoinBotToLfg(Player* bot, uint8 roleBit, lfg::LfgDungeonSet dungeons, uint64 opId)
 {
     filling = true;
     sLFGMgr->JoinLfg(bot, roleBit, dungeons, "");
@@ -129,39 +112,30 @@ bool JoinBotToLfg(Player* bot, uint8 roleBit, lfg::LfgDungeonSet dungeons)
         return false;
     }
 
-    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (role {}) joined the LFG queue.",
-        bot->GetName(), roleBit);
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (role {}) joined the LFG queue (op {}).",
+        bot->GetName(), roleBit, opId);
     queuedBots.push_back(bot->GetGUID().GetCounter());
+
+    if (opId > 0)
+    {
+        auto it = activeOperations.find(opId);
+        if (it != activeOperations.end())
+            it->second.queuedBotGuids.insert(bot->GetGUID().GetCounter());
+    }
+
     return true;
 }
 
 void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, ObjectGuid excludeGuid,
-    std::vector<ObjectGuid>& attemptedThisPass)
+    std::vector<ObjectGuid>& attemptedThisPass, uint64 opId)
 {
-    // Confirmed live (2026-09-27): the old version of this function iterated
-    // sBotMgr->GetOnlineBots() in whatever fixed order that container returns and took the
-    // *first* match -- with a large population, that's the same handful of bots every single
-    // time (the user confirmed this with ~1000 bots online: always the same ones got invited).
-    // Collecting every eligible idle candidate first and shuffling once fixes that for both
-    // the exact-role pass below and the respec-fallback pass that follows it.
     std::vector<Player*> eligible;
     for (Player* bot : sBotMgr->GetOnlineBots())
     {
-        // Never re-select the player who triggered this fill pass -- their own LFG state
-        // hasn't been set to anything but LFG_STATE_NONE yet at this point in JoinLfg (the
-        // hook fires before that happens), so without this exclusion a triggering player who
-        // also happens to match one of the *other* needed roles (e.g. a bot-initiated test
-        // join whose class defaults to a tank-shaped BotRole) gets redundantly re-queued for
-        // that role too, silently overwriting -- not adding to -- their own original join
-        // (JoinLfg's own re-join handling removes and replaces a still-queued entry).
         if (bot->GetGUID() == excludeGuid)
             continue;
         if (bot->GetTeamId() != team || !bot->IsAlive())
             continue;
-        // A bot already in a group (e.g. left over from an unrelated earlier test) takes
-        // JoinLfg's group branch instead of the solo one, which has its own membership/online
-        // checks this file isn't trying to satisfy -- cheap to skip up front rather than
-        // find out via a rejected join.
         if (bot->GetGroup())
             continue;
         if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE)
@@ -172,14 +146,10 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
 
     auto tryJoin = [&](Player* bot) -> bool
     {
-        // Skip anything already tried this pass, successful or not -- see JoinBotToLfg's
-        // comment for why a rejected candidate must not be retried indefinitely within the
-        // same fill pass.
         if (std::find(attemptedThisPass.begin(), attemptedThisPass.end(), bot->GetGUID()) != attemptedThisPass.end())
             return false;
         attemptedThisPass.push_back(bot->GetGUID());
-        return JoinBotToLfg(bot, roleBit, dungeons);
-        // Rejected -- caller keeps scanning for a different candidate instead of giving up the slot.
+        return JoinBotToLfg(bot, roleBit, dungeons, opId);
     };
 
     // Pass 1: an idle bot already spec'd for this role.
@@ -189,59 +159,64 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
             return;
     }
 
-    // Pass 2, Tank/Healer only: respec a random idle bot of some OTHER role into this one
-    // rather than ever creating a brand-new character. Confirmed live 2026-09-27: without
-    // this, a shortage of idle Tank/Healer bots left those slots permanently open no matter
-    // how many idle Dps/Support bots were sitting online, and (for the Damage role, which used
-    // to fall straight to bot creation on any shortfall) an unattended feature repeatedly
-    // hitting this shortfall mass-created hundreds of new bot characters overnight, destroying
-    // a curated population the user was using for a controlled leveling experiment. Real
-    // respec (AscensionClassServiceBridge::SwitchSpecialization via LearnSpecialization), not a
-    // cosmetic role tag -- the bot actually learns the new spec's talents.
+    // Pass 2, Tank/Healer only: respec a random idle bot of some OTHER role into this one.
     if (roleBit == lfg::PLAYER_ROLE_TANK || roleBit == lfg::PLAYER_ROLE_HEALER)
     {
         BotRole neededRole = (roleBit == lfg::PLAYER_ROLE_TANK) ? BotRole::Tank : BotRole::Healer;
         for (Player* bot : eligible)
         {
             if (std::find(attemptedThisPass.begin(), attemptedThisPass.end(), bot->GetGUID()) != attemptedThisPass.end())
-                continue; // already tried (and rejected) in pass 1
+                continue;
             uint32 spec = BotAI::FindSpecForRole(bot->getClass(), neededRole);
             if (!spec)
-                continue; // this bot's class has no spec for the needed role at all
+                continue;
 
-            LOG_INFO("module.coa-playerbots",
-                "BotLfgFill: no idle {} bot for team {} -- respeccing bot '{}' (class {}) to spec {} instead of creating a new bot.",
-                roleBit == lfg::PLAYER_ROLE_TANK ? "tank" : "healer", uint32(team), bot->GetName(), uint32(bot->getClass()), spec);
+            LOG_DEBUG("module.coa-playerbots",
+                "BotLfgFill: respeccing bot '{}' to spec {} for {} role.",
+                bot->GetName(), spec, roleBit == lfg::PLAYER_ROLE_TANK ? "tank" : "healer");
             sBotMgr->LearnSpecialization(bot->GetGUID().GetCounter(), spec, nullptr);
 
             if (tryJoin(bot))
                 return;
         }
 
-        LOG_INFO("module.coa-playerbots",
-            "BotLfgFill: no online {} bot available for team {} (none to respec either), that slot stays open.",
+        LOG_DEBUG("module.coa-playerbots",
+            "BotLfgFill: no online {} bot available for team {} (none to respec either).",
             roleBit == lfg::PLAYER_ROLE_TANK ? "tank" : "healer", uint32(team));
         return;
     }
 
-    // Damage: try every remaining eligible candidate (any role -- Dps/Support/Tank/Healer all
-    // count, this file only ever asks for Damage as a last-resort fallback role itself) before
-    // ever creating a new bot. Genuinely reached only when `eligible` had nobody left at all.
+    // Pass 3: Damage role. Try every remaining eligible candidate.
     for (Player* bot : eligible)
     {
         if (tryJoin(bot))
             return;
     }
 
+    // Pass 4: Spawn a new random bot if attempts allow.
+    auto itOp = activeOperations.find(opId);
+    if (itOp != activeOperations.end() && itOp->second.creationAttempts >= 5)
+    {
+        LOG_WARN("module.coa-playerbots", "BotLfgFill: op {} reached creation limit (5), aborting new bot spawn.", opId);
+        return;
+    }
+
     uint8 race = PickRaceForTeam(team);
     ObjectGuid::LowType newGuid = BotSpawn::CreateOneRandomBot(race, nullptr);
     if (!newGuid)
     {
-        LOG_ERROR("module.coa-playerbots", "BotLfgFill: could not create a reserve dps bot for team {}.", uint32(team));
+        LOG_ERROR("module.coa-playerbots", "BotLfgFill: could not create reserve dps bot for team {}.", uint32(team));
         return;
     }
+
+    if (itOp != activeOperations.end())
+    {
+        ++itOp->second.creationAttempts;
+        itOp->second.spawnedBotGuids.insert(newGuid);
+    }
+
     sBotMgr->SpawnBot(newGuid, nullptr);
-    pendingLogins.push_back({ newGuid, roleBit, dungeons });
+    pendingLogins.push_back({ newGuid, roleBit, dungeons, 0, opId });
 }
 
 void ProcessPendingLogins(uint32 diff)
@@ -252,7 +227,7 @@ void ProcessPendingLogins(uint32 diff)
         it->ageMs += diff;
         if (Player* bot = sBotMgr->FindBotPlayer(it->guid))
         {
-            JoinBotToLfg(bot, it->roleBit, it->dungeons);
+            JoinBotToLfg(bot, it->roleBit, it->dungeons, it->opId);
             it = pendingLogins.erase(it);
         }
         else if (it->ageMs > PENDING_LOGIN_TIMEOUT_MS)
@@ -269,50 +244,42 @@ void ProcessQueuedBots()
 {
     for (auto it = queuedBots.begin(); it != queuedBots.end();)
     {
-        Player* bot = sBotMgr->FindBotPlayer(*it);
+        ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(*it);
+        Player* bot = ObjectAccessor::FindConnectedPlayer(guid);
         if (!bot)
         {
             it = queuedBots.erase(it);
             continue;
         }
-        lfg::LfgState state = sLFGMgr->GetState(bot->GetGUID());
+
+        if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
+            sBotMgr->QueueTeleportAck(bot->GetSession());
+
+        lfg::LfgState state = sLFGMgr->GetState(guid);
         if (state == lfg::LFG_STATE_PROPOSAL)
         {
-            uint32 proposalId = sLFGMgr->GetProposalIdForPlayer(bot->GetGUID());
+            uint32 proposalId = sLFGMgr->GetProposalIdForPlayer(guid);
             if (proposalId)
             {
-                sLFGMgr->UpdateProposal(proposalId, bot->GetGUID(), true);
-                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' accepted LFG proposal {}.",
+                sLFGMgr->UpdateProposal(proposalId, guid, true);
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(guid), "BotLfgFill: bot '{}' accepted LFG proposal {}.",
                     bot->GetName(), proposalId);
             }
             it = queuedBots.erase(it);
             continue;
         }
-        if (state == lfg::LFG_STATE_NONE)
+
+        if (state != lfg::LFG_STATE_QUEUED)
         {
-            // Left the queue some other way (kicked, timed out, etc.) -- stop watching it.
             it = queuedBots.erase(it);
             continue;
         }
+
         ++it;
     }
 }
 
-// Bots have no client to click a role-check popup with -- confirmed live: a real player
-// grouped with bots who then queues for a *specific* dungeon (LFGMgr::JoinLfg's already-grouped
-// branch, distinct from the solo-join path the rest of this file handles -- explicitly out of
-// v1 scope per this file's header comment) triggers a group role check that just hangs forever,
-// since nothing ever answers CMSG_LFG_SET_ROLES on the bots' behalf ("Test has chosen: Damage"
-// repeating with the group never actually queuing). Tracks which bots have already answered the
-// *current* role check so a bot's answer doesn't get resubmitted -- and re-broadcast to the
-// real player's chat/UI -- every tick for however long the check stays open; cleared the moment
-// that bot is no longer in LFG_STATE_ROLECHECK, so it's ready to answer the next one.
 std::unordered_set<ObjectGuid::LowType> roleCheckAnswered;
-// Separate from roleCheckAnswered -- a grouped bot passes through LFG_STATE_ROLECHECK and then
-// LFG_STATE_PROPOSAL as two distinct phases of the same queue trip. Sharing one tracking set
-// between them would leave the role-check phase's "already answered" entry in place once the
-// bot moves on to the proposal phase, making the proposal-accept check below think it had
-// already run when it never had.
 std::unordered_set<ObjectGuid::LowType> proposalAccepted;
 
 uint8 RoleBitFor(Player* bot)
@@ -321,7 +288,7 @@ uint8 RoleBitFor(Player* bot)
     {
         case BotRole::Tank:   return lfg::PLAYER_ROLE_TANK;
         case BotRole::Healer: return lfg::PLAYER_ROLE_HEALER;
-        default:              return lfg::PLAYER_ROLE_DAMAGE; // Dps and Support both queue as Damage, same as BotMatchesRole above
+        default:              return lfg::PLAYER_ROLE_DAMAGE;
     }
 }
 
@@ -332,29 +299,12 @@ void ProcessGroupRoleChecks()
         if (!bot->GetGroup())
             continue;
 
-        // Confirmed live: "only 2 of 4 bots ported into the dungeon" despite every single one
-        // logging a successful UpdateProposal accept above -- LFGMgr::MakeNewGroup only actually
-        // teleports everyone once the *last* member accepts, which means it calls TeleportTo()
-        // on bots whose own UpdateProposal call already finished earlier, from *someone else's*
-        // call stack. Same "a bot's null-socket session never sends the ack a real client would"
-        // gap already fixed for DoAcceptInvite/TryFollowLeaderAcrossMaps/RepopAtGraveyard --
-        // just one more internal-engine TeleportTo() this module hadn't caught yet. Checking
-        // every online bot unconditionally here (not just the one whose accept call just ran)
-        // is what catches a bot that got swept into someone else's group-completing accept.
         if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
             sBotMgr->QueueTeleportAck(bot->GetSession());
 
         ObjectGuid::LowType lowGuid = bot->GetGUID().GetCounter();
         lfg::LfgState state = sLFGMgr->GetState(bot->GetGUID());
 
-        // Confirmed live: fixing the role-check phase alone wasn't enough -- "bots don't pass
-        // the ready check" turned out to be the *next* phase (LFG_STATE_PROPOSAL, the "instance
-        // found, confirm to enter" screen shown once matchmaking actually finds a group). A
-        // grouped bot never gets added to `queuedBots` (that list is only populated by this
-        // file's own solo-join path, JoinBotToQueue/JoinBotToLfg), so ProcessQueuedBots' existing
-        // auto-accept below never runs for it. Handling both phases here, keyed off the same
-        // per-bot "already handled this specific phase" tracking, covers a grouped bot's entire
-        // trip through the queue without needing a second tracked-list mechanism.
         if (state == lfg::LFG_STATE_PROPOSAL)
         {
             if (proposalAccepted.count(lowGuid))
@@ -385,40 +335,184 @@ void ProcessGroupRoleChecks()
         bot->GetSession()->HandleLfgSetRolesOpcode(packet);
         roleCheckAnswered.insert(lowGuid);
 
-        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' answered a group LFG role check as role {}.",
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' answered group LFG role check as role {}.",
             bot->GetName(), roleBit);
     }
+}
+
+void CleanupOperation(uint64 opId)
+{
+    auto it = activeOperations.find(opId);
+    if (it == activeOperations.end())
+        return;
+
+    for (ObjectGuid::LowType lowGuid : it->second.queuedBotGuids)
+    {
+        ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(lowGuid);
+        if (sLFGMgr->GetState(guid) == lfg::LFG_STATE_QUEUED)
+        {
+            sLFGMgr->LeaveLfg(guid);
+        }
+    }
+
+    initiatorToOpId.erase(it->second.initiator);
+    activeOperations.erase(it);
+}
+
+void ProcessOperationsTimeout(uint32 diff)
+{
+    constexpr uint32 OPERATION_TIMEOUT_MS = 60000;
+    std::vector<uint64> toCleanup;
+    for (auto& [id, op] : activeOperations)
+    {
+        op.ageMs += diff;
+        // Check if initiator is still in queue
+        if (sLFGMgr->GetState(op.initiator) == lfg::LFG_STATE_NONE || op.ageMs > OPERATION_TIMEOUT_MS)
+        {
+            toCleanup.push_back(id);
+        }
+    }
+    for (uint64 id : toCleanup)
+        CleanupOperation(id);
 }
 
 class coa_lfg_fill_playerscript : public PlayerScript
 {
 public:
-    coa_lfg_fill_playerscript() : PlayerScript("coa_lfg_fill_playerscript", { PLAYERHOOK_CAN_JOIN_LFG }) { }
+    coa_lfg_fill_playerscript() : PlayerScript("coa_lfg_fill_playerscript", { PLAYERHOOK_CAN_JOIN_LFG, PLAYERHOOK_ON_LOGOUT }) { }
+
+    void OnPlayerLogout(Player* player) override
+    {
+        if (!player)
+            return;
+        auto it = initiatorToOpId.find(player->GetGUID());
+        if (it != initiatorToOpId.end())
+        {
+            CleanupOperation(it->second);
+        }
+    }
 
     bool OnPlayerCanJoinLfg(Player* player, uint8 roles, std::set<uint32>& dungeons, std::string const& /*comment*/) override
     {
         if (filling || dungeons.empty() || !sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true))
             return true;
-        if (player->GetGroup())
-            return true; // v1 scope: solo joins only -- see header comment
 
         LFGDungeonEntry const* firstDungeon = sLFGDungeonStore.LookupEntry(*dungeons.begin());
         if (!firstDungeon || firstDungeon->TypeID == lfg::LFG_TYPE_RAID)
-            return true; // raids out of scope -- composition there is a different problem
+            return true; // Raids out of scope
+
+        lfg::LfgQueuePolicy policy;
+        sScriptMgr->OnResolveLfgQueuePolicy(player->GetGUID(), policy);
+
+        // Strict intent gating: only BOT_FILL triggers bot spawning!
+        if (policy.compositionMode != lfg::LfgCompositionMode::BOT_FILL)
+            return true;
+
+        uint64 const opId = s_nextOpId++;
+        LfgFillOperation op;
+        op.id = opId;
+        op.initiator = player->GetGUID();
+        if (player->GetGroup())
+            op.groupGuid = player->GetGroup()->GetGUID();
+        activeOperations[opId] = op;
+        initiatorToOpId[op.initiator] = opId;
 
         lfg::LfgDungeonSet dungeonsCopy(dungeons.begin(), dungeons.end());
         TeamId team = player->GetTeamId();
-
         ObjectGuid initiator = player->GetGUID();
         std::vector<ObjectGuid> attemptedThisPass;
-        if (!(roles & lfg::PLAYER_ROLE_TANK))
-            FillRole(lfg::PLAYER_ROLE_TANK, team, dungeonsCopy, initiator, attemptedThisPass);
-        if (!(roles & lfg::PLAYER_ROLE_HEALER))
-            FillRole(lfg::PLAYER_ROLE_HEALER, team, dungeonsCopy, initiator, attemptedThisPass);
 
-        uint32 dpsNeeded = (roles & lfg::PLAYER_ROLE_DAMAGE) ? 2 : 3;
+        if (Group* grp = player->GetGroup())
+        {
+            if (grp->GetMembersCount() >= 5)
+                return true;
+
+            // Multi-role deterministic assignment:
+            // Check roles covered by real group members
+            bool hasTank = false;
+            bool hasHealer = false;
+            uint32 dpsAssigned = 0;
+
+            struct MemberRoleInfo
+            {
+                Player* player;
+                uint8 roles;
+                uint8 numRoles;
+            };
+            std::vector<MemberRoleInfo> members;
+            for (GroupReference* itr = grp->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                if (Player* member = itr->GetSource())
+                {
+                    uint8 r = sLFGMgr->GetRoles(member->GetGUID());
+                    if (r == 0)
+                        r = lfg::PLAYER_ROLE_DAMAGE;
+                    uint8 count = 0;
+                    if (r & lfg::PLAYER_ROLE_TANK) ++count;
+                    if (r & lfg::PLAYER_ROLE_HEALER) ++count;
+                    if (r & lfg::PLAYER_ROLE_DAMAGE) ++count;
+                    members.push_back({ member, r, count });
+                }
+            }
+
+            // Sort members by specificity (fewer choices first)
+            std::sort(members.begin(), members.end(), [](MemberRoleInfo const& a, MemberRoleInfo const& b)
+            {
+                return a.numRoles < b.numRoles;
+            });
+
+            // Pass 1: Assign Tank
+            for (auto const& m : members)
+            {
+                if (!hasTank && (m.roles & lfg::PLAYER_ROLE_TANK))
+                {
+                    hasTank = true;
+                    continue;
+                }
+            }
+
+            // Pass 2: Assign Healer
+            for (auto const& m : members)
+            {
+                if (!hasHealer && (m.roles & lfg::PLAYER_ROLE_HEALER))
+                {
+                    hasHealer = true;
+                    continue;
+                }
+            }
+
+            // Remaining slots filled by real DPS
+            uint32 realMembers = static_cast<uint32>(members.size());
+            uint32 realDps = 0;
+            if (realMembers > (hasTank ? 1 : 0) + (hasHealer ? 1 : 0))
+                realDps = realMembers - ((hasTank ? 1 : 0) + (hasHealer ? 1 : 0));
+            dpsAssigned = realDps;
+
+            if (!hasTank)
+                FillRole(lfg::PLAYER_ROLE_TANK, team, dungeonsCopy, initiator, attemptedThisPass, opId);
+            if (!hasHealer)
+                FillRole(lfg::PLAYER_ROLE_HEALER, team, dungeonsCopy, initiator, attemptedThisPass, opId);
+
+            uint32 const dpsNeeded = (dpsAssigned >= 3) ? 0 : (3 - dpsAssigned);
+            for (uint32 i = 0; i < dpsNeeded; ++i)
+                FillRole(lfg::PLAYER_ROLE_DAMAGE, team, dungeonsCopy, initiator, attemptedThisPass, opId);
+
+            return true;
+        }
+
+        // Solo player bot fill
+        bool const isTank = (roles & lfg::PLAYER_ROLE_TANK) != 0;
+        bool const isHealer = (roles & lfg::PLAYER_ROLE_HEALER) != 0;
+        bool const isDps = (roles & lfg::PLAYER_ROLE_DAMAGE) != 0;
+
+        if (!isTank)
+            FillRole(lfg::PLAYER_ROLE_TANK, team, dungeonsCopy, initiator, attemptedThisPass, opId);
+        if (!isHealer)
+            FillRole(lfg::PLAYER_ROLE_HEALER, team, dungeonsCopy, initiator, attemptedThisPass, opId);
+
+        uint32 dpsNeeded = isDps ? 2 : 3;
         for (uint32 i = 0; i < dpsNeeded; ++i)
-            FillRole(lfg::PLAYER_ROLE_DAMAGE, team, dungeonsCopy, initiator, attemptedThisPass);
+            FillRole(lfg::PLAYER_ROLE_DAMAGE, team, dungeonsCopy, initiator, attemptedThisPass, opId);
 
         return true;
     }
@@ -434,6 +528,18 @@ public:
         ProcessPendingLogins(diff);
         ProcessQueuedBots();
         ProcessGroupRoleChecks();
+        ProcessOperationsTimeout(diff);
+    }
+};
+
+class coa_lfg_fill_globalscript : public GlobalScript
+{
+public:
+    coa_lfg_fill_globalscript() : GlobalScript("coa_lfg_fill_globalscript") { }
+
+    bool HasLfgAutoFillProvider() const override
+    {
+        return sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true);
     }
 };
 }
@@ -442,6 +548,7 @@ void AddSC_coa_bot_lfg_fill_script()
 {
     new coa_lfg_fill_playerscript();
     new coa_lfg_fill_worldscript();
+    new coa_lfg_fill_globalscript();
 }
 
 namespace BotLfgFill
