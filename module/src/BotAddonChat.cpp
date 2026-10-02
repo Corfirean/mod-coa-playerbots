@@ -151,6 +151,41 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         return;
     }
 
+    // GETBOTS:<page>:<role|any>:<class id|0>:<min level>:<max level>:<guild only 0/1>:<name part> - the "Browse" tab's list of
+    // online bots (BOTPAGE / BOTS replies). INVITEBOT:<guid> and GUILDINVITEBOT:<guid> invite one of the listed bots.
+    if (verb == "GETBOTS")
+    {
+        BotMgr::BotListQuery query;
+        query.page = parts.size() > 1 ? std::strtoul(parts[1].c_str(), nullptr, 10) : 0;
+        if (parts.size() > 2)
+        {
+            if (parts[2] == "tank")
+                query.role = int32(BotRole::Tank);
+            else if (parts[2] == "healer")
+                query.role = int32(BotRole::Healer);
+            else if (parts[2] == "dps")
+                query.role = int32(BotRole::Dps);
+        }
+        query.classId = parts.size() > 3 ? std::strtoul(parts[3].c_str(), nullptr, 10) : 0;
+        query.minLevel = parts.size() > 4 ? std::strtoul(parts[4].c_str(), nullptr, 10) : 0;
+        query.maxLevel = parts.size() > 5 ? std::min<uint32>(255, std::strtoul(parts[5].c_str(), nullptr, 10)) : 255;
+        query.guildOnly = parts.size() > 6 && parts[6] == "1";
+        query.name = parts.size() > 7 ? parts[7] : std::string();
+        for (std::string const& line : sBotMgr->GetBotList(commander, query))
+            SendCoaBotReply(commander, line);
+        return;
+    }
+    if ((verb == "INVITEBOT" || verb == "GUILDINVITEBOT") && parts.size() >= 2)
+    {
+        ObjectGuid::LowType target = std::strtoul(parts[1].c_str(), nullptr, 10);
+        ChatHandler handler(commander->GetSession());
+        if (verb == "INVITEBOT")
+            sBotMgr->InviteBotToGroup(commander, target, &handler);
+        else
+            sBotMgr->InviteBotToGuild(commander, target, &handler);
+        return;
+    }
+
     // INVITEROLE:<tank|healer|dps> invites a single bot of that role to the commander's group (the "pocket healer" case;
     // Quick Fill fills the whole party). The commander is the requester, so no bot guid / authorization gate applies.
     if (verb == "INVITEROLE" && parts.size() >= 2)

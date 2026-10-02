@@ -251,6 +251,28 @@ local function RequestOrderCatalogs()
     end
 end
 
+-- "Browse" tab: every online bot you could invite, not limited by the 49 names of /who. The server filters and pages;
+-- BOTPAGE starts a new page of results and BOTS lines fill it.
+local botBrowser = { page = 0, pages = 1, total = 0, role = "any", minLevel = 0, maxLevel = 255, guildOnly = false, name = "", list = {} }
+local botBrowserFrame
+local RefreshBotBrowser
+
+local function RequestBotList(page)
+    local f = botBrowser
+    f.page = page or 0
+    local name = (f.name or ""):gsub("[:|,]", "")
+    SendRawBody(("GETBOTS:%d:%s:0:%d:%d:%d:%s"):format(f.page, f.role, f.minLevel, f.maxLevel, f.guildOnly and 1 or 0, name))
+end
+
+local function ParseBotsChunk(payload)
+    for guid, name, classId, level, role, guildmate, className in (payload or ""):gmatch("(%d+),([^,|]*),(%d+),(%d+),([^,|]*),([01]),?([^|]*)") do
+        table.insert(botBrowser.list, {
+            guid = tonumber(guid), name = name, classId = tonumber(classId), level = tonumber(level),
+            role = role, guildmate = guildmate == "1", className = className,
+        })
+    end
+end
+
 -- "Stock" tab: the resources in the guild bank with the limit the officers set. The list is rebuilt from scratch on
 -- every request (the server answers with several STOCK: chunks).
 local function RequestStock()
@@ -346,6 +368,17 @@ local function HandleIncomingMessage(body)
         if RefreshTaskBoard then
             RefreshTaskBoard()
         end
+
+    elseif verb == "BOTPAGE" then
+        botBrowser.list = {}
+        botBrowser.page = tonumber(parts[2]) or 0
+        botBrowser.total = tonumber(parts[3]) or 0
+        botBrowser.pages = math.max(1, tonumber(parts[4]) or 1)
+        if RefreshBotBrowser then RefreshBotBrowser() end
+
+    elseif verb == "BOTS" then
+        ParseBotsChunk(parts[2])
+        if RefreshBotBrowser then RefreshBotBrowser() end
 
     elseif verb == "STOCK" then
         ParseStockChunk(parts[2])
@@ -1018,13 +1051,14 @@ local function CreateMainFrame()
         { id = "squad", label = "Squad" },
         { id = "tasks", label = "Tasks" },
         { id = "orders", label = "Orders" },
+        { id = "browse", label = "Browse" },
         { id = "gear", label = "Gear" },
     }
     for i, tabDef in ipairs(tabDefs) do
         local pageId, label = tabDef.id, tabDef.label
         local tab = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-        tab:SetSize(116, 22)
-        tab:SetPoint("TOPLEFT", frame, "TOPLEFT", 14 + (i - 1) * 122, -36)
+        tab:SetSize(96, 22)
+        tab:SetPoint("TOPLEFT", frame, "TOPLEFT", 14 + (i - 1) * 100, -36)
         tab:SetText(label)
         tab.pageId = pageId
         tab.label = label
@@ -1185,6 +1219,7 @@ local function CreateMainFrame()
             squadPage:Hide()
             if taskBoardFrame then taskBoardFrame:Hide() end
             if orderPickerFrame then orderPickerFrame:Hide() end
+            if botBrowserFrame then botBrowserFrame:Hide() end
             if gearPanelFrame then gearPanelFrame:Hide() end
             for _, btn in ipairs(frame.compactButtons) do btn:Show() end
         else
@@ -1497,6 +1532,205 @@ local function CreateGuildTaskBoardFrame()
         end
     end)
 
+    return frame
+end
+
+-------------------------------------------------------------------------------
+-- Browse tab: find and invite one bot
+-------------------------------------------------------------------------------
+
+local ROLE_CYCLE = { "any", "tank", "healer", "dps" }
+local ROLE_LABEL = { any = "Any role", tank = "Tank", healer = "Healer", dps = "Damage" }
+local browserRows = {}
+local BROWSER_ROW_H = 26
+
+local function MakeBox(parent, width, text, numeric, maxLetters)
+    local box = CreateFrame("EditBox", nil, parent)
+    box:SetSize(width, 22)
+    box:SetFontObject(GameFontHighlightSmall)
+    box:SetJustifyH("CENTER")
+    box:SetTextInsets(3, 3, 0, 0)
+    box:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 8, edgeSize = 8,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 }
+    })
+    box:SetBackdropColor(0.02, 0.02, 0.025, 0.95)
+    box:SetBackdropBorderColor(0.35, 0.37, 0.42, 1.0)
+    box:SetAutoFocus(false)
+    box:SetNumeric(numeric and true or false)
+    box:SetMaxLetters(maxLetters or 20)
+    box:SetText(text or "")
+    box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    return box
+end
+
+local function CreateBotBrowserRow(parent, index)
+    local row = CreateFrame("Frame", nil, parent)
+    row:SetSize(470, BROWSER_ROW_H)
+    row:SetPoint("TOPLEFT", parent, "TOPLEFT", 2, -(index - 1) * BROWSER_ROW_H)
+    local bg = row:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetTexture("Interface\\FriendsFrame\\UI-FriendsFrame-HighlightBar")
+    bg:SetAlpha((index % 2 == 0) and 0.06 or 0.0)
+
+    row.nameText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row.nameText:SetPoint("LEFT", row, "LEFT", 4, 0)
+    row.nameText:SetWidth(150)
+    row.nameText:SetJustifyH("LEFT")
+
+    row.infoText = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    row.infoText:SetPoint("LEFT", row.nameText, "RIGHT", 4, 0)
+    row.infoText:SetWidth(170)
+    row.infoText:SetJustifyH("LEFT")
+
+    row.btnGroup = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.btnGroup:SetSize(54, 20)
+    row.btnGroup:SetPoint("LEFT", row.infoText, "RIGHT", 4, 0)
+    row.btnGroup:SetText("Group")
+    row.btnGroup:SetScript("OnClick", function()
+        if not row.guid then return end
+        SendRawBody("INVITEBOT:" .. row.guid)
+        Log("Invited " .. (row.botName or "bot") .. " to your group.")
+    end)
+
+    row.btnGuild = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.btnGuild:SetSize(54, 20)
+    row.btnGuild:SetPoint("LEFT", row.btnGroup, "RIGHT", 2, 0)
+    row.btnGuild:SetText("Guild")
+    row.btnGuild:SetScript("OnClick", function()
+        if not row.guid then return end
+        SendRawBody("GUILDINVITEBOT:" .. row.guid)
+        Log("Invited " .. (row.botName or "bot") .. " to your guild.")
+        RequestBotList(botBrowser.page)
+    end)
+    return row
+end
+
+function RefreshBotBrowser()
+    if not botBrowserFrame or not botBrowserFrame:IsShown() then return end
+    local list = botBrowser.list
+    for i = 1, math.max(#list, #browserRows) do
+        local info = list[i]
+        if info then
+            if not browserRows[i] then browserRows[i] = CreateBotBrowserRow(botBrowserFrame.listArea, i) end
+            local row = browserRows[i]
+            row.guid = info.guid
+            row.botName = info.name
+            row.nameText:SetText(ClassColorForId(info.classId) .. info.name .. "|r" .. (info.guildmate and " |cFF55FF55*|r" or ""))
+            local roleLabel = ROLE_LABEL[info.role] or info.role
+            row.infoText:SetText("lvl " .. info.level .. "  " .. roleLabel .. "  " .. (info.className or ""))
+            row:Show()
+        elseif browserRows[i] then
+            browserRows[i]:Hide()
+        end
+    end
+    botBrowserFrame.listArea:SetHeight(math.max(#list * BROWSER_ROW_H + 4, 1))
+    botBrowserFrame.pageText:SetText(("Page %d / %d  (%d bots)"):format(botBrowser.page + 1, botBrowser.pages, botBrowser.total))
+    if botBrowser.page > 0 then botBrowserFrame.btnPrev:Enable() else botBrowserFrame.btnPrev:Disable() end
+    if botBrowser.page + 1 < botBrowser.pages then botBrowserFrame.btnNext:Enable() else botBrowserFrame.btnNext:Disable() end
+    if #list == 0 then botBrowserFrame.emptyText:Show() else botBrowserFrame.emptyText:Hide() end
+end
+
+local function CreateBotBrowserFrame()
+    local frame = CreateFrame("Frame", "CoABotUIBotBrowser", mainFrame)
+    frame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 12, -66)
+    frame:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -12, 10)
+    frame:Hide()
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -7)
+    title:SetText("|cFFFFD100Find a bot|r |cFF8B93A3every free bot of your faction, with filters|r")
+
+    -- row 1: name search and role
+    local nameBox = MakeBox(frame, 150, "", false, 24)
+    nameBox:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -30)
+    nameBox:SetJustifyH("LEFT")
+    local nameHint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    nameHint:SetPoint("LEFT", nameBox, "RIGHT", 6, 0)
+    nameHint:SetText("Name")
+
+    local btnRole = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    btnRole:SetSize(96, 22)
+    btnRole:SetPoint("LEFT", nameHint, "RIGHT", 12, 0)
+    local function RoleText() btnRole:SetText(ROLE_LABEL[botBrowser.role]) end
+    RoleText()
+
+    local guildCheck = CreateFrame("CheckButton", "CoABotUIBrowseGuildOnly", frame, "UICheckButtonTemplate")
+    guildCheck:SetSize(22, 22)
+    guildCheck:SetPoint("LEFT", btnRole, "RIGHT", 10, 0)
+    local guildLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    guildLabel:SetPoint("LEFT", guildCheck, "RIGHT", 0, 0)
+    guildLabel:SetText("Guild only")
+
+    -- row 2: level range, paging
+    local lvlLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    lvlLabel:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -60)
+    lvlLabel:SetText("Level")
+    local minBox = MakeBox(frame, 34, "", true, 3)
+    minBox:SetPoint("LEFT", lvlLabel, "RIGHT", 6, 0)
+    local dash = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    dash:SetPoint("LEFT", minBox, "RIGHT", 3, 0)
+    dash:SetText("-")
+    local maxBox = MakeBox(frame, 34, "", true, 3)
+    maxBox:SetPoint("LEFT", dash, "RIGHT", 3, 0)
+
+    frame.btnNext = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    frame.btnNext:SetSize(60, 22)
+    frame.btnNext:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -58)
+    frame.btnNext:SetText("Next")
+    frame.btnNext:SetScript("OnClick", function() RequestBotList(botBrowser.page + 1) end)
+    frame.btnPrev = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    frame.btnPrev:SetSize(60, 22)
+    frame.btnPrev:SetPoint("RIGHT", frame.btnNext, "LEFT", -4, 0)
+    frame.btnPrev:SetText("Prev")
+    frame.btnPrev:SetScript("OnClick", function() RequestBotList(math.max(0, botBrowser.page - 1)) end)
+    frame.pageText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    frame.pageText:SetPoint("RIGHT", frame.btnPrev, "LEFT", -10, 0)
+
+    local scrollFrame = CreateFrame("ScrollFrame", "CoABotUIBrowseScroll", frame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -90)
+    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 4)
+    local listArea = CreateFrame("Frame", nil, scrollFrame)
+    listArea:SetSize(470, 1)
+    scrollFrame:SetScrollChild(listArea)
+    frame.listArea = listArea
+
+    local emptyText = listArea:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    emptyText:SetPoint("TOP", listArea, "TOP", 0, -40)
+    emptyText:SetJustifyH("CENTER")
+    emptyText:SetText("|cFF888888No free bots match. Change the filters, or spawn some from the Manager.|r")
+    frame.emptyText = emptyText
+
+    -- A changed filter asks the server again after a short pause (typing does not send a request per letter).
+    local dirtyAt = nil
+    local function Dirty() dirtyAt = GetTime() end
+    nameBox:SetScript("OnTextChanged", function(self) botBrowser.name = self:GetText() or ""; Dirty() end)
+    minBox:SetScript("OnTextChanged", function(self) botBrowser.minLevel = tonumber(self:GetText()) or 0; Dirty() end)
+    maxBox:SetScript("OnTextChanged", function(self)
+        local v = tonumber(self:GetText())
+        botBrowser.maxLevel = (v and v > 0) and v or 255
+        Dirty()
+    end)
+    guildCheck:SetScript("OnClick", function(self) botBrowser.guildOnly = self:GetChecked() and true or false; Dirty() end)
+    btnRole:SetScript("OnClick", function()
+        for i, r in ipairs(ROLE_CYCLE) do
+            if r == botBrowser.role then
+                botBrowser.role = ROLE_CYCLE[(i % #ROLE_CYCLE) + 1]
+                break
+            end
+        end
+        RoleText()
+        Dirty()
+    end)
+    frame:SetScript("OnUpdate", function()
+        if dirtyAt and GetTime() - dirtyAt > 0.5 then
+            dirtyAt = nil
+            RequestBotList(0)
+        end
+    end)
+    frame:SetScript("OnShow", function() RequestBotList(botBrowser.page) end)
     return frame
 end
 
@@ -2084,7 +2318,7 @@ end
 
 ShowMainPage = function(pageId)
     if not mainFrame then return end
-    if pageId ~= "squad" and pageId ~= "tasks" and pageId ~= "orders" and pageId ~= "gear" then
+    if pageId ~= "squad" and pageId ~= "tasks" and pageId ~= "orders" and pageId ~= "browse" and pageId ~= "gear" then
         pageId = "squad"
     end
 
@@ -2093,6 +2327,7 @@ ShowMainPage = function(pageId)
     mainFrame.squadPage:Hide()
     if taskBoardFrame then taskBoardFrame:Hide() end
     if orderPickerFrame then orderPickerFrame:Hide() end
+    if botBrowserFrame then botBrowserFrame:Hide() end
     if gearPanelFrame then gearPanelFrame:Hide() end
 
     for _, tab in ipairs(mainFrame.tabs) do
@@ -2118,6 +2353,9 @@ ShowMainPage = function(pageId)
         orderPickerFrame:Show()
         RequestOrderCatalogs()
         SelectOrderCategory(activeOrderCategoryId)
+    elseif pageId == "browse" then
+        if not botBrowserFrame then botBrowserFrame = CreateBotBrowserFrame() end
+        botBrowserFrame:Show()
     else
         if not gearPanelFrame then gearPanelFrame = CreateGearPanelFrame() end
         gearPanelFrame:Show()

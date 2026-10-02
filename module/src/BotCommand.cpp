@@ -69,6 +69,7 @@ public:
             { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "quickfill",    HandleBotQuickFillCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "invitebot",    HandleBotInviteRoleCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "botlist",      HandleBotListCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "craftorder",   HandleBotCraftOrderCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "recipecoverage", HandleBotRecipeCoverageCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "guildroster",  HandleBotGuildRosterCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -188,6 +189,28 @@ public:
             return true;
         }
         sBotMgr->QuickFillGroup(commander, handler);
+        return true;
+    }
+
+    // `.botcmd botlist <player guid> [page] [role]`: what the addon's Browse tab would receive.
+    static bool HandleBotListCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, Optional<uint32> page, Optional<std::string> role)
+    {
+        Player* commander = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(charLowGuid));
+        if (!commander)
+        {
+            handler->PSendSysMessage("BotMgr: no online player with guid {} found.", charLowGuid);
+            return true;
+        }
+        BotMgr::BotListQuery query;
+        query.page = page.value_or(0);
+        if (role && *role == "tank")
+            query.role = int32(BotRole::Tank);
+        else if (role && *role == "healer")
+            query.role = int32(BotRole::Healer);
+        else if (role && *role == "dps")
+            query.role = int32(BotRole::Dps);
+        for (std::string const& line : sBotMgr->GetBotList(commander, query))
+            handler->SendSysMessage(line);
         return true;
     }
 

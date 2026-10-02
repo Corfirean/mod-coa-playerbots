@@ -20,6 +20,7 @@
 #include "Chat.h"
 #include "Config.h"
 #include "Corpse.h"
+#include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "Group.h"
 #include "GroupScript.h"
@@ -2628,6 +2629,123 @@ void BotMgr::InviteBotForRole(Player* commander, BotRole role, ChatHandler* hand
     commander->GetSession()->HandleGroupInviteOpcode(packet);
     if (handler)
         handler->PSendSysMessage("BotMgr: invited {} ({}).", chosen->GetName(), RoleToString(role));
+}
+
+std::vector<std::string> BotMgr::GetBotList(Player* commander, BotListQuery const& query) const
+{
+    std::vector<std::string> lines;
+    if (!commander)
+        return lines;
+
+    auto lower = [](std::string s)
+    {
+        for (char& ch : s)
+            ch = char(std::tolower(static_cast<unsigned char>(ch)));
+        return s;
+    };
+    std::string const nameFilter = lower(query.name);
+    uint32 const guildId = commander->GetGuildId();
+
+    std::vector<Player*> matches;
+    for (Player* bot : GetOnlineBots())
+    {
+        if (bot == commander || bot->GetGroup() || !bot->IsInWorld() || bot->GetTeamId() != commander->GetTeamId())
+            continue;
+        if (query.classId && bot->getClass() != query.classId)
+            continue;
+        if (bot->GetLevel() < query.minLevel || bot->GetLevel() > query.maxLevel)
+            continue;
+        if (query.guildOnly && (!guildId || bot->GetGuildId() != guildId))
+            continue;
+        if (query.role >= 0 && BotAI::GetRole(bot->GetGUID()) != BotRole(query.role))
+            continue;
+        if (!nameFilter.empty() && lower(bot->GetName()).find(nameFilter) == std::string::npos)
+            continue;
+        matches.push_back(bot);
+    }
+
+    // Guildmates first, then the highest level, then by name.
+    std::sort(matches.begin(), matches.end(), [&](Player* a, Player* b)
+    {
+        bool aGuild = guildId && a->GetGuildId() == guildId, bGuild = guildId && b->GetGuildId() == guildId;
+        if (aGuild != bGuild)
+            return aGuild;
+        if (a->GetLevel() != b->GetLevel())
+            return a->GetLevel() > b->GetLevel();
+        return a->GetName() < b->GetName();
+    });
+
+    constexpr size_t PAGE_SIZE = 24;
+    size_t const pages = std::max<size_t>(1, (matches.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+    size_t const page = std::min<size_t>(query.page, pages - 1);
+    lines.push_back("BOTPAGE:" + std::to_string(page) + ":" + std::to_string(matches.size()) + ":" + std::to_string(pages));
+
+    constexpr size_t BUDGET = 200;
+    std::string body;
+    auto flush = [&]()
+    {
+        if (!body.empty())
+            lines.push_back("BOTS:" + body);
+        body.clear();
+    };
+    for (size_t i = page * PAGE_SIZE; i < matches.size() && i < (page + 1) * PAGE_SIZE; ++i)
+    {
+        Player* bot = matches[i];
+        std::string name;
+        for (char ch : bot->GetName())
+            name.push_back(ch == ':' || ch == '|' || ch == ',' ? ' ' : ch);
+        std::string className;
+        if (ChrClassesEntry const* classEntry = sChrClassesStore.LookupEntry(bot->getClass()))
+            for (char ch : std::string(classEntry->name[0] ? classEntry->name[0] : ""))
+                className.push_back(ch == ':' || ch == '|' || ch == ',' ? ' ' : ch);
+        std::string const piece = std::to_string(bot->GetGUID().GetCounter()) + "," + name + "," + std::to_string(uint32(bot->getClass())) + "," +
+            std::to_string(uint32(bot->GetLevel())) + "," + RoleToString(BotAI::GetRole(bot->GetGUID())) + "," + ((guildId && bot->GetGuildId() == guildId) ? "1" : "0") + "," + className;
+        if (!body.empty() && body.size() + 1 + piece.size() > BUDGET)
+            flush();
+        if (!body.empty())
+            body += "|";
+        body += piece;
+    }
+    flush();
+    return lines;
+}
+
+void BotMgr::InviteBotToGroup(Player* commander, ObjectGuid::LowType botGuid, ChatHandler* handler)
+{
+    Player* bot = commander ? FindBotPlayer(botGuid) : nullptr;
+    if (!bot || bot == commander || bot->GetGroup() || bot->GetTeamId() != commander->GetTeamId())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: that bot is not available any more.");
+        return;
+    }
+    if (Group* group = commander->GetGroup(); group && group->IsFull())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: your group is full.");
+        return;
+    }
+    WorldPacket packet;
+    packet << bot->GetName();
+    packet << uint32(0);
+    commander->GetSession()->HandleGroupInviteOpcode(packet);
+}
+
+void BotMgr::InviteBotToGuild(Player* commander, ObjectGuid::LowType botGuid, ChatHandler* handler)
+{
+    Player* bot = commander ? FindBotPlayer(botGuid) : nullptr;
+    Guild* guild = commander ? commander->GetGuild() : nullptr;
+    if (!bot || !guild || bot->GetGuildId() || bot->GetGuildIdInvited() || bot->GetTeamId() != commander->GetTeamId())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: that bot cannot be invited to your guild.");
+        return;
+    }
+    // The guild's own check of the commander's invite right runs inside; a bot joins as soon as it is invited.
+    guild->HandleInviteMember(commander->GetSession(), bot->GetName());
+    if (bot->GetGuildIdInvited())
+        if (WorldSession* session = FindBotSession(botGuid))
+            DoAcceptGuildInvite(session);
 }
 
 void BotMgr::SetAutoDungeonMode(ObjectGuid leaderGuid, bool enabled)

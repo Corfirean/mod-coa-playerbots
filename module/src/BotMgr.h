@@ -291,6 +291,25 @@ public:
     // switched to it. Does nothing when the group is full. Reports through `handler` when given.
     void InviteBotForRole(Player* commander, BotRole role, ChatHandler* handler);
 
+    // The browsable list of bots behind the addon's "Browse" tab, free of the /who list's length limit. The filters are all
+    // optional: `role` (-1 = any, else a BotRole), a class id (0 = any), a level range, guildmates only, and a part of the name.
+    struct BotListQuery
+    {
+        uint32 page = 0;
+        int32 role = -1;
+        uint32 classId = 0;
+        uint32 minLevel = 0;
+        uint32 maxLevel = 255;
+        bool guildOnly = false;
+        std::string name;
+    };
+    // Reply bodies: `BOTPAGE:<page>:<total matches>:<pages>` then `BOTS:<guid>,<name>,<class>,<level>,<role>,<guildmate 0/1>|...`.
+    // Only online bots the commander could invite are listed: of their faction, not in a group, not the commander.
+    std::vector<std::string> GetBotList(Player* commander, BotListQuery const& query) const;
+    // Invite one listed bot to the commander's group / to the commander's guild (the guild's own invite rights apply).
+    void InviteBotToGroup(Player* commander, ObjectGuid::LowType botGuid, ChatHandler* handler);
+    void InviteBotToGuild(Player* commander, ObjectGuid::LowType botGuid, ChatHandler* handler);
+
     // Toggles autonomous dungeon/raid play for `leader`'s whole group: while enabled, a Tank
     // bot idle inside an instance (no target, leader not already fighting) scans for the
     // nearest hostile pack and pulls it on its own -- see BotAI.cpp's TryAutoPullInInstance
