@@ -1,5 +1,6 @@
 #include "BotAI.h"
 #include "BotBattlegroundFill.h"
+#include "BotEconomy.h"
 #include "BotFormations.h"
 #include "BotLfgFill.h"
 #include "BotMgr.h"
@@ -73,6 +74,7 @@ public:
             { "formation",    HandleBotFormationCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "geartrainer",  HandleBotGearTrainerCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "professiontrainer", HandleBotProfessionTrainerCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "economy",      HandleBotEconomyCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "autodungeon",  HandleBotAutoDungeonCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
@@ -82,6 +84,13 @@ public:
         };
 
         return commandTable;
+    }
+
+    // What bots would sell and why (plan only): see BotEconomy.h.
+    static bool HandleBotEconomyCommand(ChatHandler* handler, Tail args)
+    {
+        BotEconomy::HandleCommand(handler, std::string(args));
+        return true;
     }
 
     static bool HandleBotSpawnCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)

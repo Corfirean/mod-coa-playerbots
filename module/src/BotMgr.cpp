@@ -7,6 +7,7 @@
 #include "AscensionClassServiceBridge.h"
 #include "AscensionCoATalentData.h"
 #include "BotAI.h"
+#include "BotEconomy.h"
 #include "engine/SpecStrategyRegistry.h"
 #include "engine/ActionEvaluator.h"
 #include "BotSpawnRandom.h"
@@ -3213,6 +3214,7 @@ void BotMgr::Update(uint32 diff)
         _tradeEnabled = sConfigMgr->GetOption<bool>("CoaBots.Trade.Enable", true);
     }
     UpdateTrades(diff);
+    BotEconomy::Update(diff, _botSessions);
     uint32 const combatIntervalMs = _aiCombatIntervalMs;
     uint32 const idleIntervalMs = _aiIdleIntervalMs;
     for (WorldSession* session : _botSessions)

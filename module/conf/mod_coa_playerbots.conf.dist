@@ -257,3 +257,51 @@ CoaBots.Trade.Enable = 1
 #
 
 CoaBots.MarkSessionsAsBots = 1
+
+###################################################################################################
+# ECONOMY (plan only for now)
+###################################################################################################
+#
+#    CoaBots.Economy.Enable
+#        Description: Bots look into their bags and write down what they would sell and what it would
+#                     fetch (see `.botcmd economy status`, `plan <bot guid>`, `journal`). Nothing is
+#                     sold yet; this is the first step so the rules can be checked before bots trade.
+#        Default:     0
+#
+#    CoaBots.Economy.MinTripCopper
+#        Description: A bot is only noted down when what it could sell is worth at least this much.
+#        Default:     50000 - (5 gold)
+#
+#    CoaBots.Economy.KeepConsumables
+#        Description: How many potions / food items of its own level range a bot keeps of each kind.
+#        Default:     10
+#
+#    CoaBots.Economy.OutdatedBelowLevels
+#        Description: A potion or food this many levels below the bot counts as outdated and is
+#                     planned for sale in full.
+#        Default:     15
+#
+#    CoaBots.Economy.MinAuctionQuality
+#        Description: Items of this quality (2 = uncommon) and better are planned for the auction when
+#                     they can be listed, everything else for a vendor.
+#        Default:     2
+#
+#    CoaBots.Economy.UndercutPercent
+#        Description: How far below the lowest current buyout the plan prices an item.
+#        Default:     5
+#
+#    CoaBots.Economy.ScanIntervalSec / BotsPerTick / JournalDays
+#        Description: How often one bot is looked at, how many bots per world tick, and how long
+#                     journal rows are kept.
+#        Default:     600 / 2 / 14
+#
+
+CoaBots.Economy.Enable = 0
+CoaBots.Economy.MinTripCopper = 50000
+CoaBots.Economy.KeepConsumables = 10
+CoaBots.Economy.OutdatedBelowLevels = 15
+CoaBots.Economy.MinAuctionQuality = 2
+CoaBots.Economy.UndercutPercent = 5
+CoaBots.Economy.ScanIntervalSec = 600
+CoaBots.Economy.BotsPerTick = 2
+CoaBots.Economy.JournalDays = 14
