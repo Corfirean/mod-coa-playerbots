@@ -352,8 +352,28 @@ WorldSession* BotMgr::FindBotSession(ObjectGuid::LowType charLowGuid) const
     return nullptr;
 }
 
+bool BotMgr::BotsEnabled()
+{
+    static bool enabled = true;
+    static uint32 checkedAt = 0;
+    uint32 const now = getMSTime();
+    if (!checkedAt || getMSTimeDiff(checkedAt, now) >= 10000)
+    {
+        checkedAt = now ? now : 1;
+        enabled = sConfigMgr->GetOption<bool>("CoaBots.Enable", true);
+    }
+    return enabled;
+}
+
 void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std::function<void(Player*)> onReady)
 {
+    if (!BotsEnabled())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+        return;
+    }
+
     ObjectGuid playerGuid = ObjectGuid::Create<HighGuid::Player>(charLowGuid);
 
     uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(playerGuid);

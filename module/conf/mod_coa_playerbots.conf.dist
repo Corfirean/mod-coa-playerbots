@@ -4,6 +4,17 @@
 
 [worldserver]
 
+#
+#    CoaBots.Enable
+#        Description: The master switch of the companions. 0 = no bot is ever logged in (no spawn commands, no login at
+#                     start, no group / battleground / dungeon fill). The Manager's Modules page switches this setting.
+#                     Bots that are already online stay until the world server restarts.
+#        Default:     1 - (Enabled)
+#
+
+CoaBots.Enable = 1
+
+
 # Number of bots '.botcmd spawnrandom' creates when no count is given on the command line.
 CoaBots.RandomSpawn.DefaultCount = 10
 

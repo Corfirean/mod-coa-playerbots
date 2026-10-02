@@ -44,6 +44,11 @@ public:
     // adding yet another pending-queue mechanism just for that.
     void SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std::function<void(Player*)> onReady = nullptr);
 
+    // The master switch (CoaBots.Enable, default on): with it off no bot is ever logged in - not by command, not at start,
+    // not for a group, battleground or dungeon fill. Read again every few seconds, so a changed config takes effect with
+    // the next spawn (bots that are already online stay until the world restarts).
+    static bool BotsEnabled();
+
     // Manual/debug entry point: accepts a pending group invite on a bot's
     // behalf right now, reporting success/failure to handler. Bots normally
     // don't need this called explicitly any more (see Update() below) — kept
