@@ -336,6 +336,12 @@ CoaBots.MarkSessionsAsBots = 1
 #                     a day.
 #        Default:     20 / 20000 - (2 gold)
 #
+#    Stock limits (no setting)
+#        Description: The guild master and officers set limits from the addon's Stock tab ("keep N of this resource").
+#                     Once a minute a free bot of the guild takes a surplus (above the limit and at least 10, or a tenth
+#                     of the limit) out of the guild bank, carries it to a city with an auction house and sells it. One
+#                     surplus run per guild at a time. Needs CoaBots.Economy.Enable = 1 and DryRun = 0.
+#
 #    CoaBots.Economy.MinListingCopper / ListingMinutes
 #        Description: A listing worth less than this is not worth its deposit and goes to a vendor instead; how
 #                     long a listing runs (12 hours = 720, 24 hours = 1440, 48 hours = 2880).

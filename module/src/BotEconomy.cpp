@@ -77,6 +77,14 @@ namespace
         uint64 depositedCopper = 0;
     };
     std::unordered_map<ObjectGuid, GoldOrder> g_goldOrders;
+
+    // Stock limits per guild, the bots carrying a stock surplus to town, and one run at a time per guild.
+    std::unordered_map<uint32, std::unordered_map<uint32, uint32>> g_stockLimits; // guild -> item -> keep
+    std::unordered_map<ObjectGuid, std::unordered_set<uint32>> g_stockCarry;       // bot -> items it carries for sale
+    std::unordered_map<uint32, ObjectGuid> g_stockRuns;                            // guild -> the bot on a run
+    std::unordered_map<uint64, uint32> g_stockBlockedUntil;                        // (guild << 32 | item) -> game ms
+    uint32 g_stockCheckAgeMs = 0;
+    constexpr uint32 STOCK_CHECK_MS = 60 * 1000;
     uint32 g_goldCheckAgeMs = 0;
     constexpr uint32 GOLD_CHECK_MS = 60 * 1000;
     constexpr uint32 GOLD_MIN_DEPOSIT_COPPER = 10000; // 1 gold
@@ -186,6 +194,17 @@ namespace
             "  target_copper BIGINT UNSIGNED NOT NULL,"
             "  deposited_copper BIGINT UNSIGNED NOT NULL DEFAULT 0"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+        CharacterDatabase.DirectExecute(
+            "CREATE TABLE IF NOT EXISTS mod_coa_bot_stock_limits ("
+            "  guild_id INT UNSIGNED NOT NULL,"
+            "  item_entry INT UNSIGNED NOT NULL,"
+            "  keep_count INT UNSIGNED NOT NULL,"
+            "  PRIMARY KEY (guild_id, item_entry)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+        if (QueryResult limits = CharacterDatabase.Query("SELECT guild_id, item_entry, keep_count FROM mod_coa_bot_stock_limits"))
+            do
+                g_stockLimits[(*limits)[0].Get<uint32>()][(*limits)[1].Get<uint32>()] = (*limits)[2].Get<uint32>();
+            while (limits->NextRow());
         LoadProtected();
         if (QueryResult result = CharacterDatabase.Query("SELECT bot_guid, guild_id, target_copper, deposited_copper FROM mod_coa_bot_gold_orders"))
             do
@@ -734,6 +753,8 @@ namespace
 namespace BotEconomy
 {
     void ProcessGoldOrders();
+    void BalanceStock();
+    void EndStockRun(ObjectGuid bot);
 
     std::vector<Line> PlanSale(Player* bot)
     {
@@ -774,6 +795,22 @@ namespace BotEconomy
             uint32 const entry = item->GetEntry();
             if (entry == HEARTHSTONE_ENTRY || g_protected.count(entry))
                 return;
+            // A resource taken out of the guild bank to be sold (see the Stock limits).
+            if (proto->Class == ITEM_CLASS_TRADE_GOODS)
+            {
+                auto carried = g_stockCarry.find(bot->GetGUID());
+                if (carried != g_stockCarry.end() && carried->second.count(entry) && proto->SellPrice)
+                {
+                    Line stock;
+                    stock.entry = entry;
+                    stock.name = proto->Name1;
+                    stock.count = item->GetCount();
+                    stock.reason = "stock-surplus";
+                    Decide(item, proto, false, stock);
+                    add(std::move(stock));
+                    return;
+                }
+            }
             if (proto->Class == ITEM_CLASS_QUEST || proto->StartQuest || proto->Class == ITEM_CLASS_KEY || proto->Class == ITEM_CLASS_CONTAINER ||
                 proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_RECIPE || proto->Class == ITEM_CLASS_PROJECTILE ||
                 proto->Class == ITEM_CLASS_QUIVER || proto->Class == ITEM_CLASS_GLYPH)
@@ -861,6 +898,12 @@ namespace BotEconomy
             g_goldCheckAgeMs = 0;
             ProcessGoldOrders();
         }
+        g_stockCheckAgeMs += diff;
+        if (g_stockCheckAgeMs >= STOCK_CHECK_MS)
+        {
+            g_stockCheckAgeMs = 0;
+            BalanceStock();
+        }
 
         // Tick every waiting bot down, then look at the ones that are due, a few per tick.
         g_pruneAgeMs += diff;
@@ -935,6 +978,178 @@ namespace BotEconomy
             LOG_DEBUG("module.coa-playerbots", "BotEconomy: '{}' would sell {} stack(s) worth about {} (plan only).", bot->GetName(), plan.size(), Money(total));
         }
         g_rotation = (g_rotation + slice) % std::max<size_t>(1, n);
+    }
+
+    // Guild master or an officer (rank 0 or 1).
+    bool IsGuildLeader(Player* player)
+    {
+        Guild* guild = player ? sGuildMgr->GetGuildById(player->GetGuildId()) : nullptr;
+        Guild::Member const* member = guild ? guild->GetMember(player->GetGUID()) : nullptr;
+        return member && member->GetRankId() <= 1;
+    }
+
+    void EndStockRun(ObjectGuid bot)
+    {
+        g_stockCarry.erase(bot);
+        for (auto it = g_stockRuns.begin(); it != g_stockRuns.end();)
+            it = it->second == bot ? g_stockRuns.erase(it) : std::next(it);
+    }
+
+    // Once a minute, for each guild with limits that is not already running a surplus out: the most valuable surplus is
+    // withdrawn by a free bot that has room for it, and that bot sets off for town.
+    void BalanceStock()
+    {
+        uint32 const now = GameTime::GetGameTimeMS().count();
+        for (auto const& [guildId, limits] : g_stockLimits)
+        {
+            if (limits.empty() || g_stockRuns.count(guildId))
+                continue;
+            Guild* guild = sGuildMgr->GetGuildById(guildId);
+            if (!guild)
+                continue;
+
+            auto counts = sBotMgr->GuildBankTradeGoods(guildId);
+            uint32 bestEntry = 0;
+            uint32 bestSurplus = 0;
+            uint64 bestValue = 0;
+            for (auto const& [entry, keep] : limits)
+            {
+                auto have = counts.find(entry);
+                if (have == counts.end() || have->second <= keep)
+                    continue;
+                uint32 const surplus = have->second - keep;
+                if (surplus < std::max<uint32>(10, keep / 10))
+                    continue;
+                auto blocked = g_stockBlockedUntil.find((uint64(guildId) << 32) | entry);
+                if (blocked != g_stockBlockedUntil.end() && int32(now - blocked->second) < 0)
+                    continue;
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+                uint64 const value = uint64(surplus) * std::max<uint32>(1, proto ? proto->SellPrice : 1);
+                if (value > bestValue)
+                {
+                    bestValue = value;
+                    bestEntry = entry;
+                    bestSurplus = surplus;
+                }
+            }
+            if (!bestEntry)
+                continue;
+
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(bestEntry);
+            if (!proto)
+                continue;
+            Player* chosen = nullptr;
+            for (Player* bot : sBotMgr->GetOnlineBots())
+            {
+                if (bot->GetGuildId() != guildId || bot->GetGroup() || !bot->IsAlive() || bot->IsInCombat() || g_trips.count(bot->GetGUID()) ||
+                    g_goldOrders.count(bot->GetGUID()) || sBotMgr->GetGuildGatherOrder(bot->GetGUID()) || bot->GetFreeInventorySpace() < 6)
+                    continue;
+                chosen = bot;
+                break;
+            }
+            if (!chosen)
+                continue;
+
+            uint32 const room = chosen->GetFreeInventorySpace() * std::max<uint32>(1, proto->GetMaxStackSize()) * 8 / 10;
+            uint32 const take = std::min(bestSurplus, std::max<uint32>(1, room));
+            uint32 const got = sBotMgr->GuildWithdrawItem(chosen->GetGUID().GetCounter(), bestEntry, take, nullptr);
+            if (!got)
+            {
+                g_stockBlockedUntil[(uint64(guildId) << 32) | bestEntry] = now + 30 * 60 * 1000;
+                continue;
+            }
+            g_stockCarry[chosen->GetGUID()].insert(bestEntry);
+            g_stockRuns[guildId] = chosen->GetGUID();
+            g_nextTripAt.erase(chosen->GetGUID());
+            g_wantsTrip.insert(chosen->GetGUID());
+            LOG_DEBUG("module.coa-playerbots", "BotEconomy: '{}' took {}x {} out of the guild bank to sell.", chosen->GetName(), got, proto->Name1);
+        }
+    }
+
+    std::vector<std::string> GetStockLines(Player* requester)
+    {
+        std::vector<std::string> lines;
+        Guild* guild = requester ? sGuildMgr->GetGuildById(requester->GetGuildId()) : nullptr;
+        if (!guild)
+            return lines;
+        EnsureTables();
+
+        auto counts = sBotMgr->GuildBankTradeGoods(guild->GetId());
+        auto const limitsIt = g_stockLimits.find(guild->GetId());
+        struct Row
+        {
+            uint32 entry;
+            uint32 count;
+            uint32 limit;
+            std::string name;
+        };
+        std::vector<Row> rows;
+        for (auto const& [entry, count] : counts)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+            if (!proto)
+                continue;
+            uint32 limit = 0;
+            if (limitsIt != g_stockLimits.end())
+                if (auto l = limitsIt->second.find(entry); l != limitsIt->second.end())
+                    limit = l->second;
+            std::string name;
+            for (char c : proto->Name1)
+                name.push_back(c == ':' || c == '|' || c == ',' ? ' ' : c);
+            rows.push_back({ entry, count, limit, name });
+        }
+        std::sort(rows.begin(), rows.end(), [](Row const& x, Row const& y) { return x.name < y.name; });
+
+        constexpr size_t BUDGET = 200;
+        std::string body;
+        auto flush = [&]()
+        {
+            if (!body.empty())
+                lines.push_back("STOCK:" + body);
+            body.clear();
+        };
+        for (Row const& r : rows)
+        {
+            std::string const piece = std::to_string(r.entry) + "," + std::to_string(r.count) + "," + std::to_string(r.limit) + "," + r.name;
+            if (!body.empty() && body.size() + 1 + piece.size() > BUDGET)
+                flush();
+            if (!body.empty())
+                body += "|";
+            body += piece;
+        }
+        flush();
+        return lines;
+    }
+
+    void SetStockLimit(Player* requester, uint32 itemEntry, int64 keep, ChatHandler* handler)
+    {
+        if (!requester || !itemEntry)
+            return;
+        EnsureTables();
+        uint32 const guildId = requester->GetGuildId();
+        if (!guildId || (!handler && !IsGuildLeader(requester)))
+            return;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemEntry);
+        if (!proto || proto->Class != ITEM_CLASS_TRADE_GOODS)
+        {
+            if (handler)
+                handler->SendSysMessage("Limits can be set for resources (trade goods) only.");
+            return;
+        }
+        if (keep < 0)
+        {
+            g_stockLimits[guildId].erase(itemEntry);
+            CharacterDatabase.Execute(Acore::StringFormat("DELETE FROM mod_coa_bot_stock_limits WHERE guild_id = {} AND item_entry = {}", guildId, itemEntry));
+            if (handler)
+                handler->PSendSysMessage("Limit of {} removed.", proto->Name1);
+            return;
+        }
+        uint32 const value = uint32(std::min<int64>(keep, 1000000));
+        g_stockLimits[guildId][itemEntry] = value;
+        g_stockBlockedUntil.erase((uint64(guildId) << 32) | itemEntry);
+        CharacterDatabase.Execute(Acore::StringFormat("REPLACE INTO mod_coa_bot_stock_limits (guild_id, item_entry, keep_count) VALUES ({}, {}, {})", guildId, itemEntry, value));
+        if (handler)
+            handler->PSendSysMessage("The guild bank keeps {} of {}; the surplus is sold by the bots.", value, proto->Name1);
     }
 
     void ProcessGoldOrders()
@@ -1121,6 +1336,7 @@ namespace BotEconomy
             if (timedOut)
                 ++g_tripTotals.timedOut;
             g_trips.erase(guid);
+            EndStockRun(guid);
         };
 
         if (!bot->IsAlive() || bot->GetMapId() != t.mapId || int32(now - t.startedAt) > int32(TRIP_TIMEOUT_MS))
@@ -1204,6 +1420,7 @@ namespace BotEconomy
             handler->PSendSysMessage("Economy: {}, {}. Looked at {} bots, {} with something to sell; journal rows written: {}.",
                 g_settings.enable ? "on" : "off - set CoaBots.Economy.Enable = 1", g_settings.dryRun ? "plan only (CoaBots.Economy.DryRun = 1)" : "bots trade for real",
                 g_totals.botsScanned, g_totals.botsWithSales, g_totals.journalRows);
+            handler->PSendSysMessage("Stock: {} guild(s) with limits, {} surplus run(s) now.", g_stockLimits.size(), g_stockRuns.size());
             handler->PSendSysMessage("Trips: {} bots on their way, {} waiting; trips made {}; listed {} auction(s); {} vendor sale(s); earned {}, paid to guilds {}; no auctioneer on the map: {}; gave up: {}.",
                 g_trips.size(), g_wantsTrip.size(), g_tripTotals.trips, g_tripTotals.listed, g_tripTotals.soldToVendor, Money(g_tripTotals.earnedCopper),
                 Money(g_tripTotals.guildCopper), g_tripTotals.noDestination, g_tripTotals.timedOut);
@@ -1221,6 +1438,33 @@ namespace BotEconomy
                 return;
             }
             PlaceGoldOrder(requester, uint32(std::strtoul(tok[2].c_str(), nullptr, 10)), handler);
+            return;
+        }
+
+        if (sub == "stock" && tok.size() >= 2)
+        {
+            Player* requester = ObjectAccessor::FindPlayerByLowGUID(uint32(std::strtoul(tok[1].c_str(), nullptr, 10)));
+            if (!requester)
+            {
+                handler->PSendSysMessage("No online player with guid {}.", tok[1]);
+                return;
+            }
+            std::vector<std::string> lines = GetStockLines(requester);
+            handler->PSendSysMessage("{} reply line(s) for the guild bank:", lines.size());
+            for (std::string const& l : lines)
+                handler->SendSysMessage(l);
+            return;
+        }
+
+        if (sub == "stocklimit" && tok.size() >= 4)
+        {
+            Player* requester = ObjectAccessor::FindPlayerByLowGUID(uint32(std::strtoul(tok[1].c_str(), nullptr, 10)));
+            if (!requester)
+            {
+                handler->PSendSysMessage("No online player with guid {}.", tok[1]);
+                return;
+            }
+            SetStockLimit(requester, uint32(std::strtoul(tok[2].c_str(), nullptr, 10)), std::strtoll(tok[3].c_str(), nullptr, 10), handler);
             return;
         }
 
@@ -1308,6 +1552,6 @@ namespace BotEconomy
             return;
         }
 
-        handler->SendSysMessage("Usage: .botcmd economy [status | trips | goldorder <player guid> <gold> | plan <bot guid> | journal [n] | protect <item id> | unprotect <item id>]");
+        handler->SendSysMessage("Usage: .botcmd economy [status | trips | goldorder <player guid> <gold> | stock <player guid> | stocklimit <player guid> <item> <keep, -1 clears> | plan <bot guid> | journal [n] | protect <item id> | unprotect <item id>]");
     }
 }

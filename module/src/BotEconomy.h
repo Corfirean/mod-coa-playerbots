@@ -77,6 +77,15 @@ namespace BotEconomy
     // With the setting off this simply casts the aura, as bots always did.
     void StartRestAura(Player* bot, bool food);
 
+    // Guild resource limits ("Stock" tab of the task board). The guild's officers say how many of a resource the guild bank
+    // should keep; a free guild-mate bot takes the surplus out, carries it to a city with an auction house and sells it
+    // (the money goes to the bank by the usual trip share). Only resources already in the bank are listed.
+    //
+    // GetStockLines: replies for GETSTOCK, `STOCK:<entry>,<count>,<limit>,<name>|...` (chunked by length).
+    // SetStockLimit: keep >= 0 sets the limit, keep < 0 clears it. Guild master or officers only (not checked for console).
+    std::vector<std::string> GetStockLines(Player* requester);
+    void SetStockLimit(Player* requester, uint32 itemEntry, int64 keep, ChatHandler* handler);
+
     // `.botcmd economy ...` (plan <guid>, journal [n], status, protect <item>, unprotect <item>).
     void HandleCommand(ChatHandler* handler, std::string const& args);
 }

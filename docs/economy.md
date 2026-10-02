@@ -1,6 +1,6 @@
 # Bot economy
 
-Design agreed with the owner on 2026-10-02. Steps 1-4 (rules, journal, dry run; trips to town and selling; the gold order; food and drink that cost something) are in code; the rest is planned.
+Design agreed with the owner on 2026-10-02. Steps 1-5 (rules, journal, dry run; trips to town and selling; the gold order; food and drink that cost something; guild stock limits) are in code; the rest is planned.
 
 ## Principles
 
@@ -97,8 +97,25 @@ Off by default (`CoaBots.Economy.ConsumeSupplies = 0`). With it on (and `Enable 
 Checked in the sandbox: bots started without food went to town and bought 20 food and 20 drink each at the right level;
 nothing crashed. Not checked: the consumption itself over a long time (it follows the resting code).
 
+## Step 5 (in code): guild stock limits
+
+The "Stock" category of the addon's order picker (sidebar, below Recipes) lists the resources (trade goods) that are in the guild
+bank, with how many are there and a field for how many the bank should keep; the "Limit" button sets it (0 removes the limit).
+Verbs `GETSTOCK:0`, `SETSTOCK:<item>:<keep>`, `CLEARSTOCK:<item>`; limits are stored per guild in `mod_coa_bot_stock_limits`. Only the
+guild master and officers (rank 0 or 1) may change limits, checked on the server; any member may read the list.
+
+Once a minute, for each guild with limits and no run in progress, the item with the most valuable surplus (above the limit and at
+least 10 or a tenth of the limit) is picked. A free guild-mate bot (online, ungrouped, alive, not fighting, no gather or gold order,
+at least 6 free slots) withdraws the surplus from the bank (as much as fits in 80 % of its free space) and is sent to a city with an
+auction house; what it carries for sale is planned as "stock-surplus" (auction when listable and worth it, otherwise sold at the
+vendor price) and the usual 10 % trip share goes back to the bank. One surplus run per guild at a time. An item the bot cannot
+withdraw (no bank rights) is left alone for half an hour. `.botcmd economy stock <player guid>` prints the list,
+`.botcmd economy stocklimit <player guid> <item> <keep|-1>` sets or clears a limit.
+
+Checked in the sandbox: 100 Linen Cloth in the bank with a limit of 40 - a bot withdrew 60, went to town, sold them and the bank is
+at 40; the guild got its share. The addon tab is written but not click-tested with a real client.
+
 ## Steps still to do
 
 1. Buying from the auction house instead of a vendor price (never buying out players' listings); potions once bots use them.
-2. The Stock tab and limits (guild master and officers only).
-3. Statistics in the addon; relisting; the hearthstone for the way back.
+2. Statistics in the addon; relisting; the hearthstone for the way back.

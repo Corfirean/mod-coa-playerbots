@@ -259,6 +259,25 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         return;
     }
 
+    // GETSTOCK / SETSTOCK / CLEARSTOCK: the "Stock" tab. GETSTOCK:0 lists the resources in the guild bank with their limits
+    // (STOCK: replies); SETSTOCK:<item>:<keep> and CLEARSTOCK:<item> change a limit (guild master or officers only).
+    if (verb == "GETSTOCK")
+    {
+        for (std::string const& line : BotEconomy::GetStockLines(commander))
+            SendCoaBotReply(commander, line);
+        return;
+    }
+    if (verb == "SETSTOCK" && parts.size() >= 3)
+    {
+        BotEconomy::SetStockLimit(commander, std::strtoul(parts[1].c_str(), nullptr, 10), std::strtoll(parts[2].c_str(), nullptr, 10), nullptr);
+        return;
+    }
+    if (verb == "CLEARSTOCK" && parts.size() >= 2)
+    {
+        BotEconomy::SetStockLimit(commander, std::strtoul(parts[1].c_str(), nullptr, 10), -1, nullptr);
+        return;
+    }
+
     // GETGATHERCATALOG / GETRECIPECATALOG: catalog queries backing the addon's icon-menu
     // pickers (see docs/addon-protocol.md) -- replies with several small GCAT:/RCAT: messages,
     // same "one guid placeholder, several chunked replies" shape as GUILDROSTER.

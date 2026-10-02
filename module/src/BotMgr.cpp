@@ -1037,6 +1037,25 @@ uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntr
     return totalDeposited;
 }
 
+std::unordered_map<uint32, uint32> BotMgr::GuildBankTradeGoods(uint32 guildId) const
+{
+    std::unordered_map<uint32, uint32> counts;
+    Guild* guild = sGuildMgr->GetGuildById(guildId);
+    if (!guild)
+        return counts;
+    for (uint8 tabId = 0; tabId < guild->_GetPurchasedTabsSize(); ++tabId)
+    {
+        Guild::BankTab const* tab = guild->GetBankTab(tabId);
+        if (!tab)
+            continue;
+        for (uint8 slotId = 0; slotId < GUILD_BANK_MAX_SLOTS; ++slotId)
+            if (Item const* item = tab->GetItem(slotId))
+                if (ItemTemplate const* proto = item->GetTemplate(); proto && proto->Class == ITEM_CLASS_TRADE_GOODS)
+                    counts[item->GetEntry()] += item->GetCount();
+    }
+    return counts;
+}
+
 uint32 BotMgr::GuildWithdrawItem(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler)
 {
     WorldSession* session = FindBotSession(charLowGuid);

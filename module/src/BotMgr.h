@@ -71,6 +71,9 @@ public:
     // GuildGather) so a bot starts each task with its bags already as empty as they can be.
     void DepositLooseResourcesToGuildBank(Player* bot);
 
+    // Every trade-goods item in the guild's bank with its total count over all tabs (0 entries for an unknown guild).
+    std::unordered_map<uint32, uint32> GuildBankTradeGoods(uint32 guildId) const;
+
     // Withdraws items of itemEntry from guild bank into bot's inventory. Returns withdrawn count.
     uint32 GuildWithdrawItem(ObjectGuid::LowType charLowGuid, uint32 itemEntry, uint32 count, ChatHandler* handler);
 

@@ -251,6 +251,22 @@ local function RequestOrderCatalogs()
     end
 end
 
+-- "Stock" tab: the resources in the guild bank with the limit the officers set. The list is rebuilt from scratch on
+-- every request (the server answers with several STOCK: chunks).
+local function RequestStock()
+    orderCatalog["stock"] = {}
+    SendGroupCommand("GETSTOCK")
+end
+
+local function ParseStockChunk(payload)
+    orderCatalog["stock"] = orderCatalog["stock"] or {}
+    for entryStr, countStr, limitStr, name in (payload or ""):gmatch("(%d+),(%d+),(%d+),([^|]+)") do
+        table.insert(orderCatalog["stock"], {
+            entry = tonumber(entryStr), count = tonumber(countStr), limit = tonumber(limitStr), name = name,
+        })
+    end
+end
+
 -- Appends one GCAT/RCAT chunk's "entry,name|entry,name|..." payload to orderCatalog[category].
 -- Item names never contain "," or "|" (no real WoW item does), so this plain gmatch is safe.
 local function ParseCatalogChunk(category, itemsCsv, profession)
@@ -329,6 +345,12 @@ local function HandleIncomingMessage(body)
         }
         if RefreshTaskBoard then
             RefreshTaskBoard()
+        end
+
+    elseif verb == "STOCK" then
+        ParseStockChunk(parts[2])
+        if RefreshOrderPicker then
+            RefreshOrderPicker()
         end
 
     elseif verb == "GCAT" then
@@ -1472,6 +1494,7 @@ local ORDER_CATEGORIES = {
     { id = "meat",    label = "Meat",    verb = "GATHERORDER" },
     { id = "fish",    label = "Fish",    verb = "GATHERORDER" },
     { id = "recipe",  label = "Recipes", verb = "CRAFTORDER" },
+    { id = "stock",   label = "Stock",   verb = "SETSTOCK" },
 }
 local ORDER_CATEGORY_BY_ID = {}
 for _, c in ipairs(ORDER_CATEGORIES) do
@@ -1545,12 +1568,34 @@ local function CreateOrderItemRow(parent, index)
     btnOrder:SetScript("OnClick", function()
         local category = ORDER_CATEGORY_BY_ID[row.categoryId]
         if not category or not row.entry then return end
+        if row.categoryId == "stock" then
+            -- Keep this many in the guild bank; the bots sell the rest. 0 removes the limit (officers only, checked
+            -- on the server).
+            local keep = tonumber(qtyBox:GetText()) or 0
+            if keep < 1 then
+                SendRawBody("CLEARSTOCK:" .. row.entry)
+                Log("Stock limit removed: " .. row.name .. ".")
+            else
+                SendRawBody("SETSTOCK:" .. row.entry .. ":" .. keep)
+                Log("Stock limit set: keep " .. keep .. " x " .. row.name .. " in the guild bank.")
+            end
+            RequestStock()
+            return
+        end
         local count = tonumber(qtyBox:GetText()) or 1
         if count < 1 then count = 1 end
         SendRawBody(category.verb .. ":" .. row.entry .. ":" .. count)
         local verbLabel = (category.verb == "CRAFTORDER") and "Craft order" or "Gather order"
         Log(verbLabel .. " sent: " .. row.name .. " x" .. count .. ".")
     end)
+    btnOrder:SetScript("OnEnter", function(self)
+        if row.categoryId ~= "stock" then return end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Keep this many in the guild bank", 1, 0.82, 0)
+        GameTooltip:AddLine("A free guild bot takes the surplus out of the bank and sells it in town. 0 removes the limit. Guild master and officers only.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    btnOrder:SetScript("OnLeave", function() GameTooltip:Hide() end)
     row.btnOrder = btnOrder
 
     return row
@@ -1595,7 +1640,17 @@ function RefreshOrderPicker()
             row.entry = item.entry
             row.name = item.name
             row.categoryId = activeOrderCategoryId
-            row.nameText:SetText(item.name)
+            if activeOrderCategoryId == "stock" then
+                row.nameText:SetText(item.name .. " |cFF888888(" .. (item.count or 0) .. ")|r")
+                local shown = (item.limit and item.limit > 0) and item.limit or (item.count or 0)
+                row.qtyBox:SetMaxLetters(6)
+                row.qtyBox:SetText(tostring(shown))
+                row.btnOrder:SetText("Limit")
+            else
+                row.nameText:SetText(item.name)
+                row.qtyBox:SetMaxLetters(4)
+                row.btnOrder:SetText("Order")
+            end
             local icon = GetItemIcon and GetItemIcon(item.entry)
             row.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
             row:Show()
@@ -1606,7 +1661,10 @@ function RefreshOrderPicker()
 
     orderPickerFrame.scrollChild:SetHeight(math.max(#filtered * ROW_HEIGHT, 1))
 
-    if #items == 0 then
+    if #items == 0 and activeOrderCategoryId == "stock" then
+        orderPickerFrame.emptyText:SetText("|cFF888888No resources in the guild bank yet (or still loading).\nSet how many of each to keep; the bots sell the rest.|r")
+        orderPickerFrame.emptyText:Show()
+    elseif #items == 0 then
         orderPickerFrame.emptyText:SetText("|cFF888888Loading catalog from server...|r")
         orderPickerFrame.emptyText:Show()
     elseif #filtered == 0 then
@@ -1698,6 +1756,9 @@ local function SelectOrderCategory(categoryId)
         end
     end
     orderPickerFrame.searchBox:SetText("")
+    if categoryId == "stock" then
+        RequestStock()
+    end
     RefreshOrderPicker()
 end
 
