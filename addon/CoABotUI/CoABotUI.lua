@@ -275,12 +275,23 @@ end
 
 -- "Stock" tab: the resources in the guild bank with the limit the officers set. The list is rebuilt from scratch on
 -- every request (the server answers with several STOCK: chunks).
-local function RequestStock()
-    orderCatalog["stock"] = {}
+-- A "soft" request (after changing a limit) keeps the list on screen until the first answer arrives, then replaces it.
+local stockReplaceOnAnswer = false
+local function RequestStock(soft)
+    if soft then
+        stockReplaceOnAnswer = true
+    else
+        orderCatalog["stock"] = {}
+        stockReplaceOnAnswer = false
+    end
     SendGroupCommand("GETSTOCK")
 end
 
 local function ParseStockChunk(payload)
+    if stockReplaceOnAnswer then
+        orderCatalog["stock"] = {}
+        stockReplaceOnAnswer = false
+    end
     orderCatalog["stock"] = orderCatalog["stock"] or {}
     for entryStr, countStr, limitStr, name in (payload or ""):gmatch("(%d+),(%d+),(%d+),([^|]+)") do
         table.insert(orderCatalog["stock"], {
@@ -1802,7 +1813,9 @@ local function CreateOrderItemRow(parent, index)
     local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     nameText:SetPoint("LEFT", icon, "RIGHT", 6, 0)
     nameText:SetWidth(140)
+    nameText:SetHeight(ROW_HEIGHT - 2)
     nameText:SetJustifyH("LEFT")
+    if nameText.SetWordWrap then nameText:SetWordWrap(false) end -- a long name is cut off instead of pushing the limit line out
     row.nameText = nameText
 
     local qtyBox = CreateFrame("EditBox", nil, row)
@@ -1839,11 +1852,18 @@ local function CreateOrderItemRow(parent, index)
             if keep < 1 then
                 SendRawBody("CLEARSTOCK:" .. row.entry)
                 Log("Stock limit removed: " .. row.name .. ".")
+                keep = 0
             else
                 SendRawBody("SETSTOCK:" .. row.entry .. ":" .. keep)
                 Log("Stock limit set: keep " .. keep .. " x " .. row.name .. " in the guild bank.")
             end
-            RequestStock()
+            -- Show the new limit at once; the server's answer (asked for below) confirms or corrects it.
+            for _, item in ipairs(orderCatalog["stock"] or {}) do
+                if item.entry == row.entry then item.limit = keep end
+            end
+            qtyBox:ClearFocus()
+            RefreshOrderPicker()
+            RequestStock(true)
             return
         end
         local count = tonumber(qtyBox:GetText()) or 1
@@ -1905,8 +1925,12 @@ function RefreshOrderPicker()
             row.name = item.name
             row.categoryId = activeOrderCategoryId
             if activeOrderCategoryId == "stock" then
-                row.nameText:SetText(item.name .. " |cFF888888(" .. (item.count or 0) .. ")|r")
-                local shown = (item.limit and item.limit > 0) and item.limit or (item.count or 0)
+                local hasLimit = item.limit and item.limit > 0
+                -- two lines: the item with the count in the bank, and under it the limit (or that there is none)
+                local limitLabel = hasLimit and ("|cFFFFD100limit: keep " .. item.limit .. "|r") or "|cFF666666no limit|r"
+                row.nameText:SetText(item.name .. " |cFF888888(" .. (item.count or 0) .. ")|r
+" .. limitLabel)
+                local shown = hasLimit and item.limit or (item.count or 0)
                 row.qtyBox:SetMaxLetters(6)
                 row.qtyBox:SetText(tostring(shown))
                 row.btnOrder:SetText("Limit")
