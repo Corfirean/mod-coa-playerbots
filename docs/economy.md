@@ -1,6 +1,6 @@
 # Bot economy
 
-Design agreed with the owner on 2026-10-02. Step 1 (rules, journal, dry run) is in code; the rest is planned.
+Design agreed with the owner on 2026-10-02. Steps 1 and 2 (rules, journal, dry run; trips to town and selling) are in code; the rest is planned.
 
 ## Principles
 
@@ -40,9 +40,32 @@ least `MinTripCopper`.
 
 Commands: `.botcmd economy [status | plan <bot guid> | journal [n] | protect <item> | unprotect <item>]`.
 
+## Step 2 (in code): trips to town
+
+Off by default: `CoaBots.Economy.DryRun = 1`. With `DryRun = 0` (and `Enable = 1`):
+
+- The periodic scan marks a bot as wanting a trip when its plan is worth at least `MinTripCopper`. `BotEconomy::UpdateTrip`
+  runs for an idle, ungrouped bot before its other solo activities (BotAI.cpp, `UpdateSoloWorld`), picks the nearest friendly
+  auctioneer on its map from the POI index and sets off: a flight path when the destination is far and a route is known
+  (`BotWorldBehavior::RequestTravel(..., teleportFallback = false)`), otherwise on foot (`BotMovement::Navigate`, mounted
+  when the distance is long). The trip outranks ordinary walks (it releases a leftover quest/grind/gather/fish/ambient claim),
+  but lets a requested flight run its course. Giving up: 25 minutes, death, a map change, `NavStatus::Stuck`.
+- At the auctioneers (within 30 yd): collects money and returned items from the bot's auction mail, then for each planned line
+  lists it (a deposit is paid, 24 h by default, buyout = plan price with a random 5-10 % spread, never below the vendor price
+  plus 5 %, start bid 85 % of the buyout) or sells it at the vendor price. A listing worth less than `MinListingCopper` or
+  netting less than a vendor sale goes to the vendor. Then the guild gets `GuildSharePercent` of what the trip earned, keeping
+  `MoneyReserveCopper` for the bot. The bot is saved.
+- Limits: `MaxTrips` bots on their way at once, `TripCooldownMin` between trips, `MaxListings` running auctions per bot.
+- `.botcmd economy trips` lists the bots on their way and `status` shows the totals.
+
+Checked in a sandbox (25-45 bots, a copy of a real server's database): bots walked, rode and flew to the cities, sold at the
+vendor price and listed auctions that are stored correctly. Not checked: money and items coming back from an expired or sold
+auction (the collection code follows the core's mail handlers), the guild share (no bot guild in the test), cross-continent
+trips (a bot only goes to an auctioneer on its own map), the hearthstone.
+
 ## Steps still to do
 
-1. The "sell in town" need: walk or fly to an auctioneer city, list, guild percentage, the "collect gold" order.
-2. Buying consumables.
-3. The Stock tab and limits.
-4. Listing prices with the 5-10 % spread, relisting, stats.
+1. The "collect gold" order in the orders table.
+2. Buying consumables (food and potions of the bot's level, daily budget).
+3. The Stock tab and limits (guild master and officers only).
+4. Statistics in the addon; relisting; the hearthstone for the way back.

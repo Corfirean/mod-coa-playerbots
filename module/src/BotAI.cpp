@@ -85,6 +85,7 @@
 #include "BotMovement.h"
 #include "BotProgression.h"
 #include "BotTaxi.h"
+#include "BotEconomy.h"
 #include "BotWorldBehavior.h"
 #include "BotZoneProgression.h"
 #include "WorldBrain.h"
@@ -3481,6 +3482,13 @@ void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
 
     // Persistent half-hour lean (personality + session variety); the brain uses it as a bias.
     UpdateSoloIntent(bot, diff, state);
+
+    // A trip to town to sell (BotEconomy.h) owns the tick while the bot is walking there.
+    if (BotEconomy::UpdateTrip(bot, diff))
+    {
+        WorldBrain::NotifyAmbientBusy(bot);
+        return;
+    }
 
     AmbientProfile ambientProfile = MakeAmbientProfile(bot, state);
     AmbientTick ambient = BotWorldBehavior::UpdateBeforeSolo(bot, ambientProfile);

@@ -57,6 +57,11 @@ namespace BotEconomy
     // Called every world tick with the online bots: plans, a few bots at a time, and journals.
     void Update(uint32 diff, std::vector<WorldSession*> const& sessions);
 
+    // Called for an idle, ungrouped bot before its other solo activities. Returns true while the bot is on a trip to
+    // a city with an auction house (it walks or flies there, sells, and comes back to its normal life); the caller
+    // then skips everything else this tick. Only active when CoaBots.Economy.DryRun = 0.
+    bool UpdateTrip(Player* bot, uint32 diff);
+
     // `.botcmd economy ...` (plan <guid>, journal [n], status, protect <item>, unprotect <item>).
     void HandleCommand(ChatHandler* handler, std::string const& args);
 }

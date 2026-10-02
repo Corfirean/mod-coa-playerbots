@@ -92,6 +92,10 @@ namespace BotWorldBehavior
     // teleported to some unrelated hub, it just walks on instead.
     bool RequestTravel(Player* bot, uint32 mapId, float x, float y, float z, bool teleportFallback = true);
 
+    // Whether the ambient layer has an errand running for the bot (a trip to a flight master, a flight, a walk to a
+    // vendor...). Other layers that move the bot on their own leave it alone while this is true.
+    bool HasActiveErrand(ObjectGuid botGuid);
+
     // One line for `.botcmd profile`.
     std::string Describe(ObjectGuid botGuid);
 

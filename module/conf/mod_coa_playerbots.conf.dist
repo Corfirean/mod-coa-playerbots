@@ -259,13 +259,13 @@ CoaBots.Trade.Enable = 1
 CoaBots.MarkSessionsAsBots = 1
 
 ###################################################################################################
-# ECONOMY (plan only for now)
+# ECONOMY
 ###################################################################################################
 #
 #    CoaBots.Economy.Enable
 #        Description: Bots look into their bags and write down what they would sell and what it would
 #                     fetch (see `.botcmd economy status`, `plan <bot guid>`, `journal`). Nothing is
-#                     sold yet; this is the first step so the rules can be checked before bots trade.
+#                     sold while CoaBots.Economy.DryRun = 1, so the rules can be checked before bots trade.
 #        Default:     0
 #
 #    CoaBots.Economy.MinTripCopper
@@ -296,6 +296,44 @@ CoaBots.MarkSessionsAsBots = 1
 #        Default:     600 / 2 / 14
 #
 
+#
+#    CoaBots.Economy.DryRun
+#        Description: 1 = bots only plan and journal. 0 = bots really go to a city with an auction house (on
+#                     foot, by flight path, mounted), list what the plan says for the auction, sell the rest
+#                     to a vendor price, collect what earlier auctions earned, and pay the guild its share.
+#        Default:     1
+#
+#    CoaBots.Economy.MaxTrips
+#        Description: How many bots may be on their way to town at the same moment.
+#        Default:     5
+#
+#    CoaBots.Economy.TripCooldownMin
+#        Description: Minutes before the same bot is sent to town again.
+#        Default:     30
+#
+#    CoaBots.Economy.GuildSharePercent
+#        Description: Percent of what a trip earns that goes into the bot's guild bank.
+#        Default:     10
+#
+#    CoaBots.Economy.MoneyReserveCopper
+#        Description: A bot keeps at least this much money for its own needs when it pays the guild.
+#        Default:     50000 - (5 gold)
+#
+#    CoaBots.Economy.MaxListings
+#        Description: How many auctions one bot may have running.
+#        Default:     20
+#
+#    CoaBots.Economy.MinListingCopper / ListingMinutes
+#        Description: A listing worth less than this is not worth its deposit and goes to a vendor instead; how
+#                     long a listing runs (12 hours = 720, 24 hours = 1440, 48 hours = 2880).
+#        Default:     5000 (50 silver) / 1440
+#
+#    CoaBots.Economy.PriceSpreadMinPercent / PriceSpreadMaxPercent
+#        Description: Listing prices differ from the plan's price by a random 5 to 10 percent, up or down,
+#                     so the market looks alive.
+#        Default:     5 / 10
+#
+
 CoaBots.Economy.Enable = 0
 CoaBots.Economy.MinTripCopper = 50000
 CoaBots.Economy.KeepConsumables = 10
@@ -305,3 +343,13 @@ CoaBots.Economy.UndercutPercent = 5
 CoaBots.Economy.ScanIntervalSec = 600
 CoaBots.Economy.BotsPerTick = 2
 CoaBots.Economy.JournalDays = 14
+CoaBots.Economy.DryRun = 1
+CoaBots.Economy.MaxTrips = 5
+CoaBots.Economy.TripCooldownMin = 30
+CoaBots.Economy.GuildSharePercent = 10
+CoaBots.Economy.MoneyReserveCopper = 50000
+CoaBots.Economy.MaxListings = 20
+CoaBots.Economy.MinListingCopper = 5000
+CoaBots.Economy.ListingMinutes = 1440
+CoaBots.Economy.PriceSpreadMinPercent = 5
+CoaBots.Economy.PriceSpreadMaxPercent = 10

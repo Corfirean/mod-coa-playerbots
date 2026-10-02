@@ -1073,6 +1073,12 @@ namespace BotWorldBehavior
         return true;
     }
 
+    bool HasActiveErrand(ObjectGuid botGuid)
+    {
+        auto itr = _states.find(botGuid);
+        return itr != _states.end() && (itr->second.travelRequested || itr->second.intent != WorldIntent::None);
+    }
+
     std::string Describe(ObjectGuid botGuid)
     {
         auto itr = _states.find(botGuid);
