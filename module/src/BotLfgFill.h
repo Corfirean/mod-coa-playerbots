@@ -18,12 +18,24 @@ void AddSC_coa_bot_lfg_fill_script();
 
 namespace BotLfgFill
 {
-// Registers a bot (already sent through sLFGMgr->JoinLfg by the caller) to be watched for its
-// own LFG_STATE_PROPOSAL and auto-accepted the same way this file's own fill candidates are --
-// without this, a bot that only ever joins through the debug `.botcmd joinlfg` entry point
-// (not through FillRole) never gets its own proposal accepted, since nothing else is watching
-// it, and a proposal only completes once *every* member (fill bots included) has accepted.
 void WatchForProposal(Player* bot);
+
+struct RealMemberRole
+{
+    uint8 roles{0}; // Bitmask of lfg::PLAYER_ROLE_TANK, PLAYER_ROLE_HEALER, PLAYER_ROLE_DAMAGE
+};
+
+struct RoleAssignmentResult
+{
+    bool hasTank{false};
+    bool hasHealer{false};
+    uint32 realDpsCount{0};
+    uint32 tankBotsNeeded{0};
+    uint32 healerBotsNeeded{0};
+    uint32 dpsBotsNeeded{0};
+};
+
+RoleAssignmentResult SolvePartyRoles(std::vector<RealMemberRole> const& members);
 }
 
 #endif // COA_PLAYERBOTS_BOT_LFG_FILL_H

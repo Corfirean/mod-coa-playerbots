@@ -58,6 +58,14 @@ std::vector<PendingLfgBotJoin> pendingLogins;
 // LFG_STATE_PROPOSAL (accepted immediately) or leaves LFG_STATE_NONE some other way (dropped).
 std::vector<ObjectGuid::LowType> queuedBots;
 
+enum class LfgFillOperationState : uint8
+{
+    ACTIVE = 0,
+    COMPLETED = 1,
+    FAILED = 2,
+    CANCELLED = 3
+};
+
 struct LfgFillOperation
 {
     uint64 id{0};
@@ -67,6 +75,7 @@ struct LfgFillOperation
     std::unordered_set<ObjectGuid::LowType> queuedBotGuids;
     uint32 creationAttempts{0};
     uint32 ageMs{0};
+    LfgFillOperationState state{LfgFillOperationState::ACTIVE};
 };
 
 std::atomic<uint64> s_nextOpId{1};
@@ -346,6 +355,9 @@ void CleanupOperation(uint64 opId)
     if (it == activeOperations.end())
         return;
 
+    it->second.state = LfgFillOperationState::CANCELLED;
+
+    // 1. Remove queued bots from LFG and from queuedBots
     for (ObjectGuid::LowType lowGuid : it->second.queuedBotGuids)
     {
         ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(lowGuid);
@@ -353,7 +365,12 @@ void CleanupOperation(uint64 opId)
         {
             sLFGMgr->LeaveLfg(guid);
         }
+        queuedBots.erase(std::remove(queuedBots.begin(), queuedBots.end(), lowGuid), queuedBots.end());
     }
+
+    // 2. Remove any pending logins for this operation so delayed bots do not join after cleanup
+    pendingLogins.erase(std::remove_if(pendingLogins.begin(), pendingLogins.end(),
+        [opId](PendingLfgBotJoin const& p) { return p.opId == opId; }), pendingLogins.end());
 
     initiatorToOpId.erase(it->second.initiator);
     activeOperations.erase(it);
@@ -408,15 +425,6 @@ public:
         if (policy.compositionMode != lfg::LfgCompositionMode::BOT_FILL)
             return true;
 
-        uint64 const opId = s_nextOpId++;
-        LfgFillOperation op;
-        op.id = opId;
-        op.initiator = player->GetGUID();
-        if (player->GetGroup())
-            op.groupGuid = player->GetGroup()->GetGUID();
-        activeOperations[opId] = op;
-        initiatorToOpId[op.initiator] = opId;
-
         lfg::LfgDungeonSet dungeonsCopy(dungeons.begin(), dungeons.end());
         TeamId team = player->GetTeamId();
         ObjectGuid initiator = player->GetGUID();
@@ -427,19 +435,7 @@ public:
             if (grp->GetMembersCount() >= 5)
                 return true;
 
-            // Multi-role deterministic assignment:
-            // Check roles covered by real group members
-            bool hasTank = false;
-            bool hasHealer = false;
-            uint32 dpsAssigned = 0;
-
-            struct MemberRoleInfo
-            {
-                Player* player;
-                uint8 roles;
-                uint8 numRoles;
-            };
-            std::vector<MemberRoleInfo> members;
+            std::vector<BotLfgFill::RealMemberRole> memberRoles;
             for (GroupReference* itr = grp->GetFirstMember(); itr != nullptr; itr = itr->next())
             {
                 if (Player* member = itr->GetSource())
@@ -447,71 +443,54 @@ public:
                     uint8 r = sLFGMgr->GetRoles(member->GetGUID());
                     if (r == 0)
                         r = lfg::PLAYER_ROLE_DAMAGE;
-                    uint8 count = 0;
-                    if (r & lfg::PLAYER_ROLE_TANK) ++count;
-                    if (r & lfg::PLAYER_ROLE_HEALER) ++count;
-                    if (r & lfg::PLAYER_ROLE_DAMAGE) ++count;
-                    members.push_back({ member, r, count });
+                    memberRoles.push_back({ r });
                 }
             }
 
-            // Sort members by specificity (fewer choices first)
-            std::sort(members.begin(), members.end(), [](MemberRoleInfo const& a, MemberRoleInfo const& b)
-            {
-                return a.numRoles < b.numRoles;
-            });
+            BotLfgFill::RoleAssignmentResult const plan = BotLfgFill::SolvePartyRoles(memberRoles);
+            uint32 const totalBotsNeeded = plan.tankBotsNeeded + plan.healerBotsNeeded + plan.dpsBotsNeeded;
+            if (totalBotsNeeded == 0)
+                return true;
 
-            // Pass 1: Assign Tank
-            for (auto const& m : members)
-            {
-                if (!hasTank && (m.roles & lfg::PLAYER_ROLE_TANK))
-                {
-                    hasTank = true;
-                    continue;
-                }
-            }
+            uint64 const opId = s_nextOpId++;
+            LfgFillOperation op;
+            op.id = opId;
+            op.initiator = initiator;
+            op.groupGuid = grp->GetGUID();
+            activeOperations[opId] = op;
+            initiatorToOpId[op.initiator] = opId;
 
-            // Pass 2: Assign Healer
-            for (auto const& m : members)
-            {
-                if (!hasHealer && (m.roles & lfg::PLAYER_ROLE_HEALER))
-                {
-                    hasHealer = true;
-                    continue;
-                }
-            }
-
-            // Remaining slots filled by real DPS
-            uint32 realMembers = static_cast<uint32>(members.size());
-            uint32 realDps = 0;
-            if (realMembers > (hasTank ? 1 : 0) + (hasHealer ? 1 : 0))
-                realDps = realMembers - ((hasTank ? 1 : 0) + (hasHealer ? 1 : 0));
-            dpsAssigned = realDps;
-
-            if (!hasTank)
+            if (plan.tankBotsNeeded > 0)
                 FillRole(lfg::PLAYER_ROLE_TANK, team, dungeonsCopy, initiator, attemptedThisPass, opId);
-            if (!hasHealer)
+            if (plan.healerBotsNeeded > 0)
                 FillRole(lfg::PLAYER_ROLE_HEALER, team, dungeonsCopy, initiator, attemptedThisPass, opId);
 
-            uint32 const dpsNeeded = (dpsAssigned >= 3) ? 0 : (3 - dpsAssigned);
-            for (uint32 i = 0; i < dpsNeeded; ++i)
+            for (uint32 i = 0; i < plan.dpsBotsNeeded; ++i)
                 FillRole(lfg::PLAYER_ROLE_DAMAGE, team, dungeonsCopy, initiator, attemptedThisPass, opId);
 
             return true;
         }
 
         // Solo player bot fill
-        bool const isTank = (roles & lfg::PLAYER_ROLE_TANK) != 0;
-        bool const isHealer = (roles & lfg::PLAYER_ROLE_HEALER) != 0;
-        bool const isDps = (roles & lfg::PLAYER_ROLE_DAMAGE) != 0;
+        std::vector<BotLfgFill::RealMemberRole> soloMember = { { roles ? roles : static_cast<uint8>(lfg::PLAYER_ROLE_DAMAGE) } };
+        BotLfgFill::RoleAssignmentResult const soloPlan = BotLfgFill::SolvePartyRoles(soloMember);
+        uint32 const totalSoloBots = soloPlan.tankBotsNeeded + soloPlan.healerBotsNeeded + soloPlan.dpsBotsNeeded;
+        if (totalSoloBots == 0)
+            return true;
 
-        if (!isTank)
+        uint64 const opId = s_nextOpId++;
+        LfgFillOperation op;
+        op.id = opId;
+        op.initiator = initiator;
+        activeOperations[opId] = op;
+        initiatorToOpId[op.initiator] = opId;
+
+        if (soloPlan.tankBotsNeeded > 0)
             FillRole(lfg::PLAYER_ROLE_TANK, team, dungeonsCopy, initiator, attemptedThisPass, opId);
-        if (!isHealer)
+        if (soloPlan.healerBotsNeeded > 0)
             FillRole(lfg::PLAYER_ROLE_HEALER, team, dungeonsCopy, initiator, attemptedThisPass, opId);
 
-        uint32 dpsNeeded = isDps ? 2 : 3;
-        for (uint32 i = 0; i < dpsNeeded; ++i)
+        for (uint32 i = 0; i < soloPlan.dpsBotsNeeded; ++i)
             FillRole(lfg::PLAYER_ROLE_DAMAGE, team, dungeonsCopy, initiator, attemptedThisPass, opId);
 
         return true;
@@ -556,5 +535,108 @@ namespace BotLfgFill
 void WatchForProposal(Player* bot)
 {
     queuedBots.push_back(bot->GetGUID().GetCounter());
+}
+
+RoleAssignmentResult SolvePartyRoles(std::vector<RealMemberRole> const& members)
+{
+    RoleAssignmentResult result;
+    if (members.empty())
+        return result;
+
+    if (members.size() >= 5)
+    {
+        // Full party - no bots needed under any circumstances
+        return result;
+    }
+
+    size_t const N = members.size();
+
+    // Backtracking solver to find a valid assignment of real members to roles (1 Tank, 1 Healer, <= 3 DPS)
+    // We want to maximize the total number of standard roles filled (Tank + Healer + DPS)
+    // Priority for score: Tank (weight 100) + Healer (weight 50) + DPS (weight 1)
+    bool bestFound = false;
+    int bestScore = -1;
+    bool bestTank = false;
+    bool bestHealer = false;
+    uint32 bestDps = 0;
+
+    // Assignment vector: 0 = unassigned/unused, 1 = Tank, 2 = Healer, 3 = DPS
+    std::vector<uint8> currentAssignment(N, 0);
+
+    auto backtrack = [&](auto& self, size_t idx, bool curTank, bool curHealer, uint32 curDps) -> void
+    {
+        if (idx == N)
+        {
+            int score = (curTank ? 100 : 0) + (curHealer ? 50 : 0) + int(curDps);
+            if (!bestFound || score > bestScore)
+            {
+                bestScore = score;
+                bestTank = curTank;
+                bestHealer = curHealer;
+                bestDps = curDps;
+                bestFound = true;
+            }
+            return;
+        }
+
+        uint8 const availableRoles = members[idx].roles;
+
+        // Try Tank if player can Tank and Tank not yet assigned
+        if (!curTank && (availableRoles & lfg::PLAYER_ROLE_TANK))
+        {
+            currentAssignment[idx] = 1;
+            self(self, idx + 1, true, curHealer, curDps);
+            currentAssignment[idx] = 0;
+        }
+
+        // Try Healer if player can Heal and Healer not yet assigned
+        if (!curHealer && (availableRoles & lfg::PLAYER_ROLE_HEALER))
+        {
+            currentAssignment[idx] = 2;
+            self(self, idx + 1, curTank, true, curDps);
+            currentAssignment[idx] = 0;
+        }
+
+        // Try DPS if player can DPS and DPS < 3
+        if (curDps < 3 && (availableRoles & lfg::PLAYER_ROLE_DAMAGE))
+        {
+            currentAssignment[idx] = 3;
+            self(self, idx + 1, curTank, curHealer, curDps + 1);
+            currentAssignment[idx] = 0;
+        }
+
+        // Also allow unassigned branch if a member cannot satisfy anything (e.g. invalid role mask)
+        // or to allow exploring other branches
+        self(self, idx + 1, curTank, curHealer, curDps);
+    };
+
+    backtrack(backtrack, 0, false, false, 0);
+
+    result.hasTank = bestTank;
+    result.hasHealer = bestHealer;
+    result.realDpsCount = bestDps;
+
+    // Total bot slots available: capped strictly to 5 - realMembers
+    uint32 const availableBotSlots = (N >= 5) ? 0 : static_cast<uint32>(5 - N);
+    uint32 remainingSlots = availableBotSlots;
+
+    // Fill missing roles in strict order: Tank > Healer > DPS
+    if (!result.hasTank && remainingSlots > 0)
+    {
+        result.tankBotsNeeded = 1;
+        --remainingSlots;
+    }
+
+    if (!result.hasHealer && remainingSlots > 0)
+    {
+        result.healerBotsNeeded = 1;
+        --remainingSlots;
+    }
+
+    // Remaining slots filled by DPS bots up to 3 DPS total in group
+    uint32 const missingDps = (result.realDpsCount >= 3) ? 0 : (3 - result.realDpsCount);
+    result.dpsBotsNeeded = std::min<uint32>(remainingSlots, missingDps);
+
+    return result;
 }
 }
