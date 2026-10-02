@@ -15,6 +15,7 @@
 #define COA_PLAYERBOTS_BOT_MGR_H
 
 #include "ObjectGuid.h"
+#include "BotAI.h"
 #include "BotFormations.h"
 #include <functional>
 #include <mutex>
@@ -278,6 +279,12 @@ public:
     // also handles the teleport-to-leader. `commander` must be a real (non-bot) player; see
     // docs/addon-protocol.md's QUICKFILL verb.
     void QuickFillGroup(Player* commander, ChatHandler* handler);
+
+    // Invites ONE bot of the given role to the commander's group - the "pocket healer" case Quick Fill is too much for.
+    // Chosen like Quick Fill chooses: an online, ungrouped, living bot of the commander's faction, guildmates first, then
+    // the closest level and gear. A bot that already plays the role wins; otherwise a bot whose class can play it is
+    // switched to it. Does nothing when the group is full. Reports through `handler` when given.
+    void InviteBotForRole(Player* commander, BotRole role, ChatHandler* handler);
 
     // Toggles autonomous dungeon/raid play for `leader`'s whole group: while enabled, a Tank
     // bot idle inside an instance (no target, leader not already fighting) scans for the

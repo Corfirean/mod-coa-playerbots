@@ -2535,6 +2535,81 @@ void BotMgr::QuickFillGroup(Player* commander, ChatHandler* handler)
     }
 }
 
+void BotMgr::InviteBotForRole(Player* commander, BotRole role, ChatHandler* handler)
+{
+    if (!commander)
+        return;
+
+    if (Group* group = commander->GetGroup(); group && group->IsFull())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: your group is full.");
+        return;
+    }
+
+    std::vector<Player*> pool;
+    for (Player* bot : GetOnlineBots())
+    {
+        if (bot == commander || bot->GetGroup() || !bot->IsInWorld() || !bot->IsAlive())
+            continue;
+        if (bot->GetTeamId() != commander->GetTeamId())
+            continue;
+        pool.push_back(bot);
+    }
+
+    bool const commanderInGuild = commander->GetGuildId() != 0;
+    float const commanderIlvl = commander->GetAverageItemLevel();
+    auto isGuildmate = [&](Player* bot) { return commanderInGuild && bot->GetGuildId() == commander->GetGuildId(); };
+    auto better = [&](Player* a, Player* b)
+    {
+        bool aGuild = isGuildmate(a), bGuild = isGuildmate(b);
+        if (aGuild != bGuild)
+            return aGuild;
+        int32 aLevelDiff = std::abs(int32(a->GetLevel()) - int32(commander->GetLevel()));
+        int32 bLevelDiff = std::abs(int32(b->GetLevel()) - int32(commander->GetLevel()));
+        if (aLevelDiff != bLevelDiff)
+            return aLevelDiff < bLevelDiff;
+        return std::abs(a->GetAverageItemLevel() - commanderIlvl) < std::abs(b->GetAverageItemLevel() - commanderIlvl);
+    };
+
+    // First choice: a bot that already plays the role. Second: a bot whose class can (Dps: every class can).
+    Player* chosen = nullptr;
+    for (Player* bot : pool)
+        if (BotAI::GetRole(bot->GetGUID()) == role && (!chosen || better(bot, chosen)))
+            chosen = bot;
+    bool converted = false;
+    if (!chosen && role != BotRole::Dps)
+    {
+        for (Player* bot : pool)
+            if (BotAI::FindSpecForRole(bot->getClass(), role) != 0 && (!chosen || better(bot, chosen)))
+                chosen = bot;
+        converted = chosen != nullptr;
+    }
+
+    if (!chosen)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: no free {} bot of your faction is online.", RoleToString(role));
+        return;
+    }
+
+    if (converted)
+    {
+        uint32 currentSpec = chosen->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        uint32 targetSpec = BotAI::FindSpecForRole(chosen->getClass(), role, currentSpec);
+        if (targetSpec != currentSpec)
+            LearnSpecialization(chosen->GetGUID().GetCounter(), targetSpec, nullptr);
+        BotAI::SetRole(chosen->GetGUID(), role);
+    }
+
+    WorldPacket packet;
+    packet << chosen->GetName();
+    packet << uint32(0);
+    commander->GetSession()->HandleGroupInviteOpcode(packet);
+    if (handler)
+        handler->PSendSysMessage("BotMgr: invited {} ({}).", chosen->GetName(), RoleToString(role));
+}
+
 void BotMgr::SetAutoDungeonMode(ObjectGuid leaderGuid, bool enabled)
 {
     if (enabled)

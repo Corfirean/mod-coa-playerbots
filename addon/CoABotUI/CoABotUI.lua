@@ -1069,7 +1069,7 @@ local function CreateMainFrame()
     utilityBar:SetSize(492, 24)
     utilityBar:SetPoint("TOPLEFT", globalBar, "BOTTOMLEFT", 0, -4)
     local btnQuickFill = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
-    btnQuickFill:SetSize(88, 20)
+    btnQuickFill:SetSize(76, 20)
     btnQuickFill:SetPoint("LEFT", utilityBar, "LEFT", 4, 0)
     btnQuickFill:SetText("Quick Fill")
     btnQuickFill:SetScript("OnClick", function()
@@ -1077,9 +1077,35 @@ local function CreateMainFrame()
         Log("Requested quick-fill for your group.")
     end)
 
+    -- "Invite": one bot of the chosen role, for when Quick Fill (a whole party) is too much - a pocket healer or tank.
+    local btnInvite = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
+    btnInvite:SetSize(62, 20)
+    btnInvite:SetPoint("LEFT", btnQuickFill, "RIGHT", 4, 0)
+    btnInvite:SetText("Invite")
+    local inviteMenuFrame = CreateFrame("Frame", "CoABotUIInviteMenu", UIParent, "UIDropDownMenuTemplate")
+    local function InviteRole(role, label)
+        SendRawBody("INVITEROLE:" .. role)
+        Log("Looking for a " .. label .. " bot to invite.")
+    end
+    btnInvite:SetScript("OnClick", function(self)
+        EasyMenu({
+            { text = "Invite one bot", isTitle = true, notCheckable = true },
+            { text = "Tank", notCheckable = true, func = function() InviteRole("tank", "tank") end },
+            { text = "Healer", notCheckable = true, func = function() InviteRole("healer", "healer") end },
+            { text = "Damage", notCheckable = true, func = function() InviteRole("dps", "damage") end },
+        }, inviteMenuFrame, self, 0, 0, "MENU")
+    end)
+    btnInvite:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+        GameTooltip:SetText("Invite one bot", 1, 0.82, 0)
+        GameTooltip:AddLine("Pick a role: a free bot of your faction (guildmates first, closest level) is invited to your group.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    btnInvite:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
     local btnAutoDungeon = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
-    btnAutoDungeon:SetSize(104, 20)
-    btnAutoDungeon:SetPoint("LEFT", btnQuickFill, "RIGHT", 4, 0)
+    btnAutoDungeon:SetSize(96, 20)
+    btnAutoDungeon:SetPoint("LEFT", btnInvite, "RIGHT", 4, 0)
     local function RefreshAutoDungeonButton()
         btnAutoDungeon:SetText(CoABotUIDB.autoDungeon and "|cFF44FF44Dungeon: ON|r" or "Dungeon: OFF")
     end
@@ -1092,7 +1118,7 @@ local function CreateMainFrame()
     frame.RefreshAutoDungeonButton = RefreshAutoDungeonButton
 
     local btnFormation = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
-    btnFormation:SetSize(132, 20)
+    btnFormation:SetSize(124, 20)
     btnFormation:SetPoint("LEFT", btnAutoDungeon, "RIGHT", 4, 0)
     local function RefreshFormationButton()
         local formation = FORMATION_BY_ID[currentFormationId] or FORMATIONS[1]
@@ -1103,7 +1129,7 @@ local function CreateMainFrame()
     frame.RefreshFormationButton = RefreshFormationButton
 
     local btnTeleport = CreateFrame("Button", nil, utilityBar, "UIPanelButtonTemplate")
-    btnTeleport:SetSize(126, 20)
+    btnTeleport:SetSize(108, 20)
     btnTeleport:SetPoint("LEFT", btnFormation, "RIGHT", 4, 0)
     btnTeleport:SetScript("OnClick", function() SendGroupCommand("TELEPORT") end)
     local function RefreshTeleportButton()

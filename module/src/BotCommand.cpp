@@ -68,6 +68,7 @@ public:
             { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "quickfill",    HandleBotQuickFillCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "invitebot",    HandleBotInviteRoleCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "craftorder",   HandleBotCraftOrderCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "recipecoverage", HandleBotRecipeCoverageCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "guildroster",  HandleBotGuildRosterCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -187,6 +188,29 @@ public:
             return true;
         }
         sBotMgr->QuickFillGroup(commander, handler);
+        return true;
+    }
+
+    // `.botcmd invitebot <player guid> <tank|healer|dps>`: what the addon's "Invite" button does for that player.
+    static bool HandleBotInviteRoleCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, std::string role)
+    {
+        Player* commander = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(charLowGuid));
+        if (!commander)
+        {
+            handler->PSendSysMessage("BotMgr: no online player with guid {} found.", charLowGuid);
+            return true;
+        }
+        BotRole parsed = BotRole::Dps;
+        if (role == "tank")
+            parsed = BotRole::Tank;
+        else if (role == "healer")
+            parsed = BotRole::Healer;
+        else if (role != "dps")
+        {
+            handler->SendSysMessage("Usage: .botcmd invitebot <player guid> <tank|healer|dps>");
+            return true;
+        }
+        sBotMgr->InviteBotForRole(commander, parsed, handler);
         return true;
     }
 

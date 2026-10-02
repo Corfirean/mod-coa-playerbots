@@ -151,6 +151,24 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         return;
     }
 
+    // INVITEROLE:<tank|healer|dps> invites a single bot of that role to the commander's group (the "pocket healer" case;
+    // Quick Fill fills the whole party). The commander is the requester, so no bot guid / authorization gate applies.
+    if (verb == "INVITEROLE" && parts.size() >= 2)
+    {
+        BotRole role = BotRole::Dps;
+        std::string const& r = parts[1];
+        if (r == "tank")
+            role = BotRole::Tank;
+        else if (r == "healer")
+            role = BotRole::Healer;
+        else if (r != "dps")
+            return;
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> INVITEROLE {}.", commander->GetName(), r);
+        ChatHandler handler(commander->GetSession());
+        sBotMgr->InviteBotForRole(commander, role, &handler);
+        return;
+    }
+
     // AUTODUNGEON also acts on the commander's whole group, not one bot -- the second colon-part
     // carries the actual on/off value (1 or 0) instead of the usual "0" placeholder, since this
     // verb needs it. See BotMgr::SetAutoDungeonMode for what this actually changes.
