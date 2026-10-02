@@ -5,6 +5,7 @@
 #include "BotAI.h"
 #include "BotMgr.h"
 #include "BotMovement.h"
+#include "BotProgression.h"
 #include "Chat.h"
 #include "Config.h"
 #include "DBCStores.h"
@@ -60,6 +61,9 @@ namespace
         uint32 spreadMax = 10;             // ... up to this many, up or down
         uint32 minListingCopper = 5000;    // a listing worth less than this is not worth the deposit: a vendor takes it
         uint32 listingMinutes = 1440;      // how long a listing runs
+        bool consumeSupplies = false;      // eating and drinking use up food and drink
+        uint32 supplyTarget = 20;          // how many of each a bot likes to carry
+        uint32 dailyBudgetCopper = 20000;  // what one bot spends on supplies in a day
     } g_settings;
 
     uint32 g_settingsAgeMs = 1000000;
@@ -76,6 +80,17 @@ namespace
     uint32 g_goldCheckAgeMs = 0;
     constexpr uint32 GOLD_CHECK_MS = 60 * 1000;
     constexpr uint32 GOLD_MIN_DEPOSIT_COPPER = 10000; // 1 gold
+
+    // Supplies: bots that found nothing to eat or drink, and what each spent today.
+    std::unordered_set<ObjectGuid> g_needsSupplies;
+    std::unordered_map<uint64, uint32> g_noSupplyUntil; // (bot guid * 2 + food) -> a bot with nothing to eat is not searched again for a few seconds
+    struct Spending
+    {
+        uint32 dayStartedAt = 0;
+        uint64 copper = 0;
+    };
+    std::unordered_map<ObjectGuid, Spending> g_spent;
+    uint64 g_boughtCopper = 0;
 
     // Lowest buyout per single item over every auction house, refreshed every few minutes.
     std::unordered_map<uint32, uint32> g_market;
@@ -123,6 +138,9 @@ namespace
         g_settings.moneyReserveCopper = sConfigMgr->GetOption<uint32>("CoaBots.Economy.MoneyReserveCopper", 50000);
         g_settings.maxListings = sConfigMgr->GetOption<uint32>("CoaBots.Economy.MaxListings", 20);
         g_settings.spreadMin = std::min<uint32>(50, sConfigMgr->GetOption<uint32>("CoaBots.Economy.PriceSpreadMinPercent", 5));
+        g_settings.consumeSupplies = sConfigMgr->GetOption<bool>("CoaBots.Economy.ConsumeSupplies", false);
+        g_settings.supplyTarget = std::max<uint32>(1, std::min<uint32>(200, sConfigMgr->GetOption<uint32>("CoaBots.Economy.SupplyTarget", 20)));
+        g_settings.dailyBudgetCopper = sConfigMgr->GetOption<uint32>("CoaBots.Economy.DailyBudgetCopper", 20000);
         g_settings.minListingCopper = sConfigMgr->GetOption<uint32>("CoaBots.Economy.MinListingCopper", 5000);
         g_settings.listingMinutes = std::max<uint32>(5, std::min<uint32>(2880, sConfigMgr->GetOption<uint32>("CoaBots.Economy.ListingMinutes", 1440)));
         g_settings.spreadMax = std::max<uint32>(g_settings.spreadMin, std::min<uint32>(50, sConfigMgr->GetOption<uint32>("CoaBots.Economy.PriceSpreadMaxPercent", 10)));
@@ -533,6 +551,110 @@ namespace
             bot->GetGUID().GetCounter(), QuoteSql(bot->GetName()), l.entry, count, verdict, QuoteSql(l.reason), unitCopper, QuoteSql(source)));
     }
 
+    // ---- Supplies ------------------------------------------------------------------------------------------------
+
+    // The consumable (food: spell category 11, drink: 59) in the bot's bags that fits its level best, or null.
+    Item* BestSupplyInBags(Player* bot, bool food)
+    {
+        Item* best = nullptr;
+        uint32 bestLevel = 0;
+        ForEachBagItem(bot, [&](Item* item)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || proto->SubClass != ITEM_SUBCLASS_FOOD)
+                return;
+            if (proto->Spells[0].SpellCategory != (food ? 11u : 59u) || proto->RequiredLevel > bot->GetLevel())
+                return;
+            if (!best || proto->RequiredLevel > bestLevel)
+            {
+                best = item;
+                bestLevel = proto->RequiredLevel;
+            }
+        });
+        return best;
+    }
+
+    // How many items of the level range a bot may still use (RequiredLevel within the outdated margin).
+    uint32 SupplyCount(Player* bot, bool food)
+    {
+        uint32 count = 0;
+        ForEachBagItem(bot, [&](Item* item)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || proto->SubClass != ITEM_SUBCLASS_FOOD)
+                return;
+            if (proto->Spells[0].SpellCategory != (food ? 11u : 59u) || proto->RequiredLevel > bot->GetLevel())
+                return;
+            if (proto->RequiredLevel + g_settings.outdatedBelowLevels < bot->GetLevel())
+                return;
+            count += item->GetCount();
+        });
+        return count;
+    }
+
+    bool UsesMana(Player* bot)
+    {
+        return bot->getPowerType() == POWER_MANA;
+    }
+
+    // What a trip to town should buy: the best food (and drink for a mana user) of the bot's level up to the target
+    // count, within the money the bot may spend today.
+    void BuySupplies(Player* bot)
+    {
+        if (!g_settings.consumeSupplies)
+            return;
+        uint32 const now = GameTime::GetGameTimeMS().count();
+        Spending& spent = g_spent[bot->GetGUID()];
+        if (!spent.dayStartedAt || now - spent.dayStartedAt > 24u * 60 * 60 * 1000)
+        {
+            spent.dayStartedAt = now ? now : 1;
+            spent.copper = 0;
+        }
+
+        for (bool food : { true, false })
+        {
+            if (!food && !UsesMana(bot))
+                continue;
+            uint32 const entry = food ? BotProgression::PickFood(bot->GetLevel()) : BotProgression::PickDrink(bot->GetLevel());
+            ItemTemplate const* proto = entry ? sObjectMgr->GetItemTemplate(entry) : nullptr;
+            if (!proto)
+                continue;
+            uint32 const have = SupplyCount(bot, food);
+            if (have >= g_settings.supplyTarget)
+                continue;
+            uint32 want = g_settings.supplyTarget - have;
+            uint32 const unit = std::max<uint32>(1, proto->BuyPrice / std::max<uint32>(1, proto->BuyCount));
+            uint64 const money = bot->GetMoney() > g_settings.moneyReserveCopper ? bot->GetMoney() - g_settings.moneyReserveCopper : 0;
+            uint64 const budget = spent.copper < g_settings.dailyBudgetCopper ? g_settings.dailyBudgetCopper - spent.copper : 0;
+            want = uint32(std::min<uint64>(want, std::min(money, budget) / unit));
+            if (!want)
+                continue;
+            ItemPosCountVec dest;
+            if (bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, entry, want) != EQUIP_ERR_OK)
+                continue;
+            uint64 const cost = uint64(unit) * want;
+            bot->ModifyMoney(-int64(cost));
+            bot->StoreNewItem(dest, entry, true);
+            spent.copper += cost;
+            g_boughtCopper += cost;
+            BotEconomy::Line line;
+            line.entry = entry;
+            line.reason = food ? "supplies-food" : "supplies-drink";
+            JournalDone(bot, line, want, unit, "buy", "vendor");
+        }
+        g_needsSupplies.erase(bot->GetGUID());
+    }
+
+    // Whether a bot that eats and drinks has run out and can afford more: worth a trip to town.
+    bool NeedsSupplies(Player* bot)
+    {
+        if (!g_settings.consumeSupplies)
+            return false;
+        if (SupplyCount(bot, true) == 0)
+            return true;
+        return UsesMana(bot) && SupplyCount(bot, false) == 0;
+    }
+
     // What a bot does once it has reached the auctioneers: collect what earlier auctions earned, list and sell, and
     // pay the guild its share.
     void SellInTown(Player* bot, uint32 auctioneerFaction)
@@ -589,6 +711,8 @@ namespace
                 }
             }
         }
+
+        BuySupplies(bot);
 
         // The guild's small share, leaving the bot its own reserve.
         if (gained && g_settings.guildSharePercent && bot->GetGuild() && !g_goldOrders.count(bot->GetGUID()))
@@ -790,7 +914,7 @@ namespace BotEconomy
                 total += l.TotalCopper();
             // A bot working on a gold order goes to town for a smaller load: the sooner its finds are money, the sooner they are in the bank.
             uint64 const minTrip = g_goldOrders.count(bot->GetGUID()) ? std::min<uint64>(g_settings.minTripCopper, 5000) : g_settings.minTripCopper;
-            if (total < minTrip)
+            if (total < minTrip && !(g_needsSupplies.count(bot->GetGUID()) || NeedsSupplies(bot)))
                 continue;
 
             uint64 fingerprint = 1469598103934665603ull;
@@ -925,6 +1049,30 @@ namespace BotEconomy
         GoldOrder const& o = it->second;
         uint64 const target = std::max<uint64>(1, o.targetCopper);
         return Acore::StringFormat("earning gold for the guild ({}/{} g - {}%)", o.depositedCopper / 10000, target / 10000, std::min<uint64>(100, o.depositedCopper * 100 / target));
+    }
+
+    void StartRestAura(Player* bot, bool food)
+    {
+        uint32 const spell = food ? 433 : 431;
+        if (!g_settings.consumeSupplies || !g_settings.enable)
+        {
+            bot->CastSpell(bot, spell, true);
+            return;
+        }
+        uint32 const now = GameTime::GetGameTimeMS().count();
+        uint64 const key = uint64(bot->GetGUID().GetCounter()) * 2 + (food ? 1 : 0);
+        auto wait = g_noSupplyUntil.find(key);
+        if (wait != g_noSupplyUntil.end() && int32(now - wait->second) < 0)
+            return;
+        Item* item = BestSupplyInBags(bot, food);
+        if (!item)
+        {
+            g_needsSupplies.insert(bot->GetGUID()); // rests the slow way until it has bought something
+            g_noSupplyUntil[key] = now + 5000;
+            return;
+        }
+        bot->DestroyItemCount(item->GetEntry(), 1, true);
+        bot->CastSpell(bot, spell, true);
     }
 
     bool UpdateTrip(Player* bot, uint32 /*diff*/)

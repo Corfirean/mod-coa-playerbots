@@ -323,6 +323,19 @@ CoaBots.MarkSessionsAsBots = 1
 #        Description: How many auctions one bot may have running.
 #        Default:     20
 #
+#    CoaBots.Economy.ConsumeSupplies
+#        Description: 1 = eating and drinking cost something. A bot that sits down to eat or drink uses up one food or
+#                     drink item of its level range; with none it rests the slow way and wants a trip to town, where
+#                     it buys more with its own money (the best food and drink it may use, up to SupplyTarget of each,
+#                     within DailyBudgetCopper a day and keeping MoneyReserveCopper). Needs CoaBots.Economy.Enable = 1.
+#                     0 = bots rest with the instant food and drink effect and no items, as before.
+#        Default:     0
+#
+#    CoaBots.Economy.SupplyTarget / DailyBudgetCopper
+#        Description: How many food and how many drink items a bot likes to carry; what one bot may spend on them in
+#                     a day.
+#        Default:     20 / 20000 - (2 gold)
+#
 #    CoaBots.Economy.MinListingCopper / ListingMinutes
 #        Description: A listing worth less than this is not worth its deposit and goes to a vendor instead; how
 #                     long a listing runs (12 hours = 720, 24 hours = 1440, 48 hours = 2880).
@@ -349,6 +362,9 @@ CoaBots.Economy.TripCooldownMin = 30
 CoaBots.Economy.GuildSharePercent = 10
 CoaBots.Economy.MoneyReserveCopper = 50000
 CoaBots.Economy.MaxListings = 20
+CoaBots.Economy.ConsumeSupplies = 0
+CoaBots.Economy.SupplyTarget = 20
+CoaBots.Economy.DailyBudgetCopper = 20000
 CoaBots.Economy.MinListingCopper = 5000
 CoaBots.Economy.ListingMinutes = 1440
 CoaBots.Economy.PriceSpreadMinPercent = 5

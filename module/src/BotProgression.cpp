@@ -312,6 +312,16 @@ namespace BotProgression
         GiveOnce(bot, wanted);
     }
 
+    uint32 PickFood(uint8 level)
+    {
+        return PickConsumable(Consumables().food, level);
+    }
+
+    uint32 PickDrink(uint8 level)
+    {
+        return PickConsumable(Consumables().drink, level);
+    }
+
     void ProvisionFood(Player* bot, uint32 stackSize)
     {
         ConsumableTable const& table = Consumables();

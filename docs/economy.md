@@ -1,6 +1,6 @@
 # Bot economy
 
-Design agreed with the owner on 2026-10-02. Steps 1-3 (rules, journal, dry run; trips to town and selling; the gold order) are in code; the rest is planned.
+Design agreed with the owner on 2026-10-02. Steps 1-4 (rules, journal, dry run; trips to town and selling; the gold order; food and drink that cost something) are in code; the rest is planned.
 
 ## Principles
 
@@ -76,8 +76,29 @@ that leaves the guild drops its order. A bot with a gold order does not also pay
 Checked in the sandbox: placing an order, the roster text, the deposit into the guild bank (5 g arrived and the order finished),
 cancelling. The addon controls are written but not click-tested with a real client.
 
+## Step 4 (in code): food and drink that cost something
+
+Finding first: bots never used food or drink items. Out of combat they sat down and cast the generic eat/drink auras
+(spells 433 and 431) for free, so the food in their bags (a level-appropriate stack is given at creation and on every level-up,
+`BotProgression::ProvisionFood`) was decoration. The "level-1 food at 60+" impression does not match the data: real level 60-80
+bots carry level-appropriate food (checked on a live server's database).
+
+Off by default (`CoaBots.Economy.ConsumeSupplies = 0`). With it on (and `Enable = 1`):
+
+- When a bot sits down to eat or drink, one food or drink item of its level range is used up and the same auras are applied
+  (`BotEconomy::StartRestAura`, called from `BotAI.cpp`). With none in its bags it rests the slow way and is marked as wanting
+  supplies.
+- A bot with no food (or, for a mana user, no drink) of its level range wants a trip to town even when it has nothing worth
+  selling. In town (`SellInTown`) it buys the best food and drink it may use (`BotProgression::PickFood/PickDrink`, vendor-sold
+  items only), up to `SupplyTarget` of each, at the item's vendor price, within `DailyBudgetCopper` a day and keeping
+  `MoneyReserveCopper`. The purchases are written to the journal (verdict `buy`).
+- Potions are not bought: bots do not use potions yet.
+
+Checked in the sandbox: bots started without food went to town and bought 20 food and 20 drink each at the right level;
+nothing crashed. Not checked: the consumption itself over a long time (it follows the resting code).
+
 ## Steps still to do
 
-1. Buying consumables (food and potions of the bot's level, daily budget, never buying out players' listings).
+1. Buying from the auction house instead of a vendor price (never buying out players' listings); potions once bots use them.
 2. The Stock tab and limits (guild master and officers only).
 3. Statistics in the addon; relisting; the hearthstone for the way back.

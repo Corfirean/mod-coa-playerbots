@@ -45,6 +45,10 @@ namespace BotProgression
     // Food and drink for the bot's level, taken from what vendors actually sell.
     void ProvisionFood(Player* bot, uint32 stackSize);
 
+    // The vendor-sold food / drink a bot of this level should eat and drink (the best one it may use), 0 when none.
+    uint32 PickFood(uint8 level);
+    uint32 PickDrink(uint8 level);
+
     // Raises profession caps to the new level, then relearns abilities, recipes, tools and food.
     // Talents are applied separately by BotTalentBuilds.
     void OnLevelUp(Player* bot, uint8 newLevel);
