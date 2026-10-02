@@ -1928,8 +1928,7 @@ function RefreshOrderPicker()
                 local hasLimit = item.limit and item.limit > 0
                 -- two lines: the item with the count in the bank, and under it the limit (or that there is none)
                 local limitLabel = hasLimit and ("|cFFFFD100limit: keep " .. item.limit .. "|r") or "|cFF666666no limit|r"
-                row.nameText:SetText(item.name .. " |cFF888888(" .. (item.count or 0) .. ")|r
-" .. limitLabel)
+                row.nameText:SetText(item.name .. " |cFF888888(" .. (item.count or 0) .. ")|r\n" .. limitLabel)
                 local shown = hasLimit and item.limit or (item.count or 0)
                 row.qtyBox:SetMaxLetters(6)
                 row.qtyBox:SetText(tostring(shown))
