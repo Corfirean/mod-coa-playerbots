@@ -13,6 +13,7 @@
 
 #include "engine/BotDebugLog.h"
 #include "BotAI.h"
+#include "BotEconomy.h"
 #include "BotFormations.h"
 #include "BotMgr.h"
 #include "Chat.h"
@@ -245,6 +246,16 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         uint32 count = parts.size() >= 3 ? std::strtoul(parts[2].c_str(), nullptr, 10) : 1;
         LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GATHERORDER item {} x{}.", commander->GetName(), itemEntry, count);
         sBotMgr->GatherOrder(commander->GetGUID().GetCounter(), itemEntry, count ? count : 1, nullptr);
+        return;
+    }
+
+    // GOLDORDER: ask a free guild-mate bot to earn that many gold for the guild bank (0 cancels the
+    // guild's gold orders). Guild master or officers only, checked in BotEconomy::PlaceGoldOrder.
+    if (verb == "GOLDORDER" && parts.size() >= 2)
+    {
+        uint32 gold = std::strtoul(parts[1].c_str(), nullptr, 10);
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GOLDORDER {} gold.", commander->GetName(), gold);
+        BotEconomy::PlaceGoldOrder(commander, gold, nullptr);
         return;
     }
 

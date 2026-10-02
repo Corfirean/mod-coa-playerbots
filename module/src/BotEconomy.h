@@ -62,6 +62,15 @@ namespace BotEconomy
     // then skips everything else this tick. Only active when CoaBots.Economy.DryRun = 0.
     bool UpdateTrip(Player* bot, uint32 diff);
 
+    // "Collect gold" orders from the guild task board: a free guild-mate bot is asked to earn `goldAmount` gold for the
+    // guild bank. It goes about its usual life (kills, quests and loot give it money, its trips to town turn its finds
+    // into money sooner) and pays everything above its own reserve into the bank until the amount is in. 0 gold cancels
+    // the guild's gold orders. The requester must be the guild master or an officer (not checked for a console caller).
+    void PlaceGoldOrder(Player* requester, uint32 goldAmount, ChatHandler* handler);
+
+    // The roster line for a bot with a gold order ("earning gold for the guild (12/100 g - 12%)"), empty otherwise.
+    std::string GoldOrderTask(Player* bot);
+
     // `.botcmd economy ...` (plan <guid>, journal [n], status, protect <item>, unprotect <item>).
     void HandleCommand(ChatHandler* handler, std::string const& args);
 }

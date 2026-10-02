@@ -1372,8 +1372,60 @@ local function CreateGuildTaskBoardFrame()
     btnOrderMaterials:SetText("New order")
     btnOrderMaterials:SetScript("OnClick", function() ShowOrderPicker() end)
 
+    -- "Collect gold": ask a free guild-mate bot to earn that much gold for the guild bank. Guild master and
+    -- officers only (checked on the server); the bot's progress shows in its row below. 0 cancels the orders.
+    local goldLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    goldLabel:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -33)
+    goldLabel:SetText("|cFFFFD100Collect gold for the guild:|r")
+
+    local goldBox = CreateFrame("EditBox", nil, frame)
+    goldBox:SetSize(54, 22)
+    goldBox:SetPoint("LEFT", goldLabel, "RIGHT", 8, 0)
+    goldBox:SetFontObject(GameFontHighlightSmall)
+    goldBox:SetJustifyH("CENTER")
+    goldBox:SetTextInsets(3, 3, 0, 0)
+    goldBox:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 8, edgeSize = 8,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 }
+    })
+    goldBox:SetBackdropColor(0.02, 0.02, 0.025, 0.95)
+    goldBox:SetBackdropBorderColor(0.35, 0.37, 0.42, 1.0)
+    goldBox:SetAutoFocus(false)
+    goldBox:SetNumeric(true)
+    goldBox:SetMaxLetters(6)
+    goldBox:SetText("100")
+
+    local goldUnit = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    goldUnit:SetPoint("LEFT", goldBox, "RIGHT", 4, 0)
+    goldUnit:SetText("|cFFFFD100g|r")
+
+    local btnGold = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    btnGold:SetSize(56, 22)
+    btnGold:SetPoint("LEFT", goldUnit, "RIGHT", 6, 0)
+    btnGold:SetText("Order")
+    btnGold:SetScript("OnClick", function()
+        local amount = tonumber(goldBox:GetText()) or 0
+        if amount < 1 then
+            Log("Enter how many gold the guild should collect.")
+            return
+        end
+        SendRawBody("GOLDORDER:" .. amount)
+        Log("Gold order sent: " .. amount .. " gold for the guild bank.")
+    end)
+
+    local btnGoldCancel = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    btnGoldCancel:SetSize(96, 22)
+    btnGoldCancel:SetPoint("LEFT", btnGold, "RIGHT", 4, 0)
+    btnGoldCancel:SetText("Cancel orders")
+    btnGoldCancel:SetScript("OnClick", function()
+        SendRawBody("GOLDORDER:0")
+        Log("Gold orders cancelled.")
+    end)
+
     local scrollFrame = CreateFrame("ScrollFrame", "CoABotUITaskScroll", frame, "UIPanelScrollFrameTemplate")
-    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -34)
+    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -62)
     scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 4)
 
     local listArea = CreateFrame("Frame", nil, scrollFrame)

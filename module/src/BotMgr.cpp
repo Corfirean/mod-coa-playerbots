@@ -1549,6 +1549,8 @@ std::vector<std::string> BotMgr::GetGuildRosterInfo(Player* commander) const
             uint32 percent = std::min<uint32>(100, (gathered * 100) / target);
             task = "gathering " + itemName(taskItemEntry) + " (" + std::to_string(gathered) + "/" + std::to_string(target) + " - " + std::to_string(percent) + "%)";
         }
+        else if (std::string goldTask = BotEconomy::GoldOrderTask(bot); !goldTask.empty())
+            task = goldTask;
 
         // Trailing itemEntry field (added for the task board's item tooltip, see
         // docs/addon-protocol.md) -- task's item *name* was already resolved server-side above,

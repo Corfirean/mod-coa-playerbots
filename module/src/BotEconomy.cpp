@@ -11,6 +11,7 @@
 #include "DatabaseEnv.h"
 #include "GameTime.h"
 #include "Guild.h"
+#include "GuildMgr.h"
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Log.h"
@@ -64,6 +65,17 @@ namespace
     uint32 g_settingsAgeMs = 1000000;
     bool g_tablesReady = false;
     std::unordered_set<uint32> g_protected;
+
+    struct GoldOrder
+    {
+        uint32 guildId = 0;
+        uint64 targetCopper = 0;
+        uint64 depositedCopper = 0;
+    };
+    std::unordered_map<ObjectGuid, GoldOrder> g_goldOrders;
+    uint32 g_goldCheckAgeMs = 0;
+    constexpr uint32 GOLD_CHECK_MS = 60 * 1000;
+    constexpr uint32 GOLD_MIN_DEPOSIT_COPPER = 10000; // 1 gold
 
     // Lowest buyout per single item over every auction house, refreshed every few minutes.
     std::unordered_map<uint32, uint32> g_market;
@@ -149,7 +161,24 @@ namespace
             "CREATE TABLE IF NOT EXISTS mod_coa_bot_protected_items ("
             "  item_entry INT UNSIGNED NOT NULL PRIMARY KEY"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+        CharacterDatabase.DirectExecute(
+            "CREATE TABLE IF NOT EXISTS mod_coa_bot_gold_orders ("
+            "  bot_guid INT UNSIGNED NOT NULL PRIMARY KEY,"
+            "  guild_id INT UNSIGNED NOT NULL,"
+            "  target_copper BIGINT UNSIGNED NOT NULL,"
+            "  deposited_copper BIGINT UNSIGNED NOT NULL DEFAULT 0"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
         LoadProtected();
+        if (QueryResult result = CharacterDatabase.Query("SELECT bot_guid, guild_id, target_copper, deposited_copper FROM mod_coa_bot_gold_orders"))
+            do
+            {
+                Field* f = (*result).Fetch();
+                GoldOrder o;
+                o.guildId = f[1].Get<uint32>();
+                o.targetCopper = f[2].Get<uint64>();
+                o.depositedCopper = f[3].Get<uint64>();
+                g_goldOrders[ObjectGuid::Create<HighGuid::Player>(f[0].Get<uint32>())] = o;
+            } while (result->NextRow());
         g_tablesReady = true;
     }
 
@@ -280,6 +309,21 @@ namespace
                 l.verdict == BotEconomy::Verdict::Auction ? "auction" : "vendor", QuoteSql(l.reason), l.unitCopper, QuoteSql(l.priceSource)));
             ++g_totals.journalRows;
         }
+    }
+
+    // ---- Gold orders --------------------------------------------------------------------------------------------
+
+    void SaveGoldOrder(ObjectGuid guid, GoldOrder const& o)
+    {
+        CharacterDatabase.Execute(Acore::StringFormat(
+            "REPLACE INTO mod_coa_bot_gold_orders (bot_guid, guild_id, target_copper, deposited_copper) VALUES ({}, {}, {}, {})",
+            guid.GetCounter(), o.guildId, o.targetCopper, o.depositedCopper));
+    }
+
+    void DeleteGoldOrder(ObjectGuid guid)
+    {
+        CharacterDatabase.Execute(Acore::StringFormat("DELETE FROM mod_coa_bot_gold_orders WHERE bot_guid = {}", guid.GetCounter()));
+        g_goldOrders.erase(guid);
     }
 
     // ---- Trips to town -------------------------------------------------------------------------------------------
@@ -547,7 +591,7 @@ namespace
         }
 
         // The guild's small share, leaving the bot its own reserve.
-        if (gained && g_settings.guildSharePercent && bot->GetGuild())
+        if (gained && g_settings.guildSharePercent && bot->GetGuild() && !g_goldOrders.count(bot->GetGUID()))
         {
             uint64 share = gained * g_settings.guildSharePercent / 100;
             uint64 const spare = bot->GetMoney() > g_settings.moneyReserveCopper ? bot->GetMoney() - g_settings.moneyReserveCopper : 0;
@@ -565,6 +609,8 @@ namespace
 
 namespace BotEconomy
 {
+    void ProcessGoldOrders();
+
     std::vector<Line> PlanSale(Player* bot)
     {
         std::vector<Line> out;
@@ -685,6 +731,12 @@ namespace BotEconomy
             return;
         EnsureTables();
         RefreshMarket(diff);
+        g_goldCheckAgeMs += diff;
+        if (g_goldCheckAgeMs >= GOLD_CHECK_MS)
+        {
+            g_goldCheckAgeMs = 0;
+            ProcessGoldOrders();
+        }
 
         // Tick every waiting bot down, then look at the ones that are due, a few per tick.
         g_pruneAgeMs += diff;
@@ -736,7 +788,9 @@ namespace BotEconomy
             uint64 total = 0;
             for (Line const& l : plan)
                 total += l.TotalCopper();
-            if (total < g_settings.minTripCopper)
+            // A bot working on a gold order goes to town for a smaller load: the sooner its finds are money, the sooner they are in the bank.
+            uint64 const minTrip = g_goldOrders.count(bot->GetGUID()) ? std::min<uint64>(g_settings.minTripCopper, 5000) : g_settings.minTripCopper;
+            if (total < minTrip)
                 continue;
 
             uint64 fingerprint = 1469598103934665603ull;
@@ -757,6 +811,120 @@ namespace BotEconomy
             LOG_DEBUG("module.coa-playerbots", "BotEconomy: '{}' would sell {} stack(s) worth about {} (plan only).", bot->GetName(), plan.size(), Money(total));
         }
         g_rotation = (g_rotation + slice) % std::max<size_t>(1, n);
+    }
+
+    void ProcessGoldOrders()
+    {
+        std::vector<ObjectGuid> guids;
+        guids.reserve(g_goldOrders.size());
+        for (auto const& entry : g_goldOrders)
+            guids.push_back(entry.first);
+        for (ObjectGuid const& guid : guids)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(guid);
+            if (!bot)
+                continue; // offline: the order waits
+            GoldOrder& o = g_goldOrders[guid];
+            if (!bot->GetGuild() || bot->GetGuildId() != o.guildId)
+            {
+                DeleteGoldOrder(guid); // the bot left the guild
+                continue;
+            }
+            uint64 const money = bot->GetMoney();
+            uint64 const spare = money > g_settings.moneyReserveCopper ? money - g_settings.moneyReserveCopper : 0;
+            if (spare < GOLD_MIN_DEPOSIT_COPPER)
+                continue;
+            uint64 const remaining = o.targetCopper > o.depositedCopper ? o.targetCopper - o.depositedCopper : 0;
+            uint64 const amount = std::min<uint64>({ spare, remaining, 4000000000ull });
+            if (amount)
+            {
+                sBotMgr->GuildDepositMoney(guid.GetCounter(), uint32(amount), nullptr);
+                o.depositedCopper += amount;
+                g_tripTotals.guildCopper += amount;
+            }
+            if (o.depositedCopper >= o.targetCopper)
+            {
+                LOG_INFO("module.coa-playerbots", "BotEconomy: '{}' finished a gold order of {} for guild {}.", bot->GetName(), Money(o.targetCopper), o.guildId);
+                DeleteGoldOrder(guid);
+            }
+            else
+                SaveGoldOrder(guid, o);
+        }
+    }
+
+    void PlaceGoldOrder(Player* requester, uint32 goldAmount, ChatHandler* handler)
+    {
+        if (!requester)
+            return;
+        EnsureTables();
+        uint32 const guildId = requester->GetGuildId();
+        auto say = [&](std::string const& text)
+        {
+            if (handler)
+                handler->SendSysMessage(text);
+        };
+        if (!guildId)
+        {
+            say("Gold orders need a guild: the requester is not in one.");
+            return;
+        }
+        if (!handler)
+        {
+            // From a player (the addon): guild master or an officer only.
+            Guild* guild = sGuildMgr->GetGuildById(guildId);
+            Guild::Member const* member = guild ? guild->GetMember(requester->GetGUID()) : nullptr;
+            if (!member || member->GetRankId() > 1)
+                return;
+        }
+
+        if (goldAmount == 0)
+        {
+            std::vector<ObjectGuid> mine;
+            for (auto const& [guid, o] : g_goldOrders)
+                if (o.guildId == guildId)
+                    mine.push_back(guid);
+            for (ObjectGuid const& guid : mine)
+                DeleteGoldOrder(guid);
+            say(Acore::StringFormat("Cancelled {} gold order(s).", mine.size()));
+            return;
+        }
+
+        Player* chosen = nullptr;
+        for (Player* bot : sBotMgr->GetOnlineBots())
+        {
+            if (bot->GetGuildId() != guildId || bot->GetGroup() || g_goldOrders.count(bot->GetGUID()))
+                continue;
+            if (!sBotMgr->GetGuildGatherOrder(bot->GetGUID()))
+            {
+                chosen = bot;
+                break;
+            }
+            if (!chosen)
+                chosen = bot;
+        }
+        if (!chosen)
+        {
+            say("No free online guild-mate bot found for a gold order.");
+            return;
+        }
+        GoldOrder order;
+        order.guildId = guildId;
+        order.targetCopper = uint64(std::min<uint32>(goldAmount, 100000)) * 10000;
+        g_goldOrders[chosen->GetGUID()] = order;
+        SaveGoldOrder(chosen->GetGUID(), order);
+        say(Acore::StringFormat("{} will earn {} for the guild.", chosen->GetName(), Money(order.targetCopper)));
+    }
+
+    std::string GoldOrderTask(Player* bot)
+    {
+        if (!bot)
+            return std::string();
+        auto it = g_goldOrders.find(bot->GetGUID());
+        if (it == g_goldOrders.end())
+            return std::string();
+        GoldOrder const& o = it->second;
+        uint64 const target = std::max<uint64>(1, o.targetCopper);
+        return Acore::StringFormat("earning gold for the guild ({}/{} g - {}%)", o.depositedCopper / 10000, target / 10000, std::min<uint64>(100, o.depositedCopper * 100 / target));
     }
 
     bool UpdateTrip(Player* bot, uint32 /*diff*/)
@@ -896,6 +1064,18 @@ namespace BotEconomy
             return;
         }
 
+        if (sub == "goldorder" && tok.size() >= 3)
+        {
+            Player* requester = ObjectAccessor::FindPlayerByLowGUID(uint32(std::strtoul(tok[1].c_str(), nullptr, 10)));
+            if (!requester)
+            {
+                handler->PSendSysMessage("No online player with guid {}.", tok[1]);
+                return;
+            }
+            PlaceGoldOrder(requester, uint32(std::strtoul(tok[2].c_str(), nullptr, 10)), handler);
+            return;
+        }
+
         if (sub == "trips")
         {
             uint32 const now = GameTime::GetGameTimeMS().count();
@@ -980,6 +1160,6 @@ namespace BotEconomy
             return;
         }
 
-        handler->SendSysMessage("Usage: .botcmd economy [status | trips | plan <bot guid> | journal [n] | protect <item id> | unprotect <item id>]");
+        handler->SendSysMessage("Usage: .botcmd economy [status | trips | goldorder <player guid> <gold> | plan <bot guid> | journal [n] | protect <item id> | unprotect <item id>]");
     }
 }

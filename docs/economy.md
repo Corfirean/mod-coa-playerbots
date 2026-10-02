@@ -1,6 +1,6 @@
 # Bot economy
 
-Design agreed with the owner on 2026-10-02. Steps 1 and 2 (rules, journal, dry run; trips to town and selling) are in code; the rest is planned.
+Design agreed with the owner on 2026-10-02. Steps 1-3 (rules, journal, dry run; trips to town and selling; the gold order) are in code; the rest is planned.
 
 ## Principles
 
@@ -63,9 +63,21 @@ vendor price and listed auctions that are stored correctly. Not checked: money a
 auction (the collection code follows the core's mail handlers), the guild share (no bot guild in the test), cross-continent
 trips (a bot only goes to an auctioneer on its own map), the hearthstone.
 
+## Step 3 (in code): the "collect gold" order
+
+From the task board of the addon (a field and "Order" / "Cancel orders" buttons under the title; verb `GOLDORDER:<gold>`,
+`0` cancels) or `.botcmd economy goldorder <player guid> <gold>`. A free online guild-mate bot is asked to earn that many gold
+for the guild bank. It lives its usual life; money from kills, quests and loot, and from its trips to town (which start from a
+smaller load while an order is open), is paid into the guild bank every minute, everything above `MoneyReserveCopper`, until the
+amount is in. Its ROSTER task reads `earning gold for the guild (X/Y g - Z%)`. Only the guild master and officers (rank 0 or 1)
+may place or cancel orders, checked on the server. Orders are stored in `mod_coa_bot_gold_orders` and survive a restart; a bot
+that leaves the guild drops its order. A bot with a gold order does not also pay the 10 % trip share (it pays everything).
+
+Checked in the sandbox: placing an order, the roster text, the deposit into the guild bank (5 g arrived and the order finished),
+cancelling. The addon controls are written but not click-tested with a real client.
+
 ## Steps still to do
 
-1. The "collect gold" order in the orders table.
-2. Buying consumables (food and potions of the bot's level, daily budget).
-3. The Stock tab and limits (guild master and officers only).
-4. Statistics in the addon; relisting; the hearthstone for the way back.
+1. Buying consumables (food and potions of the bot's level, daily budget, never buying out players' listings).
+2. The Stock tab and limits (guild master and officers only).
+3. Statistics in the addon; relisting; the hearthstone for the way back.
