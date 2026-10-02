@@ -1651,15 +1651,32 @@ local function CreateBotBrowserFrame()
     nameHint:SetPoint("LEFT", nameBox, "RIGHT", 6, 0)
     nameHint:SetText("Name")
 
-    local btnRole = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    btnRole:SetSize(96, 22)
-    btnRole:SetPoint("LEFT", nameHint, "RIGHT", 12, 0)
-    local function RoleText() btnRole:SetText(ROLE_LABEL[botBrowser.role]) end
-    RoleText()
+    -- A changed filter asks the server again after a short pause (typing does not send a request per letter).
+    local dirtyAt = nil
+    local function Dirty() dirtyAt = GetTime() end
+
+    -- The role is a drop-down list: every choice is visible at once instead of cycling through them on a button.
+    local roleDrop = CreateFrame("Frame", "CoABotUIBrowseRole", frame, "UIDropDownMenuTemplate")
+    roleDrop:SetPoint("LEFT", nameHint, "RIGHT", -6, -2)
+    UIDropDownMenu_SetWidth(roleDrop, 92)
+    UIDropDownMenu_Initialize(roleDrop, function()
+        for _, role in ipairs(ROLE_CYCLE) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = ROLE_LABEL[role]
+            info.checked = (botBrowser.role == role)
+            info.func = function()
+                botBrowser.role = role
+                UIDropDownMenu_SetText(roleDrop, ROLE_LABEL[role])
+                Dirty()
+            end
+            UIDropDownMenu_AddButton(info)
+        end
+    end)
+    UIDropDownMenu_SetText(roleDrop, ROLE_LABEL[botBrowser.role])
 
     local guildCheck = CreateFrame("CheckButton", "CoABotUIBrowseGuildOnly", frame, "UICheckButtonTemplate")
     guildCheck:SetSize(22, 22)
-    guildCheck:SetPoint("LEFT", btnRole, "RIGHT", 10, 0)
+    guildCheck:SetPoint("LEFT", roleDrop, "RIGHT", -6, 2)
     local guildLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     guildLabel:SetPoint("LEFT", guildCheck, "RIGHT", 0, 0)
     guildLabel:SetText("Guild only")
@@ -1703,9 +1720,6 @@ local function CreateBotBrowserFrame()
     emptyText:SetText("|cFF888888No free bots match. Change the filters, or spawn some from the Manager.|r")
     frame.emptyText = emptyText
 
-    -- A changed filter asks the server again after a short pause (typing does not send a request per letter).
-    local dirtyAt = nil
-    local function Dirty() dirtyAt = GetTime() end
     nameBox:SetScript("OnTextChanged", function(self) botBrowser.name = self:GetText() or ""; Dirty() end)
     minBox:SetScript("OnTextChanged", function(self) botBrowser.minLevel = tonumber(self:GetText()) or 0; Dirty() end)
     maxBox:SetScript("OnTextChanged", function(self)
@@ -1714,16 +1728,6 @@ local function CreateBotBrowserFrame()
         Dirty()
     end)
     guildCheck:SetScript("OnClick", function(self) botBrowser.guildOnly = self:GetChecked() and true or false; Dirty() end)
-    btnRole:SetScript("OnClick", function()
-        for i, r in ipairs(ROLE_CYCLE) do
-            if r == botBrowser.role then
-                botBrowser.role = ROLE_CYCLE[(i % #ROLE_CYCLE) + 1]
-                break
-            end
-        end
-        RoleText()
-        Dirty()
-    end)
     frame:SetScript("OnUpdate", function()
         if dirtyAt and GetTime() - dirtyAt > 0.5 then
             dirtyAt = nil
