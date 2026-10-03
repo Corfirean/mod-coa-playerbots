@@ -5,6 +5,7 @@
 #include "GameTime.h"
 #include "Group.h"
 #include "Log.h"
+#include "LocalLevelScaling.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
@@ -272,7 +273,6 @@ namespace
         return token;
     }
 }
-
 
 namespace BotMovement
 {
@@ -1018,7 +1018,6 @@ namespace BotMovement
         return NavStatus::Moving;
     }
 
-
     LocomotionToken Follow(Player* bot, MoveOwner owner, Unit* target, float dist, float angle)
     {
         if (!bot || !target || !bot->IsInWorld() || !bot->IsAlive())
@@ -1206,7 +1205,6 @@ namespace BotMovement
         return token;
     }
 
-
     // =========================================================================
     // Cancellation & Cleanup (Token-Safe & Administrative Force)
     // =========================================================================
@@ -1259,7 +1257,6 @@ namespace BotMovement
             bot->IsOutdoors(), bot->IsInCombat(), bot->IsNonMeleeSpellCast(false),
             bot->GetLevel(), IsExternallyControlled(bot), isDungeon, isRaid, isInWater, isSwimming);
     }
-
 
     bool IsMounted(Player const* bot)
     {
@@ -1315,10 +1312,6 @@ namespace BotMovement
                     return spellId;
             }
 
-            uint32 racialGround = GetRacialGroundMountSpell(bot->getRace());
-            if (racialGround && bot->HasSpell(racialGround) && !mRec.knownBadMountSpells.count(racialGround))
-                return racialGround;
-
             return 0;
         }
         else
@@ -1344,6 +1337,14 @@ namespace BotMovement
 
             return 0;
         }
+    }
+
+    bool CanAttemptFlyingMount(Player* bot)
+    {
+        if (!bot || !CanUseFlyingMount(bot->GetMapId(), bot->GetLevel(),
+            LocalLevelScaling::FlightUnlockLevel.load(std::memory_order_relaxed), bot->GetBaseSkillValue(SKILL_RIDING)))
+            return false;
+        return SelectMountSpell(bot, true) != 0;
     }
 
     bool RequestMountInternal(Player* bot, MoveOwner owner, float travelDistance, bool wantFlying)
@@ -1391,8 +1392,7 @@ namespace BotMovement
         // If the bot has no valid mount spell, locomotion must NOT be disrupted.
         if (wantFlying)
         {
-            uint32 mapId = bot->GetMapId();
-            if ((mapId != 530 && mapId != 571) || bot->GetLevel() < 60)
+            if (!CanAttemptFlyingMount(bot))
                 wantFlying = false;
         }
 
@@ -1492,7 +1492,6 @@ namespace BotMovement
         RequestDismountInternal(bot, owner, reason);
     }
 
-
     void SetLeaderMountPreference(Player* bot, DesiredMountState pref)
     {
         if (!bot)
@@ -1534,7 +1533,7 @@ namespace BotMovement
             return;
         }
 
-        if (leader->IsFlying())
+        if (leader->IsFlying() || leader->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
         {
             SetLeaderMountPreference(bot, DesiredMountState::PreferFlying);
         }
@@ -1661,6 +1660,7 @@ namespace BotMovement
         std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
 
+        bool const canAttemptFlight = CanAttemptFlyingMount(bot);
         MountPolicyDecision decision;
         MoveOwner currentOwner = MoveOwner::None;
         float travelDist = 0.0f;
@@ -1705,7 +1705,7 @@ namespace BotMovement
                 mRec.state,
                 mRec.remountCooldownUntilMs,
                 now,
-                bot->CanFly(),
+                canAttemptFlight,
                 bot->IsMounted(),
                 isDungeon,
                 isRaid,

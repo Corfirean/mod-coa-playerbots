@@ -1895,6 +1895,26 @@ static void TestMountSelectionFailureZeroLocomotionMutation()
 // ============================================================================
 // Main Runner
 // ============================================================================
+static void TestCompressedRealmFlightPolicy()
+{
+    CHECK(CanUseFlyingMount(530, 45, 45, 225));
+    CHECK(CanUseFlyingMount(571, 55, 45, 300));
+    CHECK(!CanUseFlyingMount(530, 44, 45, 300));
+    CHECK(!CanUseFlyingMount(530, 55, 60, 300));
+    CHECK(!CanUseFlyingMount(530, 55, 45, 224));
+    CHECK(!CanUseFlyingMount(0, 55, 45, 300));
+    auto flying = MountPolicyResolver::Evaluate(MoveOwner::None, MoveMode::Follow, 10.0f,
+        true, DesiredMountState::PreferFlying, true, true, false, false, 55, false,
+        MountState::Unmounted, 0, 10000, true, false);
+    CHECK(flying.action == MountAction::MountFlying);
+    CHECK(flying.wantFlying);
+    auto switchMount = MountPolicyResolver::Evaluate(MoveOwner::None, MoveMode::Follow, 10.0f,
+        true, DesiredMountState::PreferFlying, true, true, false, false, 55, false,
+        MountState::MountedGround, 0, 10000, true, true);
+    CHECK(switchMount.action == MountAction::Dismount);
+    CHECK(switchMount.dismountReason == DismountReason::LeaderState);
+}
+
 int main()
 {
     std::printf("Running locomotion & navigation overhaul regression tests (Round 4, 5, 6 & Pre-Live Hardening)...\n");
@@ -1908,6 +1928,7 @@ int main()
     TestDispatchGateSerialization();
     TestStaleReleaseRaceProtection();
     TestMountInterruptAndGenerationInvalidation();
+    TestCompressedRealmFlightPolicy();
     TestLeaderPreferenceClearOnLeave();
     TestPreferUnmountedVsAutonomousTravel();
     TestSafePositionValueCopyAndMapIdFilter();

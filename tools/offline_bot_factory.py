@@ -39,6 +39,7 @@ import argparse
 import hashlib
 import os
 import random
+import struct
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -194,12 +195,64 @@ class GearPoolCache:
     mysql: MysqlClient
     cache: dict = field(default_factory=dict)
 
-    def query(self, item_class: int, subclass: int, inv_type: int) -> list[tuple[int, int, int, int]]:
+    excluded: set[int] | None = None
+    dbc_directory: Path | None = None
+
+    def load_exclusions(self):
+        if self.excluded is not None:
+            return
+        repack = self.mysql.exe.resolve().parents[2]
+        dbc = (self.dbc_directory or repack / "Data" / "dbc") / "VanityCollection.dbc"
+        data = dbc.read_bytes()
+        magic, count, fields, size, strings = struct.unpack_from("<4s4I", data)
+        if magic != b"WDBC" or size < 77 * 4 or len(data) < 20 + count * size + strings:
+            raise ValueError("Invalid VanityCollection.dbc; cannot safely select bot gear")
+        self.excluded = {struct.unpack_from("<I", data, 24 + row * size)[0] for row in range(count)}
+        for query in (
+            "SELECT item FROM game_event_npc_vendor",
+            "SELECT l.Item FROM creature_loot_template l JOIN creature_template t ON t.lootid=l.Entry "
+            "JOIN creature c ON c.id=t.entry JOIN game_event_creature e ON e.guid=c.guid",
+            "SELECT l.Item FROM gameobject_loot_template l JOIN gameobject_template t ON t.Data1=l.Entry "
+            "JOIN gameobject g ON g.id=t.entry JOIN game_event_gameobject e ON e.guid=g.guid WHERE t.type IN (3,25)",
+        ):
+            self.excluded.update(int(row[0]) for row in self.mysql.run(query, db="acore_world"))
+
+        references = self.mysql.run(
+            "SELECT l.Reference FROM creature_loot_template l JOIN creature_template t ON t.lootid=l.Entry "
+            "JOIN creature c ON c.id=t.entry JOIN game_event_creature e ON e.guid=c.guid WHERE l.Reference>0 "
+            "UNION SELECT l.Reference FROM gameobject_loot_template l JOIN gameobject_template t ON t.Data1=l.Entry "
+            "JOIN gameobject g ON g.id=t.entry JOIN game_event_gameobject e ON e.guid=g.guid "
+            "WHERE t.type IN (3,25) AND l.Reference>0", db="acore_world")
+        loot = {}
+        for entry, item, reference in self.mysql.run("SELECT Entry,Item,Reference FROM reference_loot_template", db="acore_world"):
+            loot.setdefault(int(entry), []).append((int(item), int(reference)))
+        pending = [int(row[0]) for row in references]
+        visited = set()
+        while pending:
+            reference = pending.pop()
+            if reference in visited:
+                continue
+            visited.add(reference)
+            for item, nested in loot.get(reference, []):
+                if item:
+                    self.excluded.add(item)
+                if nested:
+                    pending.append(nested)
+        rewards = ",".join([f"q.RewardItem{i}" for i in range(1,5)] + [f"q.RewardChoiceItemID{i}" for i in range(1,7)])
+        for row in self.mysql.run(
+            f"SELECT {rewards} FROM quest_template q JOIN (SELECT questId AS quest FROM game_event_seasonal_questrelation "
+            "UNION SELECT quest FROM game_event_creature_quest UNION SELECT quest FROM game_event_gameobject_quest) e ON e.quest=q.ID",
+            db="acore_world"):
+            self.excluded.update(map(int,row))
+
+    def query(self, item_class: int, subclass: int, inv_type: int) -> list[tuple[int, int, int, int, int, int]]:
+        self.load_exclusions()
         key = (item_class, subclass, inv_type)
         if key in self.cache:
             return self.cache[key]
         rows = self.mysql.run(
-            f"SELECT entry, ItemLevel, RequiredLevel, Quality FROM item_template "
+            f"SELECT entry, ItemLevel, RequiredLevel, Quality, "
+            + ",".join(f"spellid_{i},spelltrigger_{i}" for i in range(1,6)) + " FROM item_template "
             f"WHERE class={item_class} AND subclass={subclass} AND InventoryType={inv_type} "
             f"AND Quality BETWEEN 1 AND 4 AND AllowableClass=-1 "
             f"AND name NOT LIKE '%RPGITEM%' AND name NOT LIKE '%[PH]%' AND name NOT LIKE '% PH %' "
@@ -210,37 +263,55 @@ class GearPoolCache:
             f"AND (AllowableRace=-1 OR (AllowableRace & 1791)=1791)",
             db="acore_world",
         )
-        parsed = [(int(e), int(il), int(rl), int(q)) for e, il, rl, q in rows]
+        parsed = []
+        for row in rows:
+            entry, ilvl, reqlvl, quality, *spells = map(int, row)
+            if entry in self.excluded:
+                continue
+            pve = pvp = 0
+            for spell, trigger in zip(spells[::2], spells[1::2]):
+                if trigger != 1:
+                    continue
+                pve += spell - 101600 if 101600 <= spell <= 101699 else 0
+                pvp += spell - 101700 if 101700 <= spell <= 101799 else {9930954:5,9930955:6,9930956:7,9930957:10}.get(spell,0)
+            parsed.append((entry, ilvl, reqlvl, quality, pve, pvp))
         self.cache[key] = parsed
         return parsed
 
     def pick(self, item_class: int, subclasses: list[int], inv_type: int, level: int,
               quality_cap: int, rng: random.Random) -> int | None:
+        max_ilvl = (20 if level <= 10 else 30 if level <= 20 else 45 if level <= 30 else
+                    55 if level <= 40 else 65 if level <= 50 else 75 if level < 60 else 200 if level < 80 else 232)
+        max_quality = 2 if level <= 10 else 3 if level < 60 else 4
+        power_cap = 0 if level < 60 else 15 if level < 80 else 25
         matches = []
-        for subclass in subclasses:
-            for entry, ilvl, reqlvl, quality in self.query(item_class, subclass, inv_type):
-                if quality > quality_cap:
-                    continue
-                for window in (5, 255):
+        for window in (5,255):
+            for subclass in subclasses:
+                for entry, ilvl, reqlvl, quality, pve, pvp in self.query(item_class, subclass, inv_type):
+                    if not 1 <= quality <= min(quality_cap,max_quality) or not 0 < ilvl <= max_ilvl:
+                        continue
+                    if max(pve,pvp) > power_cap or (pvp and not pve):
+                        continue
                     if reqlvl <= level and reqlvl + window >= level:
-                        matches.append((quality, reqlvl, ilvl, entry))
-                        break
+                        matches.append((quality,reqlvl,pve-pvp,ilvl,entry))
+            if matches:
+                break
         if not matches:
             return None
         matches.sort(reverse=True)
         top = matches[: min(6, len(matches))]
-        return rng.choice(top)[3]
+        return rng.choice(top)[-1]
 
 
 def roll_quality_cap(level: int, rng: random.Random) -> int:
     roll = rng.randint(1, 100)
     if level <= 20:
-        return 2 if roll <= 25 else 3 if roll <= 90 else 4
+        return 1 if roll <= 25 else 2 if roll <= 90 else 3
     if level <= 60:
-        return 2 if roll <= 5 else 3 if roll <= 75 else 4
+        return 1 if roll <= 5 else 2 if roll <= 75 else 3
     if level < 80:
-        return 3 if roll <= 55 else 4
-    return 3 if roll <= 20 else 4 if roll <= 90 else 5
+        return 2 if roll <= 55 else 3
+    return 2 if roll <= 20 else 3 if roll <= 90 else 4
 
 
 def roll_leveled_level(rng: random.Random, max_level: int = 80) -> int:
@@ -436,6 +507,7 @@ def main() -> None:
         ap.add_argument("--characters-per-account", type=int, default=50)
         ap.add_argument("--mysql-exe")
         ap.add_argument("--defaults-file")
+        ap.add_argument("--dbc-dir", help="Client DBC directory; defaults to the repack Data/dbc directory.")
         ap.add_argument("--out", default=None, help="Write the generated SQL here instead of a temp file (kept for inspection).")
         ap.add_argument("--dry-run", action="store_true", help="Generate and print a summary, write no SQL, touch no DB.")
         ap.add_argument("--seed", type=int, default=None)
@@ -467,11 +539,13 @@ def main() -> None:
     char_guids = GuidAllocator(max_char_guid + 1)
     item_guids = GuidAllocator(max_item_guid + 1)
 
+    gear = GearPoolCache(mysql, dbc_directory=Path(args.dbc_dir) if args.dbc_dir else None)
+    gear.load_exclusions()
+
     pool = get_or_create_bot_accounts(
         mysql, args.account_prefix, args.characters_per_account, args.count, rng, args.dry_run
     )
 
-    gear = GearPoolCache(mysql)
 
     print(f"Generating {args.count} bot(s) ({'level ' + str(args.level) if args.level else 'leveled 1-80'}) ...")
 

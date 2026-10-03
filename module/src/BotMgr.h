@@ -400,15 +400,7 @@ public:
     // auto-logging-in some other real player's alt just because it was left grouped.
     void RestoreGroupBotsOnLogin(Player* player);
 
-    // One-off bootstrap/maintenance operation for `.botcmd geartrainer` -- tops up any EMPTY
-    // (not already-occupied, never replaces existing gear) equipment slot with a fixed, modest
-    // "heroic entry" item (real WotLK ilvl-200 blue tier-9-equivalent pieces, picked per the
-    // bot's armor proficiency from its base WoW class) so a freshly-created random bot (which
-    // only starts with mod-ascension-compat's minimal starter kit) can actually meet a
-    // dungeon's average-item-level gate (e.g. Halls of Stone heroic's 180) instead of dragging
-    // a Quick-Filled group's average down to zero. Deliberately blue/ilvl-200, not raid epics --
-    // enough to clear common heroic gates without bots one-shotting content. Safe to call
-    // repeatedly (StoreNewItemInBestSlots leaves already-filled slots untouched).
+    // Repairs unsuitable equipment using the same policy as newly spawned bots.
     void GearUpBot(Player* bot, ChatHandler* handler);
 
     // Public counterpart to the private FindBotSession, for callers (BotAddonChat.cpp) that

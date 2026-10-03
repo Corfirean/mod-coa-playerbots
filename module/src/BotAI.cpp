@@ -1,3 +1,4 @@
+#include "BotGear.h"
 /*
  * mod-coa-playerbots
  *
@@ -784,7 +785,7 @@ void TryUpgradeGearOnce(Player* bot, BotRole role)
         if (!item)
             return false;
         ItemTemplate const* proto = item->GetTemplate();
-        if (!proto)
+        if (!BotGear::Allowed(bot, proto))
             return false;
 
         // Profession tools stay tools. CoA makes several of them scaling heirloom weapons, so on raw
@@ -800,13 +801,13 @@ void TryUpgradeGearOnce(Player* bot, BotRole role)
             return false;
 
         Item* current = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, eslot);
-        float newScore = ScoreItemForBot(bot, proto, role);
+        float newScore = ScoreItemForBot(bot, proto, role) + BotGear::PowerScore(bot, proto);
         if (current)
         {
             // Small margin, not a strict ">" -- avoids swapping back and forth every scan
             // between two items that score within noise of each other.
-            float currentScore = ScoreItemForBot(bot, current->GetTemplate(), role);
-            if (newScore <= currentScore * 1.05f)
+            float currentScore = ScoreItemForBot(bot, current->GetTemplate(), role) + BotGear::PowerScore(bot, current->GetTemplate());
+            if (BotGear::Allowed(bot, current->GetTemplate()) && newScore <= currentScore * 1.05f)
                 return false;
         }
 
@@ -906,7 +907,7 @@ bool HasGearBelowRepairThreshold(Player* bot)
 // a guild bank deposit, never vendor trash, see BotMgr::DepositLooseResourcesToGuildBank.
 bool IsClutterItem(Player* bot, Item const* item, BotRole role)
 {
-    if (!item)
+    if (!item || BotGear::Archived(item))
         return false;
     ItemTemplate const* proto = item->GetTemplate();
     if (!proto)
@@ -2553,6 +2554,8 @@ void RestoreWeaponAfterFishing(Player* bot, BotAIState& state)
 
     uint16 mainHandDst = uint16(EQUIPMENT_SLOT_MAINHAND) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
     Item* replacement = state.preFishingMainHandGuid.IsEmpty() ? nullptr : bot->GetItemByGuid(state.preFishingMainHandGuid);
+    if (replacement && !BotGear::Allowed(bot, replacement->GetTemplate()))
+        replacement = nullptr;
     if (replacement && replacement != equipped && !BotAI::IsProfessionTool(replacement->GetTemplate()))
     {
         uint16 dest = 0;
@@ -2564,7 +2567,7 @@ void RestoreWeaponAfterFishing(Player* bot, BotAIState& state)
         ? replacement->GetTemplate()->GetItemLevelIncludingQuality(bot->GetLevel()) : -1.0f;
     auto consider = [&](Item* item)
     {
-        if (!item || item == equipped || BotAI::IsProfessionTool(item->GetTemplate()) ||
+        if (!item || item == equipped || !BotGear::Allowed(bot, item->GetTemplate()) || BotAI::IsProfessionTool(item->GetTemplate()) ||
             item->GetTemplate()->Class != ITEM_CLASS_WEAPON)
             return;
         uint16 dest = 0;

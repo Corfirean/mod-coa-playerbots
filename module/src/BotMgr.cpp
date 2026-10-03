@@ -1,5 +1,6 @@
 #include "engine/BotDebugLog.h"
 #include "BotMgr.h"
+#include "BotGear.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -354,6 +355,23 @@ WorldSession* BotMgr::FindBotSession(ObjectGuid::LowType charLowGuid) const
     return nullptr;
 }
 
+namespace
+{
+bool ClampBotLevel(Player* bot)
+{
+    uint32 const cap = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    if (!bot || !cap || bot->GetLevel() <= cap || bot->IsInCombat() || !bot->IsAlive())
+        return false;
+    bot->GiveLevel(static_cast<uint8>(cap));
+    bot->SetUInt32Value(PLAYER_XP, 0);
+    BotTalentBuilds::ApplyBuildForLevel(bot, bot->GetLevel());
+    BotGear::Queue(bot);
+    bot->SaveToDB(false, false);
+    LOG_INFO("module.coa-playerbots", "BotMgr: clamped '{}' to server level cap {}.", bot->GetName(), cap);
+    return true;
+}
+}
+
 bool BotMgr::BotsEnabled()
 {
     static bool enabled = true;
@@ -426,6 +444,7 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
 
             if (Player* bot = botSession->GetPlayer())
             {
+                ClampBotLevel(bot);
                 LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' ({}) logged in successfully.",
                     bot->GetName(), bot->GetGUID().ToString());
 
@@ -3037,117 +3056,9 @@ void BotMgr::GearUpBot(Player* bot, ChatHandler* handler)
     if (!bot)
         return;
 
-    // Real WotLK ilvl-200 blue armor (Tier-9-equivalent naming, all AllowableClass=-1 on this
-    // realm's item_template), one full set per armor type. Order: head, shoulder, chest, waist,
-    // legs, feet, wrist, hands. Originally picked per bot via a switch on bot->getClass() using
-    // stock CLASS_WARRIOR/CLASS_MAGE/etc constants -- confirmed live that was wrong: on this
-    // realm getClass() returns Ascension's own custom ClassId (12-32, see ClassSpecRoles.h),
-    // never the stock 1-11 range, so every bot silently fell into the cloth default regardless
-    // of real proficiency. Several of the 21 custom classes genuinely can't wear cloth (a
-    // "Barbarian" bot got 0/14 armor pieces equipped that way). No classId-to-armor-type table
-    // exists for this project, so each slot below tries all four sets via the same real
-    // CanEquipNewItem check the mainhand fallback already uses, taking whichever the bot's real
-    // proficiency actually accepts.
-    static uint32 const clothArmor[8]   = { 37294, 37196, 37222, 37289, 37189, 37218, 37245, 37153 };
-    static uint32 const leatherArmor[8] = { 37149, 37139, 37165, 37243, 37374, 37176, 37183, 37230 };
-    static uint32 const mailArmor[8]    = { 37188, 37373, 37144, 37628, 37155, 37167, 37138, 37614 };
-    static uint32 const plateArmor[8]   = { 37135, 37376, 37395, 37152, 37263, 37150, 37175, 37625 };
-    static uint8 const armorSlots[8] = {
-        EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_SHOULDERS, EQUIPMENT_SLOT_CHEST, EQUIPMENT_SLOT_WAIST,
-        EQUIPMENT_SLOT_LEGS, EQUIPMENT_SLOT_FEET, EQUIPMENT_SLOT_WRISTS, EQUIPMENT_SLOT_HANDS,
-    };
-
-    // Neck/rings/trinkets/back plan -- armor-type-agnostic, same for every bot regardless of
-    // proficiency. Two DIFFERENT ring/trinket item ids, not the same one twice -- confirmed live
-    // that repeating one entry silently failed the second equip (ItemLimitCategory rejects a
-    // second copy of the same unique-equippable item; StoreNewItemInBestSlots then just bags it
-    // instead of erroring), leaving Finger2/Trinket2 empty every time.
-    std::array<std::pair<uint8, uint32>, 6> const plan = {{
-        { EQUIPMENT_SLOT_NECK,      37141 },
-        { EQUIPMENT_SLOT_FINGER1,   37151 },
-        { EQUIPMENT_SLOT_FINGER2,   37186 },
-        { EQUIPMENT_SLOT_TRINKET1,  37166 },
-        { EQUIPMENT_SLOT_TRINKET2,  37220 },
-        { EQUIPMENT_SLOT_BACK,      37174 },
-    }};
-
-    // Mainhand handled separately with a fallback chain, not a fixed dagger -- confirmed live
-    // that weapon-skill proficiency varies noticeably across this project's 21 custom classes
-    // (unlike armor, which every bot so far has been able to wear regardless of class), so a
-    // single fixed weapon type left some bots' mainhand slot empty. Tried in order until one is
-    // actually equippable; all real ilvl-200 rare weapons of common 1H subclasses.
-    static uint32 const mainhandCandidates[] = { 37179, 37681, 37260, 37631, 37181, 37190 }; // sword, mace, axe, fist, dagger, staff
-
-    uint8 level = bot->GetLevel();
-    uint32 given = 0;
-
-    // Shared by all three passes below: tries each candidate item id in order for one specific
-    // equipment slot, stopping at the first one CanEquipNewItem actually accepts (proficiency
-    // checked BEFORE anything is touched, so a slot this bot can't use any candidate for is left
-    // completely alone) or the first one that isn't actually an upgrade over what's already
-    // there. Returns true if something was equipped.
-    auto tryEquipBestOf = [&](uint8 slot, uint32 const* candidates, size_t count) -> bool
-    {
-        for (size_t i = 0; i < count; ++i)
-        {
-            uint32 itemId = candidates[i];
-            ItemTemplate const* newTemplate = sObjectMgr->GetItemTemplate(itemId);
-            if (!newTemplate)
-                continue;
-
-            uint16 dest = uint16(slot) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
-            InventoryResult canEquip = bot->CanEquipNewItem(NULL_SLOT, dest, itemId, true);
-            if (canEquip != EQUIP_ERR_OK)
-            {
-                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::GearUpBot diag: '{}' (class {}) can't equip item {} in slot {} -- CanEquipNewItem result {}.",
-                    bot->GetName(), uint32(bot->getClass()), itemId, uint32(slot), uint32(canEquip));
-                continue; // this class/spec can't use this candidate -- try the next one
-            }
-
-            float newIlvl = newTemplate->GetItemLevelIncludingQuality(level);
-            if (Item* existing = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            {
-                ItemTemplate const* existingTemplate = existing->GetTemplate();
-                float existingIlvl = existingTemplate ? existingTemplate->GetItemLevelIncludingQuality(level) : 0.0f;
-                if (existingIlvl >= newIlvl)
-                    return false; // already at least as good -- done, no candidate needed
-                if (BotAI::IsProfessionTool(existingTemplate))
-                {
-                    // A tool that ended up equipped goes back to the bags, never to the void.
-                    if (!BotAI::MoveEquippedToolToBags(bot, slot))
-                        return false;
-                }
-                else
-                    bot->DestroyItemCount(existing->GetEntry(), 1, true);
-            }
-
-            return bot->StoreNewItemInBestSlots(itemId, 1);
-        }
-        return false;
-    };
-
-    for (size_t i = 0; i < 8; ++i)
-    {
-        // Per-slot candidates come from 4 separate, non-contiguous arrays (one per armor type),
-        // so they're gathered into a small local array here rather than passed as a raw
-        // pointer+count into any one of those arrays.
-        uint32 const candidates[4] = { plateArmor[i], mailArmor[i], leatherArmor[i], clothArmor[i] };
-        if (tryEquipBestOf(armorSlots[i], candidates, 4))
-            ++given;
-    }
-
-    for (auto const& [slot, itemId] : plan)
-        if (tryEquipBestOf(slot, &itemId, 1))
-            ++given;
-
-    if (tryEquipBestOf(EQUIPMENT_SLOT_MAINHAND, mainhandCandidates, sizeof(mainhandCandidates) / sizeof(mainhandCandidates[0])))
-        ++given;
-
+    BotSpawn::RepairGear(bot);
     if (handler)
-        handler->PSendSysMessage("BotMgr: gave '{}' {} baseline item(s) (avg item level now {:.0f}).",
-            bot->GetName(), given, bot->GetAverageItemLevel());
-    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr::GearUpBot: gave '{}' {} baseline item(s), avg item level now {:.0f}.",
-        bot->GetName(), given, bot->GetAverageItemLevel());
+        handler->PSendSysMessage("Bot gear: repaired '{}' using level-appropriate equipment.", bot->GetName());
 }
 
 void BotMgr::DoRollGreed(WorldSession* session, Roll* roll)
@@ -3277,7 +3188,17 @@ void BotMgr::UpdateTrades(uint32 diff)
 
 void BotMgr::Update(uint32 diff)
 {
+    static uint32 capCheckTimer = 0;
+    capCheckTimer += diff;
+    if (capCheckTimer >= 2000)
+    {
+        capCheckTimer = 0;
+        for (WorldSession* session : _botSessions)
+            if (ClampBotLevel(session->GetPlayer()))
+                break;
+    }
     ProcessKillEvents();
+    BotGear::Update(diff);
 
     // Must run even with zero bots currently online (e.g. right after a fresh restart, before
     // anything has spawned yet) -- otherwise a `.botcmd spawnrandom` issued at that point would

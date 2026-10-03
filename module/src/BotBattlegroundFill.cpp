@@ -1,3 +1,4 @@
+#include "BotGear.h"
 /*
  * mod-coa-playerbots
  *
@@ -217,6 +218,11 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
     GroupQueueInfo* ginfo = bgQueue.AddGroup(bot, nullptr, bgTypeId, bracketEntry, 0, false, false, 0, 0);
     if (!ginfo)
         return;
+    if (bot->GetPlayerSetting("coa.bot.gear", 0).value != 1)
+    {
+        bot->UpdatePlayerSetting("coa.bot.gear", 0, 1);
+        BotGear::Queue(bot);
+    }
     bot->AddBattlegroundQueueId(bgQueueTypeId);
     sBattlegroundMgr->ScheduleQueueUpdate(0, 0, bgQueueTypeId, bgTypeId, bracketEntry->GetBracketId());
 
@@ -511,6 +517,11 @@ bool JoinBotToBattlegroundQueue(Player* bot, uint32 bgTypeId_, ChatHandler* hand
     GroupQueueInfo* ginfo = bgQueue.AddGroup(bot, nullptr, bgTypeId, bracketEntry, 0, false, false, 0, 0);
     if (!ginfo)
         return false;
+    if (bot->GetPlayerSetting("coa.bot.gear", 0).value != 1)
+    {
+        bot->UpdatePlayerSetting("coa.bot.gear", 0, 1);
+        BotGear::Queue(bot);
+    }
     bot->AddBattlegroundQueueId(bgQueueTypeId);
 
     // Also watch the joining bot itself for its own invite so a bot-initiated test run (unlike

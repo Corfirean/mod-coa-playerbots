@@ -591,6 +591,11 @@ struct MountPolicyDecision
     bool wantFlying = false;
 };
 
+[[nodiscard]] constexpr bool CanUseFlyingMount(uint32 mapId, uint8 level, uint8 unlockLevel, uint16 ridingSkill)
+{
+    return (mapId == 530 || mapId == 571) && level >= unlockLevel && ridingSkill >= 225;
+}
+
 class MountPolicyResolver
 {
 public:
@@ -651,6 +656,12 @@ public:
             }
             else if (leaderPref == DesiredMountState::PreferFlying && canFly)
             {
+                if (isCurrentlyMounted && currentState == MountState::MountedGround)
+                {
+                    dec.action = MountAction::Dismount;
+                    dec.dismountReason = DismountReason::LeaderState;
+                    return dec;
+                }
                 if (!isCurrentlyMounted && currentState != MountState::MountCasting)
                 {
                     if (MountStateMachine::CanMount(currentState, 0.0f, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled, isDungeon, isRaid, isInWater, isSwimming))
@@ -802,6 +813,5 @@ public:
         req.lastIssueAt = now;
     }
 };
-
 
 #endif // COA_PLAYERBOTS_BOT_MOVEMENT_PRIMITIVES_H
