@@ -3228,3 +3228,117 @@ resurrection-vs-assist gap this same review round's own commit message describes
 fight for someone else" without actually covering that path. `TryAssist` now sets
 `socialActive`/`socialUntilMs` (a 60 s cap, generous for a real fight) and `IsHelping()` treats
 either an in-flight cast or `IsInCombat()` as still-helping.
+
+## 2026-10-03: Locomotion overhaul, Round 4 -- dispatch gate serialization, transactional MoveTo, stale arrival kill, safe backtrack ladder (compiled + linked, tests green)
+
+Stacked on Round 3 (`d3f78e1`). Round 3 correctly eliminated recursive shard-mutex deadlocks and
+introduced physical per-shard container sharding. Round 4 targets the four remaining P0 runtime
+correctness bugs identified in the review.
+
+### P0 fixed: Stale Navigate arrival could kill a newer same-owner command
+
+`Navigate()` had a ForceReleaseOwner fallback triggered when no LocomotionToken matched but the bot
+happened to be within the acceptance radius of an old goal. A stale callback from Navigate A could
+land while Navigate B (same Quest owner) was active, satisfy A's radius check, call
+`ForceReleaseOwner(Quest)`, and kill B entirely. This is the exact race the LocomotionToken
+generation counter was meant to prevent, and it was quietly bypassed in the arrival path.
+
+**Fix**: the Navigate arrival path now cross-checks goalId against the live `shard.requests` snapshot
+before touching any state. If the request is not found or goalId does not match the live request, the
+function returns `NavStatus::Superseded` immediately. No MotionMaster call, no shard write, no owner
+release -- the newer command is untouched. `NavStatus::Superseded` was added as a new enum value
+(alongside `Moving`, `Arrived`, `Blocked`, `Stuck`) so callers can distinguish "we were racing with a
+newer command" from "we genuinely arrived."
+
+### P0 fixed: Generation bump and MotionMaster dispatch were not linearized
+
+Between "decide to dispatch" and "actual MotionMaster call," another thread could write a competing
+command into the same bot's shard. The generation counter incremented correctly but the physical
+movement dispatch happened outside any lock, so two generators could run concurrently for the same
+bot with no ordering guarantee.
+
+**Fix**: 256 per-bot dispatch gates (`LocomotionStateStore::GetDispatchGate(guid)`) are acquired
+**before** the shard mutex in every public API that touches MotionMaster. The invariant is:
+
+```
+Dispatch Gate -> Shard Mutex (never reversed, never nested within the same lock tier)
+```
+
+This linearizes the entire path from "generation bump" through "MotionMaster call" into a single
+critical section per bot, preventing two concurrent callers from interleaving. The lock order is
+encoded in `BotMovementStateStore.h` in a comment block so it cannot be silently violated.
+
+### P0 fixed: TransitionDismount wrongly used `wasMounted` field (BotMovement.cpp line 1198)
+
+`MountTransitionResult` (defined in `BotMovementPrimitives.h`) has `interruptedSpellId` and
+`shouldDismount`. The production code in `RequestDismount` was accessing the non-existent
+`trans.wasMounted`, a hard compile error caught this round. Fixed to `trans.shouldDismount`.
+
+### P0 fixed: Transactional MoveTo -- NOPATH no longer evicts the active owner
+
+Previously, when PathGenerator returned NOPATH, `MoveTo` still committed the new owner into
+`shard.locomotion[bot]`, displacing the previously-active owner even though no movement was
+dispatched. A failed Combat-avoidance path (NOPATH) could silently kill an active Quest follow.
+
+**Fix**: PathGenerator runs entirely outside the shard lock. On NOPATH, only `shard.nopathCache`
+is written (preventing thrash on the same destination). `shard.locomotion[bot].owner` and
+`.commandId` are never touched. The previously-active owner continues running undisturbed.
+
+### Safe backtrack ladder before GiveUp
+
+When `NavProgress::Update` returns `NavRecovery::GiveUp`, the recovery path now first checks
+`SafePositionHistory::FindBacktrackTarget` before returning `NavStatus::Stuck` to callers. If a
+safe position is found, the request transitions to `RecoveryMode::Backtrack` and increments
+`backtrackAttempts` to advance the candidate ring on subsequent stalls. Only when
+`backtrackAttempts >= 3` or the ring is exhausted does GiveUp reach the caller. The `backtrackX/Y/Z`
+fields in `MovementRequest` carry the chosen candidate; the backtrack leg replaces the normal
+destination for that Navigate leg. Safe positions are pushed by `Update()` with 5-parameter
+`SafePositionHistory::Push(x, y, z, mapId, now)` and filtered by mapId in `FindBacktrackTarget`.
+
+### Mount FSM: `BotMovement.cpp` owns the single path through TransitionDismount
+
+All call sites in `BotAI.cpp` (14), `BotBattlegroundAI.cpp` (5), `BotEconomy.cpp` (4),
+`BotFlee.cpp`, `BotZoneProgression.cpp`, `QuestInteraction.cpp`, `WorldSocial.cpp`, and
+`ObjectiveCommon.cpp` now use `ForceStopOwner`/`ForceReleaseOwner` instead of the removed
+2-argument `Stop(bot, owner)` / `Release(bot, owner)` aliases. Every call site has a comment
+explaining why it uses force vs. token-safe.
+
+### Leader mount preference: cross-map and group-exit reset
+
+`TryMatchLeaderMountState()` (new public function on `BotMovement`, declared in `BotMovement.h`)
+runs in `Update()` and resets `mRec.leaderDesiredState` to `None` when the bot has no group, the
+leader is offline, or the leader is on a different map. Previously stale `PreferGround`/`PreferFlying`
+could survive a group split and force mount decisions in an irrelevant context.
+
+### New file: `BotMovementStateStore.h`
+
+Extracted from `BotMovement.cpp`. Defines 64 `LocomotionShard` instances (each with its own
+`std::mutex` and physically separate containers), 256 dispatch gates, all locked-helper statics
+(`CanClaimLocked`, `CanMountLocked`, `GetRequestSnapshotLocked`, etc.), and `ResetAllForTest()`.
+Included by both production `BotMovement.cpp` and `locomotion_tests.cpp` -- tests run against the
+exact same store.
+
+### Lock order (enforced)
+
+```
+Dispatch Gate (GetDispatchGate)  -->  Shard Mutex (LocomotionShard::mutex)  -->  [reads]
+```
+
+No public locking function calls another public locking function while holding the shard mutex.
+No shard mutex held during any MotionMaster, PathGenerator, or SpellCast call. Lock graph audit:
+zero nested-lock sites remaining after this round.
+
+### Tests: 16 tests, 90 checks, 0 failures
+
+`module/tests/locomotion_tests.cpp` covers all four P0 invariants plus the full priority chain,
+leader-mount semantics, safe-position map filtering, mount FSM lifecycle, and a 64-shard 8-thread
+stress test (80 000 ops, 10 s deadlock watchdog). All checks pass with MSVC 19.51 `/std:c++20`.
+
+**Not live-tested.** Verification steps:
+1. Quest navigate interrupted by a second Quest command mid-path: bot must not freeze (stale arrival).
+2. NOPATH from terrain boundary: previously-active Combat owner must still be moving.
+3. Bot follows group leader who dismounts: bot dismounts within 1 s debounce, then re-mounts when
+   leader leaves group and travel distance warrants it.
+4. Concurrent `MoveTo` + `Follow` calls from two threads: dispatch gate prevents interleaving;
+   neither bot freezes.
+

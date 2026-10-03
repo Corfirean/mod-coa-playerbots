@@ -5,6 +5,7 @@
 
 #include "Define.h"
 #include <functional>
+#include <string>
 
 class ObjectGuid
 {
@@ -15,11 +16,19 @@ public:
     uint64 GetRawValue() const { return _raw; }
     uint64 GetCounter() const { return _raw; }
     bool IsEmpty() const { return _raw == 0; }
-    bool operator==(ObjectGuid const& other) const { return _raw == other._raw; }
+    bool IsGameObject() const { return false; }
+    std::string ToString() const { return std::to_string(_raw); }
 
-private:
+    bool operator==(ObjectGuid const& other) const { return _raw == other._raw; }
+    bool operator!=(ObjectGuid const& other) const { return _raw != other._raw; }
+
     uint64 _raw = 0;
+
+    static ObjectGuid const Empty;
 };
+
+// Defined in one translation unit via the test main. We define it here as inline in C++17.
+inline ObjectGuid const ObjectGuid::Empty{};
 
 namespace std
 {
@@ -34,4 +43,3 @@ namespace std
 }
 
 #endif
-

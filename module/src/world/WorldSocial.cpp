@@ -119,7 +119,8 @@ namespace
             state.failures.Remember(FailKind::Target, key, now, DECIDED_MEMORY_MS, uint8(FailureReason::None));
             WorldExecutor::Dismount(bot, state);
             StepAwayFromTask(bot, state, "resurrecting someone");
-            BotMovement::Stop(bot, MoveOwner::Ambient);
+            // Administrative stop: halt ambient wandering to cast resurrection
+            BotMovement::ForceStopOwner(bot, MoveOwner::Ambient);
             bot->SetFacingToObject(other);
 
             SpellCastResult result = bot->CastSpell(other, spellId, false);

@@ -9,6 +9,7 @@
 #ifndef COA_PLAYERBOTS_WORLD_BRAIN_STATE_H
 #define COA_PLAYERBOTS_WORLD_BRAIN_STATE_H
 
+#include "BotMovementPrimitives.h"
 #include "FailureMemory.h"
 #include "Log.h"
 #include "ObjectGuid.h"
@@ -44,6 +45,7 @@ struct BrainState
     WorldPersona persona;
     WorldGoal goal = WorldGoal::None;
     WorldTask task;
+    LocomotionToken travelToken;
     uint32 nextTaskId = 1;
 
     uint32 nextPlanMs = 0;

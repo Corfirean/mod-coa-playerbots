@@ -2,6 +2,7 @@
 #define COA_PLAYERBOTS_BOT_MOVEMENT_H
 
 #include "BotMovementPrimitives.h"
+#include "BotMovementStateStore.h"
 #include "MotionMaster.h"
 #include <optional>
 #include <string>
@@ -74,10 +75,6 @@ namespace BotMovement
     void ForceStopOwner(Player* bot, MoveOwner owner);
     void ForceReleaseOwner(Player* bot, MoveOwner owner);
 
-    // Backwards-compatible aliases for administrative force cancellation
-    inline void Stop(Player* bot, MoveOwner owner) { ForceStopOwner(bot, owner); }
-    inline void Release(Player* bot, MoveOwner owner) { ForceReleaseOwner(bot, owner); }
-
     // =========================================================================
     // Centralized Mount Controller
     // =========================================================================
@@ -104,13 +101,11 @@ namespace BotMovement
     // Sets the group leader's desired mount state (debounced, avoids flapping).
     void SetLeaderMountPreference(Player* bot, DesiredMountState pref);
 
+    // Queries party leader's mounted status and updates preference (clears if no group/cross-map).
+    void TryMatchLeaderMountState(Player* bot);
+
     // Resolves completed or failed mount cast
     void ResolveMountCast(Player* bot);
-
-    // Spell cast hooks to protect mount casting and handle interruption
-    void OnSpellCastStart(Player* bot, uint32 spellId);
-    void OnSpellCastSuccess(Player* bot, uint32 spellId);
-    void OnSpellCastInterrupt(Player* bot, uint32 spellId);
 
     // =========================================================================
     // Watchdog, Backtracking, & State Queries

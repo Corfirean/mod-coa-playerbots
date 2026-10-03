@@ -162,17 +162,19 @@ enum class NavStatus : uint8
     Arrived,  // within the acceptance radius; point movement released
     Blocked,  // a higher-priority owner is moving the bot right now
     Stuck,    // the recovery ladder is exhausted; the caller must pick something else
+    Superseded, // goal reached by obsolete/stale command after replacement; no-op
 };
 
 inline char const* NavStatusName(NavStatus s)
 {
     switch (s)
     {
-        case NavStatus::Moving:  return "Moving";
-        case NavStatus::Arrived: return "Arrived";
-        case NavStatus::Blocked: return "Blocked";
-        case NavStatus::Stuck:   return "Stuck";
-        default:                 return "Unknown";
+        case NavStatus::Moving:     return "Moving";
+        case NavStatus::Arrived:    return "Arrived";
+        case NavStatus::Blocked:    return "Blocked";
+        case NavStatus::Stuck:      return "Stuck";
+        case NavStatus::Superseded: return "Superseded";
+        default:                    return "Unknown";
     }
 }
 
@@ -216,8 +218,10 @@ enum class RecoveryMode : uint8
 {
     None = 0,
     Repath,
-    Detour,
+    DetourLeft,
+    DetourRight,
     Backtrack,
+    Failed,
 };
 
 // =============================================================================
@@ -295,6 +299,7 @@ struct SafePosition
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
+    uint32 mapId = 0;
     uint32 timeMs = 0;
 };
 
@@ -303,34 +308,40 @@ class SafePositionHistory
 public:
     static constexpr size_t CAPACITY = 16;
 
-    void Push(float x, float y, float z, uint32 now)
+    void Push(float x, float y, float z, uint32 mapId, uint32 now)
     {
         if (_count > 0)
         {
             size_t lastIdx = (_head + CAPACITY - 1) % CAPACITY;
-            float dx = x - _entries[lastIdx].x;
-            float dy = y - _entries[lastIdx].y;
-            float dz = z - _entries[lastIdx].z;
-            if ((dx * dx + dy * dy + dz * dz) < 4.0f) // < 2 yards delta -> skip redundant
-                return;
+            if (_entries[lastIdx].mapId == mapId)
+            {
+                float dx = x - _entries[lastIdx].x;
+                float dy = y - _entries[lastIdx].y;
+                float dz = z - _entries[lastIdx].z;
+                if ((dx * dx + dy * dy + dz * dz) < 4.0f) // < 2 yards delta -> skip redundant
+                    return;
+            }
         }
 
-        _entries[_head] = SafePosition{x, y, z, now};
+        _entries[_head] = SafePosition{x, y, z, mapId, now};
         _head = (_head + 1) % CAPACITY;
         if (_count < CAPACITY)
             ++_count;
     }
 
-    SafePosition const* FindBacktrackTarget(float curX, float curY, float curZ, size_t skipCount = 0) const
+    std::optional<SafePosition> FindBacktrackTarget(float curX, float curY, float curZ, uint32 mapId, size_t skipCount = 0) const
     {
         if (_count == 0)
-            return nullptr;
+            return std::nullopt;
 
         size_t matchesSeen = 0;
         for (size_t i = 0; i < _count; ++i)
         {
             size_t idx = (_head + CAPACITY - 1 - i) % CAPACITY;
             SafePosition const& sp = _entries[idx];
+            if (sp.mapId != mapId)
+                continue;
+
             float dx = curX - sp.x;
             float dy = curY - sp.y;
             float dz = curZ - sp.z;
@@ -338,11 +349,11 @@ public:
             if (d2 >= 9.0f && d2 <= 3600.0f) // between 3.0yd and 60.0yd
             {
                 if (matchesSeen == skipCount)
-                    return &sp;
+                    return sp;
                 ++matchesSeen;
             }
         }
-        return nullptr;
+        return std::nullopt;
     }
 
     size_t GetCount() const { return _count; }
@@ -415,6 +426,7 @@ struct BotLocomotionRecord
 struct BotMountRecord
 {
     MountState state = MountState::Unmounted;
+    uint64 mountGeneration = 0;
     uint32 lastDismountMs = 0;
     uint32 remountCooldownUntilMs = 0;
     uint32 pendingMountSpellId = 0;
@@ -486,6 +498,12 @@ public:
     }
 };
 
+struct MountTransitionResult
+{
+    uint32 interruptedSpellId = 0;
+    bool shouldDismount = false;
+};
+
 class MountStateMachine
 {
 public:
@@ -514,12 +532,27 @@ public:
         return true;
     }
 
-    static void TransitionDismount(BotMountRecord& mRec, uint32 now)
+    static MountTransitionResult TransitionDismount(BotMountRecord& mRec, uint32 now)
+    {
+        MountTransitionResult res;
+        res.interruptedSpellId = mRec.pendingMountSpellId;
+        res.shouldDismount = (mRec.state == MountState::MountedGround || mRec.state == MountState::MountedFlying || mRec.state == MountState::MountCasting);
+
+        mRec.state = MountState::Cooldown;
+        mRec.pendingMountSpellId = 0;
+        mRec.mountGeneration++;
+        mRec.lastDismountMs = now;
+        mRec.remountCooldownUntilMs = now + REMOUNT_COOLDOWN_MS;
+        return res;
+    }
+
+    static void TransitionCastFailed(BotMountRecord& mRec, uint32 now, uint32 backoffMs = 1500)
     {
         mRec.state = MountState::Cooldown;
         mRec.pendingMountSpellId = 0;
+        mRec.mountGeneration++;
         mRec.lastDismountMs = now;
-        mRec.remountCooldownUntilMs = now + REMOUNT_COOLDOWN_MS;
+        mRec.remountCooldownUntilMs = now + backoffMs;
     }
 
     static void UpdateCooldown(BotMountRecord& mRec, uint32 now)
@@ -528,6 +561,114 @@ public:
         {
             mRec.state = MountState::Unmounted;
         }
+    }
+};
+
+enum class MountAction : uint8
+{
+    None = 0,
+    MountGround,
+    MountFlying,
+    Dismount,
+};
+
+struct MountPolicyDecision
+{
+    MountAction action = MountAction::None;
+    DismountReason dismountReason = DismountReason::Manual;
+    bool wantFlying = false;
+};
+
+class MountPolicyResolver
+{
+public:
+    static MountPolicyDecision Evaluate(
+        MoveOwner activeOwner,
+        MoveMode activeMode,
+        float travelDist,
+        bool isFollowingLeader,
+        DesiredMountState leaderPref,
+        bool leaderPrefDebounced,
+        bool isOutdoors,
+        bool inCombat,
+        bool casting,
+        uint8 level,
+        bool isControlled,
+        MountState currentState,
+        uint32 remountCooldownUntilMs,
+        uint32 now,
+        bool canFly,
+        bool isCurrentlyMounted)
+    {
+        (void)activeMode;
+        MountPolicyDecision dec;
+
+        // 1. Invariants: combat, indoors, casting, or controlled require dismount
+        if (isControlled || inCombat || !isOutdoors)
+        {
+            if (isCurrentlyMounted || currentState == MountState::MountCasting || currentState == MountState::MountedGround || currentState == MountState::MountedFlying)
+            {
+                dec.action = MountAction::Dismount;
+                dec.dismountReason = inCombat ? DismountReason::Combat : (isControlled ? DismountReason::ActionForbidden : DismountReason::IndoorEntered);
+            }
+            return dec;
+        }
+
+        // 2. Group follow context: leader mount preference has strict authority when following
+        if (isFollowingLeader && leaderPrefDebounced)
+        {
+            if (leaderPref == DesiredMountState::PreferUnmounted)
+            {
+                if (isCurrentlyMounted || currentState == MountState::MountedGround || currentState == MountState::MountedFlying)
+                {
+                    dec.action = MountAction::Dismount;
+                    dec.dismountReason = DismountReason::LeaderState;
+                }
+                return dec;
+            }
+            else if (leaderPref == DesiredMountState::PreferFlying && canFly)
+            {
+                if (!isCurrentlyMounted && currentState != MountState::MountCasting)
+                {
+                    if (MountStateMachine::CanMount(currentState, 0.0f, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled))
+                    {
+                        dec.action = MountAction::MountFlying;
+                        dec.wantFlying = true;
+                    }
+                }
+                return dec;
+            }
+            else if (leaderPref == DesiredMountState::PreferGround)
+            {
+                if (!isCurrentlyMounted && currentState != MountState::MountCasting)
+                {
+                    if (MountStateMachine::CanMount(currentState, 0.0f, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled))
+                    {
+                        dec.action = MountAction::MountGround;
+                    }
+                }
+                return dec;
+            }
+        }
+
+        // 3. Autonomous Travel / Navigate context
+        // If the bot is moving autonomously (Quest, Travel, Ambient), leader's PreferUnmounted is ignored
+        // to prevent flapping between autonomous mounting (>90yd) and leader dismount.
+        bool isAutonomousTravel = (activeOwner == MoveOwner::Travel || activeOwner == MoveOwner::Quest || activeOwner == MoveOwner::Ambient);
+        if (isAutonomousTravel && travelDist >= MountStateMachine::MOUNT_HYSTERESIS_DIST)
+        {
+            if (!isCurrentlyMounted && currentState != MountState::MountCasting)
+            {
+                if (MountStateMachine::CanMount(currentState, travelDist, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled))
+                {
+                    dec.action = canFly ? MountAction::MountFlying : MountAction::MountGround;
+                    dec.wantFlying = canFly;
+                }
+            }
+            return dec;
+        }
+
+        return dec;
     }
 };
 

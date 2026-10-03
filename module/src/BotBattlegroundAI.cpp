@@ -80,7 +80,7 @@ void BotBattlegroundAI::MoveToPoint(Player* bot, float x, float y, float z)
     }
     else
     {
-        BotMovement::Release(bot, MoveOwner::Battleground);
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Battleground);
     }
 }
 
@@ -185,7 +185,7 @@ bool BotBattlegroundAI::Update(Player* bot, uint32 diff)
     if (status == STATUS_WAIT_JOIN)
     {
         // Match preparation phase: gates are closed! Stay in spawn area and clear movement
-        BotMovement::Stop(bot, MoveOwner::Battleground);
+        BotMovement::ForceStopOwner(bot, MoveOwner::Battleground);
         return true;
     }
 
@@ -349,7 +349,7 @@ void BotBattlegroundAI::HandleEyeOfTheStorm(Player* bot, BattlegroundEY* bg, uin
     }
     else
     {
-        BotMovement::Stop(bot, MoveOwner::Battleground);
+        BotMovement::ForceStopOwner(bot, MoveOwner::Battleground);
     }
 }
 
@@ -381,7 +381,7 @@ void BotBattlegroundAI::HandleWarsongGulch(Player* bot, BattlegroundWS* bg, uint
         if (distHome > 5.0f)
             MoveToPoint(bot, homeX, homeY, homeZ);
         else
-            BotMovement::Stop(bot, MoveOwner::Battleground);
+            BotMovement::ForceStopOwner(bot, MoveOwner::Battleground);
         return;
     }
 
@@ -531,7 +531,7 @@ void BotBattlegroundAI::HandleArathiBasin(Player* bot, BattlegroundAB* bg, uint3
             }
         }
 
-        BotMovement::Stop(bot, MoveOwner::Battleground);
+        BotMovement::ForceStopOwner(bot, MoveOwner::Battleground);
         return;
     }
 

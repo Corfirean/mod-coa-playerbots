@@ -378,7 +378,10 @@ namespace ObjectiveCommon
         bool los = inRange && bot->IsWithinLOSInMap(target);
         if (inRange && los)
         {
-            BotMovement::Release(bot, MoveOwner::Quest);
+            if (ctx.state.travelToken.IsValid())
+                BotMovement::Release(bot, ctx.state.travelToken);
+            else
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::Quest);
             return NavStatus::Arrived;
         }
 
@@ -452,7 +455,11 @@ namespace ObjectiveCommon
 
     bool Settle(Player* bot, BrainState& state)
     {
-        BotMovement::Stop(bot, MoveOwner::Quest);
+        if (state.travelToken.IsValid())
+            BotMovement::Stop(bot, state.travelToken);
+        else
+            BotMovement::ForceStopOwner(bot, MoveOwner::Quest);
+
         if (bot->isMoving())
             return false;
         WorldExecutor::Dismount(bot, state);

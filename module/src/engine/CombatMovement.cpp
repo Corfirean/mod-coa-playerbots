@@ -28,7 +28,7 @@ namespace BotAI
 
         // Begin stopping -- the movement flag doesn't clear until the stop is actually processed,
         // so the cast itself is deferred to whichever tick next observes !bot->isMoving().
-        BotMovement::Stop(bot, MoveOwner::Combat);
+        BotMovement::ForceStopOwner(bot, MoveOwner::Combat); // ADMINISTRATIVE FORCE — intentionally cancels any active Combat locomotion generation before cast
         return false;
     }
 }

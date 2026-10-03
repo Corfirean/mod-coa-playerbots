@@ -165,7 +165,8 @@ namespace BotFlee
 
         if (nowMs >= state.fleeCommitUntilMs && !bot->IsInCombat())
         {
-            BotMovement::Release(bot, MoveOwner::Avoidance);
+            // Administrative release: bot disengaged safely, clear avoidance owner claim
+            BotMovement::ForceReleaseOwner(bot, MoveOwner::Avoidance);
             LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                 "FLEE: bot '{}' disengaged safely, resuming normal behavior.", bot->GetName());
             state.fleeing = false;

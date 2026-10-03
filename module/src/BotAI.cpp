@@ -1576,7 +1576,8 @@ bool TryProcessPendingLoot(Player* bot, uint32 /*diff*/, BotAIState& state)
             return true;
         }
 
-        BotMovement::Release(bot, MoveOwner::Loot);
+        // Administrative release: bot arrived within interaction distance of loot
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Loot);
 
         bool isRecipient = creature->GetLootRecipientGUID() == bot->GetGUID();
         if (!isRecipient && bot->GetGroup())
@@ -1699,7 +1700,8 @@ bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& sta
         if (!needsHp && !needsMana)
             return false;
 
-        BotMovement::Stop(bot, MoveOwner::Travel);
+        // Administrative stop: halt travel to sit and rest
+        BotMovement::ForceStopOwner(bot, MoveOwner::Travel);
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         state.isResting = true;
 
@@ -1766,7 +1768,8 @@ bool TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
 {
     if (IsCityOrSanctuary(bot))
     {
-        BotMovement::Release(bot, MoveOwner::Grind);
+        // Administrative release: do not grind inside city/sanctuary
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Grind);
         return false;
     }
 
@@ -1791,7 +1794,8 @@ bool TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
         return MoveBotToPoint(bot, MoveOwner::Grind, state.grindAnchorX, state.grindAnchorY, state.grindAnchorZ);
     }
 
-    BotMovement::Release(bot, MoveOwner::Grind);
+    // Administrative release: bot within anchor leash, clear grind movement before scanning
+    BotMovement::ForceReleaseOwner(bot, MoveOwner::Grind);
 
     if (state.nextGrindScanMs > diff)
     {
@@ -1947,7 +1951,8 @@ void TryAutoPullInInstance(Player* bot)
                 bot->GetName(), activeSpec, target->GetName());
         }
 
-        BotMovement::Release(bot, MoveOwner::AutoDungeon);
+        // Administrative release: tank ready to pull, clear pathing movement
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
         bot->Attack(target, true);
         return;
     }
@@ -2064,7 +2069,8 @@ void TryAutoPullInInstance(Player* bot)
             LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                 "AutoDungeon: bot '{}' could not reach boss spawn {} -- giving up on this approach for now.",
                 bot->GetName(), bestBossSpawnId);
-            BotMovement::Release(bot, MoveOwner::AutoDungeon);
+            // Administrative release: navigate unreachable, clear dungeon approach
+            BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
             // Release the commitment too -- otherwise the next tick's commit-and-hold check would
             // find this same still-uncleared boss and immediately recommit to the exact spawn that
             // was just found unreachable, defeating the point of giving up on it.
@@ -2325,11 +2331,13 @@ void TryFinishGathering(Player* bot, BotAIState& state)
 // processed, so the cast is handed back to TryContinueGatherWalk for the following tick.
 void CastGatherAt(Player* bot, BotAIState& state, GameObject* node, uint32 gatherSpellId)
 {
-    BotMovement::Release(bot, MoveOwner::Gather);
+    // Administrative release: bot arrived in range of node
+    BotMovement::ForceReleaseOwner(bot, MoveOwner::Gather);
 
     if (bot->isMoving())
     {
-        BotMovement::Stop(bot, MoveOwner::Gather);
+        // Administrative stop: halt physical movement before casting
+        BotMovement::ForceStopOwner(bot, MoveOwner::Gather);
         state.gatherWalkTargetGuid = node->GetGUID();
         if (!state.gatherWalkTimeoutMs)
             state.gatherWalkTimeoutMs = GATHER_WALK_TIMEOUT_MS;
@@ -2361,7 +2369,8 @@ void AbandonGatherWalk(Player* bot, BotAIState& state, char const* reason)
     LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' abandoned gather walk ({}).", bot->GetName(), reason);
     SetGatherNodeRetryCooldown(state, state.gatherWalkTargetGuid);
     state.gatherWalkTargetGuid = ObjectGuid::Empty;
-    BotMovement::Release(bot, MoveOwner::Gather);
+    // Administrative release: abandoned gather walk
+    BotMovement::ForceReleaseOwner(bot, MoveOwner::Gather);
 }
 
 // Checked every idle-solo tick while state.gatherWalkTargetGuid is set (a node TryStartGathering
@@ -2377,7 +2386,8 @@ void TryContinueGatherWalk(Player* bot, uint32 diff, BotAIState& state)
     if (!node || !node->isSpawned())
     {
         state.gatherWalkTargetGuid = ObjectGuid::Empty;
-        BotMovement::Release(bot, MoveOwner::Gather);
+        // Administrative release: node despawned
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Gather);
         return;
     }
 
@@ -2753,7 +2763,8 @@ bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
 // do below) is not enough to stop one already in progress.
 void ClearActiveFollow(Player* bot)
 {
-    BotMovement::Stop(bot, MoveOwner::Travel);
+    // Administrative stop: explicitly clear active follow movement
+    BotMovement::ForceStopOwner(bot, MoveOwner::Travel);
 }
 
 void ResumeFollowingLeader(Player* bot, BotAIState& state)
@@ -3525,7 +3536,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     if (!target || !target->IsAlive() || !bot->IsValidAttackTarget(target))
     {
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-            BotMovement::Stop(bot, MoveOwner::Combat);
+            BotMovement::ForceStopOwner(bot, MoveOwner::Combat);
 
         if (!bot->IsInCombat())
         {
@@ -4195,7 +4206,7 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
         return;
     }
     else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-        BotMovement::Stop(bot, MoveOwner::Combat);
+        BotMovement::ForceStopOwner(bot, MoveOwner::Combat);
 
     // The heal cast itself always targets the ally, regardless of which anchor positioning
     // used above -- being out of heal range of healTarget after prioritizing safety from the
@@ -4364,7 +4375,8 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
             return;
         }
 
-        BotMovement::Release(bot, MoveOwner::Corpse);
+        // Administrative release: bot arrived in reclaim radius of corpse
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
 
         // The handler itself enforces the post-release reclaim delay and the exact-range
         // recheck -- harmless (and expected) to call this every tick until it actually lands.

@@ -402,7 +402,7 @@ namespace
     void ReleaseOrdinaryWalks(Player* bot)
     {
         for (MoveOwner owner : { MoveOwner::Ambient, MoveOwner::Grind, MoveOwner::Gather, MoveOwner::Fish, MoveOwner::Quest })
-            BotMovement::Release(bot, owner);
+            BotMovement::ForceReleaseOwner(bot, owner);
     }
 
     bool IsFriendly(Player const* bot, Poi const& poi)
@@ -1331,7 +1331,7 @@ namespace BotEconomy
         Trip& t = trip->second;
         auto finish = [&](bool timedOut)
         {
-            BotMovement::Release(bot, MoveOwner::Travel);
+            BotMovement::ForceReleaseOwner(bot, MoveOwner::Travel);
             g_nextTripAt[guid] = now + g_settings.tripCooldownMin * 60 * 1000 + urand(0, 5 * 60 * 1000);
             if (timedOut)
                 ++g_tripTotals.timedOut;
@@ -1354,7 +1354,7 @@ namespace BotEconomy
             if (t.flightRequested)
                 return false;
             BotWorldBehavior::Forget(guid);
-            BotMovement::Release(bot, MoveOwner::Ambient);
+            BotMovement::ForceReleaseOwner(bot, MoveOwner::Ambient);
         }
         else
             t.flightRequested = false;
@@ -1375,7 +1375,7 @@ namespace BotEconomy
             if (BotWorldBehavior::RequestTravel(bot, t.mapId, t.x, t.y, t.z, false))
             {
                 t.flightRequested = true;
-                BotMovement::Release(bot, MoveOwner::Travel);
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::Travel);
                 return true;
             }
         }

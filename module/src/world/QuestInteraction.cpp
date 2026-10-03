@@ -384,7 +384,8 @@ namespace QuestInteraction
                 float dist = bot->GetDistance(npc);
                 if (dist <= INTERACTION_DISTANCE - 1.0f)
                 {
-                    BotMovement::Stop(bot, MoveOwner::Quest);
+                    // Administrative stop: close enough to NPC to begin dialogue interaction
+                    BotMovement::ForceStopOwner(bot, MoveOwner::Quest);
                     if (bot->isMoving())
                         return ExecResult::Running;
 

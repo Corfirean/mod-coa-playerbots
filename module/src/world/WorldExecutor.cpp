@@ -95,7 +95,7 @@ namespace WorldExecutor
         uint8 stageBefore = before ? before->progress.stage : 0;
 
         uint64 goal = state.task.GoalId(sub) + (goalSalt << 40);
-        NavStatus status = BotMovement::Navigate(bot, OwnerFor(state.task), goal, x, y, z, radius);
+        NavStatus status = BotMovement::Navigate(bot, OwnerFor(state.task), goal, x, y, z, radius, &state.travelToken);
 
         std::optional<MovementRequest> after = BotMovement::GetRequestSnapshot(bot->GetGUID());
         if (after && after->progress.stage > stageBefore)
@@ -109,8 +109,14 @@ namespace WorldExecutor
             return false;
 
         Count(state.metrics, &WorldMetrics::travels);
-        BotMovement::Release(bot, MoveOwner::Quest);
-        BotMovement::Release(bot, MoveOwner::Travel);
+        if (state.travelToken.IsValid())
+            BotMovement::Release(bot, state.travelToken);
+        else
+        {
+            BotMovement::ForceReleaseOwner(bot, MoveOwner::Quest);
+            BotMovement::ForceReleaseOwner(bot, MoveOwner::Travel);
+        }
+        state.travelToken = {};
         NoteEvent(state, Acore::StringFormat("taking a flight toward ({:.0f}, {:.0f})", x, y));
         LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' requested a flight toward ({:.0f}, {:.0f}) for task {}.",
             bot->GetName(), x, y, state.task.id);
@@ -132,11 +138,11 @@ namespace WorldExecutor
             return;
 
         task.Pause(NowMs());
-        // Release whichever owner this task's own movement actually runs under -- a Travel task
-        // (quest-hub travel) claims MoveOwner::Travel, not Quest, and releasing the wrong one would
-        // leave its claim dangling for the pause's duration even though ResetRequest below already
-        // clears the in-flight request for either owner.
-        BotMovement::Release(bot, OwnerFor(task));
+        if (state.travelToken.IsValid())
+            BotMovement::Release(bot, state.travelToken);
+        else
+            BotMovement::ForceReleaseOwner(bot, OwnerFor(task));
+        state.travelToken = {};
         BotMovement::ResetRequest(bot->GetGUID());
         PopulationHeatmap::ClearIncoming(bot->GetGUID());
 
@@ -191,8 +197,14 @@ namespace WorldExecutor
 
     void ReleaseTask(Player* bot, BrainState& state)
     {
-        BotMovement::Release(bot, MoveOwner::Quest);
-        BotMovement::Release(bot, MoveOwner::Travel);
+        if (state.travelToken.IsValid())
+            BotMovement::Release(bot, state.travelToken);
+        else
+        {
+            BotMovement::ForceReleaseOwner(bot, MoveOwner::Quest);
+            BotMovement::ForceReleaseOwner(bot, MoveOwner::Travel);
+        }
+        state.travelToken = {};
         BotMovement::ResetRequest(bot->GetGUID());
         // Every reservation a bot holds belongs to its current task.
         WorldReservations::ReleaseAll(bot->GetGUID());
