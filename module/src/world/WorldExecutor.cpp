@@ -91,13 +91,14 @@ namespace WorldExecutor
         if (allowMount)
             BotMovement::RequestMount(bot, OwnerFor(state.task), dist);
 
-        MovementRequest const* before = BotMovement::GetRequest(bot->GetGUID());
+        std::optional<MovementRequest> before = BotMovement::GetRequestSnapshot(bot->GetGUID());
         uint8 stageBefore = before ? before->progress.stage : 0;
 
         uint64 goal = state.task.GoalId(sub) + (goalSalt << 40);
         NavStatus status = BotMovement::Navigate(bot, OwnerFor(state.task), goal, x, y, z, radius);
 
-        if (MovementRequest const* after = BotMovement::GetRequest(bot->GetGUID()); after && after->progress.stage > stageBefore)
+        std::optional<MovementRequest> after = BotMovement::GetRequestSnapshot(bot->GetGUID());
+        if (after && after->progress.stage > stageBefore)
             Count(state.metrics, &WorldMetrics::travelRetries);
         return status;
     }

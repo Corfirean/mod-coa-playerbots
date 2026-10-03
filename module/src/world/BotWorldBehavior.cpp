@@ -147,6 +147,7 @@ namespace
         float travelY = 0.0f;
         float travelZ = 0.0f;
         std::array<uint32, size_t(WorldIntent::Count)> cooldownUntilMs{};
+        LocomotionToken travelToken;
     };
 
     std::unordered_map<ObjectGuid, WorldState> _states;
@@ -319,7 +320,7 @@ namespace
         float const dist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), state.x, state.y);
         BotMovement::RequestMount(bot, MoveOwner::Ambient, dist);
         uint32 const goalId = MakeAmbientGoalId(state);
-        BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius);
+        BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius, &state.travelToken);
     }
 
     // Stops a little short of the NPC on the side the bot approaches from, so it ends up
@@ -347,7 +348,15 @@ namespace
         if (cooldownMs)
             SetCooldown(state, state.intent, now, cooldownMs);
 
-        BotMovement::Release(bot, MoveOwner::Ambient);
+        if (state.travelToken.IsValid())
+        {
+            BotMovement::Release(bot, state.travelToken);
+            state.travelToken = {};
+        }
+        else
+        {
+            BotMovement::ForceReleaseOwner(bot, MoveOwner::Ambient);
+        }
         StandUp(bot, state);
         if (state.poiSpawnId)
             state.lastPoiSpawnId = state.poiSpawnId;
@@ -703,7 +712,7 @@ namespace
     {
         if (state.travelStage == TravelStage::ToFlightMaster)
         {
-            BotMovement::Release(bot, MoveOwner::Ambient);
+            BotMovement::Release(bot, state.travelToken);
             if (BotTaxi::FlyToward(bot, state.travelX, state.travelY, state.travelZ))
             {
                 state.travelStage = TravelStage::Flying;
@@ -834,7 +843,7 @@ namespace
 
     void Arrive(Player* bot, WorldState& state, AmbientProfile const& profile, uint32 now)
     {
-        BotMovement::Stop(bot, MoveOwner::Ambient);
+        BotMovement::Stop(bot, state.travelToken);
 
         if (state.intent == WorldIntent::Repair || state.intent == WorldIntent::Vendor)
             BotAI::MaintainEquipmentNow(bot);
@@ -907,7 +916,7 @@ namespace BotWorldBehavior
                 float const dist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), state.x, state.y);
                 BotMovement::RequestMount(bot, MoveOwner::Ambient, dist);
                 uint32 const goalId = MakeAmbientGoalId(state);
-                BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius);
+                BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius, &state.travelToken);
             }
         }
 
@@ -983,7 +992,7 @@ namespace BotWorldBehavior
 
             BotMovement::RequestMount(bot, MoveOwner::Ambient, dist);
             uint32 const goalId = MakeAmbientGoalId(state);
-            NavStatus status = BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius);
+            NavStatus status = BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius, &state.travelToken);
             if (status == NavStatus::Arrived)
             {
                 if (state.intent == WorldIntent::TravelHub)
