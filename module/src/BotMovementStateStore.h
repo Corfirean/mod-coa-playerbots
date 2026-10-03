@@ -23,6 +23,7 @@ struct LocomotionShard
     std::unordered_map<ObjectGuid, uint32> airborneMs;
     std::unordered_map<ObjectGuid, HistoryBuffer> histories;
     std::unordered_map<ObjectGuid, NopathCacheEntry> nopathCache;
+    std::unordered_map<ObjectGuid, uint64> nextRequestGen;
 };
 
 class LocomotionStateStore
@@ -47,6 +48,12 @@ public:
     static std::mutex& GetDispatchGate(ObjectGuid guid)
     {
         return _dispatchGates[guid.GetCounter() % DISPATCH_GATES];
+    }
+
+    // Monotonic request generation allocator (caller MUST hold shard.mutex)
+    static uint64 AllocateRequestGenerationLocked(LocomotionShard& shard, ObjectGuid guid)
+    {
+        return ++shard.nextRequestGen[guid];
     }
 
     // Lock-free helpers (caller MUST hold shard.mutex)
@@ -76,12 +83,14 @@ public:
     }
 
     static bool CanMountLocked(LocomotionShard const& shard, ObjectGuid guid, float travelDist, uint32 now,
-                               bool isOutdoors, bool inCombat, bool casting, uint8 level, bool isControlled)
+                               bool isOutdoors, bool inCombat, bool casting, uint8 level, bool isControlled,
+                               bool isDungeon = false, bool isRaid = false, bool isInWater = false, bool isSwimming = false)
     {
         auto it = shard.mounts.find(guid);
         MountState state = (it != shard.mounts.end()) ? it->second.state : MountState::Unmounted;
         uint32 cd = (it != shard.mounts.end()) ? it->second.remountCooldownUntilMs : 0;
-        return MountStateMachine::CanMount(state, travelDist, cd, now, isOutdoors, inCombat, casting, level, isControlled);
+        return MountStateMachine::CanMount(state, travelDist, cd, now, isOutdoors, inCombat, casting, level, isControlled,
+                                           isDungeon, isRaid, isInWater, isSwimming);
     }
 
     static std::optional<MovementRequest> GetRequestSnapshotLocked(LocomotionShard const& shard, ObjectGuid guid)
@@ -106,8 +115,10 @@ public:
             s.airborneMs.clear();
             s.histories.clear();
             s.nopathCache.clear();
+            s.nextRequestGen.clear();
         }
     }
+
 
 private:
     static inline std::array<LocomotionShard, LOCOMOTION_SHARDS> _shards;

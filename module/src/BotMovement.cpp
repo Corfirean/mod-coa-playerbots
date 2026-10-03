@@ -156,7 +156,7 @@ namespace
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
             auto itr = shard.locomotion.find(bot->GetGUID());
-            if (itr != shard.locomotion.end() && itr->second.owner == token.owner && itr->second.commandId == token.commandId)
+            if (itr != shard.locomotion.end() && LocomotionCommandValidator::IsTokenMatch(itr->second, token))
             {
                 RecordTransitionLocked(shard, bot->GetGUID(), itr->second.state, LocomotionState::Idle,
                     token.owner, MoveMode::Idle, "ReleaseToken", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), NowMs());
@@ -225,7 +225,7 @@ namespace
         return false;
     }
 
-    bool IssueLeg(Player* bot, MovementRequest& req, bool force)
+    LocomotionToken IssueLeg(Player* bot, MovementRequest& req)
     {
         float bx = bot->GetPositionX();
         float by = bot->GetPositionY();
@@ -258,27 +258,19 @@ namespace
             }
         }
 
-        if (force)
-        {
-            std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
-            ClearAuthorizedMovement(bot);
-        }
+        // Token-safe: Issue leg under explicit Navigate MoveMode. No independent physical clear!
+        LocomotionToken token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate);
+        if (!token.IsValid())
+            return {};
 
-        LocomotionToken token = BotMovement::MoveTo(bot, req.owner, tx, ty, tz, /*forceDestination=*/false);
-        if (!token)
-            return false;
-
-        req.commandId = token.commandId;
+        NavigateTransaction::CommitLeg(req, token, tx, ty, NowMs());
         if (req.recoveryMode == RecoveryMode::Backtrack)
             req.backtrackCommandId = token.commandId;
 
-        req.legs++;
-        req.legX = tx;
-        req.legY = ty;
-        req.lastIssueAt = NowMs();
-        return true;
+        return token;
     }
 }
+
 
 namespace BotMovement
 {
@@ -372,7 +364,7 @@ namespace BotMovement
     // Arbitrated Locomotion Primitives (Linearized Physical Dispatch & Token-Safe)
     // =========================================================================
 
-    LocomotionToken MoveTo(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination)
+    LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode)
     {
         if (!bot || !bot->IsInWorld() || !bot->IsAlive())
             return {};
@@ -385,9 +377,6 @@ namespace BotMovement
 
         uint32 now = NowMs();
         float groundZ = ResolveGroundZ(bot, x, y, z);
-
-        // Linearized Physical Dispatch: serialize MotionMaster commands per bot
-        std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
 
         // Step 1: Pre-validation under shard state lock.
@@ -403,7 +392,7 @@ namespace BotMovement
             {
                 BotLocomotionRecord const& rec = it->second;
                 // Redundancy check: if already walking to essentially the same point
-                if (rec.owner == owner && rec.mode == MoveMode::Point &&
+                if (rec.owner == owner && (rec.mode == executionMode || (rec.mode == MoveMode::Point && executionMode == MoveMode::Navigate)) &&
                     bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE &&
                     std::fabs(rec.destX - x) <= SAME_POINT_YARDS &&
                     std::fabs(rec.destY - y) <= SAME_POINT_YARDS &&
@@ -425,7 +414,8 @@ namespace BotMovement
             }
         }
 
-        // Step 2: Outside shard state lock (under dispatch gate): compute PathGenerator
+        // Step 2: Outside shard state lock AND outside dispatch gate: compute PathGenerator!
+        // This ensures unrelated bots sharing the striped dispatch gate are not blocked during pathfinding.
         bool pathValid = true;
         if (!bot->CanFly())
         {
@@ -451,11 +441,14 @@ namespace BotMovement
             return {};
         }
 
-        // Path is valid: commit owner and commandId atomically
+        // Step 4: Serialize physical MotionMaster dispatch under dispatch gate
+        std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
         LocomotionToken token;
+
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
 
+            // Revalidate CanClaim in case state changed during PathGenerator calculation
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
                 return {};
 
@@ -465,23 +458,34 @@ namespace BotMovement
             rec.destX = x;
             rec.destY = y;
             rec.destZ = groundZ;
-            rec.mode = MoveMode::Point;
+            rec.mode = executionMode;
             rec.state = LocomotionState::Moving;
             rec.issuedAtMs = now;
             rec.lastUpdateMs = now;
             token = LocomotionToken{bot->GetGUID(), owner, rec.commandId};
 
+            if (executionMode != MoveMode::Navigate)
+            {
+                shard.requests.erase(bot->GetGUID());
+            }
+
             RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Planning, LocomotionState::Moving,
-                owner, MoveMode::Point, "MovePointIssued", x, y, groundZ, now);
+                owner, executionMode, (executionMode == MoveMode::Navigate ? "NavigateLegIssued" : "MovePointIssued"),
+                x, y, groundZ, now);
         }
 
-        // Step 4: Dispatch MotionMaster MovePoint outside shard state lock (under dispatch gate)
+        // Step 5: Dispatch MotionMaster MovePoint outside shard state lock (under dispatch gate)
         ClearAuthorizedMovement(bot);
         bot->GetMotionMaster()->MovePoint(uint32(owner), x, y, groundZ, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
             /*generatePath=*/true, forceDestination);
         _stats.issued.fetch_add(1, std::memory_order_relaxed);
 
         return token;
+    }
+
+    LocomotionToken MoveTo(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination)
+    {
+        return MoveToInternal(bot, owner, x, y, z, forceDestination, MoveMode::Point);
     }
 
     NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius, LocomotionToken* outToken)
@@ -507,9 +511,12 @@ namespace BotMovement
             {
                 std::lock_guard<std::mutex> lock(shard.mutex);
                 auto rItr = shard.requests.find(bot->GetGUID());
-                if (rItr != shard.requests.end() && rItr->second.owner == owner && rItr->second.goalId == goalId)
+                if (rItr != shard.requests.end())
                 {
-                    tokenToRelease = LocomotionToken{bot->GetGUID(), owner, rItr->second.commandId};
+                    if (NavigateTransaction::ValidateArrival(rItr->second, owner, goalId, distToGoal, acceptRadius, tokenToRelease))
+                    {
+                        shard.requests.erase(rItr);
+                    }
                 }
             }
 
@@ -528,7 +535,7 @@ namespace BotMovement
 
         // Step 1: Snapshot and prepare request under shard state lock
         MovementRequest reqCopy;
-        uint64 expectedCommandId = 0;
+        uint64 expectedRequestGen = 0;
         bool isNewRequest = false;
 
         {
@@ -537,14 +544,19 @@ namespace BotMovement
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
                 return NavStatus::Blocked;
 
-            MovementRequest& req = shard.requests[bot->GetGUID()];
-            if (req.goalId != goalId || req.owner != owner || Dist2d(req.x, req.y, x, y) > GOAL_MOVED_YARDS)
+            auto rItr = shard.requests.find(bot->GetGUID());
+            if (rItr == shard.requests.end() || rItr->second.goalId != goalId || rItr->second.owner != owner ||
+                Dist2d(rItr->second.x, rItr->second.y, x, y) > GOAL_MOVED_YARDS)
             {
                 isNewRequest = true;
+                expectedRequestGen = LocomotionStateStore::AllocateRequestGenerationLocked(shard, bot->GetGUID());
+
+                MovementRequest& req = shard.requests[bot->GetGUID()];
                 req.botGuid = bot->GetGUID();
                 req.owner = owner;
                 req.goalId = goalId;
-                req.commandId = shard.locomotion[bot->GetGUID()].commandId + 1;
+                req.requestGeneration = expectedRequestGen;
+                req.movementCommandId = 0; // Not issued yet
                 req.x = x;
                 req.y = y;
                 req.z = z;
@@ -560,35 +572,61 @@ namespace BotMovement
                 req.detour = false;
                 req.recoveryMode = RecoveryMode::None;
                 req.backtrackAttempts = 0;
+
+                reqCopy = req;
             }
             else
             {
-                req.lastCallAt = now;
-                req.acceptRadius = acceptRadius;
+                rItr->second.lastCallAt = now;
+                rItr->second.acceptRadius = acceptRadius;
+                expectedRequestGen = rItr->second.requestGeneration;
+                reqCopy = rItr->second;
             }
-
-            reqCopy = req;
-            expectedCommandId = req.commandId;
         }
 
         // Step 2: Handle First Leg
         if (isNewRequest)
         {
-            if (IssueLeg(bot, reqCopy, true))
+            LocomotionToken token = IssueLeg(bot, reqCopy);
+            if (token.IsValid())
             {
-                std::lock_guard<std::mutex> lock(shard.mutex);
-                auto rItr = shard.requests.find(bot->GetGUID());
-                if (rItr != shard.requests.end() && rItr->second.goalId == goalId)
+                bool superseded = false;
                 {
-                    rItr->second = reqCopy;
-                    if (outToken)
-                        *outToken = LocomotionToken{bot->GetGUID(), owner, reqCopy.commandId};
+                    std::lock_guard<std::mutex> lock(shard.mutex);
+                    auto rItr = shard.requests.find(bot->GetGUID());
+                    if (rItr != shard.requests.end() &&
+                        NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
+                    {
+                        rItr->second = reqCopy;
+                        rItr->second.movementCommandId = token.commandId;
+                        if (outToken)
+                            *outToken = token;
+                    }
+                    else
+                    {
+                        superseded = true;
+                    }
+                }
+
+                if (superseded)
+                {
+                    Release(bot, token);
+                    return NavStatus::Superseded;
                 }
                 return NavStatus::Moving;
             }
             else
             {
-                Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.commandId});
+                // First-leg failure: DO NOT release anything! No token was issued.
+                // Erase own request generation if still current:
+                {
+                    std::lock_guard<std::mutex> lock(shard.mutex);
+                    auto rItr = shard.requests.find(bot->GetGUID());
+                    if (rItr != shard.requests.end() && rItr->second.requestGeneration == expectedRequestGen)
+                    {
+                        shard.requests.erase(rItr);
+                    }
+                }
                 return NavStatus::Blocked;
             }
         }
@@ -604,15 +642,30 @@ namespace BotMovement
                 reqCopy.recoveryMode = RecoveryMode::None;
                 reqCopy.backtrackAttempts = 0;
                 reqCopy.progress.Rebase(distToGoal, distZ, now);
-                if (IssueLeg(bot, reqCopy, true))
+                LocomotionToken token = IssueLeg(bot, reqCopy);
+                if (token.IsValid())
                 {
-                    std::lock_guard<std::mutex> lock(shard.mutex);
-                    auto rItr = shard.requests.find(bot->GetGUID());
-                    if (rItr != shard.requests.end() && rItr->second.goalId == goalId)
+                    bool superseded = false;
                     {
-                        rItr->second = reqCopy;
-                        if (outToken)
-                            *outToken = LocomotionToken{bot->GetGUID(), owner, reqCopy.commandId};
+                        std::lock_guard<std::mutex> lock(shard.mutex);
+                        auto rItr = shard.requests.find(bot->GetGUID());
+                        if (rItr != shard.requests.end() &&
+                            NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
+                        {
+                            rItr->second = reqCopy;
+                            rItr->second.movementCommandId = token.commandId;
+                            if (outToken)
+                                *outToken = token;
+                        }
+                        else
+                        {
+                            superseded = true;
+                        }
+                    }
+                    if (superseded)
+                    {
+                        Release(bot, token);
+                        return NavStatus::Superseded;
                     }
                     return NavStatus::Moving;
                 }
@@ -633,12 +686,44 @@ namespace BotMovement
                     reqCopy.backtrackX = safeTarget->x;
                     reqCopy.backtrackY = safeTarget->y;
                     reqCopy.backtrackZ = safeTarget->z;
-                    IssueLeg(bot, reqCopy, true);
+                    LocomotionToken token = IssueLeg(bot, reqCopy);
+                    if (token.IsValid())
+                    {
+                        bool superseded = false;
+                        {
+                            std::lock_guard<std::mutex> lock(shard.mutex);
+                            auto rItr = shard.requests.find(bot->GetGUID());
+                            if (rItr != shard.requests.end() &&
+                                NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
+                            {
+                                rItr->second = reqCopy;
+                                rItr->second.movementCommandId = token.commandId;
+                                if (outToken)
+                                    *outToken = token;
+                            }
+                            else
+                            {
+                                superseded = true;
+                            }
+                        }
+                        if (superseded)
+                        {
+                            Release(bot, token);
+                            return NavStatus::Superseded;
+                        }
+                    }
                 }
                 else
                 {
                     _stats.gaveUp.fetch_add(1, std::memory_order_relaxed);
-                    Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.commandId});
+                    if (reqCopy.movementCommandId != 0)
+                        Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.movementCommandId});
+                    {
+                        std::lock_guard<std::mutex> lock(shard.mutex);
+                        auto rItr = shard.requests.find(bot->GetGUID());
+                        if (rItr != shard.requests.end() && rItr->second.requestGeneration == expectedRequestGen)
+                            shard.requests.erase(rItr);
+                    }
                     return NavStatus::Stuck;
                 }
             }
@@ -666,19 +751,58 @@ namespace BotMovement
                     reqCopy.backtrackX = safeTarget->x;
                     reqCopy.backtrackY = safeTarget->y;
                     reqCopy.backtrackZ = safeTarget->z;
-                    IssueLeg(bot, reqCopy, true);
+                    LocomotionToken token = IssueLeg(bot, reqCopy);
+                    if (token.IsValid())
+                    {
+                        bool superseded = false;
+                        {
+                            std::lock_guard<std::mutex> lock(shard.mutex);
+                            auto rItr = shard.requests.find(bot->GetGUID());
+                            if (rItr != shard.requests.end() &&
+                                NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
+                            {
+                                rItr->second = reqCopy;
+                                rItr->second.movementCommandId = token.commandId;
+                                if (outToken)
+                                    *outToken = token;
+                            }
+                            else
+                            {
+                                superseded = true;
+                            }
+                        }
+                        if (superseded)
+                        {
+                            Release(bot, token);
+                            return NavStatus::Superseded;
+                        }
+                    }
                 }
                 else
                 {
                     _stats.gaveUp.fetch_add(1, std::memory_order_relaxed);
-                    Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.commandId});
+                    if (reqCopy.movementCommandId != 0)
+                        Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.movementCommandId});
+                    {
+                        std::lock_guard<std::mutex> lock(shard.mutex);
+                        auto rItr = shard.requests.find(bot->GetGUID());
+                        if (rItr != shard.requests.end() && rItr->second.requestGeneration == expectedRequestGen)
+                            shard.requests.erase(rItr);
+                    }
                     return NavStatus::Stuck;
                 }
             }
             else
             {
                 _stats.gaveUp.fetch_add(1, std::memory_order_relaxed);
-                Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.commandId});
+                if (reqCopy.movementCommandId != 0)
+                    Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.movementCommandId});
+                {
+                    std::lock_guard<std::mutex> lock(shard.mutex);
+                    auto rItr = shard.requests.find(bot->GetGUID());
+                    if (rItr != shard.requests.end() && rItr->second.requestGeneration == expectedRequestGen)
+                        shard.requests.erase(rItr);
+                }
                 return NavStatus::Stuck;
             }
         }
@@ -688,7 +812,32 @@ namespace BotMovement
             _stats.repaths.fetch_add(1, std::memory_order_relaxed);
             reqCopy.recoveryMode = RecoveryMode::Repath;
             reqCopy.detour = false;
-            IssueLeg(bot, reqCopy, true);
+            LocomotionToken token = IssueLeg(bot, reqCopy);
+            if (token.IsValid())
+            {
+                bool superseded = false;
+                {
+                    std::lock_guard<std::mutex> lock(shard.mutex);
+                    auto rItr = shard.requests.find(bot->GetGUID());
+                    if (rItr != shard.requests.end() &&
+                        NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
+                    {
+                        rItr->second = reqCopy;
+                        rItr->second.movementCommandId = token.commandId;
+                        if (outToken)
+                            *outToken = token;
+                    }
+                    else
+                    {
+                        superseded = true;
+                    }
+                }
+                if (superseded)
+                {
+                    Release(bot, token);
+                    return NavStatus::Superseded;
+                }
+            }
         }
         else if (recovery == NavRecovery::DetourLeft || recovery == NavRecovery::DetourRight)
         {
@@ -701,7 +850,8 @@ namespace BotMovement
             reqCopy.detourY = by + std::sin(angle) * 15.0f;
             reqCopy.detourZ = ResolveGroundZ(bot, reqCopy.detourX, reqCopy.detourY, bz);
 
-            if (!IssueLeg(bot, reqCopy, true))
+            LocomotionToken token = IssueLeg(bot, reqCopy);
+            if (!token.IsValid())
             {
                 // Detour issue failed -> escalate to Backtrack
                 std::optional<SafePosition> safeTarget;
@@ -718,13 +868,70 @@ namespace BotMovement
                     reqCopy.backtrackX = safeTarget->x;
                     reqCopy.backtrackY = safeTarget->y;
                     reqCopy.backtrackZ = safeTarget->z;
-                    IssueLeg(bot, reqCopy, true);
+                    LocomotionToken bToken = IssueLeg(bot, reqCopy);
+                    if (bToken.IsValid())
+                    {
+                        bool superseded = false;
+                        {
+                            std::lock_guard<std::mutex> lock(shard.mutex);
+                            auto rItr = shard.requests.find(bot->GetGUID());
+                            if (rItr != shard.requests.end() &&
+                                NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
+                            {
+                                rItr->second = reqCopy;
+                                rItr->second.movementCommandId = bToken.commandId;
+                                if (outToken)
+                                    *outToken = bToken;
+                            }
+                            else
+                            {
+                                superseded = true;
+                            }
+                        }
+                        if (superseded)
+                        {
+                            Release(bot, bToken);
+                            return NavStatus::Superseded;
+                        }
+                    }
                 }
                 else
                 {
                     _stats.gaveUp.fetch_add(1, std::memory_order_relaxed);
-                    Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.commandId});
+                    if (reqCopy.movementCommandId != 0)
+                        Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.movementCommandId});
+                    {
+                        std::lock_guard<std::mutex> lock(shard.mutex);
+                        auto rItr = shard.requests.find(bot->GetGUID());
+                        if (rItr != shard.requests.end() && rItr->second.requestGeneration == expectedRequestGen)
+                            shard.requests.erase(rItr);
+                    }
                     return NavStatus::Stuck;
+                }
+            }
+            else
+            {
+                bool superseded = false;
+                {
+                    std::lock_guard<std::mutex> lock(shard.mutex);
+                    auto rItr = shard.requests.find(bot->GetGUID());
+                    if (rItr != shard.requests.end() &&
+                        NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
+                    {
+                        rItr->second = reqCopy;
+                        rItr->second.movementCommandId = token.commandId;
+                        if (outToken)
+                            *outToken = token;
+                    }
+                    else
+                    {
+                        superseded = true;
+                    }
+                }
+                if (superseded)
+                {
+                    Release(bot, token);
+                    return NavStatus::Superseded;
                 }
             }
         }
@@ -747,12 +954,44 @@ namespace BotMovement
                 reqCopy.backtrackX = safeTarget->x;
                 reqCopy.backtrackY = safeTarget->y;
                 reqCopy.backtrackZ = safeTarget->z;
-                IssueLeg(bot, reqCopy, true);
+                LocomotionToken token = IssueLeg(bot, reqCopy);
+                if (token.IsValid())
+                {
+                    bool superseded = false;
+                    {
+                        std::lock_guard<std::mutex> lock(shard.mutex);
+                        auto rItr = shard.requests.find(bot->GetGUID());
+                        if (rItr != shard.requests.end() &&
+                            NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
+                        {
+                            rItr->second = reqCopy;
+                            rItr->second.movementCommandId = token.commandId;
+                            if (outToken)
+                                *outToken = token;
+                        }
+                        else
+                        {
+                            superseded = true;
+                        }
+                    }
+                    if (superseded)
+                    {
+                        Release(bot, token);
+                        return NavStatus::Superseded;
+                    }
+                }
             }
             else
             {
                 _stats.gaveUp.fetch_add(1, std::memory_order_relaxed);
-                Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.commandId});
+                if (reqCopy.movementCommandId != 0)
+                    Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.movementCommandId});
+                {
+                    std::lock_guard<std::mutex> lock(shard.mutex);
+                    auto rItr = shard.requests.find(bot->GetGUID());
+                    if (rItr != shard.requests.end() && rItr->second.requestGeneration == expectedRequestGen)
+                        shard.requests.erase(rItr);
+                }
                 return NavStatus::Stuck;
             }
         }
@@ -763,7 +1002,33 @@ namespace BotMovement
             float legDist = Dist2d(bx, by, reqCopy.legX, reqCopy.legY);
             if (legDist <= 4.0f && distToGoal > acceptRadius)
             {
-                IssueLeg(bot, reqCopy, false);
+                LocomotionToken token = IssueLeg(bot, reqCopy);
+                if (token.IsValid())
+                {
+                    bool superseded = false;
+                    {
+                        std::lock_guard<std::mutex> lock(shard.mutex);
+                        auto rItr = shard.requests.find(bot->GetGUID());
+                        if (rItr != shard.requests.end() &&
+                            NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
+                        {
+                            rItr->second = reqCopy;
+                            rItr->second.movementCommandId = token.commandId;
+                            if (outToken)
+                                *outToken = token;
+                        }
+                        else
+                        {
+                            superseded = true;
+                        }
+                    }
+                    if (superseded)
+                    {
+                        Release(bot, token);
+                        return NavStatus::Superseded;
+                    }
+                    return NavStatus::Moving;
+                }
             }
         }
 
@@ -771,16 +1036,18 @@ namespace BotMovement
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
             auto rItr = shard.requests.find(bot->GetGUID());
-            if (rItr != shard.requests.end() && rItr->second.commandId == expectedCommandId && rItr->second.goalId == goalId)
+            if (rItr != shard.requests.end() &&
+                NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId))
             {
                 rItr->second = reqCopy;
-                if (outToken)
-                    *outToken = LocomotionToken{bot->GetGUID(), owner, reqCopy.commandId};
+                if (outToken && reqCopy.movementCommandId != 0)
+                    *outToken = LocomotionToken{bot->GetGUID(), owner, reqCopy.movementCommandId};
             }
         }
 
         return NavStatus::Moving;
     }
+
 
     LocomotionToken Follow(Player* bot, MoveOwner owner, Unit* target, float dist, float angle)
     {
@@ -821,6 +1088,7 @@ namespace BotMovement
             rec.targetAngle = angle;
             rec.issuedAtMs = NowMs();
             rec.lastUpdateMs = NowMs();
+            shard.requests.erase(bot->GetGUID());
 
             token = LocomotionToken{bot->GetGUID(), owner, rec.commandId};
             RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Idle, LocomotionState::Following,
@@ -874,6 +1142,7 @@ namespace BotMovement
             rec.chaseAngle = angle;
             rec.issuedAtMs = NowMs();
             rec.lastUpdateMs = NowMs();
+            shard.requests.erase(bot->GetGUID());
 
             token = LocomotionToken{bot->GetGUID(), owner, rec.commandId};
             RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Idle, LocomotionState::Chasing,
@@ -950,6 +1219,7 @@ namespace BotMovement
             rec.holdUntilMs = NowMs() + durationMs;
             rec.issuedAtMs = NowMs();
             rec.lastUpdateMs = NowMs();
+            shard.requests.erase(bot->GetGUID());
 
             token = LocomotionToken{bot->GetGUID(), owner, rec.commandId};
             RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Idle, LocomotionState::Holding,
@@ -959,6 +1229,7 @@ namespace BotMovement
         ClearAuthorizedMovement(bot);
         return token;
     }
+
 
     // =========================================================================
     // Cancellation & Cleanup (Token-Safe & Administrative Force)
@@ -1001,12 +1272,18 @@ namespace BotMovement
         if (!bot || !bot->IsInWorld() || !bot->IsAlive())
             return false;
 
+        bool isDungeon = bot->GetMap() && bot->GetMap()->IsDungeon();
+        bool isRaid = bot->GetMap() && bot->GetMap()->IsRaid();
+        bool isInWater = bot->IsInWater();
+        bool isSwimming = bot->HasUnitMovementFlag(MOVEMENTFLAG_SWIMMING);
+
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
         std::lock_guard<std::mutex> lock(shard.mutex);
         return LocomotionStateStore::CanMountLocked(shard, bot->GetGUID(), travelDistance, NowMs(),
             bot->IsOutdoors(), bot->IsInCombat(), bot->IsNonMeleeSpellCast(false),
-            bot->GetLevel(), IsExternallyControlled(bot));
+            bot->GetLevel(), IsExternallyControlled(bot), isDungeon, isRaid, isInWater, isSwimming);
     }
+
 
     bool IsMounted(Player const* bot)
     {
@@ -1093,7 +1370,7 @@ namespace BotMovement
         }
     }
 
-    bool RequestMount(Player* bot, MoveOwner owner, float travelDistance, bool wantFlying)
+    bool RequestMountInternal(Player* bot, MoveOwner owner, float travelDistance, bool wantFlying)
     {
         if (!bot || !bot->IsInWorld() || !bot->IsAlive())
             return false;
@@ -1102,8 +1379,12 @@ namespace BotMovement
             return false;
 
         uint32 now = NowMs();
-        std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
+
+        bool isDungeon = bot->GetMap() && bot->GetMap()->IsDungeon();
+        bool isRaid = bot->GetMap() && bot->GetMap()->IsRaid();
+        bool isInWater = bot->IsInWater();
+        bool isSwimming = bot->HasUnitMovementFlag(MOVEMENTFLAG_SWIMMING);
 
         // Step 1: Pre-validation under shard state lock
         {
@@ -1111,7 +1392,7 @@ namespace BotMovement
 
             if (!LocomotionStateStore::CanMountLocked(shard, bot->GetGUID(), travelDistance, now,
                     bot->IsOutdoors(), bot->IsInCombat(), bot->IsNonMeleeSpellCast(false),
-                    bot->GetLevel(), false))
+                    bot->GetLevel(), false, isDungeon, isRaid, isInWater, isSwimming))
                 return false;
 
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
@@ -1173,12 +1454,19 @@ namespace BotMovement
         return false;
     }
 
-    void RequestDismount(Player* bot, MoveOwner owner, DismountReason reason)
+    bool RequestMount(Player* bot, MoveOwner owner, float travelDistance, bool wantFlying)
+    {
+        if (!bot)
+            return false;
+        std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
+        return RequestMountInternal(bot, owner, travelDistance, wantFlying);
+    }
+
+    void RequestDismountInternal(Player* bot, MoveOwner owner, DismountReason reason)
     {
         if (!bot)
             return;
 
-        std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
         MountTransitionResult trans;
 
@@ -1201,6 +1489,15 @@ namespace BotMovement
             _stats.dismounts.fetch_add(1, std::memory_order_relaxed);
         }
     }
+
+    void RequestDismount(Player* bot, MoveOwner owner, DismountReason reason)
+    {
+        if (!bot)
+            return;
+        std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
+        RequestDismountInternal(bot, owner, reason);
+    }
+
 
     void SetLeaderMountPreference(Player* bot, DesiredMountState pref)
     {
@@ -1332,6 +1629,79 @@ namespace BotMovement
         return token.IsValid();
     }
 
+    void ApplyMountPolicy(Player* bot, uint32 now)
+    {
+        if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+            return;
+
+        std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
+        LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
+
+        MountPolicyDecision decision;
+        MoveOwner currentOwner = MoveOwner::None;
+        float travelDist = 0.0f;
+
+        {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            BotLocomotionRecord const& rec = shard.locomotion[bot->GetGUID()];
+            BotMountRecord const& mRec = shard.mounts[bot->GetGUID()];
+            currentOwner = rec.owner;
+
+            // Travel distance is strictly tied to an active, matching Navigate request in Navigate mode!
+            if (rec.mode == MoveMode::Navigate)
+            {
+                auto reqIt = shard.requests.find(bot->GetGUID());
+                if (reqIt != shard.requests.end() && reqIt->second.movementCommandId == rec.commandId)
+                {
+                    travelDist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), reqIt->second.x, reqIt->second.y);
+                }
+            }
+
+            bool isFollowingLeader = (rec.mode == MoveMode::Follow && bot->GetGroup() != nullptr);
+            bool leaderPrefDebounced = (now - mRec.leaderStateObservedAt >= MountStateMachine::LEADER_DEBOUNCE_MS);
+            bool isDungeon = bot->GetMap() && bot->GetMap()->IsDungeon();
+            bool isRaid = bot->GetMap() && bot->GetMap()->IsRaid();
+            bool isInWater = bot->IsInWater();
+            bool isSwimming = bot->HasUnitMovementFlag(MOVEMENTFLAG_SWIMMING);
+
+            decision = MountPolicyResolver::Evaluate(
+                rec.owner,
+                rec.mode,
+                travelDist,
+                isFollowingLeader,
+                mRec.leaderDesiredState,
+                leaderPrefDebounced,
+                bot->IsOutdoors(),
+                bot->IsInCombat(),
+                bot->IsNonMeleeSpellCast(false),
+                bot->GetLevel(),
+                BotMovement::IsExternallyControlled(bot),
+                mRec.state,
+                mRec.remountCooldownUntilMs,
+                now,
+                bot->CanFly(),
+                bot->IsMounted(),
+                isDungeon,
+                isRaid,
+                isInWater,
+                isSwimming
+            );
+        }
+
+        if (decision.action == MountAction::Dismount && (bot->IsMounted() || GetMountState(bot) == MountState::MountCasting))
+        {
+            RequestDismountInternal(bot, currentOwner, decision.dismountReason);
+        }
+        else if (decision.action == MountAction::MountGround && !bot->IsMounted() && GetMountState(bot) != MountState::MountCasting)
+        {
+            RequestMountInternal(bot, currentOwner, travelDist, false);
+        }
+        else if (decision.action == MountAction::MountFlying && !bot->IsMounted() && GetMountState(bot) != MountState::MountCasting)
+        {
+            RequestMountInternal(bot, currentOwner, travelDist, true);
+        }
+    }
+
     void Update(Player* bot, uint32 diff)
     {
         if (!bot || !bot->IsInWorld() || !bot->IsAlive())
@@ -1340,8 +1710,14 @@ namespace BotMovement
         uint32 now = NowMs();
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
 
-        enum class Action { None, DismountLeader, MountLeaderGround, MountLeaderFlying, ClearAuthorized, AirborneRecover };
-        Action action = Action::None;
+        struct DeferredAction
+        {
+            enum class Type { None, ClearAuthorized, AirborneRecover } type = Type::None;
+            uint64 expectedCommandId = 0;
+            MoveOwner expectedOwner = MoveOwner::None;
+            MoveMode expectedMode = MoveMode::Idle;
+            LocomotionState expectedState = LocomotionState::Idle;
+        } deferred;
 
         // Update leader preference if in group
         TryMatchLeaderMountState(bot);
@@ -1367,74 +1743,49 @@ namespace BotMovement
                 rec.holdUntilMs = 0;
             }
 
-            // 3. Generator Completion Reconciliation
+            // 3. Generator Completion Reconciliation (Mode-aware: Point, Follow, Chase)
             MovementGeneratorType genType = bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
-            if (rec.state == LocomotionState::Moving && rec.mode == MoveMode::Point)
+            bool isMoving = bot->isMoving();
+
+            if (GeneratorReconciler::ReconcilePoint(rec, genType, isMoving, now))
             {
-                if (genType != POINT_MOTION_TYPE && !bot->isMoving() && (now - rec.issuedAtMs > 500))
-                {
-                    RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Moving, LocomotionState::Idle,
-                        rec.owner, MoveMode::Idle, "PointArrivedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
-                    rec.state = LocomotionState::Idle;
-                    rec.owner = MoveOwner::None;
-                    rec.mode = MoveMode::Idle;
-                }
+                RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Moving, LocomotionState::Idle,
+                    rec.owner, MoveMode::Idle, "PointArrivedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
+            }
+            else if (GeneratorReconciler::ReconcileFollow(rec, genType, isMoving, now))
+            {
+                RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Following, LocomotionState::Idle,
+                    rec.owner, MoveMode::Idle, "FollowEndedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
+            }
+            else if (GeneratorReconciler::ReconcileChase(rec, genType, isMoving, now))
+            {
+                RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Chasing, LocomotionState::Idle,
+                    rec.owner, MoveMode::Idle, "ChaseEndedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
             }
 
             // 4. Invariant Check: If internal locomotion state is Idle but MotionMaster has active bot generator
             if (rec.state == LocomotionState::Idle &&
                 (genType == POINT_MOTION_TYPE || genType == FOLLOW_MOTION_TYPE || genType == CHASE_MOTION_TYPE))
             {
-                action = Action::ClearAuthorized;
+                deferred.type = DeferredAction::Type::ClearAuthorized;
+                deferred.expectedCommandId = rec.commandId;
+                deferred.expectedOwner = rec.owner;
+                deferred.expectedMode = rec.mode;
+                deferred.expectedState = rec.state;
             }
+        }
 
-            // 5. Evaluate Mount Policy via MountPolicyResolver
-            if (action == Action::None)
-            {
-                float travelDist = 0.0f;
-                auto reqIt = shard.requests.find(bot->GetGUID());
-                if (reqIt != shard.requests.end())
-                {
-                    travelDist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), reqIt->second.x, reqIt->second.y);
-                }
+        // Step 2: Safe Position Maintenance & Airborne Watchdog (terrain query OUTSIDE shard lock)
+        float bx = bot->GetPositionX();
+        float by = bot->GetPositionY();
+        float bz = bot->GetPositionZ();
+        float groundZ = ResolveGroundZ(bot, bx, by, bz);
 
-                bool isFollowingLeader = (rec.mode == MoveMode::Follow && bot->GetGroup() != nullptr);
-                bool leaderPrefDebounced = (now - mRec.leaderStateObservedAt >= MountStateMachine::LEADER_DEBOUNCE_MS);
+        {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            BotLocomotionRecord const& rec = shard.locomotion[bot->GetGUID()];
 
-                MountPolicyDecision decision = MountPolicyResolver::Evaluate(
-                    rec.owner,
-                    rec.mode,
-                    travelDist,
-                    isFollowingLeader,
-                    mRec.leaderDesiredState,
-                    leaderPrefDebounced,
-                    bot->IsOutdoors(),
-                    bot->IsInCombat(),
-                    bot->IsNonMeleeSpellCast(false),
-                    bot->GetLevel(),
-                    BotMovement::IsExternallyControlled(bot),
-                    mRec.state,
-                    mRec.remountCooldownUntilMs,
-                    now,
-                    bot->CanFly(),
-                    bot->IsMounted()
-                );
-
-                if (decision.action == MountAction::Dismount && bot->IsMounted())
-                {
-                    action = Action::DismountLeader;
-                }
-                else if (decision.action == MountAction::MountGround && !bot->IsMounted())
-                {
-                    action = Action::MountLeaderGround;
-                }
-                else if (decision.action == MountAction::MountFlying && !bot->IsMounted())
-                {
-                    action = Action::MountLeaderFlying;
-                }
-            }
-
-            // 6. Safe Position Ring Buffer Maintenance (every 500ms for grounded bots)
+            // Safe position candidates: ground-confirmed recovery candidates
             uint32& lastSafe = shard.lastSafeCheck[bot->GetGUID()];
             if (now - lastSafe >= 500)
             {
@@ -1446,11 +1797,6 @@ namespace BotMovement
                     shard.lastRecordedMap[bot->GetGUID()] = curMap;
                 }
 
-                float bx = bot->GetPositionX();
-                float by = bot->GetPositionY();
-                float bz = bot->GetPositionZ();
-                float groundZ = ResolveGroundZ(bot, bx, by, bz);
-
                 if (!bot->CanFly() && !bot->IsFlying() && !bot->IsInFlight() &&
                     !bot->IsInWater() && !bot->GetVehicle() && !BotMovement::IsExternallyControlled(bot) &&
                     !bot->IsFalling() && !bot->HasUnitState(UNIT_STATE_JUMPING) &&
@@ -1460,18 +1806,18 @@ namespace BotMovement
                 }
             }
 
-            // 7. Airborne Watchdog: catch suspended ground bots (>5.0yd above ground, stationary)
+            // Airborne Watchdog: catch suspended ground bots (>5.0yd above ground, stationary)
             uint32& airTime = shard.airborneMs[bot->GetGUID()];
             if (!bot->CanFly() && !bot->IsInFlight() && !bot->IsInWater() && !bot->GetVehicle())
             {
-                float groundZ = ResolveGroundZ(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-                bool isSuspended = (bot->GetPositionZ() - groundZ > 5.0f);
+                bool isSuspended = (bz - groundZ > 5.0f);
                 if (isSuspended && !bot->isMoving())
                 {
                     airTime += diff;
                     if (airTime >= 1500)
                     {
-                        action = Action::AirborneRecover;
+                        deferred.type = DeferredAction::Type::AirborneRecover;
+                        deferred.expectedCommandId = rec.commandId;
                     }
                 }
                 else
@@ -1485,32 +1831,46 @@ namespace BotMovement
             }
         }
 
-        // Step 2: Execute Decisions OUTSIDE Shard State Lock
-        if (action == Action::ClearAuthorized)
+        // Step 3: Execute Deferred Actions under Dispatch Gate with Generation Revalidation
+        if (deferred.type == DeferredAction::Type::ClearAuthorized)
         {
             std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
-            ClearAuthorizedMovement(bot);
+            bool stillStale = false;
+            {
+                std::lock_guard<std::mutex> lock(shard.mutex);
+                BotLocomotionRecord const& cur = shard.locomotion[bot->GetGUID()];
+                if (LocomotionCommandValidator::ValidateDeferredAction(cur, deferred.expectedCommandId,
+                        deferred.expectedOwner, deferred.expectedMode, deferred.expectedState))
+                {
+                    stillStale = true;
+                }
+            }
+            if (stillStale)
+            {
+                ClearAuthorizedMovement(bot);
+            }
         }
-        else if (action == Action::AirborneRecover)
+        else if (deferred.type == DeferredAction::Type::AirborneRecover)
         {
             std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
-            ClearAuthorizedMovement(bot);
-            bot->GetMotionMaster()->MoveFall();
-        }
-        else if (action == Action::DismountLeader)
-        {
-            RequestDismount(bot, MoveOwner::Travel, DismountReason::LeaderState);
-        }
-        else if (action == Action::MountLeaderGround)
-        {
-            RequestMount(bot, MoveOwner::Travel, 0.0f, false);
-        }
-        else if (action == Action::MountLeaderFlying)
-        {
-            RequestMount(bot, MoveOwner::Travel, 0.0f, true);
+            bool stillAirborne = false;
+            {
+                std::lock_guard<std::mutex> lock(shard.mutex);
+                BotLocomotionRecord const& cur = shard.locomotion[bot->GetGUID()];
+                if (cur.commandId == deferred.expectedCommandId)
+                    stillAirborne = true;
+            }
+            if (stillAirborne)
+            {
+                ClearAuthorizedMovement(bot);
+                bot->GetMotionMaster()->MoveFall();
+            }
         }
 
-        // Step 3: Resolve any pending mount cast
+        // Step 4: Evaluate and apply mount policy atomically under serialized dispatch gate
+        ApplyMountPolicy(bot, now);
+
+        // Step 5: Resolve any pending mount cast
         ResolveMountCast(bot);
     }
 
@@ -1590,5 +1950,7 @@ namespace BotMovement
         shard.histories.erase(botGuid);
         shard.requests.erase(botGuid);
         shard.nopathCache.erase(botGuid);
+        shard.nextRequestGen.erase(botGuid);
     }
+
 }

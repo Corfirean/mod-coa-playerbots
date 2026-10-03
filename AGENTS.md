@@ -3342,3 +3342,64 @@ stress test (80 000 ops, 10 s deadlock watchdog). All checks pass with MSVC 19.5
 4. Concurrent `MoveTo` + `Follow` calls from two threads: dispatch gate prevents interleaving;
    neither bot freezes.
 
+## 2026-10-03: Locomotion overhaul, Round 5 -- token decoupling, zero-mutation claim failure, generation-guarded deferred actions, active-mode mount policy, pure reconcilers (compiled + linked, tests green)
+
+Stacked on Round 4 (`1bf3043`). Round 4 resolved dispatch serialization and transactional MoveTo, but code review identified remaining runtime races in token identity guessing, low-priority preemption mutation, deferred update race conditions, and mount policy mode ambiguity. Round 5 eliminates these races.
+
+### P0 fixed: Never synthesize a LocomotionToken -- request identity decoupled from locomotion command
+
+Previously, `Navigate()` predicted future command IDs via `req.commandId = shard.locomotion[botGuid].commandId + 1`. If an intervening command (e.g. Combat) took that ID before Navigate committed, or if `IssueLeg` failed, Navigate would call `Release(bot, LocomotionToken{owner, predictedCommandId})`, releasing the unrelated command.
+
+**Fix**:
+1. Decoupled `MovementRequest` identity (`uint64 requestGeneration`) from physical movement generation (`uint64 movementCommandId`).
+2. Added `nextRequestGen` to each `LocomotionShard` with monotonic allocator `LocomotionStateStore::AllocateRequestGenerationLocked`.
+3. `NavigateTransaction::CommitLeg` updates `req.movementCommandId` strictly from the `LocomotionToken` returned by committed `IssueLeg`.
+4. If first-leg issue fails, Navigate erases its own request entry (if `requestGeneration` matches) and releases *nothing*. Zero synthetic tokens exist anywhere in the codebase.
+
+### P0 fixed: IssueLeg failed claim does ZERO physical movement mutation
+
+In previous rounds, `IssueLeg` accepted `bool force = true` and called `ClearAuthorizedMovement(bot)` unconditionally. If a high-priority Combat Chase started between Navigate pre-validation and `IssueLeg`, the failed claim in `IssueLeg` would wipe the bot's MotionMaster.
+
+**Fix**:
+1. Removed `force` parameter and `ClearAuthorizedMovement(bot)` from `IssueLeg`.
+2. Failed claim in `IssueLeg` (or `MoveToInternal`) returns an invalid `LocomotionToken{}` and performs zero physical movement mutations. Lower-priority requests can never interrupt or wipe higher-priority movement.
+
+### P0 fixed: Generation-guarded deferred actions in Update()
+
+In `Update()`, decisions to clear movement (`deferredClear`) or perform airborne recovery (`deferredAirborne`) were executed after dropping the shard lock. A high-priority command arriving between snapshot and dispatch gate acquisition would be obliterated by the stale deferred clear.
+
+**Fix**:
+`Update()` records `(expectedCommandId, expectedOwner, expectedMode, expectedState)`. When the dispatch gate and shard lock are acquired, `LocomotionCommandValidator::ValidateDeferredAction` re-validates that the bot is still executing the exact snapshot generation before performing any clear or airborne teleportation. If state or generation changed, the deferred action is safely aborted.
+
+### P1 fixed: Active mode in Mount Policy & Navigate MoveMode
+
+`MountPolicyResolver::Evaluate` could trigger autonomous mounting based purely on `travelDist >= 90.0f`, even if the bot had stopped navigating and entered `Hold`, `Point`, or `Idle`.
+
+**Fix**:
+1. Introduced `MoveToInternal(..., MoveMode executionMode)`: legs issued by `Navigate` explicitly set `MoveMode::Navigate`, while direct `MoveTo` sets `MoveMode::Point`.
+2. `MountPolicyResolver::Evaluate` requires `activeMode == MoveMode::Navigate` for autonomous travel.
+3. Mode transitions in `MoveTo`, `Follow`, `Chase`, and `Hold` call `shard.requests.erase(bot)` to eliminate lingering distance targets.
+
+### P1 fixed: Mode-aware generator reconciliation
+
+Added `GeneratorReconciler` (`ReconcilePoint`, `ReconcileFollow`, `ReconcileChase`) with a 500 ms issue debounce. `Update()` reconciles generator completion for `Point`, `Follow`, and `Chase` to `Idle` when the engine generator terminates and the bot is stationary, while keeping `Navigate` owner active across intermediate legs.
+
+### P1 fixed: Explicit Mount legality for Dungeon, Raid, and Water
+
+`CanMount`, `CanMountLocked`, and `MountPolicyResolver::Evaluate` now check `isDungeon`, `isRaid`, `isInWater`, and `isSwimming`. Violations prevent mounting and generate dismount decisions with precise reasons (`IndoorEntered`, `WaterEntered`, `Combat`, `ActionForbidden`). `ApplyMountPolicy` routes the reason directly to `RequestDismountInternal`.
+
+### P1 fixed: Dispatch gate scalability -- PathGenerator outside dispatch gate
+
+In `MoveToInternal`, `PathGenerator::CalculatePath()` runs outside both `shard.mutex` and the per-bot dispatch gate. The dispatch gate is only held during generation bumping, state commit, and physical `MotionMaster` dispatch, preventing pathfinding thread convoying across bots sharing the same dispatch gate.
+
+### Tests: 25 tests, 143 checks, 0 failures
+
+`module/tests/locomotion_tests.cpp` was expanded with 9 regression tests covering synthetic token collision prevention, lower-priority non-mutation, generation-guarded deferred action validation, deferred mount policy re-evaluation, Navigate->Hold cleanup, follow/chase reconcilers, dungeon/water legality, and dispatch scalability. All 25 tests pass (143 checks, 0 failures).
+
+**Live testing matrix (ready for live validation)**:
+1. Autonomous travel (>90yd) mounts only when `MoveMode::Navigate` is active; transitioning to `Hold` never triggers mounting.
+2. Concurrent lower-priority Quest path finding failing never clears active Combat Chase.
+3. Bot entering water or instance immediately dismounts with `WaterEntered`/`IndoorEntered`.
+4. High-frequency combat interruptions during Navigate legs never corrupt or leak tokens.
+
+

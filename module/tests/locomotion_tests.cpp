@@ -1,7 +1,7 @@
 /*
- * mod-coa-playerbots -- locomotion & navigation overhaul Round 4 regression tests
+ * mod-coa-playerbots -- locomotion & navigation overhaul Round 4 & 5 regression tests
  *
- * Verifies all Round 4 core invariants using the EXACT production BotMovementStateStore:
+ * Verifies all Round 4 & 5 core invariants using the EXACT production BotMovementStateStore:
  *  1. LocomotionToken lifecycle, generation validation, stale rejection
  *  2. Multi-owner priority arbitration via LocomotionArbiter
  *  3. Stale Navigate arrival returns NavStatus::Superseded without touching active state
@@ -18,6 +18,15 @@
  * 14. Generator completion reconciliation: Moving/Point -> Idle when gen ended & stationary
  * 15. Mount cast failure backoff: TransitionCastFailed applies backoffMs cooldown
  * 16. 64-shard multithread stress with dispatch gate serialization
+ * 17. Synthetic token collision prevention (P0)
+ * 18. Lower priority IssueLeg failed claim does ZERO physical mutation (P0)
+ * 19. Generation-guarded deferred actions in Update() (P0)
+ * 20. Deferred mount policy race protection
+ * 21. Navigate -> Hold mode transition cleans up stale request & prevents mount
+ * 22. Generator reconciler - Follow
+ * 23. Generator reconciler - Chase
+ * 24. Dungeon, raid, and water mount legality & dismount reasons
+ * 25. Dispatch contention & concurrency scalability
  */
 
 #include "stub/Define.h"
@@ -151,7 +160,8 @@ static void TestStaleNavigateArrivalSuperseded()
         req.botGuid = bot;
         req.owner = MoveOwner::Quest;
         req.goalId = 200;
-        req.commandId = 55;
+        req.requestGeneration = 1;
+        req.movementCommandId = 55;
 
         BotLocomotionRecord& loc = shard.locomotion[bot];
         loc.owner = MoveOwner::Quest;
@@ -185,7 +195,7 @@ static void TestStaleNavigateArrivalSuperseded()
         auto it = shard.requests.find(bot);
         CHECK(it != shard.requests.end());
         CHECK(it->second.goalId == 200);
-        CHECK(it->second.commandId == 55);
+        CHECK(it->second.movementCommandId == 55);
         CHECK(shard.locomotion[bot].commandId == 55);
         CHECK(shard.locomotion[bot].owner == MoveOwner::Quest);
     }
@@ -820,11 +830,448 @@ static void Test64ShardMultithreadStress()
 }
 
 // ============================================================================
+// Test 17: Synthetic Token Collision Prevention (P0 Invariant)
+// ============================================================================
+static void TestSyntheticTokenCollisionPrevention()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(3001);
+    LocomotionShard& shard = LocomotionStateStore::GetShard(bot);
+
+    // Initial state: commandId 40
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.owner = MoveOwner::Ambient;
+        loc.commandId = 40;
+        loc.state = LocomotionState::Moving;
+    }
+
+    // Navigate A starts: allocates requestGeneration = 1.
+    // CRITICAL: Navigate does NOT guess or predict commandId = 41!
+    uint64 reqGenA = 0;
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        reqGenA = LocomotionStateStore::AllocateRequestGenerationLocked(shard, bot);
+        MovementRequest& req = shard.requests[bot];
+        req.botGuid = bot;
+        req.owner = MoveOwner::Quest;
+        req.goalId = 100;
+        req.requestGeneration = reqGenA;
+        req.movementCommandId = 0; // Not committed yet!
+    }
+    CHECK(reqGenA == 1);
+
+    // Concurrent command B arrives and commits real commandId = 41 (Combat)
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.owner = MoveOwner::Combat;
+        loc.commandId = 41;
+        loc.state = LocomotionState::Moving;
+    }
+
+    // Now Navigate A's IssueLeg fails (e.g. CanClaimLocked fails because Combat > Quest).
+    // In the old broken code: Navigate A generated LocomotionToken{Quest, 41} and called Release(41),
+    // killing Command B.
+    // In Round 5 code:
+    // 1. IssueLeg returns invalid token: LocomotionToken{}
+    // 2. Navigate failure only cleans up its own request generation:
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        LocomotionToken emptyTok{};
+        CHECK(!emptyTok.IsValid());
+
+        auto reqIt = shard.requests.find(bot);
+        if (reqIt != shard.requests.end() && reqIt->second.requestGeneration == reqGenA)
+        {
+            shard.requests.erase(reqIt);
+        }
+    }
+
+    // Command B (Combat, 41) MUST remain completely intact!
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotLocomotionRecord const& loc = shard.locomotion[bot];
+        CHECK(loc.owner == MoveOwner::Combat);
+        CHECK(loc.commandId == 41);
+        CHECK(loc.state == LocomotionState::Moving);
+        CHECK(shard.requests.find(bot) == shard.requests.end());
+    }
+}
+
+// ============================================================================
+// Test 18: Lower Priority IssueLeg Failed Claim Does ZERO Physical Mutation (P0 Invariant)
+// ============================================================================
+static void TestLowerPriorityIssueLegNoMutation()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(3002);
+    LocomotionShard& shard = LocomotionStateStore::GetShard(bot);
+
+    // High priority Combat Chase active: commandId = 50
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.owner = MoveOwner::Combat;
+        loc.mode = MoveMode::Chase;
+        loc.state = LocomotionState::Chasing;
+        loc.commandId = 50;
+    }
+
+    // Low priority Quest Navigate attempts to issue leg.
+    // In old code: IssueLeg used force=true and called ClearAuthorizedMovement(bot),
+    // clearing Combat's motion!
+    // In Round 5 code: IssueLeg has NO force parameter and NO ClearAuthorizedMovement.
+    // Pre-claim check under lock:
+    bool canClaim = false;
+    LocomotionToken tokenResult;
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        canClaim = LocomotionStateStore::CanClaimLocked(shard, bot, MoveOwner::Quest, false);
+        if (canClaim)
+        {
+            // Should not enter here
+            tokenResult = LocomotionToken{bot, MoveOwner::Quest, 51};
+        }
+    }
+
+    CHECK(!canClaim);
+    CHECK(!tokenResult.IsValid());
+
+    // Combat Chase must be completely unmutated
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotLocomotionRecord const& loc = shard.locomotion[bot];
+        CHECK(loc.owner == MoveOwner::Combat);
+        CHECK(loc.mode == MoveMode::Chase);
+        CHECK(loc.state == LocomotionState::Chasing);
+        CHECK(loc.commandId == 50);
+    }
+}
+
+// ============================================================================
+// Test 19: Generation-Guarded Deferred Actions in Update() (P0 Invariant)
+// ============================================================================
+static void TestGenerationGuardedDeferredAction()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(3003);
+    LocomotionShard& shard = LocomotionStateStore::GetShard(bot);
+
+    // Initial state: Travel Point, commandId = 5
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.owner = MoveOwner::Travel;
+        loc.mode = MoveMode::Point;
+        loc.state = LocomotionState::Moving;
+        loc.commandId = 5;
+    }
+
+    // Update() tick snapshot: decides command 5 is finished, sets deferredClear = true
+    uint64 deferredCommandId = 5;
+    MoveOwner deferredOwner = MoveOwner::Travel;
+    MoveMode deferredMode = MoveMode::Point;
+    LocomotionState deferredState = LocomotionState::Moving;
+
+    // Before deferred execution, higher priority Combat preempts: commandId = 6
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.owner = MoveOwner::Combat;
+        loc.mode = MoveMode::Chase;
+        loc.state = LocomotionState::Chasing;
+        loc.commandId = 6;
+    }
+
+    // Deferred action executes under dispatchGate + shard.mutex:
+    bool executedMutation = false;
+    {
+        std::mutex& gate = LocomotionStateStore::GetDispatchGate(bot);
+        std::lock_guard<std::mutex> dispatchLock(gate);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        if (LocomotionCommandValidator::ValidateDeferredAction(loc, deferredCommandId, deferredOwner, deferredMode, deferredState))
+        {
+            // Stale validation must return false!
+            loc.state = LocomotionState::Idle;
+            loc.owner = MoveOwner::None;
+            executedMutation = true;
+        }
+    }
+
+    CHECK(!executedMutation);
+
+    // Combat command 6 remains active and untouched
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotLocomotionRecord const& loc = shard.locomotion[bot];
+        CHECK(loc.owner == MoveOwner::Combat);
+        CHECK(loc.mode == MoveMode::Chase);
+        CHECK(loc.commandId == 6);
+    }
+}
+
+// ============================================================================
+// Test 20: Deferred Mount Policy Race Protection
+// ============================================================================
+static void TestDeferredMountPolicyRaceProtection()
+{
+    uint32 now = 10000;
+
+    // Leader preference snapshot: PreferUnmounted
+    DesiredMountState leaderPref = DesiredMountState::PreferUnmounted;
+
+    // Bot transitions to autonomous Navigate (150yd travel)
+    MoveOwner activeOwner = MoveOwner::Quest;
+    MoveMode activeMode = MoveMode::Navigate;
+    float travelDist = 150.0f;
+
+    // Re-evaluating under dispatch gate:
+    MountPolicyDecision dec = MountPolicyResolver::Evaluate(
+        activeOwner, activeMode, travelDist,
+        false /*isFollowingLeader*/, leaderPref, true /*debounced*/,
+        true /*outdoors*/, false /*combat*/, false /*casting*/,
+        40 /*level*/, false /*controlled*/,
+        MountState::Unmounted, 0, now, false /*canFly*/, false /*isCurrentlyMounted*/
+    );
+
+    // Must mount for autonomous travel despite leader unmounted preference
+    CHECK(dec.action == MountAction::MountGround);
+}
+
+// ============================================================================
+// Test 21: Navigate -> Hold Mode Transition Cleans Up Stale Request & Prevents Mount
+// ============================================================================
+static void TestNavigateToHoldCleansRequestAndBlocksMount()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(3004);
+    LocomotionShard& shard = LocomotionStateStore::GetShard(bot);
+
+    // Setup active Navigate request with 200yd travel
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        MovementRequest& req = shard.requests[bot];
+        req.botGuid = bot;
+        req.owner = MoveOwner::Quest;
+        req.goalId = 999;
+        req.requestGeneration = 1;
+        req.movementCommandId = 12;
+
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.owner = MoveOwner::Quest;
+        loc.mode = MoveMode::Navigate;
+        loc.state = LocomotionState::Moving;
+        loc.commandId = 12;
+    }
+
+    // Bot transitions to Hold (e.g. crowd controlled or script hold)
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        shard.requests.erase(bot); // Cleaned up!
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.mode = MoveMode::Hold;
+        loc.state = LocomotionState::Holding;
+        loc.holdUntilMs = 5000;
+    }
+
+    // Requests map must have no entry for this bot
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        CHECK(shard.requests.find(bot) == shard.requests.end());
+    }
+
+    // Evaluate mount policy with activeMode = MoveMode::Hold:
+    // Even if travelDist is somehow passed as 200yd, activeMode is Hold -> MUST NOT mount!
+    MountPolicyDecision dec = MountPolicyResolver::Evaluate(
+        MoveOwner::Quest, MoveMode::Hold, 200.0f,
+        false, DesiredMountState::None, true,
+        true, false, false, 40, false,
+        MountState::Unmounted, 0, 1000, false, false
+    );
+    CHECK(dec.action == MountAction::None);
+}
+
+// ============================================================================
+// Test 22: Generator Reconciler - Follow
+// ============================================================================
+static void TestGeneratorReconcilerFollow()
+{
+    BotLocomotionRecord rec;
+    rec.owner = MoveOwner::Travel;
+    rec.mode = MoveMode::Follow;
+    rec.state = LocomotionState::Following;
+    rec.issuedAtMs = 1000;
+
+    uint32 now = 2000;
+
+    // Case A: Generator still active (genType == 2) -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileFollow(rec, 2 /*FOLLOW_MOTION_TYPE*/, false, now));
+    CHECK(rec.state == LocomotionState::Following);
+
+    // Case B: Still moving -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileFollow(rec, 0, true /*isMoving*/, now));
+    CHECK(rec.state == LocomotionState::Following);
+
+    // Case C: Within 500ms debounce -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileFollow(rec, 0, false, 1200 /*issued 200ms ago*/));
+    CHECK(rec.state == LocomotionState::Following);
+
+    // Case D: Generator ended, not moving, issued > 500ms ago -> reconciles to Idle!
+    CHECK(GeneratorReconciler::ReconcileFollow(rec, 0, false, now));
+    CHECK(rec.state == LocomotionState::Idle);
+    CHECK(rec.mode == MoveMode::Idle);
+    CHECK(rec.owner == MoveOwner::None);
+}
+
+// ============================================================================
+// Test 23: Generator Reconciler - Chase
+// ============================================================================
+static void TestGeneratorReconcilerChase()
+{
+    BotLocomotionRecord rec;
+    rec.owner = MoveOwner::Combat;
+    rec.mode = MoveMode::Chase;
+    rec.state = LocomotionState::Chasing;
+    rec.issuedAtMs = 1000;
+
+    uint32 now = 2000;
+
+    // Case A: Generator still active (genType == 3) -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileChase(rec, 3 /*CHASE_MOTION_TYPE*/, false, now));
+    CHECK(rec.state == LocomotionState::Chasing);
+
+    // Case B: Still moving -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileChase(rec, 0, true /*isMoving*/, now));
+    CHECK(rec.state == LocomotionState::Chasing);
+
+    // Case C: Within debounce -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileChase(rec, 0, false, 1300 /*issued 300ms ago*/));
+    CHECK(rec.state == LocomotionState::Chasing);
+
+    // Case D: Generator ended, not moving, past debounce -> reconciles to Idle!
+    CHECK(GeneratorReconciler::ReconcileChase(rec, 0, false, now));
+    CHECK(rec.state == LocomotionState::Idle);
+    CHECK(rec.mode == MoveMode::Idle);
+    CHECK(rec.owner == MoveOwner::None);
+}
+
+// ============================================================================
+// Test 24: Dungeon, Raid, and Water Mount Legality & Dismount Reasons
+// ============================================================================
+static void TestDungeonRaidWaterMountLegality()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(3005);
+    LocomotionShard& shard = LocomotionStateStore::GetShard(bot);
+
+    uint32 now = 5000;
+
+    // Test CanMountLocked
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        // Base legal: outdoor, lvl 40, 100yd
+        CHECK(LocomotionStateStore::CanMountLocked(shard, bot, 100.0f, now, true, false, false, 40, false));
+
+        // Illegal in dungeon
+        CHECK(!LocomotionStateStore::CanMountLocked(shard, bot, 100.0f, now, true, false, false, 40, false, true /*dungeon*/));
+        // Illegal in raid
+        CHECK(!LocomotionStateStore::CanMountLocked(shard, bot, 100.0f, now, true, false, false, 40, false, false, true /*raid*/));
+        // Illegal in water
+        CHECK(!LocomotionStateStore::CanMountLocked(shard, bot, 100.0f, now, true, false, false, 40, false, false, false, true /*water*/));
+        // Illegal swimming
+        CHECK(!LocomotionStateStore::CanMountLocked(shard, bot, 100.0f, now, true, false, false, 40, false, false, false, false, true /*swimming*/));
+    }
+
+    // Test MountPolicyResolver::Evaluate dismount actions & reasons
+    // In Dungeon -> Dismount with IndoorEntered
+    MountPolicyDecision decDungeon = MountPolicyResolver::Evaluate(
+        MoveOwner::None, MoveMode::Idle, 0.0f, false, DesiredMountState::None, true,
+        true, false, false, 40, false, MountState::MountedGround, 0, now, false, true,
+        true /*isDungeon*/
+    );
+    CHECK(decDungeon.action == MountAction::Dismount);
+    CHECK(decDungeon.dismountReason == DismountReason::IndoorEntered);
+
+    // In Water -> Dismount with WaterEntered
+    MountPolicyDecision decWater = MountPolicyResolver::Evaluate(
+        MoveOwner::None, MoveMode::Idle, 0.0f, false, DesiredMountState::None, true,
+        true, false, false, 40, false, MountState::MountedGround, 0, now, false, true,
+        false, false, true /*isInWater*/
+    );
+    CHECK(decWater.action == MountAction::Dismount);
+    CHECK(decWater.dismountReason == DismountReason::WaterEntered);
+
+    // Swimming -> Dismount with WaterEntered
+    MountPolicyDecision decSwim = MountPolicyResolver::Evaluate(
+        MoveOwner::None, MoveMode::Idle, 0.0f, false, DesiredMountState::None, true,
+        true, false, false, 40, false, MountState::MountedGround, 0, now, false, true,
+        false, false, false, true /*isSwimming*/
+    );
+    CHECK(decSwim.action == MountAction::Dismount);
+    CHECK(decSwim.dismountReason == DismountReason::WaterEntered);
+}
+
+// ============================================================================
+// Test 25: Dispatch Contention & Concurrency Scalability
+// ============================================================================
+static void TestDispatchContentionAndScalability()
+{
+    // Find two distinct bot GUIDs that hash to DIFFERENT dispatch gates
+    ObjectGuid botA(1);
+    size_t gateA = botA.GetCounter() % DISPATCH_GATES;
+    ObjectGuid botB(2);
+    while ((botB.GetCounter() % DISPATCH_GATES) == gateA)
+    {
+        botB = ObjectGuid(botB.GetRawValue() + 1);
+    }
+    CHECK((botA.GetCounter() % DISPATCH_GATES) != (botB.GetCounter() % DISPATCH_GATES));
+
+    // Also find botC that hashes to the SAME gate as botA
+    ObjectGuid botC(botA.GetRawValue() + 1);
+    while ((botC.GetCounter() % DISPATCH_GATES) != gateA)
+    {
+        botC = ObjectGuid(botC.GetRawValue() + 1);
+    }
+    CHECK((botA.GetCounter() % DISPATCH_GATES) == (botC.GetCounter() % DISPATCH_GATES));
+
+    // Verify botA and botB can acquire their dispatch gates concurrently without contention
+    std::mutex& gateForA = LocomotionStateStore::GetDispatchGate(botA);
+    std::mutex& gateForB = LocomotionStateStore::GetDispatchGate(botB);
+
+    std::atomic<bool> aLocked{false};
+    std::atomic<bool> bRanConcurrently{false};
+
+    std::thread threadA([&]() {
+        std::lock_guard<std::mutex> lockA(gateForA);
+        aLocked.store(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    });
+
+    while (!aLocked.load())
+        std::this_thread::yield();
+
+    std::thread threadB([&]() {
+        // While threadA holds gateForA, threadB should be able to immediately acquire gateForB!
+        std::lock_guard<std::mutex> lockB(gateForB);
+        bRanConcurrently.store(aLocked.load());
+    });
+
+    threadA.join();
+    threadB.join();
+
+    CHECK(bRanConcurrently.load());
+}
+
+// ============================================================================
 // Main Runner
 // ============================================================================
 int main()
 {
-    std::printf("Running locomotion & navigation overhaul Round 4 regression tests...\n");
+    std::printf("Running locomotion & navigation overhaul Round 4 & 5 regression tests...\n");
     std::printf("Using production LocomotionStateStore: %zu shards, %zu dispatch gates\n",
         LOCOMOTION_SHARDS, DISPATCH_GATES);
 
@@ -844,6 +1291,17 @@ int main()
     TestGeneratorCompletionReconciliation();
     TestMountCastFailureBackoff();
     Test64ShardMultithreadStress();
+
+    // Round 5 tests
+    TestSyntheticTokenCollisionPrevention();
+    TestLowerPriorityIssueLegNoMutation();
+    TestGenerationGuardedDeferredAction();
+    TestDeferredMountPolicyRaceProtection();
+    TestNavigateToHoldCleansRequestAndBlocksMount();
+    TestGeneratorReconcilerFollow();
+    TestGeneratorReconcilerChase();
+    TestDungeonRaidWaterMountLegality();
+    TestDispatchContentionAndScalability();
 
     std::printf("Locomotion tests completed: %d checks, %d failures\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;

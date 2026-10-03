@@ -379,7 +379,8 @@ struct MovementRequest
     ObjectGuid botGuid;
     MoveOwner owner = MoveOwner::None;
     uint64 goalId = 0;
-    uint64 commandId = 0;
+    uint64 requestGeneration = 0;   // Navigate transaction identity
+    uint64 movementCommandId = 0;   // actual committed locomotion token commandId
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
@@ -512,9 +513,10 @@ public:
     static constexpr uint32 LEADER_DEBOUNCE_MS = 1000;
 
     static bool CanMount(MountState state, float travelDist, uint32 remountCooldownUntilMs, uint32 now,
-                         bool isOutdoors, bool inCombat, bool casting, uint8 level, bool isControlled)
+                         bool isOutdoors, bool inCombat, bool casting, uint8 level, bool isControlled,
+                         bool isDungeon = false, bool isRaid = false, bool isInWater = false, bool isSwimming = false)
     {
-        if (isControlled || inCombat || casting || !isOutdoors)
+        if (isControlled || inCombat || casting || !isOutdoors || isDungeon || isRaid || isInWater || isSwimming)
             return false;
 
         if (level < 20)
@@ -598,18 +600,28 @@ public:
         uint32 remountCooldownUntilMs,
         uint32 now,
         bool canFly,
-        bool isCurrentlyMounted)
+        bool isCurrentlyMounted,
+        bool isDungeon = false,
+        bool isRaid = false,
+        bool isInWater = false,
+        bool isSwimming = false)
     {
-        (void)activeMode;
         MountPolicyDecision dec;
 
-        // 1. Invariants: combat, indoors, casting, or controlled require dismount
-        if (isControlled || inCombat || !isOutdoors)
+        // 1. Invariants: combat, indoors, casting, controlled, dungeon, raid, water require dismount
+        if (isControlled || inCombat || !isOutdoors || isDungeon || isRaid || isInWater || isSwimming)
         {
             if (isCurrentlyMounted || currentState == MountState::MountCasting || currentState == MountState::MountedGround || currentState == MountState::MountedFlying)
             {
                 dec.action = MountAction::Dismount;
-                dec.dismountReason = inCombat ? DismountReason::Combat : (isControlled ? DismountReason::ActionForbidden : DismountReason::IndoorEntered);
+                if (inCombat)
+                    dec.dismountReason = DismountReason::Combat;
+                else if (isControlled)
+                    dec.dismountReason = DismountReason::ActionForbidden;
+                else if (isInWater || isSwimming)
+                    dec.dismountReason = DismountReason::WaterEntered;
+                else
+                    dec.dismountReason = DismountReason::IndoorEntered;
             }
             return dec;
         }
@@ -630,7 +642,7 @@ public:
             {
                 if (!isCurrentlyMounted && currentState != MountState::MountCasting)
                 {
-                    if (MountStateMachine::CanMount(currentState, 0.0f, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled))
+                    if (MountStateMachine::CanMount(currentState, 0.0f, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled, isDungeon, isRaid, isInWater, isSwimming))
                     {
                         dec.action = MountAction::MountFlying;
                         dec.wantFlying = true;
@@ -642,7 +654,7 @@ public:
             {
                 if (!isCurrentlyMounted && currentState != MountState::MountCasting)
                 {
-                    if (MountStateMachine::CanMount(currentState, 0.0f, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled))
+                    if (MountStateMachine::CanMount(currentState, 0.0f, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled, isDungeon, isRaid, isInWater, isSwimming))
                     {
                         dec.action = MountAction::MountGround;
                     }
@@ -654,12 +666,13 @@ public:
         // 3. Autonomous Travel / Navigate context
         // If the bot is moving autonomously (Quest, Travel, Ambient), leader's PreferUnmounted is ignored
         // to prevent flapping between autonomous mounting (>90yd) and leader dismount.
-        bool isAutonomousTravel = (activeOwner == MoveOwner::Travel || activeOwner == MoveOwner::Quest || activeOwner == MoveOwner::Ambient);
+        // REQUIRES activeMode == MoveMode::Navigate (never mounts on Hold / Idle / Point)!
+        bool isAutonomousTravel = (activeMode == MoveMode::Navigate && (activeOwner == MoveOwner::Travel || activeOwner == MoveOwner::Quest || activeOwner == MoveOwner::Ambient));
         if (isAutonomousTravel && travelDist >= MountStateMachine::MOUNT_HYSTERESIS_DIST)
         {
             if (!isCurrentlyMounted && currentState != MountState::MountCasting)
             {
-                if (MountStateMachine::CanMount(currentState, travelDist, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled))
+                if (MountStateMachine::CanMount(currentState, travelDist, remountCooldownUntilMs, now, isOutdoors, inCombat, casting, level, isControlled, isDungeon, isRaid, isInWater, isSwimming))
                 {
                     dec.action = canFly ? MountAction::MountFlying : MountAction::MountGround;
                     dec.wantFlying = canFly;
@@ -671,5 +684,113 @@ public:
         return dec;
     }
 };
+
+// =============================================================================
+// Pure Command Logic & Reconciliation Components (Unit-tested)
+// =============================================================================
+
+class LocomotionCommandValidator
+{
+public:
+    static bool IsTokenMatch(BotLocomotionRecord const& rec, LocomotionToken const& token)
+    {
+        if (!token.IsValid())
+            return false;
+        return rec.owner == token.owner && rec.commandId == token.commandId;
+    }
+
+    static bool ValidateDeferredAction(BotLocomotionRecord const& cur, uint64 expectedCommandId,
+                                      MoveOwner expectedOwner, MoveMode expectedMode, LocomotionState expectedState)
+    {
+        return cur.commandId == expectedCommandId &&
+               cur.owner == expectedOwner &&
+               cur.mode == expectedMode &&
+               cur.state == expectedState;
+    }
+};
+
+class GeneratorReconciler
+{
+public:
+    static bool ReconcilePoint(BotLocomotionRecord& rec, uint32 currentMotionType, bool isMoving, uint32 now)
+    {
+        if (rec.state == LocomotionState::Moving && rec.mode == MoveMode::Point)
+        {
+            if (currentMotionType != 1 /*POINT_MOTION_TYPE*/ && !isMoving && (now - rec.issuedAtMs > 500))
+            {
+                rec.state = LocomotionState::Idle;
+                rec.owner = MoveOwner::None;
+                rec.mode = MoveMode::Idle;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool ReconcileFollow(BotLocomotionRecord& rec, uint32 currentMotionType, bool isMoving, uint32 now)
+    {
+        if (rec.state == LocomotionState::Following && rec.mode == MoveMode::Follow)
+        {
+            if (currentMotionType != 2 /*FOLLOW_MOTION_TYPE*/ && !isMoving && (now - rec.issuedAtMs > 500))
+            {
+                rec.state = LocomotionState::Idle;
+                rec.owner = MoveOwner::None;
+                rec.mode = MoveMode::Idle;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool ReconcileChase(BotLocomotionRecord& rec, uint32 currentMotionType, bool isMoving, uint32 now)
+    {
+        if (rec.state == LocomotionState::Chasing && rec.mode == MoveMode::Chase)
+        {
+            if (currentMotionType != 3 /*CHASE_MOTION_TYPE*/ && !isMoving && (now - rec.issuedAtMs > 500))
+            {
+                rec.state = LocomotionState::Idle;
+                rec.owner = MoveOwner::None;
+                rec.mode = MoveMode::Idle;
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+class NavigateTransaction
+{
+public:
+    static bool ValidateArrival(MovementRequest const& req, MoveOwner owner, uint64 goalId,
+                                float distToGoal, float acceptRadius, LocomotionToken& outTokenToRelease)
+    {
+        if (distToGoal <= acceptRadius)
+        {
+            if (req.owner == owner && req.goalId == goalId && req.movementCommandId != 0)
+            {
+                outTokenToRelease = LocomotionToken{req.botGuid, owner, req.movementCommandId};
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool IsRequestCurrent(MovementRequest const& req, uint64 expectedGeneration, uint64 goalId)
+    {
+        return req.requestGeneration == expectedGeneration && req.goalId == goalId;
+    }
+
+    static void CommitLeg(MovementRequest& req, LocomotionToken const& token, float legX, float legY, uint32 now)
+    {
+        if (!token.IsValid())
+            return;
+        req.movementCommandId = token.commandId;
+        req.legs++;
+        req.legX = legX;
+        req.legY = legY;
+        req.lastIssueAt = now;
+    }
+};
+
 
 #endif // COA_PLAYERBOTS_BOT_MOVEMENT_PRIMITIVES_H
