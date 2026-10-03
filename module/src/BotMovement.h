@@ -42,8 +42,8 @@ namespace BotMovement
     // Returns a generation token. forceDestination is defaulted to false for safety.
     LocomotionToken MoveTo(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination = false);
 
-    // Internal execution variant with explicit MoveMode (Point vs Navigate)
-    LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode);
+    // Internal execution variant with explicit MoveMode (Point vs Navigate) and optional dispatch guard
+    LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard = std::nullopt);
 
     // Goal-directed multi-leg travel with progress tracking, navmesh-aware detour, and backtrack recovery.
     NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius, LocomotionToken* outToken = nullptr);

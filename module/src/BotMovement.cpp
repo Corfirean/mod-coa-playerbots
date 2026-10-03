@@ -258,8 +258,9 @@ namespace
             }
         }
 
-        // Token-safe: Issue leg under explicit Navigate MoveMode. No independent physical clear!
-        LocomotionToken token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate);
+        // Token-safe: Issue leg under explicit Navigate MoveMode and carry request generation guard.
+        MovementDispatchGuard guard{req.requestGeneration, req.goalId};
+        LocomotionToken token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
         if (!token.IsValid())
             return {};
 
@@ -364,7 +365,7 @@ namespace BotMovement
     // Arbitrated Locomotion Primitives (Linearized Physical Dispatch & Token-Safe)
     // =========================================================================
 
-    LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode)
+    LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard)
     {
         if (!bot || !bot->IsInWorld() || !bot->IsAlive())
             return {};
@@ -379,13 +380,16 @@ namespace BotMovement
         float groundZ = ResolveGroundZ(bot, x, y, z);
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
 
-        // Step 1: Pre-validation under shard state lock.
+        // Step 1: Pre-validation and plan ticket allocation under shard state lock.
         // TRANSACTIONAL: Do NOT commit owner or increment commandId before PathGenerator succeeds!
+        uint64 myPlanTicket = 0;
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
 
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
                 return {};
+
+            myPlanTicket = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot->GetGUID(), owner);
 
             auto it = shard.locomotion.find(bot->GetGUID());
             if (it != shard.locomotion.end())
@@ -451,6 +455,24 @@ namespace BotMovement
             // Revalidate CanClaim in case state changed during PathGenerator calculation
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
                 return {};
+
+            // Planning ticket epoch check: older plan cannot overwrite newer intent
+            if (!LocomotionStateStore::IsPlanCurrentLocked(shard, bot->GetGUID(), owner, myPlanTicket))
+                return {};
+
+            // Stale Navigate guard check: validate BEFORE physical commit and command bump!
+            if (executionMode == MoveMode::Navigate && guard.has_value())
+            {
+                auto rItr = shard.requests.find(bot->GetGUID());
+                if (rItr == shard.requests.end() ||
+                    rItr->second.owner != owner ||
+                    rItr->second.requestGeneration != guard->requestGeneration ||
+                    rItr->second.goalId != guard->goalId)
+                {
+                    // Stale request! Zero physical mutation, zero commandId bump.
+                    return {};
+                }
+            }
 
             BotLocomotionRecord& rec = shard.locomotion[bot->GetGUID()];
             rec.commandId++;
@@ -1390,6 +1412,14 @@ namespace BotMovement
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
 
+            auto lItr = shard.locomotion.find(bot->GetGUID());
+            if (lItr != shard.locomotion.end())
+            {
+                // Never mount during Hold!
+                if (lItr->second.mode == MoveMode::Hold)
+                    return false;
+            }
+
             if (!LocomotionStateStore::CanMountLocked(shard, bot->GetGUID(), travelDistance, now,
                     bot->IsOutdoors(), bot->IsInCombat(), bot->IsNonMeleeSpellCast(false),
                     bot->GetLevel(), false, isDungeon, isRaid, isInWater, isSwimming))
@@ -1425,6 +1455,7 @@ namespace BotMovement
             mRec.mountCastStartedAt = now;
             mRec.mountOwner = owner;
             mRec.mountGeneration++;
+            mRec.castingGeneration = mRec.mountGeneration;
             _stats.mountAttempts.fetch_add(1, std::memory_order_relaxed);
         }
 
@@ -1559,45 +1590,75 @@ namespace BotMovement
         if (!bot)
             return;
 
+        // Serialize mount resolution under per-bot dispatch gate
+        std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
+
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
         uint32 now = NowMs();
+        bool removeStaleAura = false;
 
-        std::lock_guard<std::mutex> lock(shard.mutex);
-        BotMountRecord& mRec = shard.mounts[bot->GetGUID()];
-
-        if (mRec.pendingMountSpellId == 0)
         {
-            // If mounted physically but record unmounted, sync only if not in dismount cooldown
-            if (bot->IsMounted() && mRec.state != MountState::MountedGround && mRec.state != MountState::MountedFlying &&
-                now >= mRec.remountCooldownUntilMs)
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            BotMountRecord& mRec = shard.mounts[bot->GetGUID()];
+
+            if (mRec.state == MountState::MountCasting)
             {
-                mRec.state = bot->CanFly() ? MountState::MountedFlying : MountState::MountedGround;
+                // Mount casts take ~1.5s. If bot is still non-melee casting, wait for it!
+                if (bot->IsNonMeleeSpellCast(false))
+                    return;
+
+                uint64 castGen = mRec.castingGeneration;
+                uint32 justTried = mRec.pendingMountSpellId;
+                mRec.pendingMountSpellId = 0;
+
+                // Generation check: if castingGeneration != mountGeneration, cast was cancelled/invalidated!
+                if (castGen != mRec.mountGeneration)
+                {
+                    if (bot->IsMounted())
+                    {
+                        removeStaleAura = true;
+                    }
+                    // Do NOT count success, do NOT transition to Mounted!
+                }
+                else if (bot->IsMounted())
+                {
+                    mRec.state = bot->CanFly() ? MountState::MountedFlying : MountState::MountedGround;
+                    _stats.mountSuccesses.fetch_add(1, std::memory_order_relaxed);
+                }
+                else
+                {
+                    // Cast ended without becoming mounted (interrupted or failed)
+                    MountStateMachine::TransitionCastFailed(mRec, now, MOUNT_FAIL_BACKOFF_MS);
+                    if (!bot->IsInCombat() && !bot->isMoving() &&
+                        justTried != GetRacialGroundMountSpell(bot->getRace()) &&
+                        justTried != GetDefaultFlyingMountSpell(bot))
+                    {
+                        mRec.knownBadMountSpells.insert(justTried);
+                    }
+                }
             }
-            return;
+            else
+            {
+                // Bot is in Cooldown or Unmounted
+                if (bot->IsMounted())
+                {
+                    // If in Cooldown or from an invalidated generation, strip stale mount aura!
+                    if (mRec.state == MountState::Cooldown || (mRec.castingGeneration != 0 && mRec.castingGeneration != mRec.mountGeneration))
+                    {
+                        removeStaleAura = true;
+                    }
+                    else if (mRec.state == MountState::Unmounted && now >= mRec.remountCooldownUntilMs)
+                    {
+                        // Clean external mount sync
+                        mRec.state = bot->CanFly() ? MountState::MountedFlying : MountState::MountedGround;
+                    }
+                }
+            }
         }
 
-        // Mount casts take ~1.5s. If bot is still non-melee casting, wait for it!
-        if (bot->IsNonMeleeSpellCast(false))
-            return;
-
-        uint32 justTried = mRec.pendingMountSpellId;
-        mRec.pendingMountSpellId = 0;
-
-        if (bot->IsMounted())
+        if (removeStaleAura && bot->IsMounted())
         {
-            mRec.state = bot->CanFly() ? MountState::MountedFlying : MountState::MountedGround;
-            _stats.mountSuccesses.fetch_add(1, std::memory_order_relaxed);
-        }
-        else
-        {
-            // Cast ended without becoming mounted (interrupted or failed)
-            MountStateMachine::TransitionCastFailed(mRec, now, MOUNT_FAIL_BACKOFF_MS);
-            if (!bot->IsInCombat() && !bot->isMoving() &&
-                justTried != GetRacialGroundMountSpell(bot->getRace()) &&
-                justTried != GetDefaultFlyingMountSpell(bot))
-            {
-                mRec.knownBadMountSpells.insert(justTried);
-            }
+            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
         }
     }
 
@@ -1747,20 +1808,24 @@ namespace BotMovement
             MovementGeneratorType genType = bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
             bool isMoving = bot->isMoving();
 
+            MoveOwner oldOwner = rec.owner;
+            MoveMode oldMode = rec.mode;
+            LocomotionState oldState = rec.state;
+
             if (GeneratorReconciler::ReconcilePoint(rec, genType, isMoving, now))
             {
-                RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Moving, LocomotionState::Idle,
-                    rec.owner, MoveMode::Idle, "PointArrivedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
+                RecordTransitionLocked(shard, bot->GetGUID(), oldState, LocomotionState::Idle,
+                    oldOwner, oldMode, "PointArrivedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
             }
             else if (GeneratorReconciler::ReconcileFollow(rec, genType, isMoving, now))
             {
-                RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Following, LocomotionState::Idle,
-                    rec.owner, MoveMode::Idle, "FollowEndedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
+                RecordTransitionLocked(shard, bot->GetGUID(), oldState, LocomotionState::Idle,
+                    oldOwner, oldMode, "FollowEndedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
             }
             else if (GeneratorReconciler::ReconcileChase(rec, genType, isMoving, now))
             {
-                RecordTransitionLocked(shard, bot->GetGUID(), LocomotionState::Chasing, LocomotionState::Idle,
-                    rec.owner, MoveMode::Idle, "ChaseEndedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
+                RecordTransitionLocked(shard, bot->GetGUID(), oldState, LocomotionState::Idle,
+                    oldOwner, oldMode, "ChaseEndedReconciled", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), now);
             }
 
             // 4. Invariant Check: If internal locomotion state is Idle but MotionMaster has active bot generator

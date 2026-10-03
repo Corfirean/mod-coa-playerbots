@@ -663,12 +663,6 @@ void ResolvePendingMountCast(Player* bot, BotAIState& /*state*/)
     BotMovement::ResolveMountCast(bot);
 }
 
-// Reusable mounting helper for both group-following and autonomous long-distance travel
-bool TryMount(Player* bot, BotAIState& /*state*/, bool wantFlying = false)
-{
-    return BotMovement::RequestMount(bot, MoveOwner::Travel, 0.0f, wantFlying);
-}
-
 // Synchronizes the bot's mounted state and mount type (ground vs flying) with the group leader.
 void TryMatchLeaderMountState(Player* bot, BotAIState& /*state*/)
 {
@@ -4627,11 +4621,6 @@ void PrepareBagsForTask(Player* bot)
 bool IsInCity(Player const* bot)
 {
     return IsCityOrSanctuary(bot);
-}
-
-void TryMountForTravel(Player* bot)
-{
-    BotMovement::RequestMount(bot, MoveOwner::Travel);
 }
 
 bool IsProfessionTool(ItemTemplate const* proto)

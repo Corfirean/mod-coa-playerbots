@@ -24,6 +24,14 @@ struct LocomotionShard
     std::unordered_map<ObjectGuid, HistoryBuffer> histories;
     std::unordered_map<ObjectGuid, NopathCacheEntry> nopathCache;
     std::unordered_map<ObjectGuid, uint64> nextRequestGen;
+
+    struct PlanningState
+    {
+        uint64 ticket = 0;
+        MoveOwner owner = MoveOwner::None;
+    };
+    std::unordered_map<ObjectGuid, PlanningState> activePlanning;
+    std::unordered_map<ObjectGuid, uint64> nextPlanTicket;
 };
 
 class LocomotionStateStore
@@ -54,6 +62,29 @@ public:
     static uint64 AllocateRequestGenerationLocked(LocomotionShard& shard, ObjectGuid guid)
     {
         return ++shard.nextRequestGen[guid];
+    }
+
+    // Monotonic plan ticket allocator (caller MUST hold shard.mutex)
+    static uint64 AllocatePlanTicketLocked(LocomotionShard& shard, ObjectGuid guid, MoveOwner owner)
+    {
+        uint64 ticket = ++shard.nextPlanTicket[guid];
+        shard.activePlanning[guid] = LocomotionShard::PlanningState{ticket, owner};
+        return ticket;
+    }
+
+    // Plan currency check (caller MUST hold shard.mutex)
+    static bool IsPlanCurrentLocked(LocomotionShard const& shard, ObjectGuid guid, MoveOwner owner, uint64 ticket)
+    {
+        auto it = shard.activePlanning.find(guid);
+        if (it == shard.activePlanning.end())
+            return true;
+        // Same owner: if a newer ticket was allocated, this older plan is superseded!
+        if (it->second.owner == owner && it->second.ticket > ticket)
+            return false;
+        // Priority check: if a higher-priority plan started, this lower-priority plan cannot commit!
+        if (LocomotionArbiter::PriorityOf(it->second.owner) > LocomotionArbiter::PriorityOf(owner))
+            return false;
+        return true;
     }
 
     // Lock-free helpers (caller MUST hold shard.mutex)
@@ -116,6 +147,8 @@ public:
             s.histories.clear();
             s.nopathCache.clear();
             s.nextRequestGen.clear();
+            s.activePlanning.clear();
+            s.nextPlanTicket.clear();
         }
     }
 

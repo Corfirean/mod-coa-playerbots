@@ -3402,4 +3402,85 @@ In `MoveToInternal`, `PathGenerator::CalculatePath()` runs outside both `shard.m
 3. Bot entering water or instance immediately dismounts with `WaterEntered`/`IndoorEntered`.
 4. High-frequency combat interruptions during Navigate legs never corrupt or leak tokens.
 
+---
+
+## 2026-10-03 -- Locomotion Overhaul Round 6 (Type-Safe Motion Enums, Pre-Dispatch Request Guard, Planning Epoch, Mount Serialization)
+
+Final correctness and hardening round before live testing on PR #13 branch `feat/bot-locomotion-overhaul`.
+
+### P0 fixed: Zero magic MovementGeneratorType numeric comparisons
+
+Core `src/server/game/Movement/MotionMaster.h` defines:
+- `IDLE_MOTION_TYPE = 0`
+- `CHASE_MOTION_TYPE = 5`
+- `POINT_MOTION_TYPE = 8`
+- `FOLLOW_MOTION_TYPE = 14`
+
+Previously, `GeneratorReconciler` in `BotMovementPrimitives.h` compared against magic numbers `1`, `2`, `3`. When a stationary bot followed a standing leader (`FOLLOW_MOTION_TYPE = 14, isMoving = false`) or was within chase range (`CHASE_MOTION_TYPE = 5, isMoving = false`), the reconciler treated the generator as terminated after 500 ms, setting internal mode to `Idle`. `Update()` then saw internal `Idle` vs physical generator and called `ClearAuthorizedMovement()`, causing a jarring clear/re-follow cycle every tick.
+
+**Fix**:
+1. Included `MotionMaster.h` (and created stub `MotionMaster.h` for test runner).
+2. Rewrote `GeneratorReconciler::ReconcilePoint`, `ReconcileFollow`, and `ReconcileChase` to take `MovementGeneratorType currentMotionType`.
+3. Replaced all magic numbers with exact enum constants (`POINT_MOTION_TYPE`, `FOLLOW_MOTION_TYPE`, `CHASE_MOTION_TYPE`).
+4. Stationary Follow and Chase remain in their respective modes with 0 spurious completions or clears.
+
+### P0 fixed: Pre-dispatch validation guard for Navigate requests
+
+In previous versions, path calculation ran outside the lock, but before committing `MoveToInternal`, only priority was checked. If a higher-priority command arrived, changed the goal, or cancelled the Navigate request while pathfinding was calculating, `MoveToInternal` would still increment `rec.commandId`, call `ClearAuthorizedMovement(bot)`, and issue `MovePoint`.
+
+**Fix**:
+1. Defined `struct MovementDispatchGuard { uint64 requestGeneration = 0; uint64 goalId = 0; };`.
+2. `IssueLeg` passes `guard{req.requestGeneration, req.goalId}` to `MoveToInternal`.
+3. In `MoveToInternal`, under `dispatchGate + shard.mutex`, the guard is validated against `shard.requests[bot]` BEFORE `rec.commandId++`, before `ClearAuthorizedMovement(bot)`, and before `bot->GetMotionMaster()->MovePoint(...)`.
+4. If `guard.requestGeneration != req.requestGeneration` or `guard.goalId != req.goalId` or `req.owner != owner`, `MoveToInternal` aborts immediately, performs ZERO physical movement mutation, and returns an empty `LocomotionToken{}`.
+
+### P1 fixed: Direct MoveTo planning ticket epoch
+
+Slow pathfinding for older direct `MoveTo` commands could complete and overwrite newer same-owner intent if another direct `MoveTo` was issued concurrently.
+
+**Fix**:
+1. Added `PlanningState { uint64 ticket; MoveOwner owner; }` and `nextPlanTicket` to `LocomotionShard`.
+2. Added `AllocatePlanTicketLocked` and `IsPlanCurrentLocked` to `LocomotionStateStore`.
+3. In `MoveToInternal`, a monotonic ticket is allocated in Step 1 under `shard.mutex`.
+4. In Step 4 under `dispatchGate + shard.mutex`, `IsPlanCurrentLocked(bot, myPlanTicket, owner)` verifies no newer plan ticket has been issued for this owner before committing. Outdated path results are safely discarded.
+
+### P0/P1 fixed: Mount generation enforcement & dispatch serialization
+
+`ResolveMountCast` was previously executed without dispatch serialization. Furthermore, if a mount cast was cancelled by combat or interrupted, late cast events could resurrect the mount state.
+
+**Fix**:
+1. Added `uint64 castingGeneration = 0;` to `BotMountRecord`.
+2. When starting a mount cast in `RequestMountInternal`, `castingGeneration` is recorded matching `mountGeneration`.
+3. `ResolveMountCast` is now serialized under `dispatchGate`.
+4. In `ResolveMountCast`, `mRec.castingGeneration == mRec.mountGeneration` is validated under `shard.mutex`. If cancelled or interrupted, late cast completion is rejected, any late-applied mount aura is stripped via `bot->RemoveAurasByType(SPELL_AURA_MOUNTED)`, and `mountSuccesses` is not incremented.
+
+### P1 fixed: Eliminate direct RequestMount before Navigate
+
+Callers in `WorldExecutor.cpp`, `BotWorldBehavior.cpp`, and `BotEconomy.cpp` previously called `RequestMount()` directly before calling `Navigate()`. This bypassed mount policy checks and could cause premature mounting or mount failures when in combat or invalid states.
+
+**Fix**:
+1. Removed direct `RequestMount` calls before `Navigate` across `WorldExecutor`, `BotWorldBehavior`, and `BotEconomy`. Removed dead `TryMount` helper in `BotAI.cpp`.
+2. High-level tasks now solely establish locomotion via `Navigate()`, setting `MoveMode::Navigate`.
+3. `ApplyMountPolicy` autonomously triggers mounting if `activeMode == MoveMode::Navigate` and `travelDist >= 90.0f`, respecting all environmental and combat safety invariants.
+4. `RequestMountInternal` explicitly rejects mounting if `rec.mode == MoveMode::Hold`.
+
+### P1 fixed: Accurate reconciliation transition logging
+
+`Update()` previously called `GeneratorReconciler` which modified `rec.owner`, `rec.mode`, and `rec.state` in-place before transition logging occurred, causing the log to record `(None, Idle) -> (None, Idle)` instead of `(Point/Follow/Chase) -> (None, Idle)`.
+
+**Fix**:
+`Update()` now snapshots `(oldOwner, oldMode, oldState)` before invoking `GeneratorReconciler`, ensuring all telemetry events and debug logs record the true transition.
+
+### Tests: 30 tests, 177 checks, 0 failures
+
+Added 5 comprehensive unit tests to `module/tests/locomotion_tests.cpp`:
+- `TestGeneratorReconcilerPoint`: verifies exact enum types and stationary follow/chase retention.
+- `TestStaleNavigateRequestGenerationGuardBlocksDispatch`: verifies stale Navigate requests are rejected pre-dispatch with zero physical mutation.
+- `TestPlanningEpochSameOwnerRace`: verifies planning ticket epoch prevents stale direct moves from committing.
+- `TestCancelledMountGenerationCannotResurrect`: verifies interrupted mount casts cannot resurrect mount state or leave mount auras.
+- `TestAutonomousNavigateMountsThroughPolicy`: verifies autonomous travel mounting and Hold mode blocking.
+
+All 30 unit tests pass (177 checks, 0 failures). Full clean build of `modules.lib` and `worldserver.exe` verified.
+
+
 

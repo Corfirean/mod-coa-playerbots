@@ -317,8 +317,6 @@ namespace
         state.lastProgressMs = now;
         StandUp(bot, state);
 
-        float const dist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), state.x, state.y);
-        BotMovement::RequestMount(bot, MoveOwner::Ambient, dist);
         uint32 const goalId = MakeAmbientGoalId(state);
         BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius, &state.travelToken);
     }
@@ -913,8 +911,6 @@ namespace BotWorldBehavior
             state.lastProgressMs = now;
             if (state.phase == Phase::Travel)
             {
-                float const dist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), state.x, state.y);
-                BotMovement::RequestMount(bot, MoveOwner::Ambient, dist);
                 uint32 const goalId = MakeAmbientGoalId(state);
                 BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius, &state.travelToken);
             }
@@ -990,7 +986,6 @@ namespace BotWorldBehavior
                 return AmbientTick::Busy;
             state.nextThinkMs = now + _config.thinkIntervalMs;
 
-            BotMovement::RequestMount(bot, MoveOwner::Ambient, dist);
             uint32 const goalId = MakeAmbientGoalId(state);
             NavStatus status = BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius, &state.travelToken);
             if (status == NavStatus::Arrived)

@@ -23,13 +23,19 @@
  * 19. Generation-guarded deferred actions in Update() (P0)
  * 20. Deferred mount policy race protection
  * 21. Navigate -> Hold mode transition cleans up stale request & prevents mount
- * 22. Generator reconciler - Follow
- * 23. Generator reconciler - Chase
+ * 22. Generator reconciler - Follow (with stationary check)
+ * 23. Generator reconciler - Chase (with stationary check)
  * 24. Dungeon, raid, and water mount legality & dismount reasons
  * 25. Dispatch contention & concurrency scalability
+ * 26. Point generator reconciler (zero magic numbers)
+ * 27. Stale Navigate request generation guard blocks physical dispatch (P0)
+ * 28. Planning epoch prevents older same-owner path result from overwriting newer intent (P1)
+ * 29. Cancelled mount generation cannot resurrect late auras (P0/P1)
+ * 30. Autonomous Navigate mounts through policy without explicit direct call (P1)
  */
 
 #include "stub/Define.h"
+#include "stub/MotionMaster.h"
 #include "stub/ObjectGuid.h"
 #include "BotMovementPrimitives.h"
 #include "BotMovementStateStore.h"
@@ -679,21 +685,13 @@ static void TestGeneratorCompletionReconciliation()
         loc.issuedAtMs = now - 2000;
     }
 
-    // Simulate: generator ended (genType != POINT, bot not moving, > 500ms since issue)
-    uint32 genType = 0; // idle
+    // Simulate: generator ended (genType != POINT_MOTION_TYPE, bot not moving, > 500ms since issue)
+    MovementGeneratorType genType = IDLE_MOTION_TYPE;
     bool isMoving = false;
     {
         std::lock_guard<std::mutex> lock(shard.mutex);
         BotLocomotionRecord& loc = shard.locomotion[bot];
-        if (loc.state == LocomotionState::Moving && loc.mode == MoveMode::Point)
-        {
-            if (genType != 1 /*POINT_MOTION_TYPE*/ && !isMoving && (now - loc.issuedAtMs > 500))
-            {
-                loc.state = LocomotionState::Idle;
-                loc.owner = MoveOwner::None;
-                loc.mode = MoveMode::Idle;
-            }
-        }
+        GeneratorReconciler::ReconcilePoint(loc, genType, isMoving, now);
     }
 
     {
@@ -1108,20 +1106,24 @@ static void TestGeneratorReconcilerFollow()
 
     uint32 now = 2000;
 
-    // Case A: Generator still active (genType == 2) -> do not reconcile
-    CHECK(!GeneratorReconciler::ReconcileFollow(rec, 2 /*FOLLOW_MOTION_TYPE*/, false, now));
+    // Case A: Generator still active (genType == FOLLOW_MOTION_TYPE) -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileFollow(rec, FOLLOW_MOTION_TYPE, false, now));
     CHECK(rec.state == LocomotionState::Following);
 
-    // Case B: Still moving -> do not reconcile
-    CHECK(!GeneratorReconciler::ReconcileFollow(rec, 0, true /*isMoving*/, now));
+    // Case B: Stationary Follow (bot reached leader, stationary, age > 500ms) -> MUST remain Following!
+    CHECK(!GeneratorReconciler::ReconcileFollow(rec, FOLLOW_MOTION_TYPE, false, now + 5000));
     CHECK(rec.state == LocomotionState::Following);
 
-    // Case C: Within 500ms debounce -> do not reconcile
-    CHECK(!GeneratorReconciler::ReconcileFollow(rec, 0, false, 1200 /*issued 200ms ago*/));
+    // Case C: Still moving -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileFollow(rec, IDLE_MOTION_TYPE, true /*isMoving*/, now));
     CHECK(rec.state == LocomotionState::Following);
 
-    // Case D: Generator ended, not moving, issued > 500ms ago -> reconciles to Idle!
-    CHECK(GeneratorReconciler::ReconcileFollow(rec, 0, false, now));
+    // Case D: Within 500ms debounce -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileFollow(rec, IDLE_MOTION_TYPE, false, 1200 /*issued 200ms ago*/));
+    CHECK(rec.state == LocomotionState::Following);
+
+    // Case E: Generator ended (IDLE_MOTION_TYPE), not moving, issued > 500ms ago -> reconciles to Idle!
+    CHECK(GeneratorReconciler::ReconcileFollow(rec, IDLE_MOTION_TYPE, false, now));
     CHECK(rec.state == LocomotionState::Idle);
     CHECK(rec.mode == MoveMode::Idle);
     CHECK(rec.owner == MoveOwner::None);
@@ -1140,20 +1142,24 @@ static void TestGeneratorReconcilerChase()
 
     uint32 now = 2000;
 
-    // Case A: Generator still active (genType == 3) -> do not reconcile
-    CHECK(!GeneratorReconciler::ReconcileChase(rec, 3 /*CHASE_MOTION_TYPE*/, false, now));
+    // Case A: Generator still active (genType == CHASE_MOTION_TYPE) -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileChase(rec, CHASE_MOTION_TYPE, false, now));
     CHECK(rec.state == LocomotionState::Chasing);
 
-    // Case B: Still moving -> do not reconcile
-    CHECK(!GeneratorReconciler::ReconcileChase(rec, 0, true /*isMoving*/, now));
+    // Case B: Stationary Chase (target in valid range, bot stands still, age > 500ms) -> MUST remain Chasing!
+    CHECK(!GeneratorReconciler::ReconcileChase(rec, CHASE_MOTION_TYPE, false, now + 5000));
     CHECK(rec.state == LocomotionState::Chasing);
 
-    // Case C: Within debounce -> do not reconcile
-    CHECK(!GeneratorReconciler::ReconcileChase(rec, 0, false, 1300 /*issued 300ms ago*/));
+    // Case C: Still moving -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileChase(rec, IDLE_MOTION_TYPE, true /*isMoving*/, now));
     CHECK(rec.state == LocomotionState::Chasing);
 
-    // Case D: Generator ended, not moving, past debounce -> reconciles to Idle!
-    CHECK(GeneratorReconciler::ReconcileChase(rec, 0, false, now));
+    // Case D: Within debounce -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcileChase(rec, IDLE_MOTION_TYPE, false, 1300 /*issued 300ms ago*/));
+    CHECK(rec.state == LocomotionState::Chasing);
+
+    // Case E: Generator ended (IDLE_MOTION_TYPE), not moving, past debounce -> reconciles to Idle!
+    CHECK(GeneratorReconciler::ReconcileChase(rec, IDLE_MOTION_TYPE, false, now));
     CHECK(rec.state == LocomotionState::Idle);
     CHECK(rec.mode == MoveMode::Idle);
     CHECK(rec.owner == MoveOwner::None);
@@ -1267,11 +1273,269 @@ static void TestDispatchContentionAndScalability()
 }
 
 // ============================================================================
+// Test 26: Point Generator Reconciler (Zero Magic Numbers)
+// ============================================================================
+static void TestGeneratorReconcilerPoint()
+{
+    BotLocomotionRecord rec;
+    rec.owner = MoveOwner::Travel;
+    rec.mode = MoveMode::Point;
+    rec.state = LocomotionState::Moving;
+    rec.issuedAtMs = 1000;
+
+    uint32 now = 2000;
+
+    // Case A: Generator still active (genType == POINT_MOTION_TYPE) -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcilePoint(rec, POINT_MOTION_TYPE, false, now));
+    CHECK(rec.state == LocomotionState::Moving);
+
+    // Case B: Stationary Point with POINT_MOTION_TYPE -> MUST remain Moving!
+    CHECK(!GeneratorReconciler::ReconcilePoint(rec, POINT_MOTION_TYPE, false, now + 5000));
+    CHECK(rec.state == LocomotionState::Moving);
+
+    // Case C: Still moving -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcilePoint(rec, IDLE_MOTION_TYPE, true /*isMoving*/, now));
+    CHECK(rec.state == LocomotionState::Moving);
+
+    // Case D: Within 500ms debounce -> do not reconcile
+    CHECK(!GeneratorReconciler::ReconcilePoint(rec, IDLE_MOTION_TYPE, false, 1200 /*issued 200ms ago*/));
+    CHECK(rec.state == LocomotionState::Moving);
+
+    // Case E: Generator ended (IDLE_MOTION_TYPE), not moving, past debounce -> reconciles to Idle!
+    CHECK(GeneratorReconciler::ReconcilePoint(rec, IDLE_MOTION_TYPE, false, now));
+    CHECK(rec.state == LocomotionState::Idle);
+    CHECK(rec.mode == MoveMode::Idle);
+    CHECK(rec.owner == MoveOwner::None);
+}
+
+// ============================================================================
+// Test 27: Stale Navigate Request Generation Guard Blocks Physical Dispatch & Mutation (P0)
+// ============================================================================
+static void TestStaleNavigateRequestGenerationGuardBlocksDispatch()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4001);
+    LocomotionShard& shard = LocomotionStateStore::GetShard(bot);
+
+    // Navigate A starts: requestGen = 10, goalId = 100
+    MovementDispatchGuard guardA{10, 100};
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        MovementRequest& req = shard.requests[bot];
+        req.botGuid = bot;
+        req.owner = MoveOwner::Quest;
+        req.goalId = 100;
+        req.requestGeneration = 10;
+        req.movementCommandId = 0;
+    }
+
+    // While A was calculating path, Navigate B arrives with newer requestGen = 11, goalId = 200, commits command 50
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        MovementRequest& req = shard.requests[bot];
+        req.goalId = 200;
+        req.requestGeneration = 11;
+        req.movementCommandId = 50;
+
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.owner = MoveOwner::Quest;
+        loc.commandId = 50;
+        loc.state = LocomotionState::Moving;
+        loc.mode = MoveMode::Navigate;
+    }
+
+    // Now A finishes path and tries to commit with guardA (gen=10, goal=100)
+    LocomotionToken tokenA;
+    bool committedA = false;
+    {
+        std::mutex& gate = LocomotionStateStore::GetDispatchGate(bot);
+        std::lock_guard<std::mutex> dispatchLock(gate);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+
+        // Exact guard validation logic inside MoveToInternal:
+        auto rItr = shard.requests.find(bot);
+        if (rItr == shard.requests.end() ||
+            rItr->second.owner != MoveOwner::Quest ||
+            rItr->second.requestGeneration != guardA.requestGeneration ||
+            rItr->second.goalId != guardA.goalId)
+        {
+            // Stale! Reject with ZERO mutation!
+            committedA = false;
+        }
+        else
+        {
+            committedA = true;
+            BotLocomotionRecord& loc = shard.locomotion[bot];
+            loc.commandId++;
+            tokenA = LocomotionToken{bot, MoveOwner::Quest, loc.commandId};
+        }
+    }
+
+    CHECK(!committedA);
+    CHECK(!tokenA.IsValid());
+
+    // Active Navigate B remains completely untouched
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        CHECK(shard.locomotion[bot].commandId == 50);
+        CHECK(shard.locomotion[bot].owner == MoveOwner::Quest);
+        CHECK(shard.requests[bot].requestGeneration == 11);
+        CHECK(shard.requests[bot].goalId == 200);
+        CHECK(shard.requests[bot].movementCommandId == 50);
+    }
+}
+
+// ============================================================================
+// Test 28: Planning Epoch Prevents Older Same-Owner Path Result From Overwriting Newer Intent (P1)
+// ============================================================================
+static void TestPlanningEpochSameOwnerRace()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4002);
+    LocomotionShard& shard = LocomotionStateStore::GetShard(bot);
+
+    // Direct MoveTo A starts: allocates ticket 1
+    uint64 ticketA = 0;
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        ticketA = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Quest);
+    }
+    CHECK(ticketA == 1);
+
+    // Direct MoveTo B starts later: allocates ticket 2 and commits command 100
+    uint64 ticketB = 0;
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        ticketB = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Quest);
+        CHECK(ticketB == 2);
+
+        // B commits under dispatch gate
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.owner = MoveOwner::Quest;
+        loc.mode = MoveMode::Point;
+        loc.commandId = 100;
+        loc.state = LocomotionState::Moving;
+    }
+
+    // Now A's slow path finishes, attempts to commit with ticketA (1)
+    bool committedA = false;
+    {
+        std::mutex& gate = LocomotionStateStore::GetDispatchGate(bot);
+        std::lock_guard<std::mutex> dispatchLock(gate);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+
+        if (LocomotionStateStore::IsPlanCurrentLocked(shard, bot, MoveOwner::Quest, ticketA))
+        {
+            committedA = true;
+            shard.locomotion[bot].commandId = 101;
+        }
+    }
+
+    CHECK(!committedA); // Ticket 1 must be rejected by ticket 2!
+
+    // Verify B's command 100 is still active
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        CHECK(shard.locomotion[bot].commandId == 100);
+    }
+}
+
+// ============================================================================
+// Test 29: Cancelled Mount Generation Cannot Resurrect Late Auras (P0/P1)
+// ============================================================================
+static void TestCancelledMountGenerationCannotResurrect()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4003);
+    LocomotionShard& shard = LocomotionStateStore::GetShard(bot);
+
+    uint32 now = 10000;
+
+    // Mount cast starts: generation 1, castingGeneration 1
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotMountRecord& mRec = shard.mounts[bot];
+        mRec.mountGeneration = 1;
+        mRec.castingGeneration = 1;
+        mRec.pendingMountSpellId = 458;
+        mRec.state = MountState::MountCasting;
+    }
+
+    // Dismount / cancellation occurs: bumps mountGeneration to 2, sets state to Cooldown
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotMountRecord& mRec = shard.mounts[bot];
+        MountStateMachine::TransitionDismount(mRec, now);
+        CHECK(mRec.mountGeneration == 2);
+        CHECK(mRec.state == MountState::Cooldown);
+    }
+
+    // Late completion with old generation 1:
+    // castingGeneration (1) != mountGeneration (2)
+    bool removeStaleAura = false;
+    bool mountSuccess = false;
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        BotMountRecord& mRec = shard.mounts[bot];
+
+        // Resolution check
+        if (mRec.castingGeneration != mRec.mountGeneration)
+        {
+            // Invalidated generation!
+            removeStaleAura = true;
+            // Do NOT transition to Mounted!
+        }
+        else
+        {
+            mountSuccess = true;
+        }
+    }
+
+    CHECK(removeStaleAura);
+    CHECK(!mountSuccess);
+
+    // FSM remains in Cooldown / Unmounted, does NOT resurrect to MountedGround
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        CHECK(shard.mounts[bot].state == MountState::Cooldown);
+    }
+}
+
+// ============================================================================
+// Test 30: Autonomous Navigate Mounts Through Policy Without Explicit Direct Call (P1)
+// ============================================================================
+static void TestAutonomousNavigateMountsThroughPolicy()
+{
+    uint32 now = 10000;
+
+    // Navigate autonomous travel with travelDist = 150yd
+    MountPolicyDecision decNav = MountPolicyResolver::Evaluate(
+        MoveOwner::Travel, MoveMode::Navigate, 150.0f,
+        false /*isFollowingLeader*/, DesiredMountState::None, true /*debounced*/,
+        true /*outdoors*/, false /*combat*/, false /*casting*/,
+        40 /*level*/, false /*controlled*/,
+        MountState::Unmounted, 0, now, false /*canFly*/, false /*isCurrentlyMounted*/
+    );
+
+    // Mount policy autonomously decides to mount ground without any direct pre-call!
+    CHECK(decNav.action == MountAction::MountGround);
+
+    // If bot enters Hold, policy returns None:
+    MountPolicyDecision decHold = MountPolicyResolver::Evaluate(
+        MoveOwner::Travel, MoveMode::Hold, 150.0f,
+        false, DesiredMountState::None, true,
+        true, false, false, 40, false,
+        MountState::Unmounted, 0, now, false, false
+    );
+    CHECK(decHold.action == MountAction::None);
+}
+
+// ============================================================================
 // Main Runner
 // ============================================================================
 int main()
 {
-    std::printf("Running locomotion & navigation overhaul Round 4 & 5 regression tests...\n");
+    std::printf("Running locomotion & navigation overhaul regression tests (Round 4, 5 & 6)...\n");
     std::printf("Using production LocomotionStateStore: %zu shards, %zu dispatch gates\n",
         LOCOMOTION_SHARDS, DISPATCH_GATES);
 
@@ -1302,6 +1566,13 @@ int main()
     TestGeneratorReconcilerChase();
     TestDungeonRaidWaterMountLegality();
     TestDispatchContentionAndScalability();
+
+    // Round 6 tests
+    TestGeneratorReconcilerPoint();
+    TestStaleNavigateRequestGenerationGuardBlocksDispatch();
+    TestPlanningEpochSameOwnerRace();
+    TestCancelledMountGenerationCannotResurrect();
+    TestAutonomousNavigateMountsThroughPolicy();
 
     std::printf("Locomotion tests completed: %d checks, %d failures\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;

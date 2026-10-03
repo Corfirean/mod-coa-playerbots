@@ -86,11 +86,6 @@ namespace WorldExecutor
     NavStatus TravelTo(Player* bot, BrainState& state, uint8 sub, float x, float y, float z, float radius, uint64 goalSalt,
         bool allowMount)
     {
-        float dist = std::hypot(bot->GetPositionX() - x, bot->GetPositionY() - y);
-
-        if (allowMount)
-            BotMovement::RequestMount(bot, OwnerFor(state.task), dist);
-
         std::optional<MovementRequest> before = BotMovement::GetRequestSnapshot(bot->GetGUID());
         uint8 stageBefore = before ? before->progress.stage : 0;
 

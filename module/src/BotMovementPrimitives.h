@@ -3,6 +3,7 @@
 
 #include "BotNavProgress.h"
 #include "Define.h"
+#include "MotionMaster.h"
 #include "ObjectGuid.h"
 #include <array>
 #include <cmath>
@@ -10,6 +11,12 @@
 #include <optional>
 #include <string>
 #include <unordered_set>
+
+struct MovementDispatchGuard
+{
+    uint64 requestGeneration = 0;
+    uint64 goalId = 0;
+};
 
 // =============================================================================
 // Enums & Core Primitives
@@ -428,6 +435,7 @@ struct BotMountRecord
 {
     MountState state = MountState::Unmounted;
     uint64 mountGeneration = 0;
+    uint64 castingGeneration = 0;
     uint32 lastDismountMs = 0;
     uint32 remountCooldownUntilMs = 0;
     uint32 pendingMountSpellId = 0;
@@ -712,11 +720,11 @@ public:
 class GeneratorReconciler
 {
 public:
-    static bool ReconcilePoint(BotLocomotionRecord& rec, uint32 currentMotionType, bool isMoving, uint32 now)
+    static bool ReconcilePoint(BotLocomotionRecord& rec, MovementGeneratorType currentMotionType, bool isMoving, uint32 now)
     {
         if (rec.state == LocomotionState::Moving && rec.mode == MoveMode::Point)
         {
-            if (currentMotionType != 1 /*POINT_MOTION_TYPE*/ && !isMoving && (now - rec.issuedAtMs > 500))
+            if (currentMotionType != POINT_MOTION_TYPE && !isMoving && (now - rec.issuedAtMs > 500))
             {
                 rec.state = LocomotionState::Idle;
                 rec.owner = MoveOwner::None;
@@ -727,11 +735,11 @@ public:
         return false;
     }
 
-    static bool ReconcileFollow(BotLocomotionRecord& rec, uint32 currentMotionType, bool isMoving, uint32 now)
+    static bool ReconcileFollow(BotLocomotionRecord& rec, MovementGeneratorType currentMotionType, bool isMoving, uint32 now)
     {
         if (rec.state == LocomotionState::Following && rec.mode == MoveMode::Follow)
         {
-            if (currentMotionType != 2 /*FOLLOW_MOTION_TYPE*/ && !isMoving && (now - rec.issuedAtMs > 500))
+            if (currentMotionType != FOLLOW_MOTION_TYPE && !isMoving && (now - rec.issuedAtMs > 500))
             {
                 rec.state = LocomotionState::Idle;
                 rec.owner = MoveOwner::None;
@@ -742,11 +750,11 @@ public:
         return false;
     }
 
-    static bool ReconcileChase(BotLocomotionRecord& rec, uint32 currentMotionType, bool isMoving, uint32 now)
+    static bool ReconcileChase(BotLocomotionRecord& rec, MovementGeneratorType currentMotionType, bool isMoving, uint32 now)
     {
         if (rec.state == LocomotionState::Chasing && rec.mode == MoveMode::Chase)
         {
-            if (currentMotionType != 3 /*CHASE_MOTION_TYPE*/ && !isMoving && (now - rec.issuedAtMs > 500))
+            if (currentMotionType != CHASE_MOTION_TYPE && !isMoving && (now - rec.issuedAtMs > 500))
             {
                 rec.state = LocomotionState::Idle;
                 rec.owner = MoveOwner::None;
