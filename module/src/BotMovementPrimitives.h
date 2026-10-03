@@ -409,6 +409,7 @@ struct MovementRequest
     float backtrackZ = 0.0f;
     uint64 backtrackCommandId = 0;
     uint32 backtrackAttempts = 0;
+    bool allowMount = true;
 };
 
 struct BotLocomotionRecord
@@ -612,7 +613,8 @@ public:
         bool isDungeon = false,
         bool isRaid = false,
         bool isInWater = false,
-        bool isSwimming = false)
+        bool isSwimming = false,
+        bool allowMount = true)
     {
         MountPolicyDecision dec;
 
@@ -674,8 +676,8 @@ public:
         // 3. Autonomous Travel / Navigate context
         // If the bot is moving autonomously (Quest, Travel, Ambient), leader's PreferUnmounted is ignored
         // to prevent flapping between autonomous mounting (>90yd) and leader dismount.
-        // REQUIRES activeMode == MoveMode::Navigate (never mounts on Hold / Idle / Point)!
-        bool isAutonomousTravel = (activeMode == MoveMode::Navigate && (activeOwner == MoveOwner::Travel || activeOwner == MoveOwner::Quest || activeOwner == MoveOwner::Ambient));
+        // REQUIRES allowMount == true AND activeMode == MoveMode::Navigate (never mounts on Hold / Idle / Point)!
+        bool isAutonomousTravel = allowMount && (activeMode == MoveMode::Navigate && (activeOwner == MoveOwner::Travel || activeOwner == MoveOwner::Quest || activeOwner == MoveOwner::Ambient));
         if (isAutonomousTravel && travelDist >= MountStateMachine::MOUNT_HYSTERESIS_DIST)
         {
             if (!isCurrentlyMounted && currentState != MountState::MountCasting)

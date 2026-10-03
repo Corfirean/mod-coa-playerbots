@@ -90,7 +90,7 @@ namespace WorldExecutor
         uint8 stageBefore = before ? before->progress.stage : 0;
 
         uint64 goal = state.task.GoalId(sub) + (goalSalt << 40);
-        NavStatus status = BotMovement::Navigate(bot, OwnerFor(state.task), goal, x, y, z, radius, &state.travelToken);
+        NavStatus status = BotMovement::Navigate(bot, OwnerFor(state.task), goal, x, y, z, radius, &state.travelToken, allowMount);
 
         std::optional<MovementRequest> after = BotMovement::GetRequestSnapshot(bot->GetGUID());
         if (after && after->progress.stage > stageBefore)

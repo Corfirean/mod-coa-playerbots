@@ -3482,5 +3482,79 @@ Added 5 comprehensive unit tests to `module/tests/locomotion_tests.cpp`:
 
 All 30 unit tests pass (177 checks, 0 failures). Full clean build of `modules.lib` and `worldserver.exe` verified.
 
+---
+
+## 2026-10-03 -- Locomotion Overhaul Pre-Live Hardening (Intent Epoch, Navigate Leg CAS, Gather Continuation, Planning Maps)
+
+Surgical pre-live hardening on PR #13 branch `feat/bot-locomotion-overhaul` addressing edge cases before live testing.
+
+### P0/P1 fixed: Intent epoch invalidates in-flight MoveTo on same-owner non-path intents and administrative stops
+
+Previously, the planning ticket epoch only advanced inside `MoveToInternal()` via `AllocatePlanTicketLocked()`. If a path calculation was in-flight for an owner (e.g. `MoveOwner::Quest`), a newer `Hold`, `Follow`, `Chase`, or `ForceStopOwner(Quest)` would not bump the ticket epoch, allowing the old path result to commit and resurrect movement.
+
+**Fix**:
+1. Generalized the planning epoch to represent the latest locomotion intent via `LocomotionStateStore::AdvanceIntentEpochLocked(shard, guid, owner)`.
+2. Called `AdvanceIntentEpochLocked` in `Follow`, `Chase`, `Hold`, and `ForceStopOwnerInternal` upon successful claim or administrative cancellation.
+3. Updated `IsPlanCurrentLocked` so an administrative stop (`MoveOwner::None`) or a newer same-owner intent strictly invalidates older tickets.
+4. Token-safe `Release(oldCommand)` does not advance the intent epoch, preserving legitimate newer plans.
+
+### P0/P1 fixed: Navigate leg commit command-level CAS & cleanup guard
+
+`requestGeneration` protected different requests, but all legs of a single Navigate request shared the same generation. If two ticks overlapped, a slower tick completing an older leg could overwrite a newer leg's `movementCommandId`. Furthermore, a stale tick giving up could erase the request while a newer leg was in flight.
+
+**Fix**:
+1. Added unified helper `LocomotionStateStore::CommitNavigateLegLocked`:
+   - Validates `requestGeneration`, `goalId`, and `owner`.
+   - Validates active locomotion record (`commandId == token.commandId`, `owner == token.owner`, `mode == Navigate`).
+   - CAS validation: `rItr->second.movementCommandId == expectedPreviousMovementCommandId`.
+   - Atomically updates request state and sets `movementCommandId = token.commandId`.
+   - Unified across all 6 Navigate branches (first leg, repath, detour, backtrack, backtrack resume, next normal leg).
+2. Added `LocomotionStateStore::EraseRequestIfCurrentLocked`:
+   - Erases request only if `requestGeneration == expected` AND `movementCommandId == expectedMovementCommandId`.
+   - Stale give-up or failure legs cannot erase or release newer legs.
+3. In final request state update (when no leg is issued), verified `movementCommandId == reqCopy.movementCommandId` before committing.
+
+### P1 fixed: Gathering mount walk continuation & guild gather stall semantics
+
+When a bot was far from a node (>90yd), `TryStartGathering` would issue `MoveTo` and immediately cancel it via `RequestMount`. Then `TryContinueGatherWalk` would wait without reissuing movement after mount completion, leaving the bot stationary until walk timeout. Furthermore, during mount cast, guild gather order would count the cast time toward `gatherOrderStallMs`.
+
+**Fix**:
+1. In `TryStartGathering`:
+   - If distance >= 90yd and unmounted, starts mount cast immediately without starting and immediately canceling `MoveTo`.
+2. In `TryContinueGatherWalk`:
+   - If `GetMountState == MountCasting`, returns immediately without deducting walk timeout.
+   - If `!inRange`, after mount completion, reissues `MoveBotToPoint(Gather, node)` to ride toward the node.
+3. In Guild Gather Order:
+   - If `GetMountState == MountCasting`, skips movement and does not increment `gatherOrderStallMs`.
+4. In `BotBattlegroundAI::MoveToPoint`:
+   - Added guard against `GetMountState == MountCasting`.
+
+### P2 fixed: Preserved `allowMount` semantics in Navigate & ApplyMountPolicy
+
+Option B implemented:
+1. Added `bool allowMount = true;` to `MovementRequest`.
+2. `BotMovement::Navigate` accepts `bool allowMount = true` and records it on the request.
+3. `ApplyMountPolicy` reads `allowMount` from the active request and passes it to `MountPolicyResolver::Evaluate`.
+4. `WorldExecutor::TravelTo` routes its `allowMount` parameter directly into `Navigate`.
+
+### P2 fixed: Bot lifecycle cleanup erases planning metadata
+
+Updated `BotMovement::Forget(botGuid)` to explicitly erase `shard.activePlanning` and `shard.nextPlanTicket`, preventing container bloat across bot lifecycles.
+
+### Tests: 40 tests, 199 checks, 0 failures
+
+Added 10 new regression tests (Tests 31-40) in `module/tests/locomotion_tests.cpp`:
+- Tests 31-33: Old MoveTo plan cannot overwrite newer Hold/Follow/Chase (same owner).
+- Test 34: ForceStopOwner (same owner & None) invalidates in-flight MoveTo plan.
+- Test 35: Same Navigate request command-level CAS blocks older leg commit.
+- Test 36: Stale give-up cannot erase request whose commandId advanced.
+- Test 37: Stale recovery leg cannot replace newer leg.
+- Test 38: Gathering mount cast and walk resumption.
+- Test 39: Gather order stall does not advance during mount cast.
+- Test 40: Forget clears planning metadata.
+
+All 40 unit tests pass (199 checks, 0 failures). Full clean build of `modules.lib` and `worldserver.exe` verified.
+
+
 
 

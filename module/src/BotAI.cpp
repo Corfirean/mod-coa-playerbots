@@ -2401,13 +2401,25 @@ void TryContinueGatherWalk(Player* bot, uint32 diff, BotAIState& state)
         AbandonGatherWalk(bot, state, inRange ? "never stopped moving at the node" : "never reached interact distance");
         return;
     }
+
+    if (BotMovement::GetMountState(bot) == MountState::MountCasting)
+    {
+        return; // Casting mount; wait for cast to finish, do not burn walk timeout
+    }
+
     state.gatherWalkTimeoutMs -= diff;
 
     if (!inRange)
     {
-        if (bot->GetDistance(node) > 40.0f)
-            BotMovement::RequestMount(bot, MoveOwner::Gather, bot->GetDistance(node));
-        return; // still walking -- nothing to do until it arrives, times out, or the caller re-decides
+        float dist = bot->GetDistance(node);
+        if (dist >= 90.0f && !bot->IsMounted())
+        {
+            if (BotMovement::RequestMount(bot, MoveOwner::Gather, dist))
+                return;
+        }
+
+        MoveBotToPoint(bot, MoveOwner::Gather, node->GetPositionX(), node->GetPositionY(), node->GetPositionZ());
+        return; // still walking toward node
     }
 
     state.gatherWalkTargetGuid = ObjectGuid::Empty;
@@ -2444,13 +2456,22 @@ bool TryStartGathering(Player* bot, uint32 diff, BotAIState& state, uint32 requi
 
     if (!IsInGatherRange(bot, node, gatherSpellId))
     {
-        if (!MoveBotToPoint(bot, MoveOwner::Gather, node->GetPositionX(), node->GetPositionY(), node->GetPositionZ()))
-            return false;
-
         state.gatherWalkTargetGuid = node->GetGUID();
         state.gatherWalkTimeoutMs = GATHER_WALK_TIMEOUT_MS;
-        if (bot->GetDistance(node) > 40.0f)
-            BotMovement::RequestMount(bot, MoveOwner::Gather, bot->GetDistance(node));
+
+        float dist = bot->GetDistance(node);
+        if (dist >= 90.0f && !bot->IsMounted())
+        {
+            if (BotMovement::RequestMount(bot, MoveOwner::Gather, dist))
+                return true; // Mount cast initiated; TryContinueGatherWalk will resume walk after cast
+        }
+
+        if (!MoveBotToPoint(bot, MoveOwner::Gather, node->GetPositionX(), node->GetPositionY(), node->GetPositionZ()))
+        {
+            state.gatherWalkTargetGuid = ObjectGuid::Empty;
+            return false;
+        }
+
         return true;
     }
 
@@ -3222,9 +3243,19 @@ void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
             }
 
             float dist = bot->GetExactDist2d(gatherOrder->targetX, gatherOrder->targetY);
-                if (dist > 40.0f)
+            if (dist > 40.0f)
+            {
+                if (BotMovement::GetMountState(bot) == MountState::MountCasting)
                 {
-                    BotMovement::RequestMount(bot, MoveOwner::Gather, dist);
+                    return; // Wait for mount cast to complete; do not count as stall
+                }
+
+                if (dist >= 90.0f && !bot->IsMounted())
+                {
+                    if (BotMovement::RequestMount(bot, MoveOwner::Gather, dist))
+                        return; // Mount cast initiated; move will resume next tick
+                }
+
                 // A resolved location can be genuinely unreachable on foot from wherever the
                 // teleport actually landed (across water, inside geometry, etc.) -- MoveBotToPoint
                 // then refuses every single tick with no timeout of its own, which used to leave

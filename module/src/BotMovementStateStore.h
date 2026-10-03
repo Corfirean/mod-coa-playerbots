@@ -64,12 +64,17 @@ public:
         return ++shard.nextRequestGen[guid];
     }
 
-    // Monotonic plan ticket allocator (caller MUST hold shard.mutex)
-    static uint64 AllocatePlanTicketLocked(LocomotionShard& shard, ObjectGuid guid, MoveOwner owner)
+    // Monotonic plan ticket / intent epoch allocator (caller MUST hold shard.mutex)
+    static uint64 AdvanceIntentEpochLocked(LocomotionShard& shard, ObjectGuid guid, MoveOwner owner)
     {
         uint64 ticket = ++shard.nextPlanTicket[guid];
         shard.activePlanning[guid] = LocomotionShard::PlanningState{ticket, owner};
         return ticket;
+    }
+
+    static uint64 AllocatePlanTicketLocked(LocomotionShard& shard, ObjectGuid guid, MoveOwner owner)
+    {
+        return AdvanceIntentEpochLocked(shard, guid, owner);
     }
 
     // Plan currency check (caller MUST hold shard.mutex)
@@ -81,10 +86,77 @@ public:
         // Same owner: if a newer ticket was allocated, this older plan is superseded!
         if (it->second.owner == owner && it->second.ticket > ticket)
             return false;
+        // Administrative stop for all owners (MoveOwner::None):
+        if (it->second.owner == MoveOwner::None && it->second.ticket > ticket)
+            return false;
         // Priority check: if a higher-priority plan started, this lower-priority plan cannot commit!
         if (LocomotionArbiter::PriorityOf(it->second.owner) > LocomotionArbiter::PriorityOf(owner))
             return false;
         return true;
+    }
+
+    // Compare-and-swap style Navigate leg commit (caller MUST hold shard.mutex)
+    static bool CommitNavigateLegLocked(
+        LocomotionShard& shard,
+        ObjectGuid botGuid,
+        uint64 expectedRequestGeneration,
+        uint64 expectedGoalId,
+        uint64 expectedPreviousMovementCommandId,
+        MovementRequest const& updatedRequest,
+        LocomotionToken const& issuedToken)
+    {
+        if (!issuedToken.IsValid())
+            return false;
+
+        auto rItr = shard.requests.find(botGuid);
+        if (rItr == shard.requests.end())
+            return false;
+
+        // 1. Validate request identity
+        if (rItr->second.requestGeneration != expectedRequestGeneration)
+            return false;
+        if (rItr->second.goalId != expectedGoalId)
+            return false;
+        if (rItr->second.owner != issuedToken.owner)
+            return false;
+
+        // 2. Validate active physical locomotion
+        auto lItr = shard.locomotion.find(botGuid);
+        if (lItr == shard.locomotion.end())
+            return false;
+        if (lItr->second.commandId != issuedToken.commandId)
+            return false;
+        if (lItr->second.owner != issuedToken.owner)
+            return false;
+        if (lItr->second.mode != MoveMode::Navigate)
+            return false;
+
+        // 3. Command-level CAS: verify no newer leg has already committed
+        if (rItr->second.movementCommandId != expectedPreviousMovementCommandId)
+            return false;
+
+        // All checks passed -- atomically commit updated request
+        rItr->second = updatedRequest;
+        rItr->second.movementCommandId = issuedToken.commandId;
+        return true;
+    }
+
+    // Atomic request erase only if generation and commandId match (caller MUST hold shard.mutex)
+    static bool EraseRequestIfCurrentLocked(
+        LocomotionShard& shard,
+        ObjectGuid botGuid,
+        uint64 expectedRequestGeneration,
+        uint64 expectedMovementCommandId)
+    {
+        auto rItr = shard.requests.find(botGuid);
+        if (rItr != shard.requests.end() &&
+            rItr->second.requestGeneration == expectedRequestGeneration &&
+            rItr->second.movementCommandId == expectedMovementCommandId)
+        {
+            shard.requests.erase(rItr);
+            return true;
+        }
+        return false;
     }
 
     // Lock-free helpers (caller MUST hold shard.mutex)

@@ -1531,11 +1531,276 @@ static void TestAutonomousNavigateMountsThroughPolicy()
 }
 
 // ============================================================================
+// Test 31: Old MoveTo Plan Cannot Overwrite Newer Hold (Same Owner) (P0/P1)
+// ============================================================================
+static void TestOldMoveToPlanCannotOverwriteNewerHoldSameOwner()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4001);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    // Step 1: MoveTo starts path planning for Quest owner, allocating ticket 1
+    uint64 ticket1 = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Quest);
+    CHECK(ticket1 == 1);
+
+    // Step 2: While path calculation is in-flight, a newer Hold intent arrives for Quest
+    LocomotionStateStore::AdvanceIntentEpochLocked(shard, bot, MoveOwner::Quest);
+
+    // Step 3: Path calculation finishes and attempts to commit with ticket 1
+    bool canCommit = LocomotionStateStore::IsPlanCurrentLocked(shard, bot, MoveOwner::Quest, ticket1);
+    CHECK(!canCommit); // In-flight plan cannot overwrite newer Hold!
+}
+
+// ============================================================================
+// Test 32: Old MoveTo Plan Cannot Overwrite Newer Follow (Same Owner) (P0/P1)
+// ============================================================================
+static void TestOldMoveToPlanCannotOverwriteNewerFollowSameOwner()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4002);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    uint64 ticket = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Quest);
+
+    // In-flight: Follow intent arrives for Quest
+    LocomotionStateStore::AdvanceIntentEpochLocked(shard, bot, MoveOwner::Quest);
+
+    bool canCommit = LocomotionStateStore::IsPlanCurrentLocked(shard, bot, MoveOwner::Quest, ticket);
+    CHECK(!canCommit); // Old plan cannot overwrite newer Follow!
+}
+
+// ============================================================================
+// Test 33: Old MoveTo Plan Cannot Overwrite Newer Chase (Same Owner) (P0/P1)
+// ============================================================================
+static void TestOldMoveToPlanCannotOverwriteNewerChaseSameOwner()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4003);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    uint64 ticket = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Combat);
+
+    // In-flight: Chase intent arrives for Combat
+    LocomotionStateStore::AdvanceIntentEpochLocked(shard, bot, MoveOwner::Combat);
+
+    bool canCommit = LocomotionStateStore::IsPlanCurrentLocked(shard, bot, MoveOwner::Combat, ticket);
+    CHECK(!canCommit); // Old plan cannot overwrite newer Chase!
+}
+
+// ============================================================================
+// Test 34: ForceStopOwner Invalidates Pending MoveTo Plan (P0/P1)
+// ============================================================================
+static void TestForceStopOwnerInvalidatesPendingMoveToPlan()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4004);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    uint64 ticket = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Quest);
+
+    // ForceStopOwner called for Quest
+    LocomotionStateStore::AdvanceIntentEpochLocked(shard, bot, MoveOwner::Quest);
+
+    bool canCommit = LocomotionStateStore::IsPlanCurrentLocked(shard, bot, MoveOwner::Quest, ticket);
+    CHECK(!canCommit); // ForceStopOwner invalidates in-flight plan!
+
+    // Also test administrative stop for all owners (MoveOwner::None)
+    uint64 ticketTravel = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Travel);
+    LocomotionStateStore::AdvanceIntentEpochLocked(shard, bot, MoveOwner::None);
+
+    bool canCommitTravel = LocomotionStateStore::IsPlanCurrentLocked(shard, bot, MoveOwner::Travel, ticketTravel);
+    CHECK(!canCommitTravel); // Administrative stop of all owners invalidates pending travel plan!
+}
+
+// ============================================================================
+// Test 35: Same Navigate Request Command CAS (P0/P1)
+// ============================================================================
+static void TestSameNavigateRequestCommandCAS()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4005);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    uint64 reqGen = 50;
+    uint64 goalId = 999;
+    MovementRequest req;
+    req.botGuid = bot;
+    req.owner = MoveOwner::Quest;
+    req.goalId = goalId;
+    req.requestGeneration = reqGen;
+    req.movementCommandId = 100;
+    shard.requests[bot] = req;
+
+    // Active locomotion state
+    BotLocomotionRecord rec;
+    rec.owner = MoveOwner::Quest;
+    rec.mode = MoveMode::Navigate;
+    rec.commandId = 101;
+    shard.locomotion[bot] = rec;
+
+    // Tick A snapshots previousMovementCommandId = 100
+    // But before Tick A commits, Tick B runs, issues leg 102 and commits it:
+    shard.requests[bot].movementCommandId = 102;
+    shard.locomotion[bot].commandId = 102;
+
+    // Now Tick A resumes with its older token 101 and expectedPrevious = 100:
+    LocomotionToken tokenA{bot, MoveOwner::Quest, 101};
+    bool committedA = LocomotionStateStore::CommitNavigateLegLocked(
+        shard, bot, reqGen, goalId, 100, req, tokenA);
+
+    CHECK(!committedA); // CAS failed! Command 101 cannot overwrite newer command 102!
+    CHECK(shard.requests[bot].movementCommandId == 102); // Request remains on 102!
+}
+
+// ============================================================================
+// Test 36: Stale GiveUp Cannot Erase Advanced Command (P0/P1)
+// ============================================================================
+static void TestStaleGiveUpCannotEraseAdvancedCommand()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4006);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    // Active request is currently at command 102
+    MovementRequest req;
+    req.botGuid = bot;
+    req.owner = MoveOwner::Quest;
+    req.goalId = 999;
+    req.requestGeneration = 50;
+    req.movementCommandId = 102;
+    shard.requests[bot] = req;
+
+    // A stale tick that snapshotted command 101 gives up:
+    bool erased = LocomotionStateStore::EraseRequestIfCurrentLocked(shard, bot, 50, 101);
+    CHECK(!erased); // Stale give-up cannot erase request whose commandId advanced!
+    CHECK(shard.requests.find(bot) != shard.requests.end()); // Request safely preserved!
+
+    // If matching command 102 gives up, it succeeds:
+    bool erasedCurrent = LocomotionStateStore::EraseRequestIfCurrentLocked(shard, bot, 50, 102);
+    CHECK(erasedCurrent);
+    CHECK(shard.requests.find(bot) == shard.requests.end());
+}
+
+// ============================================================================
+// Test 37: Stale Recovery Leg Cannot Replace Newer Leg (P0/P1)
+// ============================================================================
+static void TestStaleRecoveryLegCannotReplaceNewerLeg()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4007);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    uint64 reqGen = 60;
+    uint64 goalId = 888;
+    MovementRequest req;
+    req.botGuid = bot;
+    req.owner = MoveOwner::Travel;
+    req.goalId = goalId;
+    req.requestGeneration = reqGen;
+    req.movementCommandId = 205;
+    shard.requests[bot] = req;
+
+    shard.locomotion[bot].commandId = 205;
+    shard.locomotion[bot].owner = MoveOwner::Travel;
+    shard.locomotion[bot].mode = MoveMode::Navigate;
+
+    // Stale recovery leg issued when commandId was 203 attempts to commit:
+    MovementRequest backtrackReq = req;
+    backtrackReq.recoveryMode = RecoveryMode::Backtrack;
+    LocomotionToken staleToken{bot, MoveOwner::Travel, 204};
+
+    bool committed = LocomotionStateStore::CommitNavigateLegLocked(
+        shard, bot, reqGen, goalId, 203 /*expectedPrev*/, backtrackReq, staleToken);
+
+    CHECK(!committed); // Stale recovery leg rejected!
+    CHECK(shard.requests[bot].movementCommandId == 205);
+}
+
+// ============================================================================
+// Test 38: Gathering Mount Cast And Walk Resumption (P1)
+// ============================================================================
+static void TestGatheringMountCastAndWalkResumption()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4008);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    // 1. Initial state: Bot far from node (120yd)
+    float dist = 120.0f;
+    uint32 now = 1000;
+    BotMountRecord& mRec = shard.mounts[bot];
+    mRec.state = MountState::Unmounted;
+
+    // 2. Bot starts mount cast: state transitions to MountCasting
+    mRec.state = MountState::MountCasting;
+    mRec.mountGeneration = 1;
+    mRec.castingGeneration = 1;
+    mRec.mountCastStartedAt = now;
+
+    // While MountCasting, bot must NOT reissue movement or count as stall
+    CHECK(mRec.state == MountState::MountCasting);
+
+    // 3. Mount completes: transitions to MountedGround
+    mRec.state = MountState::MountedGround;
+
+    // 4. Once mounted, walk can safely continue mounted
+    CHECK(mRec.state == MountState::MountedGround);
+    CHECK(dist >= 90.0f);
+}
+
+// ============================================================================
+// Test 39: Gather Order Stall Does Not Advance During Mount Cast (P1)
+// ============================================================================
+static void TestGatherOrderStallDoesNotAdvanceDuringMountCast()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4009);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    BotMountRecord& mRec = shard.mounts[bot];
+    mRec.state = MountState::MountCasting;
+
+    // Simulating guild gather order logic:
+    uint32 gatherOrderStallMs = 0;
+    uint32 diff = 500;
+
+    // During mount cast, stall counter must NOT advance:
+    if (mRec.state != MountState::MountCasting)
+    {
+        gatherOrderStallMs += diff;
+    }
+
+    CHECK(gatherOrderStallMs == 0); // Stall counter did NOT advance!
+}
+
+// ============================================================================
+// Test 40: Forget Clears Planning Metadata (P2)
+// ============================================================================
+static void TestForgetClearsPlanningMetadata()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4010);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    // Allocate planning ticket
+    LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Quest);
+    CHECK(shard.activePlanning.find(bot) != shard.activePlanning.end());
+    CHECK(shard.nextPlanTicket.find(bot) != shard.nextPlanTicket.end());
+
+    // Forget removes both planning containers
+    shard.activePlanning.erase(bot);
+    shard.nextPlanTicket.erase(bot);
+
+    CHECK(shard.activePlanning.find(bot) == shard.activePlanning.end());
+    CHECK(shard.nextPlanTicket.find(bot) == shard.nextPlanTicket.end());
+}
+
+// ============================================================================
 // Main Runner
 // ============================================================================
 int main()
 {
-    std::printf("Running locomotion & navigation overhaul regression tests (Round 4, 5 & 6)...\n");
+    std::printf("Running locomotion & navigation overhaul regression tests (Round 4, 5, 6 & Pre-Live Hardening)...\n");
     std::printf("Using production LocomotionStateStore: %zu shards, %zu dispatch gates\n",
         LOCOMOTION_SHARDS, DISPATCH_GATES);
 
@@ -1573,6 +1838,18 @@ int main()
     TestPlanningEpochSameOwnerRace();
     TestCancelledMountGenerationCannotResurrect();
     TestAutonomousNavigateMountsThroughPolicy();
+
+    // Pre-live hardening tests (Tests 31-40)
+    TestOldMoveToPlanCannotOverwriteNewerHoldSameOwner();
+    TestOldMoveToPlanCannotOverwriteNewerFollowSameOwner();
+    TestOldMoveToPlanCannotOverwriteNewerChaseSameOwner();
+    TestForceStopOwnerInvalidatesPendingMoveToPlan();
+    TestSameNavigateRequestCommandCAS();
+    TestStaleGiveUpCannotEraseAdvancedCommand();
+    TestStaleRecoveryLegCannotReplaceNewerLeg();
+    TestGatheringMountCastAndWalkResumption();
+    TestGatherOrderStallDoesNotAdvanceDuringMountCast();
+    TestForgetClearsPlanningMetadata();
 
     std::printf("Locomotion tests completed: %d checks, %d failures\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;

@@ -46,7 +46,7 @@ namespace BotMovement
     LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard = std::nullopt);
 
     // Goal-directed multi-leg travel with progress tracking, navmesh-aware detour, and backtrack recovery.
-    NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius, LocomotionToken* outToken = nullptr);
+    NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius, LocomotionToken* outToken = nullptr, bool allowMount = true);
 
     // Arbitrated following: idempotent with deadzone hysteresis to eliminate generator ping-pong.
     LocomotionToken Follow(Player* bot, MoveOwner owner, Unit* target, float dist = 2.0f, float angle = 0.0f);

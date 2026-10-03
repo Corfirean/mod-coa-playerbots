@@ -64,7 +64,7 @@ void BotBattlegroundAI::Forget(ObjectGuid botGuid)
 
 void BotBattlegroundAI::MoveToPoint(Player* bot, float x, float y, float z)
 {
-    if (!bot || bot->IsNonMeleeSpellCast(false))
+    if (!bot || bot->IsNonMeleeSpellCast(false) || BotMovement::GetMountState(bot) == MountState::MountCasting)
         return;
 
     float groundZ = z;
