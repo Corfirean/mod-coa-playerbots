@@ -5,6 +5,7 @@
  */
 
 #include "BotClassRotations.h"
+#include "BotMovement.h"
 #include "engine/BotDebugLog.h"
 #include "CellImpl.h"
 #include "GridNotifiers.h"
@@ -1531,7 +1532,7 @@ void HandleSpellCastFailure(Player* bot, Unit* target, uint32 spellId, SpellCast
         float backoff = minRange > 0.0f
             ? std::min(minRange + bot->GetMeleeRange(target) + 2.0f, 15.0f)
             : DEFAULT_BACKOFF_YD;
-        bot->GetMotionMaster()->MoveBackwards(target, backoff);
+        BotMovement::MoveBackwards(bot, MoveOwner::Combat, target, backoff);
         LOG_DEBUG(BotDebugLog::LoggerName(bot->GetGUID()),
             "BotClassRotations: bot '{}' backing away {:.1f}yd from '{}' after spell {} failed TOO_CLOSE.",
             bot->GetName(), backoff, target->GetName(), spellId);
@@ -1560,7 +1561,7 @@ void HandleSpellCastFailure(Player* bot, Unit* target, uint32 spellId, SpellCast
         if (spellInfo && spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE && !spellInfo->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT))
         {
             constexpr float TIGHT_MELEE_DISTANCE_YD = 2.0f;
-            bot->GetMotionMaster()->MoveForwards(target, TIGHT_MELEE_DISTANCE_YD);
+            BotMovement::MoveForwards(bot, MoveOwner::Combat, target, TIGHT_MELEE_DISTANCE_YD);
             LOG_DEBUG(BotDebugLog::LoggerName(bot->GetGUID()),
                 "BotClassRotations: bot '{}' closing to {:.1f}yd from '{}' after spell {} failed OUT_OF_RANGE.",
                 bot->GetName(), TIGHT_MELEE_DISTANCE_YD, target->GetName(), spellId);
@@ -1580,7 +1581,7 @@ void HandleSpellCastFailure(Player* bot, Unit* target, uint32 spellId, SpellCast
         // position enough for the next failure's step to find a clear angle instead of never
         // moving from the exact spot LOS first broke at.
         constexpr float LOS_REPOSITION_STEP_YD = 8.0f;
-        bot->GetMotionMaster()->MoveForwards(target, LOS_REPOSITION_STEP_YD);
+        BotMovement::MoveForwards(bot, MoveOwner::Combat, target, LOS_REPOSITION_STEP_YD);
         LOG_DEBUG(BotDebugLog::LoggerName(bot->GetGUID()),
             "BotClassRotations: bot '{}' repositioning {:.1f}yd toward '{}' after spell {} failed LINE_OF_SIGHT.",
             bot->GetName(), LOS_REPOSITION_STEP_YD, target->GetName(), spellId);

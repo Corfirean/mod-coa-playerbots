@@ -452,12 +452,9 @@ namespace ObjectiveCommon
 
     bool Settle(Player* bot, BrainState& state)
     {
-        BotMovement::Release(bot, MoveOwner::Quest);
+        BotMovement::Stop(bot, MoveOwner::Quest);
         if (bot->isMoving())
-        {
-            bot->StopMoving();
             return false;
-        }
         WorldExecutor::Dismount(bot, state);
         return true;
     }

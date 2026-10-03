@@ -411,7 +411,7 @@ namespace
     void ArriveAtPoi(Player* bot, WorldState& state, AmbientProfile const& profile)
     {
         if (bot->IsMounted())
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            BotMovement::RequestDismount(bot, MoveOwner::Ambient, DismountReason::Arrival);
 
         bot->SetFacingTo(std::atan2(state.poiY - bot->GetPositionY(), state.poiX - bot->GetPositionX()));
 
@@ -788,7 +788,7 @@ namespace
             return false;
 
         if (bot->IsMounted())
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::ActionForbidden);
         exit->Use(bot);
         return true;
     }
@@ -849,8 +849,7 @@ namespace
 
     void Arrive(Player* bot, WorldState& state, AmbientProfile const& profile, uint32 now)
     {
-        BotMovement::Release(bot, MoveOwner::Ambient);
-        bot->StopMoving();
+        BotMovement::Stop(bot, MoveOwner::Ambient);
 
         if (state.intent == WorldIntent::Repair || state.intent == WorldIntent::Vendor)
             BotAI::MaintainEquipmentNow(bot);

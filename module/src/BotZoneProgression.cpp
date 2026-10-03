@@ -1,5 +1,6 @@
 #include "engine/BotDebugLog.h"
 #include "BotZoneProgression.h"
+#include "BotMovement.h"
 #include "BotMgr.h"
 #include "BotWorldBehavior.h"
 #include "WorldBrain.h"
@@ -423,8 +424,7 @@ namespace BotZoneProgression
         }
 
         // Stop current movement
-        bot->StopMoving();
-        bot->GetMotionMaster()->Clear();
+        BotMovement::Stop(bot, MoveOwner::Travel);
 
         LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotZoneProgression: relocating bot '{}' (level {}, race {}) from map {} zone {} to {} (map {}, x {:.1f}, y {:.1f}, z {:.1f}, zone {}).",
             bot->GetName(), level, uint32(bot->getRace()), bot->GetMapId(), bot->GetZoneId(), dest->name, dest->mapId, dest->x, dest->y, dest->z, dest->zoneId);

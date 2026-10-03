@@ -1363,7 +1363,7 @@ namespace BotEconomy
         if (dist <= ARRIVE_RADIUS)
         {
             if (bot->IsMounted())
-                bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+                BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::Arrival);
             SellInTown(bot, t.faction);
             finish(false);
             return false;

@@ -13,6 +13,7 @@
 
 #include "engine/BotDebugLog.h"
 #include "BotAI.h"
+#include "BotMovement.h"
 #include "BotEconomy.h"
 #include "BotFormations.h"
 #include "BotMgr.h"
@@ -240,7 +241,7 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
             if (member && member != commander && sBotMgr->FindBotPlayer(member->GetGUID().GetCounter()))
             {
                 if (member->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
-                    member->GetMotionMaster()->MoveFollow(commander, BotAI::ComputeFollowDistance(member), BotAI::ComputeFollowAngle(member));
+                    BotMovement::Follow(member, MoveOwner::Travel, commander, BotAI::ComputeFollowDistance(member), BotAI::ComputeFollowAngle(member));
             }
         }
         return;

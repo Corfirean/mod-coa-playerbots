@@ -1,4 +1,4 @@
-﻿/*
+/*
  * mod-coa-playerbots
  *
  * Tactical Battleground AI for CoA Companions.
@@ -8,6 +8,7 @@
  */
 
 #include "BotBattlegroundAI.h"
+#include "BotMovement.h"
 #include "Battleground.h"
 #include "BattlegroundAB.h"
 #include "BattlegroundEY.h"
@@ -75,57 +76,17 @@ void BotBattlegroundAI::MoveToPoint(Player* bot, float x, float y, float z)
     float dist2d = bot->GetDistance2d(x, y);
     if (dist2d > 3.0f)
     {
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE ||
-            bot->GetExactDist2d(x, y) > 6.0f)
-        {
-            bot->GetMotionMaster()->MovePoint(0, x, y, groundZ);
-        }
+        BotMovement::MoveTo(bot, MoveOwner::Battleground, x, y, groundZ);
     }
     else
     {
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-            bot->GetMotionMaster()->Clear();
+        BotMovement::Release(bot, MoveOwner::Battleground);
     }
 }
 
 bool BotBattlegroundAI::TryMountForTravel(Player* bot)
 {
-    if (!bot || !bot->IsInWorld() || !bot->IsAlive())
-        return false;
-
-    if (bot->IsMounted())
-        return true;
-
-    if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(false) || !bot->IsOutdoors() || bot->GetLevel() < 20)
-        return false;
-
-    uint32 racialMount = GetRacialGroundMount(bot);
-    if (racialMount)
-    {
-        if (!bot->HasSpell(racialMount))
-            bot->learnSpell(racialMount);
-
-        bot->CastSpell(bot, racialMount, false);
-        return true;
-    }
-
-    for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
-    {
-        if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
-            continue;
-        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-        if (!spellInfo || spellInfo->IsPassive() || spellInfo->GetMaxDuration() != -1)
-            continue;
-        if (!spellInfo->HasAura(SPELL_AURA_MOUNTED))
-            continue;
-        if (spellInfo->HasAura(SPELL_AURA_FLY) || spellInfo->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
-            continue;
-
-        bot->CastSpell(bot, spellId, false);
-        return true;
-    }
-
-    return false;
+    return BotMovement::RequestMount(bot, MoveOwner::Battleground);
 }
 
 bool BotBattlegroundAI::TryInteractWithBGObject(Player* bot, GameObject* go)
@@ -137,7 +98,7 @@ bool BotBattlegroundAI::TryInteractWithBGObject(Player* bot, GameObject* go)
         return false;
 
     if (bot->IsMounted())
-        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        BotMovement::RequestDismount(bot, MoveOwner::Battleground, DismountReason::ActionForbidden);
 
     go->Use(bot);
     return true;
@@ -224,8 +185,7 @@ bool BotBattlegroundAI::Update(Player* bot, uint32 diff)
     if (status == STATUS_WAIT_JOIN)
     {
         // Match preparation phase: gates are closed! Stay in spawn area and clear movement
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-            bot->GetMotionMaster()->Clear();
+        BotMovement::Stop(bot, MoveOwner::Battleground);
         return true;
     }
 
@@ -248,7 +208,7 @@ bool BotBattlegroundAI::Update(Player* bot, uint32 diff)
     if (bot->GetVictim() && bot->GetVictim()->IsAlive() && bot->IsValidAttackTarget(bot->GetVictim()))
     {
         if (bot->IsMounted())
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            BotMovement::RequestDismount(bot, MoveOwner::Battleground, DismountReason::Combat);
         return false;
     }
 
@@ -389,8 +349,7 @@ void BotBattlegroundAI::HandleEyeOfTheStorm(Player* bot, BattlegroundEY* bg, uin
     }
     else
     {
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-            bot->GetMotionMaster()->Clear();
+        BotMovement::Stop(bot, MoveOwner::Battleground);
     }
 }
 
@@ -422,10 +381,7 @@ void BotBattlegroundAI::HandleWarsongGulch(Player* bot, BattlegroundWS* bg, uint
         if (distHome > 5.0f)
             MoveToPoint(bot, homeX, homeY, homeZ);
         else
-        {
-            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-                bot->GetMotionMaster()->Clear();
-        }
+            BotMovement::Stop(bot, MoveOwner::Battleground);
         return;
     }
 
@@ -575,8 +531,7 @@ void BotBattlegroundAI::HandleArathiBasin(Player* bot, BattlegroundAB* bg, uint3
             }
         }
 
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-            bot->GetMotionMaster()->Clear();
+        BotMovement::Stop(bot, MoveOwner::Battleground);
         return;
     }
 

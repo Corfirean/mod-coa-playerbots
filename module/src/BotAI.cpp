@@ -705,9 +705,11 @@ void ResolvePendingMountCast(Player* bot, BotAIState& state)
     if (bot->IsMounted())
     {
         LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' confirmed mounted (spell {}).", bot->GetName(), justTried);
+        BotMovement::OnSpellCastSuccess(bot, justTried);
     }
     else
     {
+        BotMovement::OnSpellCastInterrupt(bot, justTried);
         // Cast completed or was interrupted without leaving the bot mounted.
         // Only blacklist custom/wrapper spells if bot was stationary, out of combat, and not interrupted.
         if (!bot->IsInCombat() && !bot->isMoving() &&
@@ -775,7 +777,7 @@ bool TryMount(Player* bot, BotAIState& state, bool wantFlying = false)
         return false;
 
     ClearActiveFollow(bot);
-    bot->StopMoving();
+    BotMovement::Stop(bot, MoveOwner::Travel);
 
     LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' attempting to mount spell {} (wantFlying={}).",
         bot->GetName(), spellId, wantFlying);
@@ -784,6 +786,7 @@ bool TryMount(Player* bot, BotAIState& state, bool wantFlying = false)
     if (result == SPELL_CAST_OK)
     {
         state.pendingMountSpellId = spellId;
+        BotMovement::OnSpellCastStart(bot, spellId);
         return true;
     }
 
@@ -820,7 +823,7 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
         {
             LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' dismounting (leader '{}' is no longer mounted).",
                 bot->GetName(), leader->GetName());
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::Manual);
         }
         if (state.pendingMountSpellId)
         {
@@ -841,7 +844,7 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
         {
             LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' switching mount type (botFlying={} vs leaderFlying={}).",
                 bot->GetName(), botFlying, leaderFlying);
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::Manual);
         }
         else
         {
@@ -1857,9 +1860,7 @@ bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& sta
         if (!needsHp && !needsMana)
             return false;
 
-        bot->StopMoving();
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
-            bot->GetMotionMaster()->Clear();
+        BotMovement::Stop(bot, MoveOwner::Travel);
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         state.isResting = true;
 
@@ -2489,7 +2490,7 @@ void CastGatherAt(Player* bot, BotAIState& state, GameObject* node, uint32 gathe
 
     if (bot->isMoving())
     {
-        bot->StopMoving();
+        BotMovement::Stop(bot, MoveOwner::Gather);
         state.gatherWalkTargetGuid = node->GetGUID();
         if (!state.gatherWalkTimeoutMs)
             state.gatherWalkTimeoutMs = GATHER_WALK_TIMEOUT_MS;
@@ -2499,7 +2500,7 @@ void CastGatherAt(Player* bot, BotAIState& state, GameObject* node, uint32 gathe
     state.gatherWalkTimeoutMs = 0;
 
     if (bot->IsMounted())
-        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        BotMovement::RequestDismount(bot, MoveOwner::Gather, DismountReason::ActionForbidden);
 
     SpellCastResult result = bot->CastSpell(node, gatherSpellId, false);
     if (result == SPELL_CAST_OK)
@@ -2876,7 +2877,7 @@ bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
     state.nextFishingScanMs = FISHING_SCAN_INTERVAL_MS;
 
     if (bot->IsMounted())
-        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        BotMovement::RequestDismount(bot, MoveOwner::Fish, DismountReason::ActionForbidden);
 
     float waterX = 0.0f, waterY = 0.0f, waterZ = 0.0f;
     if (!FindNearbyWater(bot, waterX, waterY, waterZ))
@@ -2913,8 +2914,7 @@ bool TryStartFishing(Player* bot, uint32 diff, BotAIState& state)
 // do below) is not enough to stop one already in progress.
 void ClearActiveFollow(Player* bot)
 {
-    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
-        bot->GetMotionMaster()->Clear();
+    BotMovement::Stop(bot, MoveOwner::Travel);
 }
 
 void ResumeFollowingLeader(Player* bot, BotAIState& state)
@@ -2984,8 +2984,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
         Player* targetToFollow = tank ? tank : leader;
         if (targetToFollow && targetToFollow != bot)
         {
-            if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
-                bot->GetMotionMaster()->MoveFollow(targetToFollow, BotAI::ComputeFollowDistance(bot), BotAI::ComputeFollowAngle(bot));
+            BotMovement::Follow(bot, MoveOwner::Travel, targetToFollow, BotAI::ComputeFollowDistance(bot), BotAI::ComputeFollowAngle(bot));
         }
         return;
     }
@@ -3003,7 +3002,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
     }
 
     // Reaction latency when leader moves:
-    if (leader->isMoving() && !state.followWaitingReaction && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+    if (leader->isMoving() && !state.followWaitingReaction && BotMovement::CurrentMode(bot) != MoveMode::Follow)
     {
         state.followWaitingReaction = true;
         state.followReactionDelayMs = 150 + (bot->GetGUID().GetCounter() % 250);
@@ -3013,8 +3012,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
     if (state.followWaitingReaction)
         return;
 
-    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
-        bot->GetMotionMaster()->MoveFollow(leader, followDist, BotAI::ComputeFollowAngle(bot));
+    BotMovement::Follow(bot, MoveOwner::Travel, leader, followDist, BotAI::ComputeFollowAngle(bot));
 }
 
 // Lowest-health-percent group member (bot included), below a "worth healing" threshold --
@@ -3686,14 +3684,14 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     else if (target && target->IsAlive() && bot->IsValidAttackTarget(target))
     {
         if (bot->IsMounted())
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            BotMovement::RequestDismount(bot, MoveOwner::Combat, DismountReason::Combat);
         state.lastCombatTargetGuid = target->GetGUID();
     }
 
     if (!target || !target->IsAlive() || !bot->IsValidAttackTarget(target))
     {
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-            bot->GetMotionMaster()->Clear();
+            BotMovement::Stop(bot, MoveOwner::Combat);
 
         if (!bot->IsInCombat())
         {
@@ -3942,11 +3940,12 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     {
         // A comfortable band, not a razor-thin one -- retreats once the enemy closes past
         // ~70% of preferredDist, holds anywhere between that and preferredDist itself.
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-            bot->GetMotionMaster()->MoveChase(target, ChaseRange(preferredDist * 0.7f, preferredDist));
+        BotMovement::Chase(bot, MoveOwner::Combat, target, ChaseRange(preferredDist * 0.7f, preferredDist));
     }
-    else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-        bot->GetMotionMaster()->MoveChase(target);
+    else
+    {
+        BotMovement::Chase(bot, MoveOwner::Combat, target);
+    }
 
     // Auto-attack and facing run once a valid combat target is acquired, independent of
     // ability/spell selection -- a real player starts auto-attacking immediately while casting
@@ -4354,17 +4353,15 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 
     if (threat && threat->IsAlive() && bot->IsValidAttackTarget(threat))
     {
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-            bot->GetMotionMaster()->MoveChase(threat, ChaseRange(RANGED_ENGAGE_DISTANCE * 0.7f, RANGED_ENGAGE_DISTANCE));
+        BotMovement::Chase(bot, MoveOwner::Combat, threat, ChaseRange(RANGED_ENGAGE_DISTANCE * 0.7f, RANGED_ENGAGE_DISTANCE));
     }
     else if (bot->GetDistance(healTarget) > healRange)
     {
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-            bot->GetMotionMaster()->MoveChase(healTarget, healRange - 5.0f);
+        BotMovement::Chase(bot, MoveOwner::Combat, healTarget, ChaseRange(0.0f, healRange - 5.0f));
         return;
     }
     else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-        bot->GetMotionMaster()->Clear();
+        BotMovement::Stop(bot, MoveOwner::Combat);
 
     // The heal cast itself always targets the ally, regardless of which anchor positioning
     // used above -- being out of heal range of healTarget after prioritizing safety from the
@@ -4630,6 +4627,8 @@ void Update(Player* bot, uint32 diff)
     // follow, a grind walk-back, an ambient leg -- would pull the bot off its gryphon mid-air.
     if (bot->IsInFlight())
         return;
+
+    BotMovement::Update(bot, diff);
 
     uint8 currentLevel = bot->GetLevel();
     if (state.lastLevel == 0)
@@ -5046,7 +5045,7 @@ void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid p
                         {
                             float followDist = BotAI::ComputeFollowDistance(bot);
                             float followAngle = BotAI::ComputeFollowAngle(bot);
-                            bot->GetMotionMaster()->MoveFollow(leader, followDist, followAngle);
+                            BotMovement::Follow(bot, MoveOwner::Travel, leader, followDist, followAngle);
                         }
                     }
                 }

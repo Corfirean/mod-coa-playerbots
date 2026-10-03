@@ -1,4 +1,5 @@
 #include "BotAI.h"
+#include "BotMovement.h"
 #include "BotBattlegroundFill.h"
 #include "BotEconomy.h"
 #include "BotFormations.h"
@@ -77,6 +78,7 @@ public:
             { "geartrainer",  HandleBotGearTrainerCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "professiontrainer", HandleBotProfessionTrainerCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "economy",      HandleBotEconomyCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "movement",     HandleBotMovementCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "autodungeon",  HandleBotAutoDungeonCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
@@ -476,6 +478,23 @@ public:
         return true;
     }
 
+    static bool HandleBotMovementCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        if (handler)
+        {
+            handler->PSendSysMessage("{}", BotMovement::Describe(bot));
+            handler->PSendSysMessage("{}", BotMovement::DescribeHistory(bot));
+        }
+        return true;
+    }
+
     // Population-wide counters of the open-world layer (quests, tasks, movement, reservations).
     static bool HandleBotWorldStatsCommand(ChatHandler* handler)
     {
@@ -598,7 +617,7 @@ public:
             {
                 if (member->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
                 {
-                    member->GetMotionMaster()->MoveFollow(player, BotAI::ComputeFollowDistance(member), BotAI::ComputeFollowAngle(member));
+                    BotMovement::Follow(member, MoveOwner::Travel, player, BotAI::ComputeFollowDistance(member), BotAI::ComputeFollowAngle(member));
                 }
             }
         }
@@ -639,9 +658,7 @@ public:
                 Player* member = itr->GetSource();
                 if (member && member != player && sBotMgr->FindBotPlayer(member->GetGUID().GetCounter()))
                 {
-                    if (member->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-                        member->GetMotionMaster()->Clear();
-                    member->GetMotionMaster()->MoveFollow(player, BotAI::ComputeFollowDistance(member), BotAI::ComputeFollowAngle(member));
+                    BotMovement::Follow(member, MoveOwner::Travel, player, BotAI::ComputeFollowDistance(member), BotAI::ComputeFollowAngle(member));
                 }
             }
         }

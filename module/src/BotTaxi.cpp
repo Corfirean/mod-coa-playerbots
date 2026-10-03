@@ -1,5 +1,6 @@
 #include "engine/BotDebugLog.h"
 #include "BotTaxi.h"
+#include "BotMovement.h"
 #include "BotZoneProgression.h"
 #include "DBCStores.h"
 #include "Log.h"
@@ -254,7 +255,7 @@ namespace BotTaxi
         }
 
         if (bot->IsMounted())
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::Taxi);
 
         if (!bot->ActivateTaxiPathTo(route))
         {

@@ -5,6 +5,7 @@
  */
 
 #include "engine/CombatMovement.h"
+#include "BotMovement.h"
 #include "Player.h"
 #include "SpellInfo.h"
 
@@ -27,7 +28,7 @@ namespace BotAI
 
         // Begin stopping -- the movement flag doesn't clear until the stop is actually processed,
         // so the cast itself is deferred to whichever tick next observes !bot->isMoving().
-        bot->StopMoving();
+        BotMovement::Stop(bot, MoveOwner::Combat);
         return false;
     }
 }

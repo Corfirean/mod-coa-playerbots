@@ -384,12 +384,10 @@ namespace QuestInteraction
                 float dist = bot->GetDistance(npc);
                 if (dist <= INTERACTION_DISTANCE - 1.0f)
                 {
-                    BotMovement::Release(bot, MoveOwner::Quest);
+                    BotMovement::Stop(bot, MoveOwner::Quest);
                     if (bot->isMoving())
-                    {
-                        bot->StopMoving();
                         return ExecResult::Running;
-                    }
+
                     WorldExecutor::Dismount(bot, state);
                     bot->SetFacingToObject(npc);
                     task.waitUntilMs = now + RollRange(state, 0x4ead, READ_MIN_MS, READ_MAX_MS);

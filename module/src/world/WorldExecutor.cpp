@@ -125,7 +125,7 @@ namespace WorldExecutor
     {
         if (!bot->IsMounted())
             return;
-        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::Manual);
         state.lastDismountMs = NowMs();
     }
 

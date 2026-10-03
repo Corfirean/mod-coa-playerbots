@@ -7,6 +7,7 @@
 #include "AscensionClassServiceBridge.h"
 #include "AscensionCoATalentData.h"
 #include "BotAI.h"
+#include "BotMovement.h"
 #include "BotEconomy.h"
 #include "engine/SpecStrategyRegistry.h"
 #include "engine/ActionEvaluator.h"
@@ -651,7 +652,7 @@ void BotMgr::FinishPendingTeleport(WorldSession* session)
         if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
         {
             if (leader != bot)
-                bot->GetMotionMaster()->MoveFollow(leader, BotAI::ComputeFollowDistance(bot), BotAI::ComputeFollowAngle(bot));
+                BotMovement::Follow(bot, MoveOwner::Travel, leader, BotAI::ComputeFollowDistance(bot), BotAI::ComputeFollowAngle(bot));
         }
     }
 }
