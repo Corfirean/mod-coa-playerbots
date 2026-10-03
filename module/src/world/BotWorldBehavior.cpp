@@ -62,16 +62,6 @@ namespace
     constexpr uint32 LIFETIME_AREA_MS = 150000;
     constexpr uint32 LIFETIME_EXPLORE_MS = 90000;
 
-    // A travelling bot that hasn't closed 2 yards on its destination for this long is stuck.
-    constexpr uint32 STUCK_MS = 15000;
-    constexpr float PROGRESS_STEP = 2.0f;
-
-    // MovePoint path generation over very long distances can truncate, so long trips are issued as
-    // a chain of legs. Each leg is re-issued on a think tick once the previous one has stopped.
-    constexpr float TRAVEL_LEG = 120.0f;
-
-    // Beyond this the bot mounts, same threshold idea the gather and quest walks already use.
-    constexpr float MOUNT_DISTANCE = 80.0f;
 
     // Area destinations must be past what the bot's own local scans could already see, or the
     // trip would be pointless: grinding scans ~30 yards, gathering 30.
@@ -297,27 +287,18 @@ namespace
         }
     }
 
-    void MoveLeg(Player* bot, WorldState& state)
+    uint32 MakeAmbientGoalId(WorldState const& state)
     {
-        float bx = bot->GetPositionX();
-        float by = bot->GetPositionY();
-        float dist = Dist2d(bx, by, state.x, state.y);
-
-        float tx = state.x;
-        float ty = state.y;
-        float tz = state.z;
-        if (dist > TRAVEL_LEG)
-        {
-            float t = TRAVEL_LEG / dist;
-            tx = bx + (state.x - bx) * t;
-            ty = by + (state.y - by) * t;
-            tz = bot->GetPositionZ();
-        }
-
-        if (dist > MOUNT_DISTANCE && !bot->IsMounted())
-            BotAI::TryMountForTravel(bot);
-
-        BotMovement::MoveTo(bot, MoveOwner::Ambient, tx, ty, tz);
+        uint32 h = 2166136261u;
+        auto hashVal = [&h](uint32 v) {
+            h = (h ^ v) * 16777619u;
+        };
+        hashVal(static_cast<uint32>(state.intent));
+        hashVal(state.mapId);
+        hashVal(static_cast<uint32>(std::floor(state.x * 10.0f)));
+        hashVal(static_cast<uint32>(std::floor(state.y * 10.0f)));
+        hashVal(static_cast<uint32>(std::floor(state.z * 10.0f)));
+        return (h == 0) ? 1 : h;
     }
 
     void Begin(Player* bot, WorldState& state, WorldIntent intent, float x, float y, float z, float arriveRadius,
@@ -334,7 +315,11 @@ namespace
         state.bestDistance = Dist2d(bot->GetPositionX(), bot->GetPositionY(), x, y);
         state.lastProgressMs = now;
         StandUp(bot, state);
-        MoveLeg(bot, state);
+
+        float const dist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), state.x, state.y);
+        BotMovement::RequestMount(bot, MoveOwner::Ambient, dist);
+        uint32 const goalId = MakeAmbientGoalId(state);
+        BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius);
     }
 
     // Stops a little short of the NPC on the side the bot approaches from, so it ends up
@@ -918,7 +903,12 @@ namespace BotWorldBehavior
                 IntentName(state.intent));
             state.lastProgressMs = now;
             if (state.phase == Phase::Travel)
-                MoveLeg(bot, state);
+            {
+                float const dist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), state.x, state.y);
+                BotMovement::RequestMount(bot, MoveOwner::Ambient, dist);
+                uint32 const goalId = MakeAmbientGoalId(state);
+                BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius);
+            }
         }
 
         if (now >= state.deadlineMs)
@@ -953,55 +943,78 @@ namespace BotWorldBehavior
             return AmbientTick::Relocated;
         }
 
-        float dist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), state.x, state.y);
-        if (dist <= state.arriveRadius)
+        if (state.phase == Phase::Travel)
         {
-            if (state.intent == WorldIntent::TravelHub)
-                return AdvanceTravel(bot, state, now);
-
-            if (state.intent == WorldIntent::LeaveCity)
+            float dist = Dist2d(bot->GetPositionX(), bot->GetPositionY(), state.x, state.y);
+            if (dist <= state.arriveRadius)
             {
-                if (UseCityExit(bot, state))
+                if (state.intent == WorldIntent::TravelHub)
+                    return AdvanceTravel(bot, state, now);
+
+                if (state.intent == WorldIntent::LeaveCity)
                 {
-                    // The exit's spell has a cast time, so for a few seconds the bot is still standing
-                    // in the city; without this pause the next think chose LeaveCity again and clicked
-                    // the crystal a second time. If the teleport never happens, it simply retries.
-                    Finish(bot, state, "completed", EXIT_RETRY_MS, now);
+                    if (UseCityExit(bot, state))
+                    {
+                        // The exit's spell has a cast time, so for a few seconds the bot is still standing
+                        // in the city; without this pause the next think chose LeaveCity again and clicked
+                        // the crystal a second time. If the teleport never happens, it simply retries.
+                        Finish(bot, state, "completed", EXIT_RETRY_MS, now);
+                        return AmbientTick::Relocated;
+                    }
+                    Finish(bot, state, "abandoned (exit object not found)", FAIL_COOLDOWN_MS, now);
                     return AmbientTick::Relocated;
                 }
-                Finish(bot, state, "abandoned (exit object not found)", FAIL_COOLDOWN_MS, now);
-                return AmbientTick::Relocated;
+
+                if (state.intent == WorldIntent::GatherArea || state.intent == WorldIntent::GrindArea)
+                {
+                    // The trip was the whole errand: hand the bot straight back to its own local scans,
+                    // which can now see what it came here for.
+                    Finish(bot, state, "completed", 0, now);
+                    return AmbientTick::Relocated;
+                }
+
+                Arrive(bot, state, profile, now);
+                return AmbientTick::Busy;
             }
 
-            if (state.intent == WorldIntent::GatherArea || state.intent == WorldIntent::GrindArea)
+            if (now < state.nextThinkMs)
+                return AmbientTick::Busy;
+            state.nextThinkMs = now + _config.thinkIntervalMs;
+
+            BotMovement::RequestMount(bot, MoveOwner::Ambient, dist);
+            uint32 const goalId = MakeAmbientGoalId(state);
+            NavStatus status = BotMovement::Navigate(bot, MoveOwner::Ambient, goalId, state.x, state.y, state.z, state.arriveRadius);
+            if (status == NavStatus::Arrived)
             {
-                // The trip was the whole errand: hand the bot straight back to its own local scans,
-                // which can now see what it came here for.
-                Finish(bot, state, "completed", 0, now);
+                if (state.intent == WorldIntent::TravelHub)
+                    return AdvanceTravel(bot, state, now);
+
+                if (state.intent == WorldIntent::LeaveCity)
+                {
+                    if (UseCityExit(bot, state))
+                    {
+                        Finish(bot, state, "completed", EXIT_RETRY_MS, now);
+                        return AmbientTick::Relocated;
+                    }
+                    Finish(bot, state, "abandoned (exit object not found)", FAIL_COOLDOWN_MS, now);
+                    return AmbientTick::Relocated;
+                }
+
+                if (state.intent == WorldIntent::GatherArea || state.intent == WorldIntent::GrindArea)
+                {
+                    Finish(bot, state, "completed", 0, now);
+                    return AmbientTick::Relocated;
+                }
+
+                Arrive(bot, state, profile, now);
+                return AmbientTick::Busy;
+            }
+            if (status == NavStatus::Stuck)
+            {
+                Finish(bot, state, "abandoned (stuck)", FAIL_COOLDOWN_MS, now);
                 return AmbientTick::Relocated;
             }
-
-            Arrive(bot, state, profile, now);
-            return AmbientTick::Busy;
         }
-
-        if (now < state.nextThinkMs)
-            return AmbientTick::Busy;
-        state.nextThinkMs = now + _config.thinkIntervalMs;
-
-        if (dist < state.bestDistance - PROGRESS_STEP)
-        {
-            state.bestDistance = dist;
-            state.lastProgressMs = now;
-        }
-        else if (now - state.lastProgressMs > STUCK_MS)
-        {
-            Finish(bot, state, "abandoned (stuck)", FAIL_COOLDOWN_MS, now);
-            return AmbientTick::Relocated;
-        }
-
-        if (!bot->isMoving() || BotMovement::CurrentOwner(bot) != MoveOwner::Ambient)
-            MoveLeg(bot, state);
 
         return AmbientTick::Busy;
     }

@@ -14,9 +14,6 @@ using namespace WorldBrainInternal;
 
 namespace
 {
-    // No remounting this soon after getting off: mount/dismount flapping reads as a bot, not a
-    // player.
-    constexpr uint32 REMOUNT_COOLDOWN_MS = 10000;
 
     MoveOwner OwnerFor(WorldTask const& task)
     {
@@ -89,12 +86,10 @@ namespace WorldExecutor
     NavStatus TravelTo(Player* bot, BrainState& state, uint8 sub, float x, float y, float z, float radius, uint64 goalSalt,
         bool allowMount)
     {
-        uint32 now = NowMs();
         float dist = std::hypot(bot->GetPositionX() - x, bot->GetPositionY() - y);
 
-        if (allowMount && !bot->IsMounted() && dist > state.mountThreshold && !bot->IsInCombat() &&
-            now - state.lastDismountMs > REMOUNT_COOLDOWN_MS)
-            BotAI::TryMountForTravel(bot);
+        if (allowMount)
+            BotMovement::RequestMount(bot, OwnerFor(state.task), dist);
 
         MovementRequest const* before = BotMovement::GetRequest(bot->GetGUID());
         uint8 stageBefore = before ? before->progress.stage : 0;
@@ -125,7 +120,7 @@ namespace WorldExecutor
     {
         if (!bot->IsMounted())
             return;
-        BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::Manual);
+        BotMovement::RequestDismount(bot, OwnerFor(state.task), DismountReason::Manual);
         state.lastDismountMs = NowMs();
     }
 

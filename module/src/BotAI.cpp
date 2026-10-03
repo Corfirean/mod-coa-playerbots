@@ -197,32 +197,7 @@ struct BotAIState
     // stuckDetector above, this one *does* act on what it sees.
     BotFleeState flee;
 
-    // See TryMatchLeaderMountState -- a "mount" spell in this server's account-wide collection
-    // is actually a wrapper (mod-ascension-compat's spell_ascension_local_mount script) that
-    // resolves to a real ground/flying spell internally; a wrapper collected for a mount with no
-    // ground form (e.g. a drake with only Flying150/280/310 variants) reports SPELL_CAST_OK but
-    // silently applies nothing when a ground mount is what's actually wanted, with zero
-    // server-side trace either way. SelectKnownMountSpell has no way to know this ahead of time
-    // (it can only see the wrapper spell's own SpellInfo, not mod-ascension-compat's internal
-    // MountWrapper table), so this remembers which spellIds turned out not to actually work and
-    // skips them on future attempts, trying a different known mount instead of retrying the same
-    // dead end forever.
-    std::unordered_set<uint32> knownBadMountSpells;
 
-    // Confirmed live (root cause of a near-total mount outage: one bot had blacklisted 816
-    // distinct mount spells and never mounted once): checking bot->IsMounted() synchronously in
-    // the same statement as the CastSpell() call that just requested the mount reads stale state
-    // -- SPELL_AURA_MOUNTED isn't guaranteed visible via IsMounted() until the tick after the
-    // cast resolves, even for a real SPELL_CAST_OK (255) result and an unwrapped racial mount
-    // with nothing scripted in front of it. Checking that early was blacklisting good, working
-    // mounts as fast as a bot could cycle through its known list, exhausting the entire
-    // collection within seconds and leaving it permanently grounded (no known mounts left to
-    // try). This defers the real "did it actually mount" check to the following tick instead of
-    // trusting an instantaneous read, while still catching the genuinely-broken wrapper mounts
-    // this blacklist was originally built for (see knownBadMountSpells' own comment) -- those
-    // still fail the check a full tick later, just without punishing spells that only needed one
-    // more tick to show up as mounted.
-    uint32 pendingMountSpellId = 0;
 
     // Death handling (see UpdateDeathHandling): true once this death has already started its
     // grace-period wait for an incoming resurrect, so the wait isn't restarted every tick.
@@ -683,130 +658,19 @@ void EnsureBotHasMount(Player* bot)
 void ClearActiveFollow(Player* bot);
 
 // Resolves in-progress mount cast for both grouped and solo bots
-void ResolvePendingMountCast(Player* bot, BotAIState& state)
+void ResolvePendingMountCast(Player* bot, BotAIState& /*state*/)
 {
-    if (bot->IsMounted())
-    {
-        state.pendingMountSpellId = 0;
-        return;
-    }
-
-    if (!state.pendingMountSpellId)
-        return;
-
-    // Mount casts have a 1.5s (1500 ms) cast time. If the bot is still casting,
-    // wait for it to complete -- DO NOT interrupt, blacklist, or restart!
-    if (bot->IsNonMeleeSpellCast(false))
-        return;
-
-    uint32 justTried = state.pendingMountSpellId;
-    state.pendingMountSpellId = 0;
-
-    if (bot->IsMounted())
-    {
-        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' confirmed mounted (spell {}).", bot->GetName(), justTried);
-        BotMovement::OnSpellCastSuccess(bot, justTried);
-    }
-    else
-    {
-        BotMovement::OnSpellCastInterrupt(bot, justTried);
-        // Cast completed or was interrupted without leaving the bot mounted.
-        // Only blacklist custom/wrapper spells if bot was stationary, out of combat, and not interrupted.
-        if (!bot->IsInCombat() && !bot->isMoving() &&
-            justTried != RacialGroundMountSpellFor(bot->getRace()) &&
-            justTried != DefaultFlyingMountSpellFor(bot))
-        {
-            state.knownBadMountSpells.insert(justTried);
-            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
-                "BotAI: bot '{}' mount spell {} finished cast but bot is not mounted -- marking bad.",
-                bot->GetName(), justTried);
-        }
-    }
+    BotMovement::ResolveMountCast(bot);
 }
 
 // Reusable mounting helper for both group-following and autonomous long-distance travel
-bool TryMount(Player* bot, BotAIState& state, bool wantFlying = false)
+bool TryMount(Player* bot, BotAIState& /*state*/, bool wantFlying = false)
 {
-    if (!bot || !bot->IsInWorld() || !bot->IsAlive())
-        return false;
-
-    if (bot->IsMounted())
-        return true;
-
-    if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(false) || !bot->IsOutdoors())
-        return false;
-
-    if (bot->GetLevel() < 20)
-        return false;
-
-    if (state.pendingMountSpellId)
-        return false;
-
-    if (wantFlying)
-    {
-        // Only allow flying mounts in Outland (map 530) or Northrend (map 571) with level >= 60
-        uint32 mapId = bot->GetMapId();
-        if ((mapId != 530 && mapId != 571) || bot->GetLevel() < 60)
-            wantFlying = false;
-    }
-
-    uint32 spellId = 0;
-    if (wantFlying)
-    {
-        uint32 defaultFly = DefaultFlyingMountSpellFor(bot);
-        if (defaultFly && bot->HasSpell(defaultFly) && !state.knownBadMountSpells.count(defaultFly))
-            spellId = defaultFly;
-
-        if (!spellId)
-            spellId = SelectKnownMountSpell(bot, true /*wantFlying*/, state.knownBadMountSpells);
-
-        if (!spellId)
-            spellId = RacialGroundMountSpellFor(bot->getRace());
-    }
-    else
-    {
-        uint32 racialSpellId = RacialGroundMountSpellFor(bot->getRace());
-        if (racialSpellId && bot->HasSpell(racialSpellId) && !state.knownBadMountSpells.count(racialSpellId))
-            spellId = racialSpellId;
-
-        if (!spellId)
-            spellId = SelectKnownMountSpell(bot, false /*wantFlying*/, state.knownBadMountSpells);
-    }
-
-    if (!spellId)
-        return false;
-
-    ClearActiveFollow(bot);
-    BotMovement::Stop(bot, MoveOwner::Travel);
-
-    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' attempting to mount spell {} (wantFlying={}).",
-        bot->GetName(), spellId, wantFlying);
-
-    SpellCastResult result = bot->CastSpell(bot, spellId, false);
-    if (result == SPELL_CAST_OK)
-    {
-        state.pendingMountSpellId = spellId;
-        BotMovement::OnSpellCastStart(bot, spellId);
-        return true;
-    }
-
-    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
-        "BotAI: bot '{}' mount spell {} failed to cast (result {}).",
-        bot->GetName(), spellId, uint32(result));
-
-    if (spellId != RacialGroundMountSpellFor(bot->getRace()) && spellId != DefaultFlyingMountSpellFor(bot))
-    {
-        if (result != SPELL_FAILED_ONLY_OUTDOORS && result != SPELL_FAILED_MOVING &&
-            result != SPELL_FAILED_SPELL_IN_PROGRESS && result != SPELL_FAILED_NOT_HERE)
-        {
-            state.knownBadMountSpells.insert(spellId);
-        }
-    }
-    return false;
+    return BotMovement::RequestMount(bot, MoveOwner::Travel, 0.0f, wantFlying);
 }
 
 // Synchronizes the bot's mounted state and mount type (ground vs flying) with the group leader.
-void TryMatchLeaderMountState(Player* bot, BotAIState& state)
+void TryMatchLeaderMountState(Player* bot, BotAIState& /*state*/)
 {
     Group* group = bot->GetGroup();
     if (!group)
@@ -816,43 +680,18 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& state)
     if (!leader || leader == bot || !leader->IsInWorld() || leader->GetMap() != bot->GetMap())
         return;
 
-    // 2. Leader is NOT mounted -> bot must dismount / cancel pending cast
+    DesiredMountState pref = DesiredMountState::None;
     if (!leader->IsMounted())
     {
-        if (bot->IsMounted())
-        {
-            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' dismounting (leader '{}' is no longer mounted).",
-                bot->GetName(), leader->GetName());
-            BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::Manual);
-        }
-        if (state.pendingMountSpellId)
-        {
-            state.pendingMountSpellId = 0;
-            bot->InterruptNonMeleeSpells(false);
-        }
-        return;
+        pref = DesiredMountState::PreferUnmounted;
     }
-
-    // 3. Leader IS mounted: determine ground vs flying mount type
-    bool leaderFlying = IsUnitOnFlyingMount(leader);
-
-    if (bot->IsMounted())
+    else
     {
-        state.pendingMountSpellId = 0;
-        bool botFlying = IsUnitOnFlyingMount(bot);
-        if (leaderFlying != botFlying)
-        {
-            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' switching mount type (botFlying={} vs leaderFlying={}).",
-                bot->GetName(), botFlying, leaderFlying);
-            BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::Manual);
-        }
-        else
-        {
-            return;
-        }
+        bool leaderFlying = IsUnitOnFlyingMount(leader);
+        pref = leaderFlying ? DesiredMountState::PreferFlying : DesiredMountState::PreferGround;
     }
 
-    TryMount(bot, state, leaderFlying);
+    BotMovement::SetLeaderMountPreference(bot, pref);
 }
 
 // Rough per-role/class stat-fit weighting for ScoreItemForBot -- deliberately not a full
@@ -1672,7 +1511,7 @@ private:
 // alternatives can act on instead of assuming its walk started.
 bool MoveBotToPoint(Player* bot, MoveOwner owner, float x, float y, float z)
 {
-    return BotMovement::MoveTo(bot, owner, x, y, z);
+    return bool(BotMovement::MoveTo(bot, owner, x, y, z));
 }
 
 // Real "open, take everything, release" loot flow draining the bot's pending loot queue.
@@ -1787,7 +1626,7 @@ bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& sta
         return false;
     }
 
-    if (bot->IsMounted() || state.pendingMountSpellId)
+    if (bot->IsMounted() || BotMovement::GetPendingMountSpell(bot))
     {
         if (state.isResting)
         {
@@ -2562,8 +2401,8 @@ void TryContinueGatherWalk(Player* bot, uint32 diff, BotAIState& state)
 
     if (!inRange)
     {
-        if (bot->GetDistance(node) > 40.0f && !bot->IsMounted())
-            TryMount(bot, state, false);
+        if (bot->GetDistance(node) > 40.0f)
+            BotMovement::RequestMount(bot, MoveOwner::Gather, bot->GetDistance(node));
         return; // still walking -- nothing to do until it arrives, times out, or the caller re-decides
     }
 
@@ -2606,8 +2445,8 @@ bool TryStartGathering(Player* bot, uint32 diff, BotAIState& state, uint32 requi
 
         state.gatherWalkTargetGuid = node->GetGUID();
         state.gatherWalkTimeoutMs = GATHER_WALK_TIMEOUT_MS;
-        if (bot->GetDistance(node) > 40.0f && !bot->IsMounted())
-            TryMount(bot, state, false);
+        if (bot->GetDistance(node) > 40.0f)
+            BotMovement::RequestMount(bot, MoveOwner::Gather, bot->GetDistance(node));
         return true;
     }
 
@@ -2919,14 +2758,10 @@ void ClearActiveFollow(Player* bot)
 
 void ResumeFollowingLeader(Player* bot, BotAIState& state)
 {
-    // If the bot is already mounted, its mount cast is definitely completed
-    if (bot->IsMounted())
-        state.pendingMountSpellId = 0;
-
     // Suppress follow movement while a mount attempt is pending or the bot is actively casting
     // a non-melee spell (such as a 1.5s mount cast). Issuing movement while casting immediately
     // aborts the spell cast.
-    if (state.pendingMountSpellId || bot->IsNonMeleeSpellCast(false))
+    if (BotMovement::GetPendingMountSpell(bot) || bot->IsNonMeleeSpellCast(false))
         return;
 
     // Stay means exactly this: don't resume following just because there's nothing to fight
@@ -3382,10 +3217,9 @@ void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
             }
 
             float dist = bot->GetExactDist2d(gatherOrder->targetX, gatherOrder->targetY);
-            if (dist > 40.0f)
-            {
-                if (!bot->IsMounted())
-                    TryMount(bot, state, false);
+                if (dist > 40.0f)
+                {
+                    BotMovement::RequestMount(bot, MoveOwner::Gather, dist);
                 // A resolved location can be genuinely unreachable on foot from wherever the
                 // teleport actually landed (across water, inside geometry, etc.) -- MoveBotToPoint
                 // then refuses every single tick with no timeout of its own, which used to leave
@@ -4785,7 +4619,7 @@ bool IsInCity(Player const* bot)
 
 void TryMountForTravel(Player* bot)
 {
-    TryMount(bot, states[bot->GetGUID()], false);
+    BotMovement::RequestMount(bot, MoveOwner::Travel);
 }
 
 bool IsProfessionTool(ItemTemplate const* proto)
@@ -5032,9 +4866,6 @@ void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid p
 
         if (Player* bot = ObjectAccessor::FindPlayer(botGuid))
         {
-            if (bot->IsMounted())
-                state.pendingMountSpellId = 0;
-
             if (!bot->IsNonMeleeSpellCast(false))
             {
                 if (Group* group = bot->GetGroup())

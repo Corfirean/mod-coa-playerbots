@@ -1380,8 +1380,7 @@ namespace BotEconomy
             }
         }
 
-        if (!bot->IsMounted() && dist > 150.0f && !bot->IsInCombat())
-            BotAI::TryMountForTravel(bot);
+        BotMovement::RequestMount(bot, MoveOwner::Travel, dist);
 
         NavStatus const status = BotMovement::Navigate(bot, MoveOwner::Travel, t.goalId, t.x, t.y, t.z, ARRIVE_RADIUS * 0.7f);
         if (status == NavStatus::Stuck)

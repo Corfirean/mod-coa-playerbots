@@ -103,13 +103,34 @@ enum class MountState : uint8
     Cooldown,
 };
 
+enum class DesiredMountState : uint8
+{
+    None = 0,
+    PreferGround,
+    PreferFlying,
+    PreferUnmounted,
+};
+
 // Command generation token to prevent stale cancellations and ensure deterministic preemption.
 struct LocomotionToken
 {
-    uint64 commandId = 0;
+    ObjectGuid botGuid;
     MoveOwner owner = MoveOwner::None;
-    MoveMode mode = MoveMode::Idle;
+    uint64 commandId = 0;
+
+    bool IsValid() const { return !botGuid.IsEmpty() && owner != MoveOwner::None && commandId != 0; }
+    operator bool() const { return IsValid(); }
 };
+
+inline bool operator==(LocomotionToken const& a, LocomotionToken const& b)
+{
+    return a.botGuid == b.botGuid && a.owner == b.owner && a.commandId == b.commandId;
+}
+
+inline bool operator!=(LocomotionToken const& a, LocomotionToken const& b)
+{
+    return !(a == b);
+}
 
 // 32-entry circular ring buffer record for debugging and telemetry.
 struct TransitionRecord
@@ -136,8 +157,10 @@ struct SafePosition
 // The persistent half of a Navigate() call: what the bot is walking to and how it is going.
 struct MovementRequest
 {
+    ObjectGuid botGuid;
     MoveOwner owner = MoveOwner::None;
     uint64 goalId = 0;
+    uint64 commandId = 0;
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
@@ -153,6 +176,7 @@ struct MovementRequest
     float detourX = 0.0f;
     float detourY = 0.0f;
     float detourZ = 0.0f;
+    bool backtracking = false;
 };
 
 struct MovementStats
@@ -162,6 +186,7 @@ struct MovementStats
     uint64 stuckEvents = 0;     // progress stalls that started a recovery
     uint64 repaths = 0;
     uint64 detours = 0;
+    uint64 backtracks = 0;
     uint64 gaveUp = 0;          // Navigate returned Stuck
     uint64 mountAttempts = 0;
     uint64 mountSuccesses = 0;
@@ -171,50 +196,61 @@ struct MovementStats
 namespace BotMovement
 {
     // =========================================================================
-    // Core Arbitrated Locomotion API
+    // Controlled Movement Guard
+    // =========================================================================
+
+    // Checks whether the bot is undergoing externally-controlled motion (knockback, fear,
+    // taxi, flight, jump, stun, vehicle). Bot locomotion must NOT interrupt these.
+    bool IsExternallyControlled(Player const* bot);
+
+    // =========================================================================
+    // Core Arbitrated Locomotion API (Token-Safe)
     // =========================================================================
 
     // Move to a specific point with optional navmesh path generation.
-    // forceDestination is defaulted to false for safety (fail safe, never cheat geometry).
-    bool MoveTo(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination = false);
+    // Returns a generation token. forceDestination is defaulted to false for safety.
+    LocomotionToken MoveTo(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination = false);
 
-    // Goal-directed multi-leg travel with progress tracking and navmesh-aware detour recovery.
-    NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius);
+    // Goal-directed multi-leg travel with progress tracking, navmesh-aware detour, and backtrack recovery.
+    NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius, LocomotionToken* outToken = nullptr);
 
     // Arbitrated following: idempotent with deadzone hysteresis to eliminate generator ping-pong.
-    bool Follow(Player* bot, MoveOwner owner, Unit* target, float dist = 2.0f, float angle = 0.0f);
+    LocomotionToken Follow(Player* bot, MoveOwner owner, Unit* target, float dist = 2.0f, float angle = 0.0f);
 
     // Arbitrated combat chasing: idempotent range banding without spline jitter.
-    bool Chase(Player* bot, MoveOwner owner, Unit* target, float minRange = 0.0f, float maxRange = 0.0f, float angle = 0.0f);
-    inline bool Chase(Player* bot, MoveOwner owner, Unit* target, ChaseRange const& range, float angle = 0.0f)
+    LocomotionToken Chase(Player* bot, MoveOwner owner, Unit* target, float minRange = 0.0f, float maxRange = 0.0f, float angle = 0.0f);
+    inline LocomotionToken Chase(Player* bot, MoveOwner owner, Unit* target, ChaseRange const& range, float angle = 0.0f)
     {
         return Chase(bot, owner, target, range.MinRange, range.MaxRange, angle);
     }
 
     // Tactical relative movement (stepping towards or backing away from target)
-    bool MoveForwards(Player* bot, MoveOwner owner, Unit* target, float dist);
-    bool MoveBackwards(Player* bot, MoveOwner owner, Unit* target, float dist);
+    LocomotionToken MoveForwards(Player* bot, MoveOwner owner, Unit* target, float dist);
+    LocomotionToken MoveBackwards(Player* bot, MoveOwner owner, Unit* target, float dist);
 
     // Holds position for a given duration
-    bool Hold(Player* bot, MoveOwner owner, uint32 durationMs);
+    LocomotionToken Hold(Player* bot, MoveOwner owner, uint32 durationMs);
 
-    // Safe stop: only stops if owner holds the active claim or outranks it.
+    // Token-safe cancellation: cleans up ONLY if active.commandId == token.commandId && active.owner == token.owner.
+    // Stale tokens from previous commands or other owners are safely ignored.
+    bool Release(Player* bot, LocomotionToken const& token);
+    bool Stop(Player* bot, LocomotionToken const& token);
+
+    // Administrative cancellation by owner: releases or stops whatever movement currently belongs to owner.
     void Stop(Player* bot, MoveOwner owner);
-
-    // Releases ownership without forcing abrupt stop if caller simply finished its duty.
     void Release(Player* bot, MoveOwner owner);
 
     // =========================================================================
     // Centralized Mount Controller
     // =========================================================================
 
-    // Requests mounting with distance hysteresis check (>90 yards).
-    bool RequestMount(Player* bot, MoveOwner owner, float travelDistance = 0.0f);
+    // Requests mounting with distance hysteresis check (>90 yards) and full production spell selection.
+    bool RequestMount(Player* bot, MoveOwner owner, float travelDistance = 0.0f, bool wantFlying = false);
 
-    // Requests dismounting with explicit reason tracking and remount cooldown.
+    // Requests dismounting with explicit reason tracking and global 6s remount cooldown.
     void RequestDismount(Player* bot, MoveOwner owner, DismountReason reason);
 
-    // Checks whether the bot can legally mount (level, outdoor, spell, cooldown).
+    // Checks whether the bot can legally mount (level, outdoor, cooldown, not controlled).
     bool CanMount(Player const* bot, float travelDistance = 0.0f);
 
     // Checks whether the bot is currently mounted.
@@ -222,6 +258,16 @@ namespace BotMovement
 
     // Mount state machine queries
     MountState GetMountState(Player const* bot);
+    uint32 GetPendingMountSpell(Player const* bot);
+
+    // Production mount spell selector: resolves racial, flying, learned, or wrapper mounts.
+    uint32 SelectMountSpell(Player* bot, bool wantFlying = false);
+
+    // Sets the group leader's desired mount state (debounced, avoids flapping).
+    void SetLeaderMountPreference(Player* bot, DesiredMountState pref);
+
+    // Resolves completed or failed mount cast
+    void ResolveMountCast(Player* bot);
 
     // Spell cast hooks to protect mount casting and handle interruption
     void OnSpellCastStart(Player* bot, uint32 spellId);
@@ -235,7 +281,7 @@ namespace BotMovement
     // Periodic watchdog update: checks airborne safety, mount state, and movement health.
     void Update(Player* bot, uint32 diff);
 
-    // Attempts to navigate back to the bot's last known safe position.
+    // Attempts to navigate back to a confirmed safe position from recent history.
     bool BacktrackToSafePosition(Player* bot, MoveOwner owner);
 
     // State inspection
@@ -245,6 +291,7 @@ namespace BotMovement
     bool CanClaim(Player* bot, MoveOwner owner);
     bool IsCommandActive(Player* bot, MoveOwner owner, uint64 commandId);
     uint64 GetActiveCommandId(Player* bot);
+    LocomotionToken GetActiveToken(Player* bot);
 
     // Request lifecycle
     void ResetRequest(ObjectGuid botGuid);
@@ -257,6 +304,7 @@ namespace BotMovement
     char const* StateName(LocomotionState state);
     char const* MountStateName(MountState state);
     char const* DismountReasonName(DismountReason reason);
+    char const* LeaderPrefName(DesiredMountState pref);
 
     std::string Describe(Player* bot);
     std::string DescribeHistory(Player* bot);
