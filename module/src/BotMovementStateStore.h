@@ -25,12 +25,14 @@ struct LocomotionShard
     std::unordered_map<ObjectGuid, NopathCacheEntry> nopathCache;
     std::unordered_map<ObjectGuid, uint64> nextRequestGen;
 
-    struct PlanningState
+    struct PlanningEpochState
     {
-        uint64 ticket = 0;
-        MoveOwner owner = MoveOwner::None;
+        std::array<uint64, static_cast<size_t>(MoveOwner::Count)> latestByOwner{};
+        uint64 latestAnyTicket = 0;
+        MoveOwner latestAnyOwner = MoveOwner::None;
+        uint64 globalStopTicket = 0;
     };
-    std::unordered_map<ObjectGuid, PlanningState> activePlanning;
+    std::unordered_map<ObjectGuid, PlanningEpochState> activePlanning;
     std::unordered_map<ObjectGuid, uint64> nextPlanTicket;
 };
 
@@ -68,7 +70,19 @@ public:
     static uint64 AdvanceIntentEpochLocked(LocomotionShard& shard, ObjectGuid guid, MoveOwner owner)
     {
         uint64 ticket = ++shard.nextPlanTicket[guid];
-        shard.activePlanning[guid] = LocomotionShard::PlanningState{ticket, owner};
+        auto& epoch = shard.activePlanning[guid];
+        if (owner == MoveOwner::None)
+        {
+            epoch.globalStopTicket = ticket;
+            epoch.latestAnyTicket = ticket;
+            epoch.latestAnyOwner = MoveOwner::None;
+        }
+        else
+        {
+            epoch.latestByOwner[static_cast<size_t>(owner)] = ticket;
+            epoch.latestAnyTicket = ticket;
+            epoch.latestAnyOwner = owner;
+        }
         return ticket;
     }
 
@@ -83,15 +97,22 @@ public:
         auto it = shard.activePlanning.find(guid);
         if (it == shard.activePlanning.end())
             return true;
-        // Same owner: if a newer ticket was allocated, this older plan is superseded!
-        if (it->second.owner == owner && it->second.ticket > ticket)
+
+        LocomotionShard::PlanningEpochState const& epoch = it->second;
+
+        // 1. Same-owner check: if a newer ticket was allocated for this owner, older plan is superseded!
+        if (owner != MoveOwner::None && epoch.latestByOwner[static_cast<size_t>(owner)] > ticket)
             return false;
-        // Administrative stop for all owners (MoveOwner::None):
-        if (it->second.owner == MoveOwner::None && it->second.ticket > ticket)
+
+        // 2. Global administrative stop check
+        if (epoch.globalStopTicket > ticket)
             return false;
-        // Priority check: if a higher-priority plan started, this lower-priority plan cannot commit!
-        if (LocomotionArbiter::PriorityOf(it->second.owner) > LocomotionArbiter::PriorityOf(owner))
+
+        // 3. Priority check: if a newer higher-priority intent started, lower-priority plan cannot commit!
+        if (epoch.latestAnyTicket > ticket &&
+            LocomotionArbiter::PriorityOf(epoch.latestAnyOwner) > LocomotionArbiter::PriorityOf(owner))
             return false;
+
         return true;
     }
 

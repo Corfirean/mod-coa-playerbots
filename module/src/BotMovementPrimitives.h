@@ -446,6 +446,7 @@ struct BotMountRecord
     std::unordered_set<uint32> knownBadMountSpells;
     DesiredMountState leaderDesiredState = DesiredMountState::None;
     uint32 leaderStateObservedAt = 0;
+    uint32 noMountAvailableUntilMs = 0;
 };
 
 // =============================================================================

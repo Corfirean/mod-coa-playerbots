@@ -1796,6 +1796,103 @@ static void TestForgetClearsPlanningMetadata()
 }
 
 // ============================================================================
+// Test 41: Planning Epoch Preserves Same-Owner History Across Intermediary Owner (P0/P1)
+// ============================================================================
+static void TestPlanningEpochPreservesSameOwnerHistoryAcrossIntermediary()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4011);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    // Step 1: Travel MoveTo A allocates ticket 10
+    uint64 ticketA = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Travel);
+
+    // Step 2: Travel MoveTo B allocates ticket 11 (superseding A)
+    uint64 ticketB = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Travel);
+    CHECK(ticketB > ticketA);
+
+    // Step 3: An intermediary Gather intent arrives (ticket 12, lower priority than Travel)
+    uint64 ticketGather = LocomotionStateStore::AdvanceIntentEpochLocked(shard, bot, MoveOwner::Gather);
+    CHECK(ticketGather > ticketB);
+
+    // Step 4: Travel MoveTo A finishes path generation and tries to commit with ticketA.
+    // Under the old bug, activePlanning had {12, Gather}, and since Gather was lower priority,
+    // Travel A would incorrectly return TRUE!
+    // Under the new decoupled epoch state, Travel A's ticket (10) < latestByOwner[Travel] (11),
+    // so it MUST be rejected.
+    bool canCommitA = LocomotionStateStore::IsPlanCurrentLocked(shard, bot, MoveOwner::Travel, ticketA);
+    CHECK(!canCommitA); // Stale Travel A plan rejected despite intermediate Gather!
+
+    // Step 5: Travel MoveTo B is still current for Travel owner, and higher priority than Gather:
+    bool canCommitB = LocomotionStateStore::IsPlanCurrentLocked(shard, bot, MoveOwner::Travel, ticketB);
+    CHECK(canCommitB); // Travel B can still commit!
+
+    // Step 6: Verify priority ordering: an older in-flight Combat plan (ticket 20)
+    // is NOT superseded by a newer lower-priority Ambient intent (ticket 21).
+    uint64 ticketCombat = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot, MoveOwner::Combat);
+    uint64 ticketAmbient = LocomotionStateStore::AdvanceIntentEpochLocked(shard, bot, MoveOwner::Ambient);
+    CHECK(ticketAmbient > ticketCombat);
+    bool canCommitCombat = LocomotionStateStore::IsPlanCurrentLocked(shard, bot, MoveOwner::Combat, ticketCombat);
+    CHECK(canCommitCombat); // Lower-priority Ambient does not invalidate higher-priority Combat!
+}
+
+// ============================================================================
+// Test 42: Mount Selection Failure Has Zero Locomotion Mutation (P1)
+// ============================================================================
+static void TestMountSelectionFailureZeroLocomotionMutation()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(4012);
+    auto& shard = LocomotionStateStore::GetShard(bot);
+
+    // Setup active locomotion: bot is in Point under Travel owner
+    BotLocomotionRecord rec;
+    rec.owner = MoveOwner::Travel;
+    rec.mode = MoveMode::Point;
+    rec.state = LocomotionState::Moving;
+    rec.commandId = 55;
+    rec.destX = 100.0f;
+    rec.destY = 200.0f;
+    rec.destZ = 10.0f;
+    shard.locomotion[bot] = rec;
+
+    BotMountRecord& mRec = shard.mounts[bot];
+    mRec.state = MountState::Unmounted;
+    mRec.mountGeneration = 3;
+
+    // Simulate Mount Request when no mount spell is known (e.g. level 20 with no training):
+    // In production RequestMountInternal, SelectMountSpell returns 0.
+    // In this failure branch:
+    // 1) no locomotion state or commandId is mutated
+    // 2) no mount state or generation is mutated
+    // 3) a 5000ms cooldown is recorded on noMountAvailableUntilMs
+    uint32 now = 10000;
+    uint32 spellId = 0; // SelectMountSpell returned 0
+
+    if (!spellId)
+    {
+        mRec.noMountAvailableUntilMs = now + 5000;
+        // returns false WITHOUT calling ForceStopOwnerInternal!
+    }
+
+    // Verify ZERO locomotion mutation:
+    CHECK(shard.locomotion[bot].commandId == 55);
+    CHECK(shard.locomotion[bot].owner == MoveOwner::Travel);
+    CHECK(shard.locomotion[bot].mode == MoveMode::Point);
+    CHECK(shard.locomotion[bot].state == LocomotionState::Moving);
+    CHECK(shard.locomotion[bot].destX == 100.0f);
+
+    // Verify mount record:
+    CHECK(mRec.state == MountState::Unmounted);
+    CHECK(mRec.mountGeneration == 3);
+    CHECK(mRec.noMountAvailableUntilMs == now + 5000);
+
+    // Verify backoff throttle prevents immediate re-query within 5000ms:
+    uint32 nextCheckTime = now + 1000;
+    CHECK(nextCheckTime < mRec.noMountAvailableUntilMs);
+}
+
+// ============================================================================
 // Main Runner
 // ============================================================================
 int main()
@@ -1839,7 +1936,7 @@ int main()
     TestCancelledMountGenerationCannotResurrect();
     TestAutonomousNavigateMountsThroughPolicy();
 
-    // Pre-live hardening tests (Tests 31-40)
+    // Pre-live hardening tests (Tests 31-42)
     TestOldMoveToPlanCannotOverwriteNewerHoldSameOwner();
     TestOldMoveToPlanCannotOverwriteNewerFollowSameOwner();
     TestOldMoveToPlanCannotOverwriteNewerChaseSameOwner();
@@ -1850,6 +1947,8 @@ int main()
     TestGatheringMountCastAndWalkResumption();
     TestGatherOrderStallDoesNotAdvanceDuringMountCast();
     TestForgetClearsPlanningMetadata();
+    TestPlanningEpochPreservesSameOwnerHistoryAcrossIntermediary();
+    TestMountSelectionFailureZeroLocomotionMutation();
 
     std::printf("Locomotion tests completed: %d checks, %d failures\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;

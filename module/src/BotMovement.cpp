@@ -1381,14 +1381,14 @@ namespace BotMovement
 
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
                 return false;
+
+            BotMountRecord const& mRec = shard.mounts[bot->GetGUID()];
+            if (now < mRec.noMountAvailableUntilMs)
+                return false;
         }
 
-        // Step 2: Stop any active movement under this owner so mount cast does not cancel immediately.
-        ForceStopOwnerInternal(bot, owner);
-        if (bot->isMoving())
-            return false;
-
-        // Step 3: Select mount spell
+        // Step 2: Select mount spell BEFORE stopping locomotion!
+        // If the bot has no valid mount spell, locomotion must NOT be disrupted.
         if (wantFlying)
         {
             uint32 mapId = bot->GetMapId();
@@ -1398,6 +1398,15 @@ namespace BotMovement
 
         uint32 spellId = SelectMountSpell(bot, wantFlying);
         if (!spellId)
+        {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            shard.mounts[bot->GetGUID()].noMountAvailableUntilMs = now + 5000;
+            return false;
+        }
+
+        // Step 3: Valid mount spell is resolved -- stop active movement under this owner so cast succeeds.
+        ForceStopOwnerInternal(bot, owner);
+        if (bot->isMoving())
             return false;
 
         // Step 4: Record state under shard lock
