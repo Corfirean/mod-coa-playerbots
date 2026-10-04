@@ -25,7 +25,7 @@ struct Manager { bool enabled; bool AutoLootInGroup() const { return enabled; } 
 auto sBotMgr = &manager;
 enum class MoveOwner { Loot };
 unsigned released = 0;
-namespace BotMovement { void Release(Player*, MoveOwner) { ++released; } }
+namespace BotMovement { void ForceReleaseOwner(Player*, MoveOwner) { ++released; } }
 ''' + guard + r'''
     return true;
 }

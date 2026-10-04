@@ -1517,7 +1517,7 @@ bool TryProcessPendingLoot(Player* bot, uint32 /*diff*/, BotAIState& state)
     {
         state.pendingLootGuids.clear();
         state.lastCombatTargetGuid = ObjectGuid::Empty;
-        BotMovement::Release(bot, MoveOwner::Loot);
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Loot);
         return false;
     }
 
