@@ -1513,6 +1513,14 @@ bool MoveBotToPoint(Player* bot, MoveOwner owner, float x, float y, float z)
 // Allows bots to systematically path to and loot all trash and boss kills in an encounter.
 bool TryProcessPendingLoot(Player* bot, uint32 /*diff*/, BotAIState& state)
 {
+    if (bot->GetGroup() && !sBotMgr->AutoLootInGroup())
+    {
+        state.pendingLootGuids.clear();
+        state.lastCombatTargetGuid = ObjectGuid::Empty;
+        BotMovement::Release(bot, MoveOwner::Loot);
+        return false;
+    }
+
     // If we have a single lastCombatTargetGuid from combat, push it into pendingLootGuids
     if (!state.lastCombatTargetGuid.IsEmpty())
     {
