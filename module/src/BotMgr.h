@@ -571,6 +571,7 @@ private:
     // Trading with a player: how long each bot's open trade window has existed, and whether bots take part at all.
     std::unordered_map<ObjectGuid, uint32> _tradeAgeMs;
     bool _tradeEnabled = true;
+    bool _autoLootInGroup = false;
     void UpdateTrades(uint32 diff);
     std::mutex _killEventLock;
     std::vector<KillEvent> _killEvents;
@@ -585,6 +586,7 @@ public:
     // with. Also callable directly (e.g. from a GM command) to (re)populate the queue against an
     // already-running server without needing a restart.
     void QueueAllBotsForAutoLogin();
+    bool AutoLootInGroup() const { return _autoLootInGroup; }
 };
 
 #define sBotMgr BotMgr::instance()

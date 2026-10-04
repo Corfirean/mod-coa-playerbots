@@ -361,7 +361,7 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     Player* bot = ResolveAuthorizedBot(commander, botGuidLow);
     if (!bot)
     {
-        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAddonChat: '{}' sent COABOT verb '{}' for guid {} but it failed authorization "
+        LOG_DEBUG("module.coa-playerbots", "BotAddonChat: '{}' sent COABOT verb '{}' for guid {} but it failed authorization "
             "(not a tracked bot session, or not grouped with the sender) -- dropped.",
             commander->GetName(), verb, botGuidLow);
         return;

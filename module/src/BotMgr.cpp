@@ -3368,6 +3368,7 @@ void BotMgr::Update(uint32 diff)
         _aiCombatIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.CombatIntervalMs", 100);
         _aiIdleIntervalMs = sConfigMgr->GetOption<uint32>("CoaBots.AI.IdleIntervalMs", 250);
         _tradeEnabled = sConfigMgr->GetOption<bool>("CoaBots.Trade.Enable", true);
+        _autoLootInGroup = sConfigMgr->GetOption<bool>("CoaBots.Loot.AutoLootInGroup", false);
     }
     UpdateTrades(diff);
     BotEconomy::Update(diff, _botSessions);
