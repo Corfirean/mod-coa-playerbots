@@ -119,7 +119,11 @@ EQUIPMENT_SLOT_BACK = 14
 EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED = 15, 16, 17
 
 VALID_RACES = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11]
-ALLIANCE_RACES = {1, 3, 4, 7, 11}
+ALLIANCE_RACES = {
+    1, 3, 4, 7, 11,
+    13, 14, 15, 16, 18, 22, 27, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39,
+    40, 41, 42, 43, 44, 45, 46, 47, 48, 50, 52, 54, 59, 61, 62, 65, 67, 68, 71, 77, 78, 80, 82, 97
+}
 
 ONSETS = ["Th", "Br", "Cr", "Dr", "Gr", "Kr", "Fr", "Sh", "Sk", "Sn",
           "St", "Tr", "Vr", "Wr", "Zar", "Mor", "Kel", "Val", "Ral", "Bel"]
