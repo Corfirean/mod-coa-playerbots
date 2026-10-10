@@ -151,13 +151,22 @@ namespace BotZoneProgression
                     break;
             }
         }
+        TeamId team = Player::TeamIdForRace(race);
+        for (ZoneHub const& hub : STARTING_HUBS)
+            if (hub.team == team)
+                return &hub;
         return &STARTING_HUBS[0]; // fallback
     }
 
     ZoneHub const* GetRandomHubForLevel(uint8 level, TeamId team)
     {
         if (level <= 10)
+        {
+            for (ZoneHub const& hub : STARTING_HUBS)
+                if (hub.team == team)
+                    return &hub;
             return &STARTING_HUBS[0];
+        }
 
         std::vector<ZoneHub const*> candidates;
         candidates.reserve(8);

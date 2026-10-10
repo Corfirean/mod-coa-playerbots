@@ -65,9 +65,81 @@ namespace
 // ProcessPendingRandomBotSpawns can hand it to spawnrandom bots too, same as spawnleveled already does.
 void ApplyFreshBotSetup(Player* bot, uint8 level);
 
-// Standard playable WotLK races. 9 (Goblin) is NPC-only; nothing here is Death-Knight-only,
-// so no starting-level special case is needed.
-constexpr std::array<uint8, 10> VALID_RACES = { 1, 2, 3, 4, 5, 6, 7, 8, 10, 11 };
+// Available races for bot spawning.
+// Respects custom races switches and bot exclusion settings:
+// - CoACustomRaces.Enable / CoACustomRaces.BotsEnable (coa_custom_races.conf)
+// - CoaBots.CustomRaces.Enable (mod_coa_playerbots.conf)
+// - AiPlayerbot.ExcludedBotRaces / CoaBots.ExcludedBotRaces
+std::vector<uint8> GetValidBotRaces()
+{
+    bool customRacesEnabled = sConfigMgr->GetOption<bool>("CoACustomRaces.Enable", false)
+                           && sConfigMgr->GetOption<bool>("CoACustomRaces.BotsEnable", false);
+
+    if (sConfigMgr->GetOption<bool>("CoaBots.CustomRaces.Enable", false))
+        customRacesEnabled = true;
+
+    std::string excludedStr = sConfigMgr->GetOption<std::string>("AiPlayerbot.ExcludedBotRaces", "");
+    if (excludedStr.empty())
+        excludedStr = sConfigMgr->GetOption<std::string>("CoaBots.ExcludedBotRaces", "");
+
+    std::unordered_set<uint8> excluded;
+    if (!excludedStr.empty())
+    {
+        std::stringstream ss(excludedStr);
+        std::string token;
+        while (std::getline(ss, token, ','))
+        {
+            size_t start = token.find_first_not_of(" \t\r\n\"'");
+            size_t end = token.find_last_not_of(" \t\r\n\"'");
+            if (start != std::string::npos && end != std::string::npos)
+            {
+                std::string clean = token.substr(start, end - start + 1);
+                if (!clean.empty())
+                {
+                    try {
+                        excluded.insert(static_cast<uint8>(std::stoul(clean)));
+                    } catch (...) {}
+                }
+            }
+        }
+    }
+
+    // The recommended exclusions list excludes all custom races (e.g. 33 and 128)
+    if (excluded.count(33) && excluded.count(128))
+        customRacesEnabled = false;
+
+    std::vector<uint8> races;
+    constexpr uint8 stockRaces[] = { 1, 2, 3, 4, 5, 6, 7, 8, 10, 11 };
+    for (uint8 r : stockRaces)
+        if (!excluded.count(r))
+            races.push_back(r);
+
+    if (customRacesEnabled)
+    {
+        static const std::unordered_set<uint8> defaultExpExclusions = {
+            16, 19, 27, 32, 50, 52, 53, 65, 66, 67, 68, 69, 70, 71, 72, 74, 77, 80, 81
+        };
+
+        for (uint8 r = 12; r <= 128; ++r)
+        {
+            if (excluded.empty() && defaultExpExclusions.count(r))
+                continue;
+            if (excluded.count(r))
+                continue;
+
+            if (sChrRacesStore.LookupEntry(r))
+                races.push_back(r);
+        }
+    }
+
+    if (races.empty())
+    {
+        for (uint8 r : stockRaces)
+            races.push_back(r);
+    }
+
+    return races;
+}
 
 std::mt19937& Rng()
 {
@@ -117,14 +189,15 @@ std::string GenerateRandomName()
 // Lore names: "<First> <Last>" drawn from per-race pools (BotNameData.h), so orcs get orcish names
 // and clan names, tauren get tauren family names, and so on. The surname is optional per race: races
 // whose lore has no family names get a single first name. The server accepts a two-word name
-// (ObjectMgr::CheckPlayerName); the pools are letters-only, 3-12 characters per word. A race
-// without a pool (custom races) falls back to the human pool.
+// (ObjectMgr::CheckPlayerName); the pools are letters-only, 3-12 characters per word. Custom races
+// resolve to their parent race's pool or their dedicated unique pool (BotNameData::ResolveNamingRace).
 std::string GenerateLoreName(uint8 race, uint8 gender)
 {
+    uint8 effectiveRace = BotNameData::ResolveNamingRace(race);
     BotNameData::RacePools const* pools = &BotNameData::kRacePools[0];
     for (BotNameData::RacePools const& candidate : BotNameData::kRacePools)
     {
-        if (candidate.race == race)
+        if (candidate.race == effectiveRace)
         {
             pools = &candidate;
             break;
@@ -450,6 +523,7 @@ void ProcessPendingRandomBotSpawns(uint32 diff)
 
     bool autoLogin = sConfigMgr->GetOption<bool>("CoaBots.RandomSpawn.AutoLogin", true);
     uint32 thisBatch = std::min(g_pendingRandomBotCount, RandomSpawnBatchSize());
+    std::vector<uint8> const validRaces = GetValidBotRaces();
 
     for (uint32 i = 0; i < thisBatch; ++i)
     {
@@ -461,7 +535,7 @@ void ProcessPendingRandomBotSpawns(uint32 diff)
         constexpr uint32 MAX_RACE_ATTEMPTS = 10;
         for (uint32 attempt = 0; attempt < MAX_RACE_ATTEMPTS && !newGuid; ++attempt)
         {
-            uint8 race = VALID_RACES[RandomInt(0, VALID_RACES.size() - 1)];
+            uint8 race = validRaces[RandomInt(0, validRaces.size() - 1)];
             newGuid = CreateOneRandomBot(race, nullptr);
         }
 
@@ -1256,6 +1330,7 @@ void ProcessPendingLeveledBotSpawns(uint32 diff)
 
     uint8 serverMaxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
     uint32 thisBatch = std::min(g_pendingLeveledBotCount, RandomSpawnBatchSize());
+    std::vector<uint8> const validRaces = GetValidBotRaces();
     for (uint32 i = 0; i < thisBatch; ++i)
     {
         uint8 level = RollWeightedLevel(serverMaxLevel);
@@ -1263,7 +1338,7 @@ void ProcessPendingLeveledBotSpawns(uint32 diff)
         constexpr uint32 MAX_RACE_ATTEMPTS = 10;
         for (uint32 attempt = 0; attempt < MAX_RACE_ATTEMPTS && !newGuid; ++attempt)
         {
-            uint8 race = VALID_RACES[RandomInt(0, VALID_RACES.size() - 1)];
+            uint8 race = validRaces[RandomInt(0, validRaces.size() - 1)];
             newGuid = CreateBotClone(race, nullptr, level);
         }
 

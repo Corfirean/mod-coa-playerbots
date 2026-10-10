@@ -1398,6 +1398,407 @@ static constexpr char const* kDraeneiFemale[] = {
     "Yrma", "Yuula", "Zaari", "Zamara", "Zurii",
 };
 
+static constexpr char const* kOgreMale[] = {
+    "Cho", "Brogg", "Gorg", "Korg", "Throm", "Murog", "Burl", "Drogg",
+    "Zogg", "Ogg", "Grull", "Mogor", "Kroll", "Dentarg", "Gurok", "Torg",
+    "Crag", "Thorg", "Borgg", "Grug", "Thrag", "Morgg", "Horg", "Grok",
+    "Krug", "Brag", "Targ", "Skrog", "Blorg", "Dorg", "Krogg", "Brak",
+    "Brugg", "Chog", "Dakk", "Draz", "Dug", "Gakk", "Gort", "Glok",
+    "Gnarl", "Golg", "Gorr", "Grak", "Gromm", "Grunk", "Klagg", "Klorg",
+    "Krazz", "Krag", "Krall", "Krog", "Lokk", "Lorgg", "Lukk", "Mogg",
+    "Mok", "Morb", "Narg", "Nogg", "Olg", "Orgg", "Rogg", "Rorg",
+    "Skarr", "Slogg", "Smarg", "Snagg", "Stogg", "Thokk", "Throk", "Torb",
+    "Trog", "Urg", "Vrog", "Vrok", "Warb", "Worg", "Zag", "Zog",
+    "Zorgg", "Zurk",
+};
+
+static constexpr char const* kOgreFemale[] = {
+    "Groka", "Morga", "Burlia", "Krolla", "Gorgi", "Thruma", "Zogga", "Bruga",
+    "Drogga", "Gurgi", "Ogri", "Borka", "Choga", "Dorka", "Garka", "Gloka",
+    "Gorka", "Graka", "Kroga", "Lokka", "Lorga", "Mogga", "Roga", "Skarra",
+    "Sloga", "Throka", "Vroka", "Zorka", "Bragga", "Kruga", "Targa", "Grulla",
+    "Morbia", "Gromma", "Zorga",
+};
+
+static constexpr char const* kOgreSurname[] = {
+    "Skullcrush", "Bonechewer", "Stonemaul", "Bloodgut", "Boulderfist", "Ogremaul", "Mauler", "Bonebreaker",
+    "Thrasher", "Crushridge", "Gordok", "Dunemaul", "Bloodfist", "Ironhide", "Rockjaw", "Smashskull",
+    "Heavyfist", "Gutripper", "Warmaul", "Stonefist", "Ironmaul", "Bouldercrush", "Earthshaker", "Cleaver",
+    "Bonecrush", "Brute", "Thickskull", "Mountaincrag", "Hillbasher", "Maulface",
+};
+
+static constexpr char const* kSethrakMale[] = {
+    "Vorrik", "Korthek", "Sulthis", "Rhassek", "Zhiska", "Ssarik", "Ssliss", "Skaliss",
+    "Sskash", "Vessik", "Ashresh", "Razhek", "Sslar", "Krezik", "Sethrik", "Serekk",
+    "Thassik", "Ssuraz", "Krolusk", "Zskera", "Arshak", "Ashkar", "Aziss", "Essek",
+    "Hessik", "Isskar", "Kazesh", "Keshik", "Kreshan", "Lizash", "Meshak", "Neshik",
+    "Rhessek", "Sarez", "Sarzik", "Sekkor", "Sethak", "Sethis", "Sezrak", "Shakaz",
+    "Shaliss", "Shazik", "Shissak", "Sirrash", "Skariss", "Ssaraz", "Sserik", "Sszar",
+    "Suzek", "Tarzesh", "Tashik", "Thessik", "Vashak", "Vissak", "Zassik", "Zeshar",
+    "Zissak", "Zossek", "Zrethik",
+};
+
+static constexpr char const* kSethrakFemale[] = {
+    "Maru", "Ssaress", "Zhashee", "Sheliss", "Nissari", "Sharesh", "Ssirah", "Kheliss",
+    "Sshari", "Zaliska", "Ssetha", "Ashara", "Rishiss", "Ashena", "Azissa", "Eshala",
+    "Isharra", "Kasheera", "Kessari", "Leshiss", "Mashira", "Nazhira", "Neshara", "Ressila",
+    "Sarasha", "Sashira", "Sezira", "Shalera", "Shazira", "Shezira", "Shirassa", "Sirisha",
+    "Skarissa", "Ssalira", "Sserina", "Talisha", "Tashira", "Thessira", "Vashira", "Vessila",
+    "Zashira", "Zessari", "Zhira", "Zissira",
+};
+
+static constexpr char const* kSethrakSurname[] = {
+    "Sandprowler", "Sandspeaker", "Duneclaw", "Venombite", "Coilstrike", "Dustwalker", "Scaleshed", "Adderfang",
+    "Sunbasker", "Sandcoiler", "Venomfang", "Sunscale", "Viperstrike", "Dunerunner", "Dustcoiler", "Fangstrike",
+    "Sandslither", "Coilbinder", "Sandvenom", "Hissfang", "Sunbasking", "Coilweaver", "Venomspit", "Rattlestrike",
+    "Dunewhisper", "Desertscale", "Dusthisser", "Sandstriker",
+};
+
+static constexpr char const* kNagaMale[] = {
+    "Najentus", "Karathress", "Rajnaz", "Skariss", "Zhurk", "Nazjar", "Siraress", "Vorash",
+    "Kresh", "Razzar", "Azshul", "Tethyr", "Ziljin", "Morvash", "Zandaris", "Slithor",
+    "Alash", "Ashkar", "Azjatar", "Azral", "Balash", "Drazkar", "Glithor", "Hazjil",
+    "Ilash", "Jalash", "Karkash", "Malash", "Morzash", "Narash", "Nazhoul", "Nazress",
+    "Ralash", "Razhoul", "Sarthe", "Sarthon", "Sazhoul", "Scylla", "Shakir", "Slarth",
+    "Slizor", "Srethiss", "Sylash", "Talash", "Tholaz", "Varkash", "Velash", "Vrazh",
+    "Zalash", "Zarthon", "Zhilaz", "Zlash",
+};
+
+static constexpr char const* kNagaFemale[] = {
+    "Vashj", "Athissa", "Siraress", "Azshara", "Ladyvash", "Thessia", "Rajis", "Shirak",
+    "Valish", "Morjina", "Kalissa", "Sylea", "Zaria", "Aliss", "Ashzara", "Azjira",
+    "Daliss", "Eszara", "Ilissa", "Jaliss", "Kaeliss", "Lashira", "Maliss", "Marjina",
+    "Nalissa", "Nazjara", "Razhira", "Rhyzara", "Sarjina", "Sazhara", "Seljina", "Shakira",
+    "Shiraja", "Sirajis", "Slisha", "Syzara", "Talissa", "Thelissa", "Valjina", "Vashira",
+    "Vezara", "Zalissa", "Zarjina", "Zhiliss", "Zlashira",
+};
+
+static constexpr char const* kNagaSurname[] = {
+    "Deepfathom", "Tidestalker", "Coilskar", "Crestseer", "Stormsurge", "Waverunner", "Coldfin", "Abyssbinder",
+    "Bloodscale", "Coralclaw", "Reefstrider", "Abysswalker", "Deepcaller", "Darkfin", "Oceanfury", "Ripcurrent",
+    "Seastalker", "Stormscale", "Tiderunner", "Wavecrash", "Abyssfury", "Brineweaver", "Coralstrike", "Deepstrider",
+    "Drowncaller", "Finspire", "Oceancrest", "Saltscale", "Seacaller", "Wavebinder",
+};
+
+static constexpr char const* kVulperaMale[] = {
+    "Kiro", "Meerah", "Nisha", "Rakera", "Jak", "Toki", "Vano", "Jiro",
+    "Kili", "Rin", "Rixo", "Ziko", "Taka", "Niku", "Balo", "Dax",
+    "Piro", "Taz", "Renko", "Varek", "Boki", "Chek", "Diko", "Fenn",
+    "Gilo", "Jaxi", "Kani", "Keko", "Loro", "Maki", "Noko", "Piku",
+    "Raki", "Roli", "Siku", "Tari", "Tiko", "Vako", "Zani", "Zoli",
+};
+
+static constexpr char const* kVulperaFemale[] = {
+    "Meerah", "Nisha", "Eudora", "Kiri", "Rika", "Lani", "Tula", "Mira",
+    "Vani", "Kessa", "Suki", "Zala", "Tani", "Rini", "Yuli", "Nela",
+    "Miko", "Bria", "Dalia", "Fari", "Jani", "Kalia", "Lana", "Lori",
+    "Mili", "Nira", "Pira", "Rona", "Sana", "Talia", "Vana", "Zeli",
+    "Zira",
+};
+
+static constexpr char const* kVulperaSurname[] = {
+    "Duneskimmer", "Dustrunner", "Scavenger", "Sandprowler", "Swiftpaw", "Burrower", "Quickfoot", "Brightfur",
+    "Sunprowler", "Redtail", "Dustpaw", "Dunehopper", "Foxstep", "Goldfur", "Keenear", "Packrunner",
+    "Rusttail", "Sanddune", "Swiftfoot", "Tanfur", "Wagtail", "Windwhisper",
+};
+
+static constexpr char const* kPandarenMale[] = {
+    "Chen", "Taran", "Huojin", "Jojo", "Liang", "Dawei", "Feng", "Hao",
+    "Kang", "Ming", "Peng", "Quan", "Rong", "Shan", "Tao", "Wei",
+    "Zhi", "Bao", "Chang", "Chun", "Delun", "Dong", "Fai", "Guozhi",
+    "Heng", "Hong", "Jin", "Jun", "Kun", "Lei", "Long", "Lun",
+    "Pan", "Shen", "Song", "Teng", "Xiang", "Yang", "Zhen",
+};
+
+static constexpr char const* kPandarenFemale[] = {
+    "Aysa", "Mei", "Jia", "Ling", "Lian", "Bao", "Chun", "Dan",
+    "Fen", "Hua", "Lan", "Min", "Ping", "Qiao", "Rong", "Shu",
+    "Ting", "Xia", "Yan", "Yue", "Dai", "Gui", "Hui", "Jing",
+    "Ning", "Shan", "Shuang", "Wan", "Wen", "Xiu", "Yin", "Yun",
+    "Zhi",
+};
+
+static constexpr char const* kPandarenSurname[] = {
+    "Stormstout", "Firepaw", "Tushui", "Cloudpaw", "Earthsong", "Redmane", "Ironpaw", "Mistwalker",
+    "Strongboar", "Windwalker", "Brewchaser", "Riverwhisper", "Sunstone", "Applebough", "Barrelkeg", "Bamboofur",
+    "Caskbearer", "Dragonfang", "Highmountain", "Lotusblossom", "Quietstride", "Rainwhisper", "Silkstep", "Springbreeze",
+    "Stonekeg", "Swiftstride", "Thunderfist", "Wildhop",
+};
+
+static constexpr char const* kTuskarrMale[] = {
+    "Karuk", "Tavok", "Urom", "Elderatua", "Tana", "Muahit", "Gawan", "Oran",
+    "Hotu", "Kili", "Ralu", "Etu", "Opo", "Kask", "Nanu", "Arak",
+    "Atua", "Balo", "Bok", "Chanu", "Golu", "Hano", "Iluk", "Kalo",
+    "Kuka", "Maluk", "Murok", "Nuat", "Orok", "Pakuk", "Ruku", "Tarak",
+    "Toko", "Tuluk", "Urk", "Vaku",
+};
+
+static constexpr char const* kTuskarrFemale[] = {
+    "Kura", "Tani", "Oona", "Naya", "Rona", "Sura", "Mura", "Kala",
+    "Tuka", "Piki", "Aluk", "Bira", "Chuna", "Enuk", "Hina", "Iluna",
+    "Kalu", "Luna", "Malu", "Nuka", "Oluk", "Puka", "Runa", "Taluk",
+    "Uluk",
+};
+
+static constexpr char const* kTuskarrSurname[] = {
+    "Icefisher", "Whaler", "Tuskwalker", "Netweaver", "Frosttusk", "Harpooner", "Wavecaller", "Walrustusk",
+    "Deepdiver", "Driftwood", "Blubberlip", "Coldcurrent", "Floatice", "Floehopper", "Icewalker", "Icechisel",
+    "Northwave", "Speartip", "Tuskcarver", "Winterfluke",
+};
+
+static constexpr char const* kVrykulMale[] = {
+    "Ingvar", "Torvald", "Bjorn", "Skadi", "Ymiron", "Halvdan", "Ragnar", "Einar",
+    "Gunnar", "Leif", "Sigurd", "Ulf", "Ivar", "Arvid", "Stian", "Viggo",
+    "Alrik", "Asbjorn", "Balder", "Brand", "Egil", "Erik", "Frode", "Geir",
+    "Gorm", "Hakon", "Harald", "Helge", "Inge", "Jarl", "Kjell", "Knut",
+    "Magni", "Olav", "Roar", "Runar", "Svein", "Thorbjorn", "Trygve", "Vidar",
+};
+
+static constexpr char const* kVrykulFemale[] = {
+    "Svala", "Astrid", "Brynhild", "Freyja", "Sigrid", "Ingrid", "Gunnhild", "Ragna",
+    "Tora", "Liv", "Solveig", "Hild", "Kari", "Aasa", "Bodil", "Dagmar",
+    "Gerd", "Gudrun", "Helga", "Inga", "Jorunn", "Ragnhild", "Signe", "Siri",
+    "Svanhild", "Thora", "Tone", "Torhild", "Turid", "Vigdis",
+};
+
+static constexpr char const* kVrykulSurname[] = {
+    "Frostaxe", "Ironborn", "Dragonflayer", "Winterspear", "Stormherald", "Skullsplit", "Runebreaker", "Thunderbrow",
+    "Bloodaxe", "Icefist", "Bearsark", "Bittercold", "Bloodbeard", "Deepchasm", "Fjordguard", "Halberdier",
+    "Ironshield", "Northbreaker", "Ravenshade", "Seaflayer", "Shieldbiter", "Warhorn",
+};
+
+static constexpr char const* kGoblinMale[] = {
+    "Gazlowe", "Gallywix", "Noggen", "Marin", "Pozzik", "Slink", "Fizrik", "Razzik",
+    "Zix", "Kraz", "Grikk", "Mox", "Ziggy", "Snazz", "Sprocket", "Axel",
+    "Blix", "Buzz", "Clink", "Dizz", "Frazz", "Gax", "Gizz", "Jax",
+    "Jinx", "Klank", "Knick", "Kryzz", "Nix", "Piz", "Razz", "Rez",
+    "Rix", "Scraps", "Skizz", "Snicker", "Sputter", "Tink", "Trikk", "Wrench",
+    "Zazz", "Zing",
+};
+
+static constexpr char const* kGoblinFemale[] = {
+    "Sassy", "Megs", "Krazzie", "Betti", "Tink", "Roxie", "Goldie", "Fifi",
+    "Dolly", "Trixie", "Penny", "Vixie", "Lotti", "Gizma", "Bella", "Bitsy",
+    "Bombi", "Candi", "Cleo", "Didi", "Dixie", "Foxy", "Gigi", "Izzy",
+    "Kiki", "Lulu", "Mimi", "Niki", "Pippa", "Ruby", "Sizzle", "Sparky",
+    "Suzi", "Taffy", "Trina", "Vivi", "Zanna", "Zizi",
+};
+
+static constexpr char const* kGoblinSurname[] = {
+    "Copperpinch", "Steamwheedle", "Bilgewater", "Fusebreaker", "Goldgrubber", "Boompipe", "Sparkfuse", "Cogspinner",
+    "Rustwrench", "Moneybags", "Boltclank", "Brassknuckle", "Cheapskate", "Coinpurse", "Dynoquick", "Fastnickel",
+    "Fuelguzzle", "Greasegear", "Greedfinger", "Loosecannon", "Overclock", "Pocketlint", "Quickfuse", "Rivethead",
+    "Shortcircuit", "Slicknickel", "Steambox", "Wheelturn",
+};
+
+static constexpr char const* kJinyuMale[] = {
+    "Finch", "Karash", "Lushei", "Rasik", "Inao", "Chishi", "Waterspeaker", "Kalu",
+    "Zao", "Tan", "Shaolin", "Aolin", "Baolin", "Chensho", "Daolin", "Fengshi",
+    "Haolin", "Jinsho", "Kaolin", "Longshi", "Mingdao", "Qianjin", "Rensho", "Songdao",
+    "Tianbao", "Wensho", "Xinbao", "Yanlin", "Zensho",
+};
+
+static constexpr char const* kJinyuFemale[] = {
+    "Lorelei", "Sula", "Rina", "Miri", "Talia", "Coral", "Anshi", "Bishan",
+    "Chaolin", "Danlin", "Fenbao", "Huashan", "Jinlan", "Lanbao", "Minlan", "Qiaobao",
+    "Ronglan", "Shulan", "Tinglin", "Xianbao", "Yanlan", "Yunshi",
+};
+
+static constexpr char const* kJinyuSurname[] = {
+    "Pearlfin", "Waterspeaker", "Riverseer", "Finblade", "Puddlejumper", "Deepcurrent", "Wavestrider", "Brookwhisper",
+    "Clearwater", "Currentseer", "Deepstream", "Flowseeker", "Glidewater", "Lakeguard", "Mistreed", "Rainpool",
+    "Reedwhisper", "Ripplerun", "Rivercrest", "Streamwalker",
+};
+
+static constexpr char const* kGnollMale[] = {
+    "Hogger", "Meatball", "Snarlmane", "Yowler", "Mudsnout", "Gruff", "Fang", "Bonechewer",
+    "Ripsaw", "Howler", "Grin", "Mangle", "Slink", "Bark", "Bite", "Brawler",
+    "Clatter", "Crunch", "Dogger", "Drool", "Fallow", "Gnasher", "Growler", "Gutwrencher",
+    "Hound", "Jawbreaker", "Loper", "Mangler", "Packsnarl", "Ravager", "Ripper", "Runt",
+    "Scavenge", "Scurry", "Slunker", "Snapper", "Snicker", "Stalker", "Tooth",
+};
+
+static constexpr char const* kGnollFemale[] = {
+    "Snarl", "Bristle", "Mangla", "Yowla", "Bonefang", "Ripsnout", "Scrabble", "Barka",
+    "Biter", "Fangette", "Gnash", "Growla", "Howla", "Manglefur", "Packa", "Rippersnout",
+    "Scritch", "Slinka", "Snappa", "Teeth", "Yowlerina",
+};
+
+static constexpr char const* kGnollSurname[] = {
+    "Riverpaw", "Redridge", "Mudsnout", "Mosshide", "Bloodfang", "Rotfur", "Bonecruncher", "Fleshripper",
+    "Howlfang", "Packleader", "Carrionbite", "Darkprowler", "Dirtpaw", "Gnawbone", "Grimbark", "Hydechewer",
+    "Mudfur", "Packprowler", "Rabidfang", "Rippersnout", "Scavenger", "Yelloweye",
+};
+
+static constexpr char const* kSaberonMale[] = {
+    "Leorajh", "Akali", "Bloodclaw", "Grimtalon", "Shadowfang", "Swiftclaw", "Rakash", "Roar",
+    "Prowl", "Sharpclaw", "Ashclaw", "Bloodroar", "Clawtalon", "Duskhunter", "Feralpaw", "Ghostfang",
+    "Goreclaw", "Grimclaw", "Hunter", "Ironfang", "Nightclaw", "Prideroar", "Razortalon", "Redfang",
+    "Scarclaw", "Shadowstride", "Slash", "Stalker", "Swiftstride", "Thornclaw",
+};
+
+static constexpr char const* kSaberonFemale[] = {
+    "Kasha", "Shara", "Rala", "Talia", "Sira", "Nala", "Clawma", "Ashpaw",
+    "Duskfur", "Feralia", "Ghostia", "Goria", "Grima", "Leorina", "Nightia", "Prowla",
+    "Rakasha", "Razoria", "Redclaw", "Scaria", "Shadownia", "Slashette", "Swiftia", "Thornfur",
+};
+
+static constexpr char const* kSaberonSurname[] = {
+    "Bloodstalker", "Clawshear", "Shadowfur", "Plainsstalk", "Sharpfang", "Nightprowler", "Goreclaw", "Ghostfur",
+    "Amberclaw", "Blackmane", "Bloodhunter", "Bristlefur", "Dunehunter", "Duskstride", "Feralheart", "Goldmane",
+    "Grimhunter", "Ironstalker", "Prideleader", "Razorstrike", "Redhunter", "Savageclaw", "Stealthprowl",
+};
+
+static constexpr char const* kDracthyrMale[] = {
+    "Sarkareth", "Caelestrasz", "Viridian", "Azural", "Ignis", "Charion", "Pyro", "Pyre",
+    "Drakos", "Thalor", "Drake", "Alagios", "Balestrasz", "Caldera", "Cinderos", "Drazor",
+    "Emberon", "Flamecrest", "Ignos", "Kazragor", "Pyroclast", "Scaleon", "Scorch", "Solon",
+    "Talon", "Terros", "Therian", "Tyran", "Volcan", "Zarkon",
+};
+
+static constexpr char const* kDracthyrFemale[] = {
+    "Emberthal", "Viridia", "Ruby", "Azure", "Caelestra", "Dracona", "Saphira", "Flamewing",
+    "Alastra", "Balestra", "Calderia", "Cinderia", "Drazora", "Embera", "Flamia", "Ignia",
+    "Kazragosa", "Pyra", "Scalia", "Scorchia", "Sola", "Talona", "Terria", "Theria",
+    "Tyrana", "Volcania", "Zarkona",
+};
+
+static constexpr char const* kDracthyrSurname[] = {
+    "Wingstrider", "Talonstrike", "Scalebearer", "Flamebreath", "Skywatcher", "Emberflight", "Dragonheart", "Scalebinder",
+    "Ashflight", "Blazewing", "Cinderscale", "Drakeborn", "Flamecaster", "Glidesky", "Highsoar", "Ignisheart",
+    "Pyrewing", "Scaleguard", "Skyclaw", "Stormglide", "Sunwing", "Talonguard",
+};
+
+static constexpr char const* kFurbolgMale[] = {
+    "Barkskin", "Bristlefur", "Grol", "Rell", "Timber", "Grizzle", "Ursa", "Kroll",
+    "Bramble", "Moss", "Alder", "Bark", "Bear", "Birch", "Cedar", "Claw",
+    "Den", "Fur", "Grove", "Honey", "Log", "Oak", "Paw", "Pine",
+    "Root", "Snarl", "Thorn", "Track", "Tree", "Trunk",
+};
+
+static constexpr char const* kFurbolgFemale[] = {
+    "Ursa", "Bera", "Sylvan", "Fern", "Bristla", "Willow", "Honey", "Aldera",
+    "Barka", "Birchia", "Bramblia", "Cedara", "Fura", "Grovia", "Larix", "Mossa",
+    "Oaka", "Pawa", "Pinia", "Roota", "Sylva", "Thornie", "Timberia",
+};
+
+static constexpr char const* kFurbolgSurname[] = {
+    "Timbermaw", "Bristlelimb", "Barkwalker", "Deadwood", "Winterfall", "Pineclaw", "Honeytracker", "Mossfoot",
+    "Barkchewer", "Bearclaw", "Bramblefur", "Clawmark", "Deepforest", "Furcoat", "Greatpaw", "Grovekeeper",
+    "Hollowtrunk", "Leafstalker", "Moonfur", "Oakheart", "Redbark", "Rootweaver", "Shadyden",
+};
+
+static constexpr char const* kMurlocMale[] = {
+    "Murky", "Morgl", "Cookie", "Brack", "Blrgl", "Glrgl", "Finley", "Grrbl",
+    "Slurpy", "Chomp", "Puddle", "Splash", "Bllg", "Clack", "Gurgle", "Hiss",
+    "Krr", "Lrrg", "Mrrgl", "Plop", "Rrgl", "Snip", "Splosh", "Squawk",
+    "Swish", "Waddle",
+};
+
+static constexpr char const* kMurlocFemale[] = {
+    "Murka", "Morga", "Cookia", "Bracka", "Blrgla", "Glrgla", "Finlia", "Grrbla",
+    "Slurpina", "Chompia", "Puddla", "Splashia", "Bllga", "Gurgla", "Lrrga", "Mrrgla",
+    "Plopa", "Rrgla", "Squawka",
+};
+
+static constexpr char const* kMurlocSurname[] = {
+    "Tidehunter", "Puddlejumper", "Saltscale", "Gillcrest", "Finflapper", "Shorecrawler", "Mudfoot", "Beachrunner",
+    "Clamchomper", "Coralhopper", "Deepfin", "Fishbone", "Frogleg", "Kelpswimmer", "Reefcrawler", "Sandhopper",
+    "Shellcracker", "Tidalwave", "Wavechaser",
+};
+
+static constexpr char const* kHarpyMale[] = {
+    "Talon", "Screech", "Gale", "Zephyr", "Beak", "Feather", "Claw", "Gust",
+    "Razor", "Skystalker", "Storm", "Swift", "Wing", "Wingblade",
+};
+
+static constexpr char const* kHarpyFemale[] = {
+    "Serena", "Bloodfeather", "Witchwing", "Windcaller", "Sharpbeak", "Talon", "Screech", "Gale",
+    "Zephyr", "Aeria", "Aviara", "Bleakwing", "Clawina", "Cloudia", "Feather", "Flurry",
+    "Gust", "Harpia", "Hawkina", "Raven", "Skyra", "Stormia", "Swoop", "Vultura",
+};
+
+static constexpr char const* kHarpySurname[] = {
+    "Bloodfeather", "Windfury", "Sharpclaw", "Screechwing", "Witchwing", "Skyterror", "Cloudshriek", "Blackbeak",
+    "Cloudtalon", "Dreadfeather", "Featherfall", "Gusthunter", "Highnest", "Razorbeak", "Skyqueen", "Stormcaller",
+    "Swiftfeather", "Talonfury",
+};
+
+
+// Resolve any playable race (stock or custom) to an effective naming race pool.
+// Related races (e.g. Forest/Ice Trolls, Fel/Mag'har Orcs, Void/High Elves) reuse
+// their parent race's naming conventions, while unique races have their own pools.
+inline unsigned char ResolveNamingRace(unsigned char race)
+{
+    switch (race)
+    {
+        // Trolls: Troll (8), Zandalari (12), Forest (24, 40), Ice (25, 43), Drakkari (28, 44), Leper (45)
+        case 8: case 12: case 24: case 25: case 28: case 40: case 43: case 44: case 45:
+            return 8;
+        // Orcs: Orc (2, 52), Fel Orc (23, 34), Mag'har (49)
+        case 2: case 23: case 34: case 49: case 52:
+            return 2;
+        // Dwarves: Dwarf (3), Earthen (27, 68, 69), Dark Iron (48)
+        case 3: case 27: case 48: case 68: case 69:
+            return 3;
+        // Blood / High / Void / Nightborne / San'layn Elves
+        case 10: case 14: case 59: case 60: case 63: case 72: case 77: case 80: case 81:
+            return 10;
+        // Night Elves: Night Elf (4), Illidari (61), Haranir (70, 71)
+        case 4: case 61: case 70: case 71:
+            return 4;
+        // Tauren: Tauren (6), Taunka (17, 41), Highmountain (66)
+        case 6: case 17: case 41: case 66:
+            return 6;
+        // Draenei: Draenei (11), Broken (22, 36), Eredar (55), Lightforged (62)
+        case 11: case 22: case 36: case 55: case 62:
+            return 11;
+        // Gnomes: Gnome (7), Undead Gnome (51), Mechagnome (67)
+        case 7: case 51: case 67:
+            return 7;
+        // Undead: Undead (5), Skeleton (26, 37, 42)
+        case 5: case 26: case 37: case 42:
+            return 5;
+        // Humans: Human (1), Worgen (13, 47), Kul Tiran (16), Thin Human (32, 33), Test (65)
+        case 1: case 13: case 16: case 32: case 33: case 47: case 65:
+            return 1;
+        // Goblins: Goblin (9), Alpha Goblin (57)
+        case 9: case 57:
+            return 9;
+        // Pandaren: Pandaren (20, 29)
+        case 20: case 29:
+            return 20;
+        // Naga: Naga (21, 35)
+        case 21: case 35:
+            return 21;
+        // Tuskarr: Tuskarr (15, 39)
+        case 15: case 39:
+            return 15;
+        // Vrykul: Vrykul (18, 38)
+        case 18: case 38:
+            return 18;
+        // Vulpera: Vulpera (19, 74)
+        case 19: case 74:
+            return 19;
+        // Dracthyr: Dracthyr (54, 58)
+        case 54: case 58:
+            return 54;
+        // Murloc / Troglodyte: Murloc (30, 31), Troglodyte (46)
+        case 30: case 31: case 46:
+            return 30;
+        // Dedicated unique races
+        case 50: return 50; // Furbolg
+        case 53: return 53; // Ogre
+        case 56: return 56; // Harpy
+        case 78: return 78; // Jinyu
+        case 82: return 82; // Sethrak
+        case 83: return 83; // Gnoll
+        case 97: return 97; // Saberon
+        default:
+            return 1; // Fallback to Human
+    }
+}
+
 static constexpr RacePools kRacePools[] = {
     { 1, { kHumanMale, sizeof(kHumanMale) / sizeof(char const*) }, { kHumanFemale, sizeof(kHumanFemale) / sizeof(char const*) }, { kHumanSurname, sizeof(kHumanSurname) / sizeof(char const*) } },
     { 2, { kOrcMale, sizeof(kOrcMale) / sizeof(char const*) }, { kOrcFemale, sizeof(kOrcFemale) / sizeof(char const*) }, { kOrcSurname, sizeof(kOrcSurname) / sizeof(char const*) } },
@@ -1407,7 +1808,24 @@ static constexpr RacePools kRacePools[] = {
     { 6, { kTaurenMale, sizeof(kTaurenMale) / sizeof(char const*) }, { kTaurenFemale, sizeof(kTaurenFemale) / sizeof(char const*) }, { kTaurenSurname, sizeof(kTaurenSurname) / sizeof(char const*) } },
     { 7, { kGnomeMale, sizeof(kGnomeMale) / sizeof(char const*) }, { kGnomeFemale, sizeof(kGnomeFemale) / sizeof(char const*) }, { kGnomeSurname, sizeof(kGnomeSurname) / sizeof(char const*) } },
     { 8, { kTrollMale, sizeof(kTrollMale) / sizeof(char const*) }, { kTrollFemale, sizeof(kTrollFemale) / sizeof(char const*) }, { nullptr, 0 } },
+    { 9, { kGoblinMale, sizeof(kGoblinMale) / sizeof(char const*) }, { kGoblinFemale, sizeof(kGoblinFemale) / sizeof(char const*) }, { kGoblinSurname, sizeof(kGoblinSurname) / sizeof(char const*) } },
     { 10, { kBloodElfMale, sizeof(kBloodElfMale) / sizeof(char const*) }, { kBloodElfFemale, sizeof(kBloodElfFemale) / sizeof(char const*) }, { kBloodElfSurname, sizeof(kBloodElfSurname) / sizeof(char const*) } },
     { 11, { kDraeneiMale, sizeof(kDraeneiMale) / sizeof(char const*) }, { kDraeneiFemale, sizeof(kDraeneiFemale) / sizeof(char const*) }, { nullptr, 0 } },
+
+    // Unique custom races
+    { 15, { kTuskarrMale, sizeof(kTuskarrMale) / sizeof(char const*) }, { kTuskarrFemale, sizeof(kTuskarrFemale) / sizeof(char const*) }, { kTuskarrSurname, sizeof(kTuskarrSurname) / sizeof(char const*) } },
+    { 18, { kVrykulMale, sizeof(kVrykulMale) / sizeof(char const*) }, { kVrykulFemale, sizeof(kVrykulFemale) / sizeof(char const*) }, { kVrykulSurname, sizeof(kVrykulSurname) / sizeof(char const*) } },
+    { 19, { kVulperaMale, sizeof(kVulperaMale) / sizeof(char const*) }, { kVulperaFemale, sizeof(kVulperaFemale) / sizeof(char const*) }, { kVulperaSurname, sizeof(kVulperaSurname) / sizeof(char const*) } },
+    { 20, { kPandarenMale, sizeof(kPandarenMale) / sizeof(char const*) }, { kPandarenFemale, sizeof(kPandarenFemale) / sizeof(char const*) }, { kPandarenSurname, sizeof(kPandarenSurname) / sizeof(char const*) } },
+    { 21, { kNagaMale, sizeof(kNagaMale) / sizeof(char const*) }, { kNagaFemale, sizeof(kNagaFemale) / sizeof(char const*) }, { kNagaSurname, sizeof(kNagaSurname) / sizeof(char const*) } },
+    { 30, { kMurlocMale, sizeof(kMurlocMale) / sizeof(char const*) }, { kMurlocFemale, sizeof(kMurlocFemale) / sizeof(char const*) }, { kMurlocSurname, sizeof(kMurlocSurname) / sizeof(char const*) } },
+    { 50, { kFurbolgMale, sizeof(kFurbolgMale) / sizeof(char const*) }, { kFurbolgFemale, sizeof(kFurbolgFemale) / sizeof(char const*) }, { kFurbolgSurname, sizeof(kFurbolgSurname) / sizeof(char const*) } },
+    { 53, { kOgreMale, sizeof(kOgreMale) / sizeof(char const*) }, { kOgreFemale, sizeof(kOgreFemale) / sizeof(char const*) }, { kOgreSurname, sizeof(kOgreSurname) / sizeof(char const*) } },
+    { 54, { kDracthyrMale, sizeof(kDracthyrMale) / sizeof(char const*) }, { kDracthyrFemale, sizeof(kDracthyrFemale) / sizeof(char const*) }, { kDracthyrSurname, sizeof(kDracthyrSurname) / sizeof(char const*) } },
+    { 56, { kHarpyMale, sizeof(kHarpyMale) / sizeof(char const*) }, { kHarpyFemale, sizeof(kHarpyFemale) / sizeof(char const*) }, { kHarpySurname, sizeof(kHarpySurname) / sizeof(char const*) } },
+    { 78, { kJinyuMale, sizeof(kJinyuMale) / sizeof(char const*) }, { kJinyuFemale, sizeof(kJinyuFemale) / sizeof(char const*) }, { kJinyuSurname, sizeof(kJinyuSurname) / sizeof(char const*) } },
+    { 82, { kSethrakMale, sizeof(kSethrakMale) / sizeof(char const*) }, { kSethrakFemale, sizeof(kSethrakFemale) / sizeof(char const*) }, { kSethrakSurname, sizeof(kSethrakSurname) / sizeof(char const*) } },
+    { 83, { kGnollMale, sizeof(kGnollMale) / sizeof(char const*) }, { kGnollFemale, sizeof(kGnollFemale) / sizeof(char const*) }, { kGnollSurname, sizeof(kGnollSurname) / sizeof(char const*) } },
+    { 97, { kSaberonMale, sizeof(kSaberonMale) / sizeof(char const*) }, { kSaberonFemale, sizeof(kSaberonFemale) / sizeof(char const*) }, { kSaberonSurname, sizeof(kSaberonSurname) / sizeof(char const*) } },
 };
 }

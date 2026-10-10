@@ -19,6 +19,18 @@ CoaBots.Loot.AutoLootInGroup = 0
 
 CoaBots.Enable = 1
 
+#
+#    CoaBots.CustomRaces.Enable
+#        Description: Allow random bots to spawn as custom races. When set to 0 (default),
+#                     bot race selection automatically follows CoACustomRaces.BotsEnable
+#                     (from coa_custom_races.conf) and AiPlayerbot.ExcludedBotRaces.
+#                     Set to 1 to explicitly enable custom races for companion bots.
+#        Default:     0 - (Follows CoACustomRaces.BotsEnable / AiPlayerbot.ExcludedBotRaces)
+#
+
+CoaBots.CustomRaces.Enable = 0
+
+
 
 # Number of bots '.botcmd spawnrandom' creates when no count is given on the command line.
 CoaBots.RandomSpawn.DefaultCount = 10
