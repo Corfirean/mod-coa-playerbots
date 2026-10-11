@@ -40,6 +40,7 @@
 #include "Player.h"
 #include "PlayerScript.h"
 #include "QueryHolder.h"
+#include "Realm.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "TradeData.h"
