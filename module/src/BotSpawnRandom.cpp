@@ -685,7 +685,7 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
     if (!accountId)
         return 0;
 
-    ClassTemplates const& templates = templateRoster[classId];
+    ClassTemplates const& templates = templateRoster.at(classId);
     uint32 templateGuid = templates.byTeam[wantedTeam].guid ? templates.byTeam[wantedTeam].guid
         : templates.byTeam[1 - wantedTeam].guid;
     uint8 gender = uint8(RandomInt(0, 1));
