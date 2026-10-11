@@ -9,6 +9,11 @@
 # Does not change Need/Greed rolls or gathering and fishing loot.
 CoaBots.Loot.AutoLootInGroup = 0
 
+# Allow custom races only when CoACustomRaces.Enable and CoACustomRaces.BotsEnable are enabled.
+# Set to 0 to restrict companions to stock races. Both bot exclusion lists apply.
+CoaBots.CustomRaces.Enable = 1
+
+
 # Number of bots '.botcmd spawnrandom' creates when no count is given on the command line.
 CoaBots.RandomSpawn.DefaultCount = 10
 
