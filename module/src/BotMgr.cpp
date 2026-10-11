@@ -721,7 +721,7 @@ ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, 
     std::unordered_set<ObjectGuid::LowType> const& excludedGuids) const
 {
     std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
-    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE username LIKE '{}%'", accountPrefix);
+    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE id > 2 AND username LIKE '{}%'", accountPrefix);
     if (!accounts)
         return 0;
 
@@ -2113,17 +2113,24 @@ void BotMgr::PurgeAllBots(ChatHandler* handler)
         } while (chars->NextRow());
     }
 
-    // Purge the bot accounts and their access/realm links completely from LoginDatabase
-    LoginDatabase.DirectExecute(Acore::StringFormat("DELETE FROM account_access WHERE id IN ({})", idList));
-    LoginDatabase.DirectExecute(Acore::StringFormat("DELETE FROM realmcharacters WHERE acctid IN ({})", idList));
-    LoginDatabase.DirectExecute(Acore::StringFormat("DELETE FROM account WHERE id IN ({})", idList));
+    // Use the core account lifecycle, including bans, mute records and script hooks.
+    // Retain shared accounts when another realm still owns characters.
+    uint32 deletedAccounts = 0;
+    for (uint32 accountId : accountIds)
+    {
+        QueryResult otherRealm = LoginDatabase.Query(
+            "SELECT 1 FROM realmcharacters WHERE acctid = {} AND realmid <> {} AND numchars > 0 LIMIT 1",
+            accountId, realm.Id.Realm);
+        if (!otherRealm && AccountMgr::DeleteAccount(accountId) == AOR_OK)
+            ++deletedAccounts;
+    }
 
     LOG_INFO("module.coa-playerbots", "BotMgr: purged {} bot character(s) and {} bot-hosting account(s).",
-        deleted, accountIds.size());
+        deleted, deletedAccounts);
     BotSpawn::ResetAccountLookupCache();
     if (handler)
         handler->PSendSysMessage("BotMgr: purged {} bot character(s) and {} bot account(s). Use .botcmd spawnrandom or "
-            ".botcmd spawnleveled to create a fresh population.", deleted, uint32(accountIds.size()));
+            ".botcmd spawnleveled to create a fresh population.", deleted, deletedAccounts);
 }
 
 void BotMgr::ListAuras(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
