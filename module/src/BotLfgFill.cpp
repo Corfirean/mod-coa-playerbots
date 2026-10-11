@@ -220,7 +220,7 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
     }
 
     std::unordered_set<ObjectGuid::LowType> excludedGuids;
-    for (PendingLogin const& p : pendingLogins)
+    for (auto const& p : pendingLogins)
         excludedGuids.insert(p.guid);
 
     uint8 minLvl = 1;

@@ -249,7 +249,7 @@ void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueue
 
     // Reuse an existing offline bot character before creating a brand new one
     std::unordered_set<ObjectGuid::LowType> excludedGuids;
-    for (PendingLogin const& p : pendingLogins)
+    for (auto const& p : pendingLogins)
         excludedGuids.insert(p.guid);
 
     uint8 minLvl = bracketEntry ? bracketEntry->minLevel : 0;
