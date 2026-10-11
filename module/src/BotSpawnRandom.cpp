@@ -73,14 +73,11 @@ void ApplyFreshBotSetup(Player* bot, uint8 level);
 std::vector<uint8> GetValidBotRaces()
 {
     bool customRacesEnabled = sConfigMgr->GetOption<bool>("CoACustomRaces.Enable", false)
-                           && sConfigMgr->GetOption<bool>("CoACustomRaces.BotsEnable", false);
+                           && sConfigMgr->GetOption<bool>("CoACustomRaces.BotsEnable", false)
+                           && sConfigMgr->GetOption<bool>("CoaBots.CustomRaces.Enable", true);
 
-    if (sConfigMgr->GetOption<bool>("CoaBots.CustomRaces.Enable", false))
-        customRacesEnabled = true;
-
-    std::string excludedStr = sConfigMgr->GetOption<std::string>("AiPlayerbot.ExcludedBotRaces", "");
-    if (excludedStr.empty())
-        excludedStr = sConfigMgr->GetOption<std::string>("CoaBots.ExcludedBotRaces", "");
+    std::string excludedStr = sConfigMgr->GetOption<std::string>("AiPlayerbot.ExcludedBotRaces", "")
+        + "," + sConfigMgr->GetOption<std::string>("CoaBots.ExcludedBotRaces", "");
 
     std::unordered_set<uint8> excluded;
     if (!excludedStr.empty())
@@ -97,16 +94,15 @@ std::vector<uint8> GetValidBotRaces()
                 if (!clean.empty())
                 {
                     try {
-                        excluded.insert(static_cast<uint8>(std::stoul(clean)));
+                        size_t consumed = 0;
+                        unsigned long race = std::stoul(clean, &consumed);
+                        if (consumed == clean.size() && race > 0 && race <= 255)
+                            excluded.insert(static_cast<uint8>(race));
                     } catch (...) {}
                 }
             }
         }
     }
-
-    // The recommended exclusions list excludes all custom races (e.g. 33 and 128)
-    if (excluded.count(33) && excluded.count(128))
-        customRacesEnabled = false;
 
     std::vector<uint8> races;
     constexpr uint8 stockRaces[] = { 1, 2, 3, 4, 5, 6, 7, 8, 10, 11 };
@@ -130,12 +126,6 @@ std::vector<uint8> GetValidBotRaces()
             if (sChrRacesStore.LookupEntry(r))
                 races.push_back(r);
         }
-    }
-
-    if (races.empty())
-    {
-        for (uint8 r : stockRaces)
-            races.push_back(r);
     }
 
     return races;
@@ -524,6 +514,12 @@ void ProcessPendingRandomBotSpawns(uint32 diff)
     bool autoLogin = sConfigMgr->GetOption<bool>("CoaBots.RandomSpawn.AutoLogin", true);
     uint32 thisBatch = std::min(g_pendingRandomBotCount, RandomSpawnBatchSize());
     std::vector<uint8> const validRaces = GetValidBotRaces();
+    if (validRaces.empty())
+    {
+        LOG_ERROR("module.coa-playerbots", "BotMgr: no races allowed by bot race configuration; random spawn cancelled.");
+        g_pendingRandomBotCount = g_pendingRandomBotCreated = g_pendingRandomBotRequested = 0;
+        return;
+    }
 
     for (uint32 i = 0; i < thisBatch; ++i)
     {
@@ -1331,6 +1327,12 @@ void ProcessPendingLeveledBotSpawns(uint32 diff)
     uint8 serverMaxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
     uint32 thisBatch = std::min(g_pendingLeveledBotCount, RandomSpawnBatchSize());
     std::vector<uint8> const validRaces = GetValidBotRaces();
+    if (validRaces.empty())
+    {
+        LOG_ERROR("module.coa-playerbots", "BotMgr: no races allowed by bot race configuration; leveled spawn cancelled.");
+        g_pendingLeveledBotCount = g_pendingLeveledBotCreated = g_pendingLeveledBotRequested = 0;
+        return;
+    }
     for (uint32 i = 0; i < thisBatch; ++i)
     {
         uint8 level = RollWeightedLevel(serverMaxLevel);
