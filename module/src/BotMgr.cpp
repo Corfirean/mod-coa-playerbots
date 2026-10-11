@@ -2076,7 +2076,7 @@ void BotMgr::PurgeAllBots(ChatHandler* handler)
     // account, so this catches bots that were never logged in this session too, not just the
     // ones just despawned above.
     std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
-    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE username LIKE '{}%'", accountPrefix);
+    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE id > 2 AND username LIKE '{}%'", accountPrefix);
     if (!accounts)
     {
         if (handler)
