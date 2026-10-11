@@ -229,10 +229,10 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
     {
         if (LFGDungeonEntry const* d = sLFGDungeonStore.LookupEntry(dId))
         {
-            if (d->minlevel > minLvl)
-                minLvl = d->minlevel;
-            if (d->maxlevel && d->maxlevel < maxLvl)
-                maxLvl = d->maxlevel;
+            if (d->MinLevel > minLvl)
+                minLvl = d->MinLevel;
+            if (d->MaxLevel && d->MaxLevel < maxLvl)
+                maxLvl = d->MaxLevel;
         }
     }
 
