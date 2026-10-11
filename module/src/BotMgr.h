@@ -15,6 +15,7 @@
 #define COA_PLAYERBOTS_BOT_MGR_H
 
 #include "ObjectGuid.h"
+#include "SharedDefines.h"
 #include "BotAI.h"
 #include "BotFormations.h"
 #include <functional>
