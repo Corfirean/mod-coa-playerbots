@@ -208,11 +208,41 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
             return;
     }
 
-    // Pass 4: Spawn a new random bot if attempts allow.
+    // Pass 4: Reuse existing offline bot if available, or spawn a new random bot if attempts allow.
     auto itOp = activeOperations.find(opId);
     if (itOp != activeOperations.end() && itOp->second.creationAttempts >= 5)
     {
         LOG_WARN("module.coa-playerbots", "BotLfgFill: op {} reached creation limit (5), aborting new bot spawn.", opId);
+        return;
+    }
+
+    std::unordered_set<ObjectGuid::LowType> excludedGuids;
+    for (PendingLogin const& p : pendingLogins)
+        excludedGuids.insert(p.guid);
+
+    uint8 minLvl = 1;
+    uint8 maxLvl = 80;
+    for (uint32 dId : dungeons)
+    {
+        if (LFGDungeonEntry const* d = sLFGDungeonStore.LookupEntry(dId))
+        {
+            if (d->minlevel > minLvl)
+                minLvl = d->minlevel;
+            if (d->maxlevel && d->maxlevel < maxLvl)
+                maxLvl = d->maxlevel;
+        }
+    }
+
+    ObjectGuid::LowType candidateGuid = sBotMgr->FindEligibleOfflineBot(team, minLvl, maxLvl, excludedGuids);
+    if (candidateGuid)
+    {
+        if (itOp != activeOperations.end())
+        {
+            ++itOp->second.creationAttempts;
+            itOp->second.spawnedBotGuids.insert(candidateGuid);
+        }
+        sBotMgr->SpawnBot(candidateGuid, nullptr);
+        pendingLogins.push_back({ candidateGuid, roleBit, dungeons, 0, opId });
         return;
     }
 

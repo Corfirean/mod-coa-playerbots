@@ -717,6 +717,51 @@ Player* BotMgr::FindBotPlayer(ObjectGuid::LowType charLowGuid) const
     return session ? session->GetPlayer() : nullptr;
 }
 
+ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, uint8 maxLevel,
+    std::unordered_set<ObjectGuid::LowType> const& excludedGuids) const
+{
+    std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE username LIKE '{}%'", accountPrefix);
+    if (!accounts)
+        return 0;
+
+    std::ostringstream accountIds;
+    do
+    {
+        accountIds << (*accounts)[0].Get<uint32>() << ",";
+    } while (accounts->NextRow());
+    std::string idList = accountIds.str();
+    idList.pop_back();
+
+    std::string query = Acore::StringFormat(
+        "SELECT guid, race, level FROM characters WHERE account IN ({}) AND level BETWEEN {} AND {}",
+        idList, uint32(minLevel), uint32(maxLevel));
+    QueryResult chars = CharacterDatabase.Query(query);
+    if (!chars)
+        return 0;
+
+    std::vector<ObjectGuid::LowType> candidates;
+    do
+    {
+        Field* fields = chars->Fetch();
+        ObjectGuid::LowType guid = fields[0].Get<uint32>();
+        uint8 race = fields[1].Get<uint8>();
+
+        if (team != TEAM_NEUTRAL && Player::TeamIdForRace(race) != team)
+            continue;
+
+        if (excludedGuids.count(guid) || FindBotSession(guid))
+            continue;
+
+        candidates.push_back(guid);
+    } while (chars->NextRow());
+
+    if (candidates.empty())
+        return 0;
+
+    return candidates[urand(0, uint32(candidates.size()) - 1)];
+}
+
 std::vector<Player*> BotMgr::GetOnlineBots() const
 {
     std::vector<Player*> bots;
@@ -2052,32 +2097,33 @@ void BotMgr::PurgeAllBots(ChatHandler* handler)
 
     QueryResult chars = CharacterDatabase.Query(
         "SELECT guid, account FROM characters WHERE account IN ({})", idList);
-    if (!chars)
+    uint32 deleted = 0;
+    if (chars)
     {
-        if (handler)
-            handler->PSendSysMessage("BotMgr: no bot characters found, nothing to purge.");
-        return;
+        do
+        {
+            Field* fields = chars->Fetch();
+            ObjectGuid::LowType guid = fields[0].Get<uint32>();
+            uint32 accountId = fields[1].Get<uint32>();
+            // deleteFinally=true: a hard delete, not the recycle-bin soft delete a real player's
+            // ".character erase" leaves behind -- there's no reason to keep a purged bot's row
+            // around, and leaving it would just block CharacterCreate from reusing its name.
+            Player::DeleteFromDB(guid, accountId, true, true);
+            ++deleted;
+        } while (chars->NextRow());
     }
 
-    uint32 deleted = 0;
-    do
-    {
-        Field* fields = chars->Fetch();
-        ObjectGuid::LowType guid = fields[0].Get<uint32>();
-        uint32 accountId = fields[1].Get<uint32>();
-        // deleteFinally=true: a hard delete, not the recycle-bin soft delete a real player's
-        // ".character erase" leaves behind -- there's no reason to keep a purged bot's row
-        // around, and leaving it would just block CharacterCreate from reusing its name.
-        Player::DeleteFromDB(guid, accountId, true, true);
-        ++deleted;
-    } while (chars->NextRow());
+    // Purge the bot accounts and their access/realm links completely from LoginDatabase
+    LoginDatabase.DirectExecute(Acore::StringFormat("DELETE FROM account_access WHERE id IN ({})", idList));
+    LoginDatabase.DirectExecute(Acore::StringFormat("DELETE FROM realmcharacters WHERE acctid IN ({})", idList));
+    LoginDatabase.DirectExecute(Acore::StringFormat("DELETE FROM account WHERE id IN ({})", idList));
 
-    LOG_INFO("module.coa-playerbots", "BotMgr: purged {} bot character(s) across {} bot-hosting account(s).",
+    LOG_INFO("module.coa-playerbots", "BotMgr: purged {} bot character(s) and {} bot-hosting account(s).",
         deleted, accountIds.size());
     BotSpawn::ResetAccountLookupCache();
     if (handler)
-        handler->PSendSysMessage("BotMgr: purged {} bot character(s). Use .botcmd spawnrandom or "
-            ".botcmd spawnleveled to create a fresh population.", deleted);
+        handler->PSendSysMessage("BotMgr: purged {} bot character(s) and {} bot account(s). Use .botcmd spawnrandom or "
+            ".botcmd spawnleveled to create a fresh population.", deleted, uint32(accountIds.size()));
 }
 
 void BotMgr::ListAuras(ObjectGuid::LowType charLowGuid, ChatHandler* handler)

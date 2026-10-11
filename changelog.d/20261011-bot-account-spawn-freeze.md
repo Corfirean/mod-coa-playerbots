@@ -2,6 +2,6 @@
 area: bots
 type: fixed
 audience: players
-title: Random bot creation no longer causes server hitches or disconnects
+title: Random bot spawning and auto-fill no longer leak accounts or freeze the server
 ---
-Fixed an issue where creating random bots on realms with accumulated bot accounts caused heavy world thread freezes and connection timeouts during bot generation.
+Battleground and Dungeon Finder auto-fill now reuses existing offline bots instead of creating duplicate characters. Account lookup is now indexed to prevent tick hitches, and bot accounts are fully cleaned up when purged.

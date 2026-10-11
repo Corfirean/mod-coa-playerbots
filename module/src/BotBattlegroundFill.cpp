@@ -247,6 +247,21 @@ void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueue
         return;
     }
 
+    // Reuse an existing offline bot character before creating a brand new one
+    std::unordered_set<ObjectGuid::LowType> excludedGuids;
+    for (PendingLogin const& p : pendingLogins)
+        excludedGuids.insert(p.guid);
+
+    uint8 minLvl = bracketEntry ? bracketEntry->minLevel : 0;
+    uint8 maxLvl = bracketEntry ? bracketEntry->maxLevel : 80;
+    ObjectGuid::LowType candidateGuid = sBotMgr->FindEligibleOfflineBot(team, minLvl, maxLvl, excludedGuids);
+    if (candidateGuid)
+    {
+        sBotMgr->SpawnBot(candidateGuid, nullptr);
+        pendingLogins.push_back({ candidateGuid, bgTypeId, bgQueueTypeId, bracketEntry });
+        return;
+    }
+
     uint8 race = PickRaceForTeam(team);
     ObjectGuid::LowType newGuid = BotSpawn::CreateOneRandomBot(race, nullptr);
     if (!newGuid)
