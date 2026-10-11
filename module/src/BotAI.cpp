@@ -1055,7 +1055,7 @@ public:
 
     void OnPetitionOffered(Player* player, ObjectGuid petitionGuid) override
     {
-        if (sBotMgr->FindBotPlayer(player->GetGUID().GetCounter()))
+        if (sBotMgr->BotsEnabled() && sBotMgr->FindBotPlayer(player->GetGUID().GetCounter()))
             requestedPetitionSignatures[petitionGuid].insert(player->GetGUID());
     }
 };

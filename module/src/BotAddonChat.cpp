@@ -492,6 +492,9 @@ public:
 
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 language, std::string& message, Player* receiver) override
     {
+        if (!sBotMgr->BotsEnabled())
+            return true;
+
         if (type != CHAT_MSG_WHISPER || language != LANG_ADDON || receiver != player)
             return true;
         if (message.compare(0, PROTOCOL_PREFIX_LEN, PROTOCOL_PREFIX) != 0)

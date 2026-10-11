@@ -25,7 +25,6 @@ dist/bin/
 /conf/
 /src/
 
-# Python cache
+# Python
 __pycache__/
-*.pyc
-
+*.py[cod]

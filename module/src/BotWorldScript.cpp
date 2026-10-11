@@ -28,6 +28,8 @@ public:
     // upstream playerbots module, which brings a database of its own that this server does not use.)
     void OnShutdown() override
     {
+        if (!sBotMgr->BotsEnabled())
+            return;
         sBotMgr->LogoutAllBots();
     }
 
@@ -37,6 +39,9 @@ public:
     // dev/test session can still boot clean (no bots) when that's what's actually wanted.
     void OnStartup() override
     {
+        if (!sBotMgr->BotsEnabled())
+            return;
+
         BotTalentBuilds::Initialize();
         BotAI::SpecStrategyRegistry::Validate();
         sBotMgr->LoadGuildGatherOrders();
@@ -57,7 +62,7 @@ public:
 
     void OnPlayerRewardKillRewarder(Player* player, KillRewarder* rewarder, bool /*isDungeon*/, float& /*rate*/) override
     {
-        if (!player || !rewarder)
+        if (!sBotMgr->BotsEnabled() || !player || !rewarder)
             return;
 
         Unit* victim = rewarder->GetVictim();

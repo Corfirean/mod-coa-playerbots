@@ -55,6 +55,9 @@ void ProcessPendingLeveledBotSpawns(uint32 diff);
 // already created stay (use despawnall / purgeall for those). Returns how many queued bots were cancelled.
 uint32 CancelPendingSpawns();
 
+// Resets cached bot template rosters and account index tracking (e.g. after purging bot characters).
+void ResetAccountLookupCache();
+
 // `.botcmd professiontrainer [charLowGuid]` -- grants every profession this realm allows to one
 // online bot (or every online bot, if omitted) at its current level's skill cap. Standalone from
 // ApplyFreshBotSetup so it can backfill a bot that never went through that path (this project's

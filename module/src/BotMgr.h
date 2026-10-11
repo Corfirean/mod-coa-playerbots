@@ -15,6 +15,7 @@
 #define COA_PLAYERBOTS_BOT_MGR_H
 
 #include "ObjectGuid.h"
+#include "SharedDefines.h"
 #include "BotAI.h"
 #include "BotFormations.h"
 #include <functional>
@@ -414,6 +415,11 @@ public:
     // specific guid -- e.g. BotBattlegroundFill.cpp finding an idle bot of a given faction to
     // queue, without needing BotMgr to track a separate faction-indexed roster of its own.
     std::vector<Player*> GetOnlineBots() const;
+
+    // Finds an existing offline bot character created under CoaBots.RandomSpawn.AccountPrefix,
+    // matching team and level constraints. Returns 0 if none found.
+    ObjectGuid::LowType FindEligibleOfflineBot(TeamId team, uint8 minLevel = 0, uint8 maxLevel = 80,
+        std::unordered_set<ObjectGuid::LowType> const& excludedGuids = {}) const;
 
     // Called every world tick via a WorldScript hook. Auto-accepts any
     // pending group invite and auto-rolls Greed on any pending loot roll for
