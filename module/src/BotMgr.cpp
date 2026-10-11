@@ -717,6 +717,51 @@ Player* BotMgr::FindBotPlayer(ObjectGuid::LowType charLowGuid) const
     return session ? session->GetPlayer() : nullptr;
 }
 
+ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, uint8 maxLevel,
+    std::unordered_set<ObjectGuid::LowType> const& excludedGuids) const
+{
+    std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE id > 2 AND username LIKE '{}%'", accountPrefix);
+    if (!accounts)
+        return 0;
+
+    std::ostringstream accountIds;
+    do
+    {
+        accountIds << (*accounts)[0].Get<uint32>() << ",";
+    } while (accounts->NextRow());
+    std::string idList = accountIds.str();
+    idList.pop_back();
+
+    std::string query = Acore::StringFormat(
+        "SELECT guid, race, level FROM characters WHERE account IN ({}) AND level BETWEEN {} AND {}",
+        idList, uint32(minLevel), uint32(maxLevel));
+    QueryResult chars = CharacterDatabase.Query(query);
+    if (!chars)
+        return 0;
+
+    std::vector<ObjectGuid::LowType> candidates;
+    do
+    {
+        Field* fields = chars->Fetch();
+        ObjectGuid::LowType guid = fields[0].Get<uint32>();
+        uint8 race = fields[1].Get<uint8>();
+
+        if (team != TEAM_NEUTRAL && Player::TeamIdForRace(race) != team)
+            continue;
+
+        if (excludedGuids.count(guid) || FindBotSession(guid))
+            continue;
+
+        candidates.push_back(guid);
+    } while (chars->NextRow());
+
+    if (candidates.empty())
+        return 0;
+
+    return candidates[urand(0, uint32(candidates.size()) - 1)];
+}
+
 std::vector<Player*> BotMgr::GetOnlineBots() const
 {
     std::vector<Player*> bots;
@@ -2031,7 +2076,7 @@ void BotMgr::PurgeAllBots(ChatHandler* handler)
     // account, so this catches bots that were never logged in this session too, not just the
     // ones just despawned above.
     std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
-    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE username LIKE '{}%'", accountPrefix);
+    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE id > 2 AND username LIKE '{}%'", accountPrefix);
     if (!accounts)
     {
         if (handler)
@@ -2052,31 +2097,40 @@ void BotMgr::PurgeAllBots(ChatHandler* handler)
 
     QueryResult chars = CharacterDatabase.Query(
         "SELECT guid, account FROM characters WHERE account IN ({})", idList);
-    if (!chars)
+    uint32 deleted = 0;
+    if (chars)
     {
-        if (handler)
-            handler->PSendSysMessage("BotMgr: no bot characters found, nothing to purge.");
-        return;
+        do
+        {
+            Field* fields = chars->Fetch();
+            ObjectGuid::LowType guid = fields[0].Get<uint32>();
+            uint32 accountId = fields[1].Get<uint32>();
+            // deleteFinally=true: a hard delete, not the recycle-bin soft delete a real player's
+            // ".character erase" leaves behind -- there's no reason to keep a purged bot's row
+            // around, and leaving it would just block CharacterCreate from reusing its name.
+            Player::DeleteFromDB(guid, accountId, true, true);
+            ++deleted;
+        } while (chars->NextRow());
     }
 
-    uint32 deleted = 0;
-    do
+    // Use the core account lifecycle, including bans, mute records and script hooks.
+    // Retain shared accounts when another realm still owns characters.
+    uint32 deletedAccounts = 0;
+    for (uint32 accountId : accountIds)
     {
-        Field* fields = chars->Fetch();
-        ObjectGuid::LowType guid = fields[0].Get<uint32>();
-        uint32 accountId = fields[1].Get<uint32>();
-        // deleteFinally=true: a hard delete, not the recycle-bin soft delete a real player's
-        // ".character erase" leaves behind -- there's no reason to keep a purged bot's row
-        // around, and leaving it would just block CharacterCreate from reusing its name.
-        Player::DeleteFromDB(guid, accountId, true, true);
-        ++deleted;
-    } while (chars->NextRow());
+        QueryResult otherRealm = LoginDatabase.Query(
+            "SELECT 1 FROM realmcharacters WHERE acctid = {} AND realmid <> {} AND numchars > 0 LIMIT 1",
+            accountId, realm.Id.Realm);
+        if (!otherRealm && AccountMgr::DeleteAccount(accountId) == AOR_OK)
+            ++deletedAccounts;
+    }
 
-    LOG_INFO("module.coa-playerbots", "BotMgr: purged {} bot character(s) across {} bot-hosting account(s).",
-        deleted, accountIds.size());
+    LOG_INFO("module.coa-playerbots", "BotMgr: purged {} bot character(s) and {} bot-hosting account(s).",
+        deleted, deletedAccounts);
+    BotSpawn::ResetAccountLookupCache();
     if (handler)
-        handler->PSendSysMessage("BotMgr: purged {} bot character(s). Use .botcmd spawnrandom or "
-            ".botcmd spawnleveled to create a fresh population.", deleted);
+        handler->PSendSysMessage("BotMgr: purged {} bot character(s) and {} bot account(s). Use .botcmd spawnrandom or "
+            ".botcmd spawnleveled to create a fresh population.", deleted, deletedAccounts);
 }
 
 void BotMgr::ListAuras(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
@@ -3025,7 +3079,7 @@ std::vector<std::string> BotMgr::GetEquippedGearInfo(Player* bot) const
 
 void BotMgr::RestoreGroupBotsOnLogin(Player* player)
 {
-    if (!player || FindBotPlayer(player->GetGUID().GetCounter()))
+    if (!BotsEnabled() || !player || FindBotPlayer(player->GetGUID().GetCounter()))
         return; // only for a real player's own login -- a bot's login already got here via whichever real player's own restore pass spawned it
 
     Group* group = player->GetGroup();
@@ -3188,6 +3242,13 @@ void BotMgr::UpdateTrades(uint32 diff)
 
 void BotMgr::Update(uint32 diff)
 {
+    if (!BotsEnabled())
+    {
+        if (!_botSessions.empty() || !_pendingAutoLoginQueue.empty())
+            DespawnAllBots();
+        return;
+    }
+
     static uint32 capCheckTimer = 0;
     capCheckTimer += diff;
     if (capCheckTimer >= 2000)
@@ -3551,7 +3612,7 @@ public:
 
     void OnRemoveMember(Group* group, ObjectGuid guid, RemoveMethod /*method*/, ObjectGuid /*kicker*/, char const* /*reason*/) override
     {
-        if (!group)
+        if (!sBotMgr->BotsEnabled() || !group)
             return;
         if (BotMgr::IsBotAccountId(sCharacterCache->GetCharacterAccountIdByGuid(guid)))
             return; // a bot leaving on its own isn't a reason for the rest to bail too

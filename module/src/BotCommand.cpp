@@ -117,6 +117,12 @@ public:
     // CoaBots.RandomSpawn.MaxCount regardless of what's asked for.
     static bool HandleBotSpawnRandomCommand(ChatHandler* handler, Optional<uint32> count)
     {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
         BotSpawn::SpawnRandomBots(count.value_or(0), handler);
         return true;
     }
@@ -125,6 +131,12 @@ public:
     // level-bracketed gear -- see BotSpawnRandom.h/.cpp's SpawnLeveledBots.
     static bool HandleBotSpawnLeveledCommand(ChatHandler* handler, uint32 count)
     {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
         BotSpawn::SpawnLeveledBots(count, handler);
         return true;
     }
@@ -134,6 +146,12 @@ public:
     // 21 Human level-1 bots.
     static bool HandleBotSpawnFleetCommand(ChatHandler* handler, uint8 race, uint8 level)
     {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
         BotSpawn::SpawnClassFleet(race, level, handler);
         return true;
     }
@@ -144,6 +162,12 @@ public:
     // battlemaster NPC's gossip menu.
     static bool HandleBotJoinBGCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, uint32 bgTypeId)
     {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
         Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
         if (!bot)
         {
@@ -163,6 +187,12 @@ public:
     static bool HandleBotJoinLfgCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid,
         uint32 dungeonId, uint8 roleBit)
     {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
         Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
         if (!bot)
         {
@@ -182,6 +212,12 @@ public:
 
     static bool HandleBotAcceptInviteCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
         sBotMgr->AcceptInvite(charLowGuid, handler);
         return true;
     }
@@ -191,6 +227,12 @@ public:
     // resolve "any online player by low guid"), not a bot to act on.
     static bool HandleBotQuickFillCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
         Player* commander = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(charLowGuid));
         if (!commander)
         {
@@ -205,6 +247,12 @@ public:
     // `.botcmd botlist <player guid> [page] [role]`: what the addon's Browse tab would receive.
     static bool HandleBotListCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, Optional<uint32> page, Optional<std::string> role)
     {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
         Player* commander = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(charLowGuid));
         if (!commander)
         {
@@ -227,6 +275,12 @@ public:
     // `.botcmd invitebot <player guid> <tank|healer|dps>`: what the addon's "Invite" button does for that player.
     static bool HandleBotInviteRoleCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, std::string role)
     {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
         Player* commander = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(charLowGuid));
         if (!commander)
         {

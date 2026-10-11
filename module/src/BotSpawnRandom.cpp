@@ -241,12 +241,14 @@ std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster()
 {
     std::string prefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
     std::unordered_set<uint32> botAccounts;
-    for (uint32 n = 1; n <= 10000; ++n)
+    QueryResult botAccountsResult = LoginDatabase.Query(
+        "SELECT id FROM account WHERE username LIKE '{}%'", prefix);
+    if (botAccountsResult)
     {
-        uint32 accountId = AccountMgr::GetId(prefix + std::to_string(n));
-        if (!accountId)
-            break;
-        botAccounts.insert(accountId);
+        do
+        {
+            botAccounts.insert((*botAccountsResult)[0].Get<uint32>());
+        } while (botAccountsResult->NextRow());
     }
 
     std::unordered_map<uint8, ClassTemplates> roster;
@@ -268,6 +270,14 @@ std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster()
             slot = ClassTemplate{ fields[1].Get<uint32>(), race };
     } while (result->NextRow());
     return roster;
+}
+
+std::unordered_map<uint8, ClassTemplates> const& GetClassTemplateRoster(bool refresh = false)
+{
+    static std::unordered_map<uint8, ClassTemplates> cachedRoster;
+    if (refresh || cachedRoster.empty())
+        cachedRoster = BuildClassTemplateRoster();
+    return cachedRoster;
 }
 
 // Cached column list for the `characters` table, fetched once per server run. Cloning a row
@@ -293,14 +303,50 @@ std::vector<std::string> const& CharacterColumns()
     return columns;
 }
 
+uint32 s_lastBotAccountIndex = 1;
+std::string s_cachedBotAccountPrefix;
+bool s_botAccountLookupInitialized = false;
+
 // Finds an existing "<prefix>N" account with room under CharactersPerAccount, or creates the
 // next one in sequence. Bots need their own accounts -- never account 1, and account 2's own
 // pool is small and shared with hand-made test characters -- so a large batch has somewhere
 // to keep going once any single account fills up.
 uint32 FindOrCreateBotAccount(std::string const& prefix, uint32 charactersPerAccount, ChatHandler* handler)
 {
-    for (uint32 n = 1; n <= 10000; ++n)
+    if (!s_botAccountLookupInitialized || s_cachedBotAccountPrefix != prefix)
     {
+        s_botAccountLookupInitialized = true;
+        s_cachedBotAccountPrefix = prefix;
+        s_lastBotAccountIndex = 1;
+
+        // Discover the highest existing account index in a single query rather than sequentially
+        // probing every full account from 1..N with individual synchronous queries.
+        QueryResult result = LoginDatabase.Query(
+            "SELECT username FROM account WHERE username LIKE '{}%'", prefix);
+        if (result)
+        {
+            uint32 maxN = 1;
+            do
+            {
+                std::string uname = (*result)[0].Get<std::string>();
+                if (uname.size() > prefix.size())
+                {
+                    char* end = nullptr;
+                    unsigned long val = std::strtoul(uname.c_str() + prefix.size(), &end, 10);
+                    if (end != uname.c_str() + prefix.size() && *end == '\0')
+                    {
+                        if (val > maxN && val <= 10000)
+                            maxN = uint32(val);
+                    }
+                }
+            } while (result->NextRow());
+            s_lastBotAccountIndex = maxN;
+        }
+    }
+
+    for (uint32 offset = 0; offset < 10000; ++offset)
+    {
+        uint32 n = ((s_lastBotAccountIndex - 1 + offset) % 10000) + 1;
         std::string username = prefix + std::to_string(n);
         uint32 accountId = AccountMgr::GetId(username);
         if (!accountId)
@@ -330,10 +376,14 @@ uint32 FindOrCreateBotAccount(std::string const& prefix, uint32 charactersPerAcc
             }
             if (handler)
                 handler->PSendSysMessage("BotMgr: created bot-hosting account '{}' (id {}).", username, accountId);
+            s_lastBotAccountIndex = n;
             return accountId;
         }
         if (AccountMgr::GetCharactersCount(accountId) < charactersPerAccount)
+        {
+            s_lastBotAccountIndex = n;
             return accountId;
+        }
     }
     return 0;
 }
@@ -446,6 +496,13 @@ uint32 g_pendingRandomBotThrottleMs = 0;
 
 void SpawnRandomBots(uint32 requestedCount, ChatHandler* handler)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+        return;
+    }
+
     uint32 defaultCount = sConfigMgr->GetOption<uint32>("CoaBots.RandomSpawn.DefaultCount", 10);
     uint32 maxCount = sConfigMgr->GetOption<uint32>("CoaBots.RandomSpawn.MaxCount", 1000);
 
@@ -467,7 +524,7 @@ void SpawnRandomBots(uint32 requestedCount, ChatHandler* handler)
 
     // Fail fast on a broken setup up front, rather than queuing a batch that would just fail
     // bot-by-bot once ProcessPendingRandomBotSpawns starts draining it.
-    if (BuildClassTemplateRoster().empty())
+    if (GetClassTemplateRoster(true).empty())
     {
         if (handler)
             handler->PSendSysMessage(
@@ -501,6 +558,13 @@ void SpawnRandomBots(uint32 requestedCount, ChatHandler* handler)
 
 void ProcessPendingRandomBotSpawns(uint32 diff)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        g_pendingRandomBotCount = 0;
+        g_pendingRandomBotRequested = 0;
+        return;
+    }
+
     if (!g_pendingRandomBotCount)
         return;
 
@@ -630,7 +694,7 @@ std::vector<std::pair<std::string, std::string>> FreshCharacterOverrides(uint8 l
 // papered over.
 ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId = 0)
 {
-    std::unordered_map<uint8, ClassTemplates> templateRoster = BuildClassTemplateRoster();
+    std::unordered_map<uint8, ClassTemplates> const& templateRoster = GetClassTemplateRoster();
     if (templateRoster.empty())
     {
         if (handler)
@@ -735,6 +799,13 @@ ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatH
 
 void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+        return;
+    }
+
     // The 21 custom Ascension classes, ids 12-32 -- same range BuildClassTemplateRoster's own
     // query uses (line ~165). Synchronous, not queued: this is 21 bots for a controlled debugging
     // population, not a several-hundred-bot batch, so none of SpawnRandomBots/SpawnLeveledBots'
@@ -743,6 +814,7 @@ void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
     // Fresh registry every run -- a re-spawn after `.botcmd purgeall` must not keep logging a
     // deleted bot's old GUID under a slot number a brand new bot is about to reuse.
     BotAI::BotDebugLog::Clear();
+    GetClassTemplateRoster(true);
 
     uint32 created = 0;
     std::vector<uint8> failedClasses;
@@ -1253,6 +1325,13 @@ void RepairGear(Player* bot)
 
 void SpawnLeveledBots(uint32 requestedCount, ChatHandler* handler)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+        return;
+    }
+
     uint32 maxCount = sConfigMgr->GetOption<uint32>("CoaBots.RandomSpawn.MaxCount", 1000);
     uint32 count = requestedCount;
     if (count > maxCount * 2) // this path is requested in bigger batches (1000-1500) than plain spawnrandom
@@ -1268,7 +1347,7 @@ void SpawnLeveledBots(uint32 requestedCount, ChatHandler* handler)
         return;
     }
 
-    if (BuildClassTemplateRoster().empty())
+    if (GetClassTemplateRoster(true).empty())
     {
         if (handler)
             handler->PSendSysMessage(
@@ -1312,8 +1391,22 @@ uint32 CancelPendingSpawns()
     return cancelled;
 }
 
+void ResetAccountLookupCache()
+{
+    s_botAccountLookupInitialized = false;
+    s_lastBotAccountIndex = 1;
+    GetClassTemplateRoster(true);
+}
+
 void ProcessPendingLeveledBotSpawns(uint32 diff)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        g_pendingLeveledBotCount = 0;
+        g_pendingLeveledBotRequested = 0;
+        return;
+    }
+
     if (!g_pendingLeveledBotCount)
         return;
 
