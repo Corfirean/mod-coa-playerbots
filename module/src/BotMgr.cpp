@@ -2074,6 +2074,7 @@ void BotMgr::PurgeAllBots(ChatHandler* handler)
 
     LOG_INFO("module.coa-playerbots", "BotMgr: purged {} bot character(s) across {} bot-hosting account(s).",
         deleted, accountIds.size());
+    BotSpawn::ResetAccountLookupCache();
     if (handler)
         handler->PSendSysMessage("BotMgr: purged {} bot character(s). Use .botcmd spawnrandom or "
             ".botcmd spawnleveled to create a fresh population.", deleted);

@@ -24,3 +24,7 @@ dist/bin/
 # Local AzerothCore module build mirrors
 /conf/
 /src/
+
+# Python
+__pycache__/
+*.py[cod]
