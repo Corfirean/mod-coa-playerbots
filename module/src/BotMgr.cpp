@@ -3072,7 +3072,7 @@ std::vector<std::string> BotMgr::GetEquippedGearInfo(Player* bot) const
 
 void BotMgr::RestoreGroupBotsOnLogin(Player* player)
 {
-    if (!player || FindBotPlayer(player->GetGUID().GetCounter()))
+    if (!BotsEnabled() || !player || FindBotPlayer(player->GetGUID().GetCounter()))
         return; // only for a real player's own login -- a bot's login already got here via whichever real player's own restore pass spawned it
 
     Group* group = player->GetGroup();
@@ -3235,6 +3235,13 @@ void BotMgr::UpdateTrades(uint32 diff)
 
 void BotMgr::Update(uint32 diff)
 {
+    if (!BotsEnabled())
+    {
+        if (!_botSessions.empty() || !_pendingAutoLoginQueue.empty())
+            DespawnAllBots();
+        return;
+    }
+
     static uint32 capCheckTimer = 0;
     capCheckTimer += diff;
     if (capCheckTimer >= 2000)
@@ -3598,7 +3605,7 @@ public:
 
     void OnRemoveMember(Group* group, ObjectGuid guid, RemoveMethod /*method*/, ObjectGuid /*kicker*/, char const* /*reason*/) override
     {
-        if (!group)
+        if (!sBotMgr->BotsEnabled() || !group)
             return;
         if (BotMgr::IsBotAccountId(sCharacterCache->GetCharacterAccountIdByGuid(guid)))
             return; // a bot leaving on its own isn't a reason for the rest to bail too

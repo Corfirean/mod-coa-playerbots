@@ -144,6 +144,9 @@ bool JoinBotToLfg(Player* bot, uint8 roleBit, lfg::LfgDungeonSet dungeons, uint6
 void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, ObjectGuid excludeGuid,
     std::vector<ObjectGuid>& attemptedThisPass, uint64 opId)
 {
+    if (!sBotMgr->BotsEnabled())
+        return;
+
     std::vector<Player*> eligible;
     for (Player* bot : sBotMgr->GetOnlineBots())
     {
@@ -447,7 +450,7 @@ public:
 
     bool OnPlayerCanJoinLfg(Player* player, uint8 roles, std::set<uint32>& dungeons, std::string const& /*comment*/) override
     {
-        if (filling || dungeons.empty() || !sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true))
+        if (filling || dungeons.empty() || !sBotMgr->BotsEnabled() || !sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true))
             return true;
 
         LFGDungeonEntry const* firstDungeon = sLFGDungeonStore.LookupEntry(*dungeons.begin());
@@ -540,6 +543,18 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        if (!sBotMgr->BotsEnabled() || !sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true))
+        {
+            if (!pendingLogins.empty() || !queuedBots.empty() || !activeOperations.empty())
+            {
+                pendingLogins.clear();
+                queuedBots.clear();
+                activeOperations.clear();
+                initiatorToOpId.clear();
+            }
+            return;
+        }
+
         ProcessPendingLogins(diff);
         ProcessQueuedBots();
         ProcessGroupRoleChecks();
@@ -554,7 +569,7 @@ public:
 
     bool HasLfgAutoFillProvider() const override
     {
-        return sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true);
+        return sBotMgr->BotsEnabled() && sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true);
     }
 };
 }

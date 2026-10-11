@@ -433,6 +433,13 @@ uint32 g_pendingRandomBotThrottleMs = 0;
 
 void SpawnRandomBots(uint32 requestedCount, ChatHandler* handler)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+        return;
+    }
+
     uint32 defaultCount = sConfigMgr->GetOption<uint32>("CoaBots.RandomSpawn.DefaultCount", 10);
     uint32 maxCount = sConfigMgr->GetOption<uint32>("CoaBots.RandomSpawn.MaxCount", 1000);
 
@@ -488,6 +495,13 @@ void SpawnRandomBots(uint32 requestedCount, ChatHandler* handler)
 
 void ProcessPendingRandomBotSpawns(uint32 diff)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        g_pendingRandomBotCount = 0;
+        g_pendingRandomBotRequested = 0;
+        return;
+    }
+
     if (!g_pendingRandomBotCount)
         return;
 
@@ -715,6 +729,13 @@ ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatH
 
 void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+        return;
+    }
+
     // The 21 custom Ascension classes, ids 12-32 -- same range BuildClassTemplateRoster's own
     // query uses (line ~165). Synchronous, not queued: this is 21 bots for a controlled debugging
     // population, not a several-hundred-bot batch, so none of SpawnRandomBots/SpawnLeveledBots'
@@ -1234,6 +1255,13 @@ void RepairGear(Player* bot)
 
 void SpawnLeveledBots(uint32 requestedCount, ChatHandler* handler)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+        return;
+    }
+
     uint32 maxCount = sConfigMgr->GetOption<uint32>("CoaBots.RandomSpawn.MaxCount", 1000);
     uint32 count = requestedCount;
     if (count > maxCount * 2) // this path is requested in bigger batches (1000-1500) than plain spawnrandom
@@ -1302,6 +1330,13 @@ void ResetAccountLookupCache()
 
 void ProcessPendingLeveledBotSpawns(uint32 diff)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        g_pendingLeveledBotCount = 0;
+        g_pendingLeveledBotRequested = 0;
+        return;
+    }
+
     if (!g_pendingLeveledBotCount)
         return;
 

@@ -374,7 +374,7 @@ public:
 
     void OnPlayerJoinBG(Player* player) override
     {
-        if (!sConfigMgr->GetOption<bool>("CoaBots.BGFill.Enable", true))
+        if (!sBotMgr->BotsEnabled() || !sConfigMgr->GetOption<bool>("CoaBots.BGFill.Enable", true))
             return;
 
         // Confirmed live crash: a *grouped* real-player join (WorldSession::HandleBattlemasterJoinOpcode's
@@ -456,6 +456,16 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        if (!sBotMgr->BotsEnabled() || !sConfigMgr->GetOption<bool>("CoaBots.BGFill.Enable", true))
+        {
+            if (!pendingLogins.empty() || !queuedBots.empty())
+            {
+                pendingLogins.clear();
+                queuedBots.clear();
+            }
+            return;
+        }
+
         ProcessPendingLogins(diff);
         ProcessQueuedBots();
         NudgeStalledQueues(diff);
@@ -473,6 +483,13 @@ namespace BotBGFill
 {
 bool JoinBotToBattlegroundQueue(Player* bot, uint32 bgTypeId_, ChatHandler* handler)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+        return false;
+    }
+
     if (!sBattlemasterListStore.LookupEntry(bgTypeId_))
     {
         if (handler)
