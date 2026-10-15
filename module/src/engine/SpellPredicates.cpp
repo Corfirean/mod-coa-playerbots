@@ -328,6 +328,19 @@ namespace BotAI
         bot->SetFacingToObject(target);
     }
 
+    namespace
+    {
+        // Share of maximum health a health-paid damage spell has to leave behind.
+        constexpr float HEALTH_COST_RESERVE_PCT = 30.0f;
+
+        bool IsHealthPaidDamageSpell(SpellInfo const* spellInfo)
+        {
+            return spellInfo->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE) || spellInfo->HasEffect(SPELL_EFFECT_WEAPON_DAMAGE) ||
+                spellInfo->HasEffect(SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL) || spellInfo->HasEffect(SPELL_EFFECT_WEAPON_PERCENT_DAMAGE) ||
+                spellInfo->HasEffect(SPELL_EFFECT_NORMALIZED_WEAPON_DMG) || spellInfo->HasAura(SPELL_AURA_PERIODIC_DAMAGE);
+        }
+    }
+
     char const* NativeCastPrerequisiteFailure(Player* bot, SpellInfo const* spellInfo)
     {
         if (!bot || !spellInfo)
@@ -356,6 +369,16 @@ namespace BotAI
                 if (!weapon || weapon->IsBroken() || !weapon->IsFitToSpellRequirements(spellInfo))
                     return "off-hand weapon requirement";
             }
+        }
+        // A damage spell that is paid for with health must not take the caster below the reserve: Sanguine bled itself to 0% with
+        // no incoming damage (the profile gate did not cover the generic fallback). Self-sustain spells that cost health
+        // (Blood Tap, Liquify, ...) deal no damage and keep their own profile gates.
+        if (spellInfo->PowerType == POWER_HEALTH && IsHealthPaidDamageSpell(spellInfo))
+        {
+            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
+            if (cost > 0 && bot->GetMaxHealth() > 0 &&
+                float(int64(bot->GetHealth()) - cost) * 100.0f / float(bot->GetMaxHealth()) < HEALTH_COST_RESERVE_PCT)
+                return "health reserve for health-cost damage spell";
         }
         for (uint32 totem : spellInfo->Totem)
             if (totem && !bot->HasItemCount(totem))

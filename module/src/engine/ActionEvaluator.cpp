@@ -255,6 +255,9 @@ namespace BotAI
         // Resource check through CombatResourceEvaluator
         if (!IsNativeFormAllowed(bot, spellInfo))
             return "native stance/form requirement";
+        // Same native-prerequisite and health-reserve rules as CanCast, for casts that reach the engines through the fallbacks.
+        if (char const* prerequisite = NativeCastPrerequisiteFailure(bot, spellInfo))
+            return prerequisite;
         if (!CombatResourceEvaluator::CanAfford(ctx.resources, bot, action.spellId))
             return "can't afford";
 
