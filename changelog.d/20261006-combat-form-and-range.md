@@ -1,0 +1,1 @@
+Fix bots dismantling the Tinker Mechsuit as a travel mount during combat. Add its native combat attacks, resolve Mechanics Shotgun through its native rank chain, and match native combat reach when evaluating ability range. Reject native stance-incompatible candidates before they starve legal attacks.
