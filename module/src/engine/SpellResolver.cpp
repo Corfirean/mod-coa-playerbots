@@ -7,30 +7,18 @@
 #include "engine/SpellResolver.h"
 #include "Player.h"
 #include "SpellMgr.h"
-#include <unordered_map>
+#include "SpellInfo.h"
 
 namespace BotAI
 {
-    namespace
-    {
-        // [botGuid][rootSpellId] -> highestLearnedRank
-        std::unordered_map<ObjectGuid, std::unordered_map<uint32, uint32>> s_resolvedCache;
-    }
-
     uint32 SpellResolver::ResolveSpell(Player* bot, uint32 rootSpellId)
     {
         if (!bot || !rootSpellId)
             return 0;
 
-        ObjectGuid guid = bot->GetGUID();
-        auto botItr = s_resolvedCache.find(guid);
-        if (botItr != s_resolvedCache.end())
-        {
-            auto spellItr = botItr->second.find(rootSpellId);
-            if (spellItr != botItr->second.end())
-                return spellItr->second;
-        }
-
+        // Native talents, temporary grants and specialization changes can mutate
+        // active learned ranks without a level change. Walk the short native rank
+        // chain against the live book rather than retaining a stale rank or zero.
         PlayerSpellMap const& spellMap = bot->GetSpellMap();
         uint32 lastInChain = sSpellMgr->GetLastSpellInChain(rootSpellId);
         uint32 current = lastInChain ? lastInChain : rootSpellId;
@@ -58,17 +46,28 @@ namespace BotAI
                 resolved = rootSpellId;
         }
 
-        s_resolvedCache[guid][rootSpellId] = resolved;
         return resolved;
     }
 
-    void SpellResolver::Invalidate(ObjectGuid botGuid)
+    uint32 SpellResolver::EffectiveSpell(Player* bot, uint32 learnedSpellId)
     {
-        s_resolvedCache.erase(botGuid);
+        if (!bot || !learnedSpellId)
+            return 0;
+        uint32 replacement = bot->GetTemporarySpellReplacement(learnedSpellId);
+        return replacement && sSpellMgr->GetSpellInfo(replacement) ? replacement : learnedSpellId;
+    }
+
+    uint32 SpellResolver::ResolveCastSpell(Player* bot, uint32 rootSpellId)
+    {
+        return EffectiveSpell(bot, ResolveSpell(bot, rootSpellId));
+    }
+
+    void SpellResolver::Invalidate(ObjectGuid /*botGuid*/)
+    {
+        // Compatibility for lifecycle callers: resolution now reads the live book.
     }
 
     void SpellResolver::ClearAll()
     {
-        s_resolvedCache.clear();
     }
 }

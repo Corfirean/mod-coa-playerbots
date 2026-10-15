@@ -72,6 +72,8 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Discharge (AoE Spender)";
                 d.rootSpellId = 805288;
+                // Native Static spender/mana recovery is useful even with one enemy.
+                d.minAoETargets = 1;
                 d.tags = AbilityTag::AoEDamage | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 15000;
@@ -92,6 +94,47 @@ namespace BotAI
             }
 
             // 6. Chain Lightning (AoE Spreader)
+            // Learned instant, no-cost, no-cooldown nuke (Spell.dbc 501421, range 35) that the profile never used;
+            // Zyth45 ranks it above Shock. Chain Lightning / Lightning Bolt (stock ids 421/403) are not learned.
+            {
+                AbilityDescriptor d;
+                d.name = "Electrocute (instant filler)";
+                d.rootSpellId = 501421;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 175.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Arm of Thorim";
+                d.rootSpellId = 501433;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Volt (DoT)";
+                d.rootSpellId = 500928;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 215.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Storm Ascendance";
+                d.rootSpellId = 681110;
+                d.tags = AbilityTag::Buff | AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 235.0f;
+                d.missingAuraOnCaster = 681110;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Chain Lightning";
@@ -232,6 +275,8 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Discharge";
                 d.rootSpellId = 805288;
+                // Native Static spender/mana recovery is useful even with one enemy.
+                d.minAoETargets = 1;
                 d.tags = AbilityTag::AoEDamage | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 15000;
@@ -322,6 +367,8 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Discharge (Burst)";
                 d.rootSpellId = 805288;
+                // Native Static spender/mana recovery is useful even with one enemy.
+                d.minAoETargets = 1;
                 d.tags = AbilityTag::AoEDamage | AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 15000;
@@ -354,6 +401,27 @@ namespace BotAI
             }
 
             // 6. Chain Lightning
+            // Learned instant, no-cost, no-cooldown nuke (Spell.dbc 501421, range 35) that the profile never used;
+            // Zyth45 ranks it above Shock. Chain Lightning / Lightning Bolt (stock ids 421/403) are not learned.
+            {
+                AbilityDescriptor d;
+                d.name = "Electrocute (instant filler)";
+                d.rootSpellId = 501421;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 175.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Storm Ascendance";
+                d.rootSpellId = 681110;
+                d.tags = AbilityTag::Buff | AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 235.0f;
+                d.missingAuraOnCaster = 681110;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Chain Lightning";
@@ -362,6 +430,18 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 6000;
                 d.baseScore = 175.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Native Stormflow is the sustained channel. Resolve its learned rank;
+            // unordered legacy fallback otherwise selects level-12 spell 567555.
+            {
+                AbilityDescriptor d;
+                d.name = "Stormflow";
+                d.rootSpellId = 567555;
+                d.tags = AbilityTag::Filler | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 120.0f;
                 p.abilities.push_back(d);
             }
 

@@ -12,6 +12,7 @@
 #include "CellImpl.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "Item.h"
 #include "Player.h"
 #include "SharedDefines.h"
 #include "Spell.h"
@@ -37,6 +38,11 @@ namespace BotAI
             return false;
         if (!spellInfo->NeedsExplicitUnitTarget() || !spellInfo->CanBeUsedInCombat())
             return false;
+        // Charm/possession changes enemy allegiance. Its periodic damage is not
+        // a generic damage filler; deliberate crowd-control policies own it.
+        if (spellInfo->HasAura(SPELL_AURA_MOD_CHARM) || spellInfo->HasAura(SPELL_AURA_MOD_POSSESS) ||
+            spellInfo->HasAura(SPELL_AURA_MOD_POSSESS_PET))
+            return false;
         if (spellInfo->IsAutoRepeatRangedSpell())
             return false;
 
@@ -55,6 +61,24 @@ namespace BotAI
         // CombatProfile/useRangedAutoRepeat path entirely separately -- so excluding ranged-weapon
         // spells here costs it nothing.
         if (spellInfo->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT))
+            return false;
+
+        // A spell whose only unit targets are allies (Spirit Charge: charge + heal + damage on TARGET_UNIT_TARGET_ALLY) is not
+        // an enemy filler even though one effect deals damage; at a hostile target the core answers SPELL_FAILED_BAD_TARGETS.
+        bool allyOnly = false, enemyReachable = false;
+        for (SpellEffectInfo const& effect : spellInfo->Effects)
+        {
+            if (!effect.IsEffect())
+                continue;
+            for (Targets target : { effect.TargetA.GetTarget(), effect.TargetB.GetTarget() })
+            {
+                if (target == TARGET_UNIT_TARGET_ALLY || target == TARGET_UNIT_TARGET_PARTY)
+                    allyOnly = true;
+                else if (target == TARGET_UNIT_TARGET_ENEMY || target == TARGET_UNIT_TARGET_ANY)
+                    enemyReachable = true;
+            }
+        }
+        if (allyOnly && !enemyReachable)
             return false;
 
         return spellInfo->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE) ||
@@ -118,8 +142,22 @@ namespace BotAI
     {
         if (!spellInfo || spellInfo->IsPassive() || !spellInfo->IsPositive())
             return false;
-        if (!spellInfo->NeedsExplicitUnitTarget() || !spellInfo->CanBeUsedInCombat())
+        if (!spellInfo->CanBeUsedInCombat())
             return false;
+
+        if (!spellInfo->NeedsExplicitUnitTarget())
+        {
+            bool casterGroupDispel = false;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                auto const& effect = spellInfo->Effects[i];
+                if (effect.Effect != SPELL_EFFECT_DISPEL) continue;
+                for (auto target : {effect.TargetA.GetTarget(), effect.TargetB.GetTarget()})
+                    if (target == TARGET_UNIT_CASTER_AREA_PARTY || target == TARGET_UNIT_CASTER_AREA_RAID)
+                        casterGroupDispel = true;
+            }
+            if (!casterGroupDispel) return false;
+        }
 
         // The real WotLK dispel shape (Dispel Magic/Cleanse/Remove Curse/Purify all use this) --
         // this fork's SharedDefines.h/SpellAuraDefines.h has no periodic-dispel aura type to also
@@ -282,6 +320,52 @@ namespace BotAI
         return !bot->GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo);
     }
 
+    void FaceHostileTargetForCast(Player* bot, Unit* target)
+    {
+        if (!bot || !target || target == bot || !bot->IsHostileTo(target) || bot->HasInArc(float(M_PI), target))
+            return;
+        bot->SetInFront(target);
+        bot->SetFacingToObject(target);
+    }
+
+    char const* NativeCastPrerequisiteFailure(Player* bot, SpellInfo const* spellInfo)
+    {
+        if (!bot || !spellInfo)
+            return nullptr;
+        // Bladestorm-like states (Righteous Tempest): the core answers every other cast with SPELL_FAILED_SPELL_IN_PROGRESS
+        // (Spell::CheckCast, PLAYER_ALLOW_ONLY_ABILITY), which cost Crusader24 about 20 failed casts per 30 s.
+        if (bot->HasPlayerFlag(PLAYER_ALLOW_ONLY_ABILITY) && !spellInfo->HasAttribute(SPELL_ATTR0_ON_NEXT_SWING_NO_DAMAGE))
+            return "only abilities allowed while a Tempest-like state is active";
+        if (spellInfo->CasterAuraStateNot && bot->HasAuraState(AuraStateType(spellInfo->CasterAuraStateNot)))
+            return "blocked by spell-defined caster aura state";
+        if (spellInfo->ExcludeCasterAuraSpell && bot->HasAura(spellInfo->ExcludeCasterAuraSpell))
+            return "blocked by spell-defined caster aura";
+        if (!bot->HasItemFitToSpellRequirements(spellInfo))
+            return "equipped item requirement";
+        if (spellInfo->EquippedItemClass >= 0)
+        {
+            if (spellInfo->HasAttribute(SPELL_ATTR3_REQUIRES_MAIN_HAND_WEAPON))
+            {
+                Item* weapon = bot->GetWeaponForAttack(BASE_ATTACK);
+                if (!weapon || weapon->IsBroken() || !weapon->IsFitToSpellRequirements(spellInfo))
+                    return "main-hand weapon requirement";
+            }
+            if (spellInfo->HasAttribute(SPELL_ATTR3_REQUIRES_OFF_HAND_WEAPON))
+            {
+                Item* weapon = bot->GetWeaponForAttack(OFF_ATTACK);
+                if (!weapon || weapon->IsBroken() || !weapon->IsFitToSpellRequirements(spellInfo))
+                    return "off-hand weapon requirement";
+            }
+        }
+        for (uint32 totem : spellInfo->Totem)
+            if (totem && !bot->HasItemCount(totem))
+                return "missing totem item";
+        for (uint32 category : spellInfo->TotemCategory)
+            if (category && !bot->HasItemTotemCategory(category))
+                return "missing totem category item";
+        return nullptr;
+    }
+
     bool IsKnownSpellCastable(Player* bot, uint32 spellId, Unit* target, bool positiveRange)
     {
         if (!bot || !spellId || !target)
@@ -296,6 +380,11 @@ namespace BotAI
         if (!spellInfo)
             return false;
 
+        // This boundary receives the effective cast ID. Native passive auras
+        // and proc execution are not manually activated by bot decisions.
+        if (spellInfo->IsPassive())
+            return false;
+
         // Confirmed live (21-bot fleet, 2026-09-25/26): a genuinely stunned bot kept getting a
         // spell selected here anyway, tried to cast it, and failed SPELL_FAILED_STUNNED every
         // single tick until the stun wore off (Finding 3 in
@@ -308,7 +397,7 @@ namespace BotAI
             return false;
         if (!IsOffGlobalCooldown(bot, spellInfo))
             return false;
-        if (!bot->HasItemFitToSpellRequirements(spellInfo))
+        if (NativeCastPrerequisiteFailure(bot, spellInfo))
             return false;
         if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
             return false;
@@ -372,12 +461,17 @@ namespace BotAI
             if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
                 continue;
 
-            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+            uint32 first = sSpellMgr->GetFirstSpellInChain(spellId);
+            uint32 highest = SpellResolver::ResolveSpell(bot, first ? first : spellId);
+            if (highest != spellId)
+                continue;
+            uint32 effective = SpellResolver::EffectiveSpell(bot, highest);
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(effective);
             if (!predicate(spellInfo))
                 continue;
 
-            if (IsKnownSpellCastable(bot, spellId, target, positiveRange))
-                return spellId;
+            if (IsKnownSpellCastable(bot, effective, target, positiveRange))
+                return effective;
         }
         return 0;
     }
@@ -405,6 +499,29 @@ namespace BotAI
             SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
             if (!IsUsableBuffSpell(spellInfo))
                 continue;
+
+            // Sun Cleric vows replace one another natively. Routine fallback
+            // must not undo the profile's selected vow by cycling all learned vows.
+            if (profile && bot->getClass() == 27)
+            {
+                auto isVow = [](uint32 id) {
+                    return id == 803489 || id == 803491 || id == 803719 ||
+                        id == 807435 || id == 807547 || id == 807749;
+                };
+                if (isVow(spellId))
+                {
+                    bool hasPreferred = false;
+                    bool isPreferred = false;
+                    for (auto const& ability : profile->abilities)
+                        if (HasTag(ability.tags, AbilityTag::Buff) && isVow(ability.rootSpellId))
+                        {
+                            hasPreferred = true;
+                            isPreferred = isPreferred || ability.rootSpellId == spellId;
+                        }
+                    if (hasPreferred && !isPreferred)
+                        continue;
+                }
+            }
 
             // Never select cooldowns tagged as DefensiveCD or OffensiveCD for routine buff maintenance
             if (profile)

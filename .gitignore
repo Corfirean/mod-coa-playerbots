@@ -24,3 +24,6 @@ dist/bin/
 # Local AzerothCore module build mirrors
 /conf/
 /src/
+
+# Private local training server configuration and reports
+.agents/training-live/

@@ -352,9 +352,9 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Shatter Echo";
                 d.rootSpellId = 804503;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::RangedAttack; // not OffensiveCD: a 3-second-throttle rotational attack; that tag scales the score by x0.15 outside boss/elite/PvP fights
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 10000;
+                d.internalThrottleMs = 3000; // native cooldown of the learned rank 572417
                 d.baseScore = 260.0f;
                 p.abilities.push_back(d);
             }
@@ -391,6 +391,48 @@ namespace BotAI
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 6000;
                 d.baseScore = 220.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Echo Fragment (804455) builders. Native CustomResourceData grants a fragment on each
+            // damaging Wand of Time hit and on each Artificer's Wand cast; Shatter Echo / Arc
+            // Collision need that aura, so without a builder the whole spender chain stayed
+            // blocked (I17: 1586 damage in 15 s, both spenders "missing spell-defined caster aura").
+            {
+                AbilityDescriptor d;
+                d.name = "Wand of Time (Echo builder)";
+                d.rootSpellId = 520175;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 5000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Artificer's Wand (Echo filler)";
+                d.rootSpellId = 561357;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 120.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Discordance";
+                d.rootSpellId = 503875;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 205.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Unmake";
+                d.rootSpellId = 503784;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
 

@@ -1,3 +1,4 @@
+#include "training/TrainingArenaManager.h"
 /*
  * mod-coa-playerbots
  *
@@ -8,6 +9,7 @@
 #include "engine/TankEngine.h"
 #include "engine/ActionEvaluator.h"
 #include "engine/CastGuard.h"
+#include "engine/SpellPredicates.h"
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
 #include "engine/SpecStrategyRegistry.h"
@@ -71,7 +73,9 @@ namespace BotAI
             return CombatResult::Busy;
         }
 
+        FaceHostileTargetForCast(bot, action.target);
         SpellCastResult result = bot->CastSpell(action.target, action.spellId, false);
+        CoaTraining::CastResult(bot, action.spellId, uint32(result), action.target);
         SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
         if (result == SPELL_CAST_OK)
         {

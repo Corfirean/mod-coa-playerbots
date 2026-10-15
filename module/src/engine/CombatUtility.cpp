@@ -1,3 +1,4 @@
+#include "training/TrainingArenaManager.h"
 /*
  * mod-coa-playerbots
  *
@@ -13,6 +14,7 @@
 #include "engine/CombatResource.h"
 #include "engine/SpecStrategyRegistry.h"
 #include "engine/SpellPredicates.h"
+#include "engine/SpellResolver.h"
 #include "BotClassRotations.h"
 #include "Group.h"
 #include "Log.h"
@@ -66,6 +68,7 @@ namespace BotAI
             }
 
             SpellCastResult result = bot->CastSpell(target, spellId, false);
+            CoaTraining::CastResult(bot, spellId, uint32(result), target);
             SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
             if (result == SPELL_CAST_OK)
             {
@@ -101,8 +104,14 @@ namespace BotAI
             {
                 if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
                     continue;
-                if (IsUsableDispelSpell(sSpellMgr->GetSpellInfo(spellId)))
-                    knownDispelSpells.push_back(spellId);
+                uint32 root = sSpellMgr->GetFirstSpellInChain(spellId);
+                uint32 highest = SpellResolver::ResolveSpell(bot, root ? root : spellId);
+                if (highest != spellId)
+                    continue;
+                uint32 effective = SpellResolver::EffectiveSpell(bot, highest);
+                if (IsUsableDispelSpell(sSpellMgr->GetSpellInfo(effective)) &&
+                    std::find(knownDispelSpells.begin(), knownDispelSpells.end(), effective) == knownDispelSpells.end())
+                    knownDispelSpells.push_back(effective);
             }
             if (knownDispelSpells.empty())
                 return plan;
@@ -124,10 +133,34 @@ namespace BotAI
                         SpellInfo const* dispelInfo = sSpellMgr->GetSpellInfo(dispelSpellId);
                         if (!IsDispelCompatible(dispelInfo, debuffInfo))
                             continue;
-                        if (!IsKnownSpellCastable(bot, dispelSpellId, ally, true))
+                        Unit* castTarget = ally;
+                        if (!dispelInfo->NeedsExplicitUnitTarget())
+                        {
+                            // Caster-centred party/raid cleanses have no explicit ally
+                            // target. Check the matching dispel effect's own radius,
+                            // then cast on self and let the native area selection run.
+                            bool reachesAlly = false;
+                            uint32 mask = SpellInfo::GetDispelMask(DispelType(debuffInfo->Dispel));
+                            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                            {
+                                auto const& effect = dispelInfo->Effects[i];
+                                if (effect.Effect != SPELL_EFFECT_DISPEL ||
+                                    !(SpellInfo::GetDispelMask(DispelType(effect.MiscValue)) & mask)) continue;
+                                bool casterGroupTarget = false;
+                                for (auto target : {effect.TargetA.GetTarget(), effect.TargetB.GetTarget()})
+                                    if (target == TARGET_UNIT_CASTER_AREA_PARTY || target == TARGET_UNIT_CASTER_AREA_RAID)
+                                        casterGroupTarget = true;
+                                float radius = effect.CalcRadius(bot);
+                                if (casterGroupTarget && radius > 0.0f && bot->IsWithinDistInMap(ally, radius))
+                                    reachesAlly = true;
+                            }
+                            if (!reachesAlly) continue;
+                            castTarget = bot;
+                        }
+                        if (!IsKnownSpellCastable(bot, dispelSpellId, castTarget, true))
                             continue;
 
-                        plan.target = ally;
+                        plan.target = castTarget;
                         plan.spellId = dispelSpellId;
                         return true;
                     }
@@ -226,6 +259,48 @@ namespace BotAI
             if (TryCast(bot, ctx, cleansePlan.spellId, cleansePlan.target, "cleansed", nextCastAllowedMs))
                 return true;
         }
+
+        // Native caster-area resurrection (e.g. Defibrillate). Never offer it
+        // as healing on a living player or while living allies are critical.
+        Group* resurrectionGroup = bot->GetGroup();
+        bool hasFallenMember = false;
+        if (resurrectionGroup)
+            for (GroupReference* ref = resurrectionGroup->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource())
+                    if (!member->IsAlive() && member->IsInWorld() && !member->isResurrectRequested())
+                        hasFallenMember = true;
+        if (hasFallenMember && !ctx.criticalAllyCount && ctx.botHpPct >= 35.0f)
+            if (Group* group = resurrectionGroup)
+                for (auto const& [spellId, learned] : bot->GetSpellMap())
+                {
+                    if (!learned || learned->State == PLAYERSPELL_REMOVED || !learned->Active) continue;
+                    uint32 root = sSpellMgr->GetFirstSpellInChain(spellId);
+                    uint32 resolved = SpellResolver::ResolveCastSpell(bot, root ? root : spellId);
+                    if (SpellResolver::ResolveSpell(bot, root ? root : spellId) != spellId) continue;
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(resolved);
+                    if (!info || info->IsPassive() || !info->IsPositive() || info->NeedsExplicitUnitTarget() ||
+                        (bot->IsInCombat() && !info->CanBeUsedInCombat())) continue;
+                    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                    {
+                        auto const& effect = info->Effects[i];
+                        if (effect.Effect != SPELL_EFFECT_RESURRECT && effect.Effect != SPELL_EFFECT_RESURRECT_NEW) continue;
+                        bool casterArea = false;
+                        for (auto target : {effect.TargetA.GetTarget(), effect.TargetB.GetTarget()})
+                            if (target == TARGET_UNIT_SRC_AREA_ALLY || target == TARGET_UNIT_CASTER_AREA_PARTY ||
+                                target == TARGET_UNIT_CASTER_AREA_RAID) casterArea = true;
+                        float radius = effect.CalcRadius(bot);
+                        if (!casterArea || radius <= 0.0f) continue;
+                        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                        {
+                            Player* member = ref->GetSource();
+                            if (!member || member->IsAlive() || !member->IsInWorld() || member->isResurrectRequested() ||
+                                !bot->IsWithinDistInMap(member, radius)) continue;
+                            if (IsKnownSpellCastable(bot, resolved, bot, true) &&
+                                TryCast(bot, ctx, resolved, bot, "offered area resurrection", nextCastAllowedMs))
+                                return true;
+                        }
+                    }
+                }
 
         return false;
     }

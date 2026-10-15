@@ -190,6 +190,9 @@ namespace BotAI
         // Mandatory form/stance
         RequiredCombatState requiredState;
         bool allowLegacyInTemporaryState = false;
+        // A complete, verified profile can own resource/cooldown waits too. Generic
+        // spellbook fallback would spend the resources reserved for its next attack.
+        bool ownsCombatRotation = false;
 
         bool HasMandatoryBaselineState() const
         {

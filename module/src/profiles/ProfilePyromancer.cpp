@@ -28,16 +28,16 @@ namespace BotAI
             p.role = BotRole::Healer;
             p.profileName = "Pyromancer_Flameweaving_Healer";
 
-            // 1. Emergency Critical Heal: Phoenix Blessing (< 35% HP)
+            // Native Seal of Alysrazor is a stat aura, not an emergency direct heal.
             {
                 AbilityDescriptor d;
-                d.name = "Phoenix Blessing";
+                d.name = "Seal of Alysrazor";
                 d.rootSpellId = 800196;
-                d.tags = AbilityTag::DirectHeal | AbilityTag::EmergencyHeal | AbilityTag::DefensiveCD;
-                d.targetType = TargetType::LowestHealthAlly;
-                d.maxTargetHpPct = 35.0f;
-                d.internalThrottleMs = 15000;
-                d.baseScore = 400.0f;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::TankAlly;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
 
@@ -69,30 +69,29 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 4. Primary Direct Heal: Blessing of the Firelands (< 80% HP)
+            // Native Cinderheart ranks resolve through progression root 800806.
             {
                 AbilityDescriptor d;
-                d.name = "Blessing of the Firelands";
-                d.rootSpellId = 504397;
+                d.name = "Cinderheart";
+                d.rootSpellId = 800806;
                 d.tags = AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 80.0f;
-                d.internalThrottleMs = 2500;
+                d.internalThrottleMs = 0;
                 d.baseScore = 280.0f;
                 p.abilities.push_back(d);
             }
 
-            // 5. Cauterize HoT: Ember Touch (< 90% HP)
+            // Explicit Kindle root avoids unordered fallback selecting the level-20 rank.
             {
                 AbilityDescriptor d;
-                d.name = "Ember Touch (Cauterize HoT)";
-                d.rootSpellId = 800818;
-                d.tags = AbilityTag::PeriodicHeal;
+                d.name = "Kindle";
+                d.rootSpellId = 803819;
+                d.tags = AbilityTag::DirectHeal | AbilityTag::EmergencyHeal;
                 d.targetType = TargetType::LowestHealthAlly;
-                d.maxTargetHpPct = 90.0f;
-                d.requireAuraMissingOnTarget = true;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 250.0f;
+                d.maxTargetHpPct = 35.0f;
+                d.internalThrottleMs = 0;
+                d.baseScore = 400.0f;
                 p.abilities.push_back(d);
             }
 
@@ -236,6 +235,17 @@ namespace BotAI
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 4000;
                 d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Native Ember spender; the native caster aura and cost gate own eligibility.
+            {
+                AbilityDescriptor d;
+                d.name = "Explode (Ember Spender)";
+                d.rootSpellId = 800792;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
 

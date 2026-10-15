@@ -66,6 +66,18 @@ namespace BotAI
             }
 
             // 2. Taunt / Threat
+            // Real taunt: Spell.dbc effect ATTACK_ME + MOD_TAUNT, 8 s native cooldown. The generic
+            // Taunt355 root is not a learned spell for Ascension classes ("not known/resolvable" in
+            // every I17 tank decision) and passive ids cannot be cast.
+            {
+                AbilityDescriptor d;
+                d.name = "Writhe (Taunt)";
+                d.rootSpellId = 801337;
+                d.tags = AbilityTag::Taunt;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 455.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Tormentor (Taunt)";
@@ -199,6 +211,35 @@ namespace BotAI
             p.specId = 56; // Harvest
             p.role = BotRole::Dps;
             p.profileName = "Reaper_Harvest_MeleeDps";
+
+            // Learned native Harvest Time preserves Soul Infusion on spenders.
+            // Treat this as a combat window, not routine pre-pull buff maintenance.
+            {
+                AbilityDescriptor d;
+                d.name = "Harvest Time";
+                d.rootSpellId = 803995;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 803995;
+                d.baseScore = 270.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Slaughter (Extinction proc)";
+                d.rootSpellId = 500373;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 240.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // Native Extinction560414 is consumed by Slaughter's rank chain.
+                    // All costs, range and aura requirements remain native checks.
+                    return ctx.bot->HasAura(560414) ? 120.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
 
             // 1. Personal Defense
             {
@@ -334,14 +375,20 @@ namespace BotAI
         }
 
         // -------------------------------------------------------------
-        // Profile 3: Reaper - Spec 55: Soul (SHADOW & NETHER CASTER DPS)
+        // Profile 3: Reaper - Spec 55: Soul (MELEE RUNIC-POWER DPS)
         // -------------------------------------------------------------
         {
             CombatProfile p;
             p.classId = 30;
             p.specId = 55; // Soul
             p.role = BotRole::Dps;
-            p.profileName = "Reaper_Soul_CasterDps";
+            p.profileName = "Reaper_Soul_MeleeDps";
+            // Site role is Melee DPS (Strength, Runic Power). Reap/Soul Strike/Murder are melee
+            // swings and Reap is the only free builder: native Reap hits generate Soul Fragments
+            // (805077) -> Reaped Soul (500363) -> Soul Infusion (803031), which gates Withering
+            // Touch, Soulslam and Soulrend. The previous caster tags voted this spec to 22 yards,
+            // where Reap was permanently out of range and none of that chain could start.
+            p.preferredEngageDistance = PROFILE_MELEE_ENGAGE_DISTANCE;
 
             // 1. Personal Defense & Mana/Soul Management
             {
@@ -373,12 +420,12 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 2. Ranged Shadow Spells & DoTs
+            // 2. Melee builders, spenders and Soul Infusion DoTs
             {
                 AbilityDescriptor d;
                 d.name = "Tormented Souls (Shadow DoT)";
                 d.rootSpellId = 500483;
-                d.tags = AbilityTag::PeriodicDamage | AbilityTag::RangedAttack;
+                d.tags = AbilityTag::PeriodicDamage | AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 4000;
@@ -389,7 +436,7 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Withering Touch (Curse DoT)";
                 d.rootSpellId = 573071;
-                d.tags = AbilityTag::PeriodicDamage | AbilityTag::RangedAttack;
+                d.tags = AbilityTag::PeriodicDamage | AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 4000;
@@ -398,19 +445,9 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
-                d.name = "Soul Harvest (Burst Channel)";
-                d.rootSpellId = 504012;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
-                d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 20000;
-                d.baseScore = 170.0f;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
                 d.name = "Ghastly Screech (AoE Shadow)";
                 d.rootSpellId = 806146;
-                d.tags = AbilityTag::AoEDamage | AbilityTag::RangedAttack;
+                d.tags = AbilityTag::AoEDamage | AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 6000;
                 d.baseScore = 150.0f;
@@ -420,7 +457,7 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Deathwind (AoE Leech)";
                 d.rootSpellId = 800174;
-                d.tags = AbilityTag::AoEDamage | AbilityTag::RangedAttack;
+                d.tags = AbilityTag::AoEDamage | AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 6000;
                 d.baseScore = 140.0f;
@@ -428,7 +465,47 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
-                d.name = "Reap (Fallback Strike)";
+                d.name = "Soulslam (Infusion Burst)";
+                d.rootSpellId = 504014;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::OffensiveCD;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 20000;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Wraithblade (Weapon Spender)";
+                d.rootSpellId = 806823;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 5000;
+                d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Murder (Execution Strike)";
+                d.rootSpellId = 500376;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::Execute;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 5000;
+                d.baseScore = 190.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Soul Strike (Weapon Attack)";
+                d.rootSpellId = 500517;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 4000;
+                d.baseScore = 170.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Reap (Primary Generator)";
                 d.rootSpellId = 500357;
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
@@ -443,15 +520,15 @@ namespace BotAI
             s.classId = 30;
             s.specId = 55;
             s.role = BotRole::Dps;
-            s.strategyName = "Reaper_Soul_CasterDps_Strategy";
+            s.strategyName = "Reaper_Soul_MeleeDps_Strategy";
 
             s.phaseModifiers[CombatPhase::Opener] = {
                 { AbilityTag::PeriodicDamage, 1.5f, 40.0f },
-                { AbilityTag::RangedAttack,   1.3f, 30.0f }
+                { AbilityTag::MeleeAttack,    1.3f, 30.0f }
             };
             s.phaseModifiers[CombatPhase::Burst] = {
                 { AbilityTag::OffensiveCD,  1.8f, 50.0f },
-                { AbilityTag::RangedAttack, 1.3f, 30.0f }
+                { AbilityTag::MeleeAttack,  1.3f, 30.0f }
             };
             s.phaseModifiers[CombatPhase::AoE] = {
                 { AbilityTag::AoEDamage, 2.0f, 60.0f }

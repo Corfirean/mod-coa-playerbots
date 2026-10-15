@@ -2,7 +2,7 @@
  * mod-coa-playerbots
  *
  * Data-Driven Combat AI Framework: SpellResolver
- * Resolves root spell IDs to the highest learned rank with per-bot caching.
+ * Resolves root spell IDs against the current active learned spellbook.
  */
 
 #ifndef COA_PLAYERBOTS_SPELL_RESOLVER_H
@@ -18,13 +18,17 @@ namespace BotAI
     class SpellResolver
     {
     public:
-        // Returns the highest learned rank of rootSpellId for this bot (cached).
+        // Returns the highest currently active learned rank, including runtime changes.
         static uint32 ResolveSpell(Player* bot, uint32 rootSpellId);
 
-        // Clears cached spell ranks for a specific bot (e.g. on level up or spell learn).
+        // Resolve the current native proc/form replacement without caching temporary state.
+        static uint32 EffectiveSpell(Player* bot, uint32 learnedSpellId);
+        static uint32 ResolveCastSpell(Player* bot, uint32 rootSpellId);
+
+        // Lifecycle compatibility; live resolution needs no cache invalidation.
         static void Invalidate(ObjectGuid botGuid);
 
-        // Clears all caches (e.g. on world reload).
+        // World-reload compatibility.
         static void ClearAll();
     };
 }

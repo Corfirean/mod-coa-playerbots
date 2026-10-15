@@ -386,3 +386,27 @@ CoaBots.Economy.MinListingCopper = 5000
 CoaBots.Economy.ListingMinutes = 1440
 CoaBots.Economy.PriceSpreadMinPercent = 5
 CoaBots.Economy.PriceSpreadMaxPercent = 10
+
+CoaBots.Training.Enable = 0
+CoaBots.Training.OutputDir = training/results
+CoaBots.Training.DefaultLevel = 60
+CoaBots.Training.DefaultDurationSec = 180
+CoaBots.Training.Deterministic = 1
+CoaBots.Training.LogDecisionTrace = 1
+CoaBots.Training.BossEntry = 31144
+
+#
+#    CoaBots.Training.TargetIsBoss
+#        Description: Training only. Treat the training dummy as a boss for the "worth an offensive
+#                     cooldown" decision (the dummy is a rank-0 creature, so cooldowns are otherwise
+#                     scored x0.15). Changes measurements: do not compare runs across the setting.
+#        Default:     0
+#
+
+CoaBots.Training.TargetIsBoss = 0
+
+CoaBots.Training.HazardSpellId = 5740
+CoaBots.Training.InterruptCastSpellId = 133
+
+# Reserved training phases: bits 30..27; configure only on isolated servers.
+CoaBots.Training.MaxParallelArenas = 1

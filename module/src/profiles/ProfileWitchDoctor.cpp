@@ -292,8 +292,29 @@ namespace BotAI
             CombatProfile p;
             p.classId = 13;
             p.specId = 4; // Shadowhunting
+            p.useRangedAutoRepeat = true;
             p.role = BotRole::Dps;
             p.profileName = "WitchDoctor_Shadowhunting_Dps";
+
+            // Native Spirit Idol restores owner/party mana every three seconds.
+            // Keep a live idol instead of spending the remaining mana on another burst action.
+            {
+                AbilityDescriptor d;
+                d.name = "Spirit Idol (Mana Recovery)";
+                d.rootSpellId = 500961;
+                d.tags = AbilityTag::TotemOrWard | AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.trackedEntityType = TrackedEntityType::Ward;
+                d.trackedEntityEntry = 50106;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 440.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return ctx.botPowerPct < 70.0f ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
 
             // 1. Major Self Buffs & Burst (Shadow Avatar is burst, not permanent form)
             {

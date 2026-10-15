@@ -17,6 +17,28 @@
 
 namespace BotAI
 {
+    namespace
+    {
+        void AddLunarEclipse(CombatProfile& profile)
+        {
+            AbilityDescriptor d;
+            d.name = "Lunar Eclipse";
+            d.rootSpellId = 800386;
+            d.tags = AbilityTag::OffensiveCD;
+            d.targetType = TargetType::Self;
+            d.missingAuraOnCaster = 800386;
+            d.baseScore = 300.0f;
+            if (profile.role == BotRole::Healer)
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return ctx.lowestAllyHpPct < 50.0f ? -1.0f : 0.0f;
+                };
+            // Native eligibility/affordability consumes four Lunar Phase stacks
+            // and rejects activation while Eclipse is already active.
+            profile.abilities.push_back(d);
+        }
+    }
+
     void RegisterStarcallerProfiles()
     {
         // -------------------------------------------------------------
@@ -126,6 +148,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            AddLunarEclipse(p);
             ProfileRegistry::RegisterProfile(std::move(p));
 
             // SpecStrategy for Moon Guard
@@ -267,6 +290,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            AddLunarEclipse(p);
             ProfileRegistry::RegisterProfile(std::move(p));
 
             // SpecStrategy for Moon Priest
@@ -306,6 +330,7 @@ namespace BotAI
             CombatProfile p;
             p.classId = 26;
             p.specId = 44; // Sentinel
+            p.useRangedAutoRepeat = true;
             p.role = BotRole::Dps;
             p.profileName = "Starcaller_Sentinel_Dps";
 
@@ -341,7 +366,7 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Moon Arrow";
                 d.rootSpellId = 801972;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::RangedAttack; // not OffensiveCD: a 20-second-throttle rotational attack; that tag scales the score by x0.15 outside boss/elite/PvP fights
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 250.0f;
@@ -353,8 +378,55 @@ namespace BotAI
                 d.rootSpellId = 680220;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 5000;
+                // No cooldown: Huntress Shot is the 2 s-cast filler (Zyth45 spams it); the old 5 s throttle idled the GCD.
                 d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Arrow of the Goddess";
+                d.rootSpellId = 563725;
+                d.tags = AbilityTag::RangedAttack; // not OffensiveCD: that tag is held for a Burst phase that static fights never reach (score 280 -> 42)
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 280.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Arrows In The Night";
+                d.rootSpellId = 520481;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 260.0f;
+                d.missingAuraOnCaster = 520481;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Drawstring of Elune";
+                d.rootSpellId = 801975;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 255.0f;
+                d.missingAuraOnCaster = 801975;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Starcall";
+                d.rootSpellId = 502316;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Starfire Shot";
+                d.rootSpellId = 801978;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -391,6 +463,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            AddLunarEclipse(p);
             ProfileRegistry::RegisterProfile(std::move(p));
 
             // SpecStrategy for Sentinel
@@ -463,7 +536,7 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Warden's Blade (Multi-Strike)";
                 d.rootSpellId = 805508;
-                d.tags = AbilityTag::MeleeAttack | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::MeleeAttack; // not OffensiveCD: a 20-second-throttle rotational attack; that tag scales the score by x0.15 outside boss/elite/PvP fights
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 260.0f;
@@ -521,6 +594,7 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            AddLunarEclipse(p);
             ProfileRegistry::RegisterProfile(std::move(p));
 
             // SpecStrategy for Warden

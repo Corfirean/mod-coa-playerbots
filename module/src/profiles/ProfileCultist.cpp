@@ -37,6 +37,18 @@ namespace BotAI
             p.profileName = "Cultist_Dreadnought_Tank";
 
             // Primary Taunts
+            // Real taunt: Spell.dbc effect ATTACK_ME + MOD_TAUNT, 8 s native cooldown. The generic
+            // Taunt355 root is not a learned spell for Ascension classes ("not known/resolvable" in
+            // every I17 tank decision) and passive ids cannot be cast.
+            {
+                AbilityDescriptor d;
+                d.name = "Test of Pride (Taunt)";
+                d.rootSpellId = 804412;
+                d.tags = AbilityTag::Taunt;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 455.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Taunt";
@@ -178,8 +190,8 @@ namespace BotAI
             // Critical Direct Heal
             {
                 AbilityDescriptor d;
-                d.name = "Abyssal Reconstruction";
-                d.rootSpellId = 800429;
+                d.name = "Eldritch Mending (Emergency)";
+                d.rootSpellId = 500711;
                 d.tags = AbilityTag::EmergencyHeal | AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 40.0f;
@@ -201,15 +213,46 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // Sustained Direct Heal
+            // Native learned direct healing, rather than treating a self channel as a heal.
             {
                 AbilityDescriptor d;
-                d.name = "Satiate";
-                d.rootSpellId = 804275;
+                d.name = "Eldritch Mending (Triage)";
+                d.rootSpellId = 500711;
                 d.tags = AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 80.0f;
                 d.baseScore = 280.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Satiate (Self Channel)";
+                d.rootSpellId = 804275;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 804275;
+                d.baseScore = 220.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    float mana = 100.0f * ctx.bot->GetPower(POWER_MANA) /
+                        std::max(1u, ctx.bot->GetMaxPower(POWER_MANA));
+                    return mana < 70.0f || ctx.lowestAllyHpPct < 85.0f ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Sanity Tap";
+                d.rootSpellId = 802575;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.minSelfHpPct = 55.0f;
+                d.baseScore = 300.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return ctx.bot->GetPower(POWER_MANA) * 100 /
+                        std::max(1u, ctx.bot->GetMaxPower(POWER_MANA)) < 40 ? 0.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
 

@@ -23,6 +23,11 @@ namespace BotAI
             p.specId = 59; // Wildwalker
             p.role = BotRole::Dps;
             p.profileName = "Primalist_Wildwalker_Dps";
+            // Site role is Melee DPS (Strength); the spec's rage is built by its own melee swings
+            // and damage taken. The ranged-tag vote used to park it at 22 yards where no swing
+            // landed and every rage spender stayed unaffordable (I66: resource 680441 at zero for
+            // the whole fight, 10 casts in 30 s).
+            p.preferredEngageDistance = PROFILE_MELEE_ENGAGE_DISTANCE;
 
             // 1. Personal Defense: Rock Barrier (< 45% HP)
             {
@@ -87,12 +92,39 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 5. Heavy Ranged Nukes
+            // 5. Melee rage spenders (native weapon-damage effects, 5-8 yard ranges)
+            {
+                AbilityDescriptor d;
+                d.name = "Totemic Smash";
+                d.rootSpellId = 802557;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 190.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Seismic Spike";
+                d.rootSpellId = 560171;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 170.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Wildclaw";
+                d.rootSpellId = 520566;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Rylak's Bite";
                 d.rootSpellId = 706490;
-                d.tags = AbilityTag::RangedAttack;
+                d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 6000;
                 d.baseScore = 140.0f;
@@ -140,7 +172,7 @@ namespace BotAI
             s.requiredState = RequiredCombatState{ 500943, 500943, {} };
 
             s.phaseModifiers[CombatPhase::Opener] = {
-                { AbilityTag::RangedAttack, 1.3f, 30.0f },
+                { AbilityTag::MeleeAttack,  1.3f, 30.0f },
                 { AbilityTag::PeriodicDamage, 1.5f, 40.0f }
             };
             s.phaseModifiers[CombatPhase::Burst] = {
@@ -170,6 +202,18 @@ namespace BotAI
             p.profileName = "Primalist_MountainKing_Tank";
 
             // 1. Taunt & Threat Control
+            // Real taunt: Spell.dbc effect ATTACK_ME + MOD_TAUNT, 8 s native cooldown. The generic
+            // Taunt355 root is not a learned spell for Ascension classes ("not known/resolvable" in
+            // every I17 tank decision) and passive ids cannot be cast.
+            {
+                AbilityDescriptor d;
+                d.name = "Gaze of Theradras (Taunt)";
+                d.rootSpellId = 805919;
+                d.tags = AbilityTag::Taunt;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 455.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Protective Roar (Taunt)";
@@ -324,8 +368,8 @@ namespace BotAI
             CombatProfile p;
             p.classId = 31;
             p.specId = 58; // Grovekeeper
-            p.role = BotRole::Healer;
-            p.profileName = "Primalist_Grovekeeper_Healer";
+            p.role = BotRole::Support;
+            p.profileName = "Primalist_Grovekeeper_Support";
 
             // 1. Emergency Direct Heal (< 45% HP)
             {
@@ -412,7 +456,7 @@ namespace BotAI
                 d.baseScore = 40.0f;
                 d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
                 {
-                    return (ctx.lowestAllyHpPct > 85.0f) ? 0.0f : -1.0f;
+                    return (ctx.lowestAllyHpPct > 70.0f) ? 0.0f : -1.0f;
                 };
                 p.abilities.push_back(d);
             }
@@ -425,19 +469,19 @@ namespace BotAI
                 d.baseScore = 20.0f;
                 d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
                 {
-                    return (ctx.lowestAllyHpPct > 85.0f) ? 0.0f : -1.0f;
+                    return (ctx.lowestAllyHpPct > 70.0f) ? 0.0f : -1.0f;
                 };
                 p.abilities.push_back(d);
             }
 
             ProfileRegistry::RegisterProfile(p);
 
-            // SpecStrategy for Grovekeeper (Healer)
+            // SpecStrategy for Grovekeeper (Support)
             SpecStrategy sHeal;
             sHeal.classId = 31;
             sHeal.specId = 58;
-            sHeal.role = BotRole::Healer;
-            sHeal.strategyName = "Primalist_Grovekeeper_Healer_Strategy";
+            sHeal.role = BotRole::Support;
+            sHeal.strategyName = "Primalist_Grovekeeper_Support_Strategy";
             sHeal.requiredState = RequiredCombatState{ 800137, 800137, {} };
 
             sHeal.phaseModifiers[CombatPhase::Opener] = {
@@ -508,6 +552,60 @@ namespace BotAI
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 4000;
                 d.baseScore = 160.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Rage economy. Geomancy casts from range, so melee swings never build rage; Primal
+            // Rush (ENERGIZE rage ~20, 25 s category cooldown) and Therazane's Rage (ENERGIZE rage,
+            // 30 s cooldown) are the learned rage sources and Terrasurge/Stoneshard cost 45/40
+            // rage. I66/I17: rage spenders were "can't afford" in 18-19 of 19 decisions; I71
+            // confirmed the 25 s cooldown (2 casts in 30 s, "spell cooldown" 38 decisions).
+            {
+                AbilityDescriptor d;
+                d.name = "Primal Rush (Rage builder)";
+                d.rootSpellId = 500696;
+                d.tags = AbilityTag::Filler;
+                d.targetType = TargetType::Self;
+                d.baseScore = 190.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // Spender cost is raw 450 (45 rage); only build when a spender is unaffordable.
+                    return ctx.bot->GetPower(POWER_RAGE) < 450 ? 190.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Therazane's Rage (Rage builder)";
+                d.rootSpellId = 503736;
+                d.tags = AbilityTag::Filler;
+                d.targetType = TargetType::Self;
+                d.baseScore = 185.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return ctx.bot->GetPower(POWER_RAGE) < 450 ? 185.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+            // Free 8 s builders of the Earthshaping stack (native CustomResourceData rows).
+            {
+                AbilityDescriptor d;
+                d.name = "Seismic Crash";
+                d.rootSpellId = 503258;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 8000;
+                d.baseScore = 175.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Seismic Spike";
+                d.rootSpellId = 560171;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 8000;
+                d.baseScore = 170.0f;
                 p.abilities.push_back(d);
             }
 

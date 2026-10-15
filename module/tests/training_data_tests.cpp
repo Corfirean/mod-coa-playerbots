@@ -1,0 +1,46 @@
+#include "training/TrainingData.h"
+#include <cassert>
+#include <iostream>
+
+int main()
+{
+    using namespace CoaTraining;
+    Scenario scenario;
+    for (auto name : {"ST_STATIC", "RESOURCE_ENDURANCE", "ST_MOVEMENT", "BURST", "CLEAVE", "AOE",
+        "SURVIVAL", "GROUND_HAZARDS", "GROUP_STRESS", "THREAT_STRESS", "SUPPORT_GROUP",
+        "DISPEL_MAGIC", "RESURRECT_AREA", "RESURRECT_AFTER_PULL"})
+    {
+        assert(Scenario::Find(name, scenario));
+        assert(scenario.Timeline(1001, 5) == scenario.Timeline(1001, 5));
+        auto timeline = scenario.Timeline(1001, 5);
+        for (size_t i = 0; i < timeline.size(); ++i)
+        {
+            assert(timeline[i].timeMs < scenario.durationMs);
+            assert(timeline[i].targetSlot < 5);
+            if (i) assert(timeline[i].timeMs >= timeline[i - 1].timeMs);
+        }
+    }
+    assert(Scenario::Find("GROUP_STRESS", scenario));
+    assert(scenario.Timeline(1001, 5) != scenario.Timeline(1002, 5));
+    assert(!Scenario::Find("BAD_SCENARIO", scenario));
+    assert(Scenario::Find("RESURRECT_AREA", scenario));
+    size_t scheduledDeaths = 0;
+    for (auto const& event : scenario.Timeline(6000, 5))
+        if (event.kind == "resurrection_death") { ++scheduledDeaths; assert(event.timeMs == 3000); }
+    assert(scheduledDeaths == 1);
+    assert(Json("quote\"\n\\").Dump() == "\"quote\\\"\\u000a\\\\\"");
+    Json row;
+    row["value"] = 17; row["null"] = Json(); row["bool"] = true;
+    assert(row.Dump() == "{\"bool\":true,\"null\":null,\"value\":17}");
+    AuraStats aura;
+    aura.Apply(1000, 1); aura.Apply(2000, 2);
+    assert(aura.Uptime(3000) == 2000);
+    assert(aura.refreshes == 1 && aura.applies == 1 && aura.stacks == 2);
+    aura.Remove(4000); aura.Remove(5000);
+    assert(aura.Uptime(6000) == 3000);
+    aura.Apply(7000, 1);
+    assert(aura.Uptime(8000) == 4000);
+    aura = AuraStats{};
+    assert(aura.Uptime(10000) == 0 && !aura.active);
+    std::cout << "Training schedule and JSON checks passed\n";
+}

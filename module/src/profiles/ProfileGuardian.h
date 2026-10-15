@@ -15,6 +15,11 @@
 namespace BotAI
 {
     void RegisterGuardianProfiles();
+
+    // Vanguard baseline formation: Tower Formation (800317) when the core lets the tank's strikes
+    // be cast inside its stance, otherwise Line Formation (803130). Shared by the profile and the
+    // legacy rotation so the two never alternate formations.
+    unsigned int VanguardBaselineFormation();
 }
 
 #endif // COA_PLAYERBOTS_PROFILE_GUARDIAN_H

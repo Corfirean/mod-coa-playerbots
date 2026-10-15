@@ -3,7 +3,7 @@
  *
  * Data-Driven Combat AI Framework: Tinker Profiles
  * Supports:
- *   - Spec 50: Mechanics (Mechsuit Heavy Tank)
+ *   - Spec 50: Mechanics (Ranged DPS)
  *   - Spec 51: Invention (Nanobot & Medical Dispenser Healer)
  *   - Spec 49: Demolition (Explosive Guns & Artillery DPS)
  *   - Spec 0: Default Fallback

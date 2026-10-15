@@ -12,6 +12,8 @@ struct ItemTemplate;
 namespace BotGear
 {
 bool Ready();
+bool TrainingLocked(Player* bot);
+void LockTraining(Player* bot);
 bool Allowed(Player* bot, ItemTemplate const* item);
 bool AllowedAtLevel(uint8 level, ItemTemplate const* item);
 float PowerScore(Player* bot, ItemTemplate const* item);

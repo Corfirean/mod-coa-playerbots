@@ -443,8 +443,8 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Ice Barrage";
-                d.rootSpellId = 803779;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
+                d.rootSpellId = 801760; // Native learned Ice Barrage channel, not its damage trigger
+                d.tags = AbilityTag::RangedAttack; // not OffensiveCD: a 12-second-throttle rotational attack; that tag scales the score by x0.15 outside boss/elite/PvP fights
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 12000;
                 d.baseScore = 250.0f;

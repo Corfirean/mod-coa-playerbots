@@ -34,6 +34,8 @@
  */
 
 #include "BotClassRotationsFelsworn.h"
+#include "engine/SpellResolver.h"
+#include "engine/SpellPredicates.h"
 #include "Player.h"
 #include "SharedDefines.h"
 #include "SpellInfo.h"
@@ -61,31 +63,13 @@ constexpr uint32 SPELL_SARGERON_SMITE = 501321;
 constexpr uint32 SPELL_FEL_FIREBALL = 501291;
 constexpr uint32 AURA_AT_LEAST_2_FELFURY = 803468;
 
-// Same real range/cost validation SelectKnownSpell performs in BotAI.cpp -- a rotation
-// function that skips this can offer a candidate UpdateOffensive will cast blind (it trusts a
-// non-zero return instead of chasing/checking affordability itself), which is exactly the two
-// bugs caught live testing BotClassRotationsReaper.cpp. See that file for the fuller story.
-bool IsCastable(Player* bot, Unit* target, uint32 spellId)
+// Legacy priorities still use root IDs, but dispatch must resolve the live
+// active rank and effective native replacement through the shared cast guards.
+uint32 ReadySpell(Player* bot, Unit* target, uint32 spellId)
 {
-    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-    if (!spellInfo)
-        return false;
-
-    float dist = bot->GetDistance(target);
-    float maxRange = spellInfo->GetMaxRange(false, bot);
-    if (maxRange > 0.0f && dist > maxRange)
-        return false;
-    float minRange = spellInfo->GetMinRange(false);
-    if (minRange > 0.0f && dist < minRange)
-        return false;
-
-    int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
-    return cost <= 0 || bot->GetPower(Powers(spellInfo->PowerType)) >= cost;
-}
-
-bool IsReady(Player* bot, Unit* target, uint32 spellId)
-{
-    return bot->HasSpell(spellId) && !bot->HasSpellCooldown(spellId) && IsCastable(bot, target, spellId);
+    uint32 first = sSpellMgr->GetFirstSpellInChain(spellId);
+    uint32 resolved = SpellResolver::ResolveCastSpell(bot, first ? first : spellId);
+    return IsKnownSpellCastable(bot, resolved, target, false) ? resolved : 0;
 }
 }
 
@@ -94,38 +78,28 @@ uint32 SelectFelswornRotationSpell(Player* bot, Unit* target)
     if (bot->getClass() != CLASS_DEMON_HUNTER)
         return 0;
 
-    // DoT maintenance first -- only worth reapplying if this bot's own copy isn't already
-    // ticking (HasAura's second argument restricts the check to auras cast by this caster).
-    if (bot->HasSpell(SPELL_BANE_OF_CHAOS) && !target->HasAura(SPELL_BANE_OF_CHAOS, bot->GetGUID()) &&
-        IsReady(bot, target, SPELL_BANE_OF_CHAOS))
-        return SPELL_BANE_OF_CHAOS;
-    if (bot->HasSpell(SPELL_SARGERAS_EMBRACE) && !target->HasAura(SPELL_SARGERAS_EMBRACE, bot->GetGUID()) &&
-        IsReady(bot, target, SPELL_SARGERAS_EMBRACE))
-        return SPELL_SARGERAS_EMBRACE;
+    for (uint32 root : {SPELL_BANE_OF_CHAOS, SPELL_SARGERAS_EMBRACE})
+        if (uint32 spell = ReadySpell(bot, target, root))
+            if (!target->HasAura(spell, bot->GetGUID()))
+                return spell;
 
-    if (IsReady(bot, target, SPELL_INFERNAL))
-        return SPELL_INFERNAL;
+    if (uint32 spell = ReadySpell(bot, target, SPELL_INFERNAL))
+        return spell;
 
-    // Tyrant's Gaze is a real execute: DBCStructure.h's own TargetAuraState field (verified
-    // live -- SPELL_FAILED_TARGET_AURASTATE against a full-health training dummy) requires
-    // AURA_STATE_HEALTHLESS_35_PERCENT on the target. Below 35% is exactly when this should
-    // actually fire, not a bug to route around.
-    if (target->HasAuraState(AURA_STATE_HEALTHLESS_35_PERCENT) && IsReady(bot, target, SPELL_TYRANTS_GAZE))
-        return SPELL_TYRANTS_GAZE;
+    // Native execute eligibility is retained.
+    if (target->HasAuraState(AURA_STATE_HEALTHLESS_35_PERCENT))
+        if (uint32 spell = ReadySpell(bot, target, SPELL_TYRANTS_GAZE))
+            return spell;
 
-    // Ruin/Felwrath/Sargeron Smite are Felfury spenders: all three require CasterAuraSpell
-    // 803468 ("At Least 2 Felfury") -- also caught live (SPELL_FAILED_CASTER_AURASTATE would
-    // have followed once the range/cost checks passed). Real stack-gated spenders, not a bug.
+    // Keep the existing native Felfury threshold; never force a resource grant.
     if (bot->HasAura(AURA_AT_LEAST_2_FELFURY))
-    {
-        for (uint32 spellId : {SPELL_RUIN, SPELL_FELWRATH, SPELL_SARGERON_SMITE})
-            if (IsReady(bot, target, spellId))
-                return spellId;
-    }
+        for (uint32 root : {SPELL_RUIN, SPELL_FELWRATH, SPELL_SARGERON_SMITE})
+            if (uint32 spell = ReadySpell(bot, target, root))
+                return spell;
 
-    for (uint32 spellId : {SPELL_FELHOOF_CHARGE, SPELL_FEL_FIREBALL, SPELL_MANABURN})
-        if (IsReady(bot, target, spellId))
-            return spellId;
+    for (uint32 root : {SPELL_FELHOOF_CHARGE, SPELL_FEL_FIREBALL, SPELL_MANABURN})
+        if (uint32 spell = ReadySpell(bot, target, root))
+            return spell;
 
     return 0;
 }

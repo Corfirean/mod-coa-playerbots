@@ -13,9 +13,66 @@
 #include "engine/CombatContext.h"
 #include "engine/SpecStrategyRegistry.h"
 #include "Player.h"
+#include "SpellAuras.h"
 
 namespace BotAI
 {
+    static void AddRangerResourceTools(CombatProfile& profile)
+    {
+        AbilityDescriptor d;
+        d.name = "Instinct (Focus Recovery)";
+        d.rootSpellId = 801434; // Used in the reference player's actual cast sequence
+        d.tags = AbilityTag::Buff;
+        d.targetType = TargetType::Self;
+        d.missingAuraOnCaster = 801434;
+        d.baseScore = 500.0f;
+        d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+        {
+            return ctx.botPowerPct <= 50.0f ? 0.0f : -1.0f;
+        };
+        profile.abilities.push_back(d);
+        AbilityDescriptor adaptation;
+        adaptation.name = "Woodsman's Adaptation";
+        adaptation.rootSpellId = 803666;
+        adaptation.tags = AbilityTag::Buff;
+        adaptation.targetType = TargetType::Self;
+        adaptation.missingAuraOnCaster = 803666;
+        adaptation.baseScore = 180.0f;
+        profile.abilities.push_back(adaptation);
+        // Quivers replace each other. Prefer Poison when learned, keeping Searing
+        // as a lower-level fallback rather than switching imbues every throttle.
+        for (auto& ability : profile.abilities)
+        {
+            if (ability.rootSpellId == 500103)
+                ability.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return ctx.bot->HasSpell(800260) ? -1.0f : 0.0f;
+                };
+            if (profile.specId != 30 && ability.rootSpellId == 500074)
+                ability.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    Aura const* advantage = ctx.bot->GetAura(804329);
+                    return !advantage || advantage->GetStackAmount() < 2 ? 160.0f : 0.0f;
+                };
+            if (profile.specId != 30 && ability.rootSpellId == 802036)
+                ability.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    Aura const* advantage = ctx.bot->GetAura(804329);
+                    return advantage && advantage->GetStackAmount() >= 3 ? 0.0f : -1.0f;
+                };
+        }
+        if (profile.specId == 30)
+        {
+            AbilityDescriptor strike;
+            strike.name = "Assault (Dagger Strike)";
+            strike.rootSpellId = 803108;
+            strike.tags = AbilityTag::MeleeAttack;
+            strike.targetType = TargetType::CurrentTarget;
+            strike.baseScore = 200.0f;
+            profile.abilities.push_back(strike);
+        }
+    }
+
     void RegisterRangerProfiles()
     {
         // -------------------------------------------------------------
@@ -145,11 +202,10 @@ namespace BotAI
             // 6. Execute: Skullpiercer (< 35% target HP)
             {
                 AbilityDescriptor d;
-                d.name = "Skullpiercer (Execute)";
+                d.name = "Skullpiercer (Advantage Spender)";
                 d.rootSpellId = 802036;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::Execute;
+                d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.maxTargetHpPct = 35.0f;
                 d.internalThrottleMs = 5000;
                 d.baseScore = 260.0f;
                 p.abilities.push_back(d);
@@ -233,11 +289,13 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            AddRangerResourceTools(p);
             ProfileRegistry::RegisterProfile(std::move(p));
 
             // SpecStrategy for Farstrider
             SpecStrategy s;
             s.classId = 21;
+            s.ownsCombatRotation = true;
             s.specId = 29;
             s.role = BotRole::Support;
             s.strategyName = "Ranger_Farstrider_Support_Strategy";
@@ -256,7 +314,7 @@ namespace BotAI
 
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
             {
-                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 30) &&
+                return (bot->GetPower(bot->getPowerType()) * 100 / std::max(1u, bot->GetMaxPower(bot->getPowerType())) >= 30) &&
                        (bot->GetHealthPct() >= 50.0f);
             };
 
@@ -357,11 +415,10 @@ namespace BotAI
             // 4. Execute: Skullpiercer (< 35% target HP)
             {
                 AbilityDescriptor d;
-                d.name = "Skullpiercer (Execute)";
+                d.name = "Skullpiercer (Advantage Spender)";
                 d.rootSpellId = 802036;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::Execute;
+                d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.maxTargetHpPct = 35.0f;
                 d.internalThrottleMs = 5000;
                 d.baseScore = 270.0f;
                 p.abilities.push_back(d);
@@ -393,8 +450,8 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
-                d.name = "Aimed Shot (Heavy Shot)";
-                d.rootSpellId = 19434;
+                d.name = "Hunting Shot (Heavy Shot)";
+                d.rootSpellId = 801191;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 6000;
@@ -452,11 +509,13 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            AddRangerResourceTools(p);
             ProfileRegistry::RegisterProfile(std::move(p));
 
             // SpecStrategy for Archery
             SpecStrategy s;
             s.classId = 21;
+            s.ownsCombatRotation = true;
             s.specId = 28;
             s.role = BotRole::Dps;
             s.strategyName = "Ranger_Archery_Marksman_Strategy";
@@ -475,7 +534,7 @@ namespace BotAI
 
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
             {
-                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 25) &&
+                return (bot->GetPower(bot->getPowerType()) * 100 / std::max(1u, bot->GetMaxPower(bot->getPowerType())) >= 25) &&
                        (bot->GetHealthPct() >= 50.0f);
             };
 
@@ -497,11 +556,10 @@ namespace BotAI
             // 1. Defensive: Elude (< 40% HP)
             {
                 AbilityDescriptor d;
-                d.name = "Elude (Defensive)";
+                d.name = "Elude (Brigand Attack Window)";
                 d.rootSpellId = 801345;
-                d.tags = AbilityTag::DefensiveCD;
+                d.tags = AbilityTag::OffensiveCD | AbilityTag::Buff;
                 d.targetType = TargetType::Self;
-                d.maxSelfHpPct = 40.0f;
                 d.missingAuraOnCaster = 801345;
                 d.internalThrottleMs = 15000;
                 d.baseScore = 380.0f;
@@ -557,11 +615,10 @@ namespace BotAI
             // 4. Execute: Skullpiercer (< 35% target HP)
             {
                 AbilityDescriptor d;
-                d.name = "Skullpiercer (Execute)";
+                d.name = "Skullpiercer (Advantage Spender)";
                 d.rootSpellId = 802036;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::Execute;
+                d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.maxTargetHpPct = 35.0f;
                 d.internalThrottleMs = 5000;
                 d.baseScore = 260.0f;
                 p.abilities.push_back(d);
@@ -631,11 +688,13 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            AddRangerResourceTools(p);
             ProfileRegistry::RegisterProfile(std::move(p));
 
             // SpecStrategy for Brigand
             SpecStrategy s;
             s.classId = 21;
+            s.ownsCombatRotation = true;
             s.specId = 30;
             s.role = BotRole::Dps;
             s.strategyName = "Ranger_Brigand_Melee_Strategy";
@@ -654,7 +713,7 @@ namespace BotAI
 
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
             {
-                return (bot->GetPower(POWER_MANA) * 100 / std::max(1u, bot->GetMaxPower(POWER_MANA)) >= 25) &&
+                return (bot->GetPower(bot->getPowerType()) * 100 / std::max(1u, bot->GetMaxPower(bot->getPowerType())) >= 25) &&
                        (bot->GetHealthPct() >= 50.0f);
             };
 

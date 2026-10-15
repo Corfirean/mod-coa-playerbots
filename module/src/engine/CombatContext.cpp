@@ -10,6 +10,8 @@
 #include "engine/HealEvaluator.h"
 #include "engine/SpellPredicates.h"
 #include "engine/TargetEvaluator.h"
+#include "training/TrainingArenaManager.h"
+#include "Config.h"
 #include "Group.h"
 #include "Player.h"
 #include "Spell.h"
@@ -63,6 +65,16 @@ namespace BotAI
             // already about to die (don't blow a 2-minute CD to finish off a 10%-HP trash mob).
             ctx.targetHpPct = ctx.victim->GetHealthPct();
             ctx.targetIsBossOrElite = IsBossOrEliteTarget(ctx.victim);
+            // The training dummy is a rank-0 creature, so no OffensiveCD ability was ever worth using
+            // in a training run (score x0.15). Opt-in: a training session may stand the dummy in for a
+            // boss; off by default so earlier measurements stay comparable.
+            if (!ctx.targetIsBossOrElite && CoaTraining::Owns(bot->GetGUID()))
+            {
+                static bool const dummyIsBoss = sConfigMgr->GetOption<bool>("CoaBots.Training.TargetIsBoss", false);
+                static uint32 const bossEntry = sConfigMgr->GetOption<uint32>("CoaBots.Training.BossEntry", 31144);
+                if (dummyIsBoss && ctx.victim->GetEntry() == bossEntry)
+                    ctx.targetIsBossOrElite = true;
+            }
             ctx.nearbyEnemyCount = static_cast<uint8>(std::min<uint32>(255,
                 CountNearbyEnemies(bot, ctx.victim, 10.0f)));
             ctx.engagedEnemyCount = static_cast<uint8>(std::min<uint32>(255,

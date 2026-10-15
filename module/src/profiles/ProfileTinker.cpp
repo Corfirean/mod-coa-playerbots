@@ -3,7 +3,7 @@
  *
  * Data-Driven Combat AI Framework: Tinker Profiles & Strategies implementation
  * Supports:
- *   - Spec 50: Mechanics (Mechsuit Heavy Tank)
+ *   - Spec 50: Mechanics (Ranged DPS)
  *   - Spec 51: Invention (Nanobot & Medical Dispenser Healer)
  *   - Spec 49: Demolition (Explosive Guns & Artillery DPS)
  *   - Spec 0: Default Fallback
@@ -21,44 +21,18 @@ namespace BotAI
     static void RegisterTinkerStrategies()
     {
         // -------------------------------------------------------------
-        // Strategy 1: Tinker - Spec 50: Mechanics (Tank)
+        // Strategy 1: Tinker - Spec 50: Mechanics (Ranged DPS)
         // -------------------------------------------------------------
         {
             SpecStrategy s;
             s.classId = 28; // Tinker
             s.specId = 50;  // Mechanics
-            s.role = BotRole::Tank;
+            s.ownsCombatRotation = true;
+            s.role = BotRole::Dps;
 
-            // Mechsuit (spell 92141, aura 801384) is mandatory baseline form
-            s.requiredState.formSpellId = 92141;
-            s.requiredState.formAuraId = 801384;
-            s.requiredState.setupSpellId = 801647; // Shotgun (Scrap builder)
-
-            // Setup is needed if Mechsuit is missing and Scrap (801816) is insufficient (< 10)
-            s.requiredState.isSetupNeeded = [](Player* bot, CombatContext const& /*ctx*/) -> bool
-            {
-                if (bot->HasAura(801384))
-                    return false;
-                Aura const* scrapAura = bot->GetAura(801816);
-                return !scrapAura || scrapAura->GetStackAmount() < 10;
-            };
-
-            // Scrap builder recovery action: generates Scrap so Mechsuit can be constructed
-            s.requiredState.buildStateRecoveryAction = [](Player* bot, CombatContext const& ctx) -> BotAction
-            {
-                BotAction act;
-                uint32 spellId = 801647; // Shotgun
-                if (bot->HasSpell(500236)) // Deathball
-                    spellId = 500236;
-                act.spellId = SpellResolver::ResolveSpell(bot, spellId);
-                act.rootSpellId = spellId;
-                act.target = ctx.victim ? ctx.victim : bot->GetVictim();
-                act.score = 1100.0f;
-                act.tags = AbilityTag::MeleeAttack;
-                act.name = "Scrap Generator";
-                act.reason = "Generate Scrap for Mechsuit";
-                return act;
-            };
+            // Mechanics can fight outside Mechsuit. Native Scrap/form requirements remain
+            // enforced by the action evaluator; construction must not own every decision
+            // while mana is depleted or the temporary form is unavailable.
 
             // ResourcePolicy for Scrap (801816)
             {
@@ -71,7 +45,7 @@ namespace BotAI
                 s.resourcePolicies.push_back(pol);
             }
 
-            // Mechanics pull readiness: if Mechsuit missing and Scrap < 10, allow controlled opener pull
+            // Allow the controlled opener while building the forty-Scrap stockpile.
             s.isReadyToPull = [](Player* bot, CombatContext const& ctx) -> bool
             {
                 if (bot->HasAura(801384))
@@ -81,16 +55,16 @@ namespace BotAI
                 // Allow pull to acquire Scrap upon first damaging hit!
                 Aura const* scrapAura = bot->GetAura(801816);
                 int32 scrap = scrapAura ? scrapAura->GetStackAmount() : 0;
-                if (scrap < 10)
+                if (scrap < 40)
                     return ctx.botHpPct >= 70.0f;
 
-                return false; // Has 10+ Scrap, should cast Mechsuit before pull
+                return false; // Has enough Scrap, should cast Mechsuit before pull
             };
 
             // Phase modifiers
             s.phaseModifiers[CombatPhase::Opener] = {
-                { AbilityTag::Taunt, 2.0f, 60.0f },
-                { AbilityTag::MeleeAttack, 1.4f, 30.0f }
+                { AbilityTag::RangedAttack, 1.4f, 30.0f },
+                { AbilityTag::OffensiveCD, 1.4f, 30.0f }
             };
             s.phaseModifiers[CombatPhase::Burst] = {
                 { AbilityTag::OffensiveCD, 1.6f, 40.0f },
@@ -98,7 +72,7 @@ namespace BotAI
             };
             s.phaseModifiers[CombatPhase::AoE] = {
                 { AbilityTag::AoEDamage, 2.0f, 50.0f },
-                { AbilityTag::Taunt, 1.5f, 30.0f }
+                { AbilityTag::RangedAttack, 1.5f, 30.0f }
             };
 
             SpecStrategyRegistry::RegisterStrategy(std::move(s));
@@ -176,38 +150,30 @@ namespace BotAI
         RegisterTinkerStrategies();
 
         // -------------------------------------------------------------
-        // Profile 1: Tinker - Spec 50: Mechanics (MECHSUIT TANK)
+        // Profile 1: Tinker - Spec 50: Mechanics (RANGED DPS)
         // -------------------------------------------------------------
         {
             CombatProfile p;
             p.classId = 28; // Tinker
             p.specId = 50;  // Mechanics
-            p.role = BotRole::Tank;
-            p.profileName = "Tinker_Mechanics_Tank";
+            p.role = BotRole::Dps;
+            p.profileName = "Tinker_Mechanics_Dps";
+            p.preferredEngageDistance = 20.0f;
 
-            // 1. Primary Taunts & Threat
+            // Native Replenishment Beacon restores mana to nearby allies, including its owner.
+            // Place it before the mana floor prevents all builders and Mechsuit attacks.
             {
                 AbilityDescriptor d;
-                d.name = "Taunt";
-                d.rootSpellId = 355;
-                d.tags = AbilityTag::Taunt;
-                d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 8000;
-                d.baseScore = 450.0f;
+                d.name = "Build: Replenishment Beacon";
+                d.rootSpellId = 560750;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 440.0f;
                 d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
                 {
-                    return ctx.victimTargetingNonTank ? 100.0f : 0.0f;
+                    return ctx.botPowerPct < 70.0f ? 0.0f : -1.0f;
                 };
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Concussive Spanner (Mecha Threat)";
-                d.rootSpellId = 704107;
-                d.tags = AbilityTag::Taunt | AbilityTag::MeleeAttack;
-                d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 440.0f;
                 p.abilities.push_back(d);
             }
 
@@ -239,7 +205,7 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Build: Mechsuit";
-                d.rootSpellId = 92141;
+                d.rootSpellId = 801384;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 801384;
@@ -248,7 +214,40 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 4. Mecha Strikes & Threat
+            // 4. Native ranged attacks and Mechsuit damage
+            // Native Mechsuit action bar (AscensionTinker::FillMechsuitBar).
+            // The legacy profile omitted these and attempted unmounted Shotgun.
+            {
+                AbilityDescriptor d;
+                d.name = "Mechsuit: Combustion";
+                d.rootSpellId = 801387;
+                d.tags = AbilityTag::AoEDamage;
+                d.minAoETargets = 1; // Native Mechsuit attack is also valid against one boss
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 250.0f;
+                d.requiredAuraOnCaster = 801384; // native Mechsuit aura: casting these outside the suit fails with ONLY_MOUNTED
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Mechsuit: Laser Beam";
+                d.rootSpellId = 805372;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
+                d.requiredAuraOnCaster = 801384; // native Mechsuit aura: casting these outside the suit fails with ONLY_MOUNTED
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Gatling Gun";
+                d.rootSpellId = 500213;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 180.0f;
+                d.requiredAuraOnCaster = 801384; // native Mechsuit aura: casting these outside the suit fails with ONLY_MOUNTED
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Deathball";
@@ -261,12 +260,16 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
-                d.name = "Shotgun (Melee Blast)";
-                d.rootSpellId = 801647;
-                d.tags = AbilityTag::MeleeAttack;
+                d.name = "Scrap Shot";
+                d.rootSpellId = 500549; // Native Shotgun rank chain, not the legacy alias
+                d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 3000;
                 d.baseScore = 220.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return ctx.bot->IsInTinkerMechsuit() ? -1.0f : 0.0f;
+                };
                 p.abilities.push_back(d);
             }
             {
@@ -303,18 +306,8 @@ namespace BotAI
             p.role = BotRole::Healer;
             p.profileName = "Tinker_Invention_Healer";
 
-            // 1. Emergency Critical Direct Heal: DEFIBRILATE! (< 35% HP)
-            {
-                AbilityDescriptor d;
-                d.name = "DEFIBRILATE!";
-                d.rootSpellId = 802175;
-                d.tags = AbilityTag::DirectHeal | AbilityTag::EmergencyHeal | AbilityTag::DefensiveCD;
-                d.targetType = TargetType::LowestHealthAlly;
-                d.maxTargetHpPct = 35.0f;
-                d.internalThrottleMs = 30000;
-                d.baseScore = 400.0f;
-                p.abilities.push_back(d);
-            }
+            // Defibrillate is native area resurrection, handled by combat utility.
+            // It is not a direct heal for a living ally.
 
             // 2. Protective Barrier: Nanobot Reconstruction (< 60% HP)
             {
@@ -458,25 +451,19 @@ namespace BotAI
                 d.baseScore = 270.0f;
                 p.abilities.push_back(d);
             }
-            {
-                AbilityDescriptor d;
-                d.name = "Build: Destructo-Bot";
-                d.rootSpellId = 804673;
-                d.tags = AbilityTag::OffensiveCD;
-                d.targetType = TargetType::CurrentTarget;
-                d.trackedEntityType = TrackedEntityType::Turret;
-                d.trackedEntityEntry = 50300;
-                d.internalThrottleMs = 45000;
-                d.baseScore = 250.0f;
-                p.abilities.push_back(d);
-            }
+            // Build: Destructo-Bot (804673) is deliberately not cast. It is a 45 s channel that
+            // hands the caster control of a remote-controlled puppet (summon properties category
+            // PUPPET); the AI never drives that puppet, so I65 telemetry showed the bot channelling
+            // for 12.4 s of a 15 s window next to an inert entry 50300 (no victim, never in
+            // combat) and the 45 s cooldown equals the channel, which would keep it frozen for a
+            // whole 180 s fight.
 
             // 3. Heavy Ordnance
             {
                 AbilityDescriptor d;
                 d.name = "Rocket Launcher";
                 d.rootSpellId = 500235;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::RangedAttack; // not OffensiveCD: a 12-second-throttle rotational attack; that tag scales the score by x0.15 outside boss/elite/PvP fights
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 12000;
                 d.baseScore = 250.0f;

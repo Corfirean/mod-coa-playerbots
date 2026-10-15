@@ -107,7 +107,7 @@ static constexpr SpecRoleEntry SPEC_ROLE_TABLE[] =
 
     // Class 28: Tinker
     { 28, 49,  BotRole::Dps,    "Demolition" },
-    { 28, 50,  BotRole::Tank,   "Mechanics" },
+    { 28, 50,  BotRole::Dps,    "Mechanics" },
     { 28, 51,  BotRole::Healer, "Invention" },
 
     // Class 29: Venomancer
@@ -122,7 +122,7 @@ static constexpr SpecRoleEntry SPEC_ROLE_TABLE[] =
     { 30, 57,  BotRole::Tank,   "Domination" },
 
     // Class 31: Primalist
-    { 31, 58,  BotRole::Healer, "Grovekeeper" },
+    { 31, 58,  BotRole::Support,"Grovekeeper" },
     { 31, 59,  BotRole::Dps,    "Wildwalker" },
     { 31, 60,  BotRole::Tank,   "Mountain King" },
     { 31, 95,  BotRole::Dps,    "Geomancy" },

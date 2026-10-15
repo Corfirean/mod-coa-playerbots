@@ -1,3 +1,4 @@
+#include "training/TrainingArenaManager.h"
 #include "BotGear.h"
 #include "BotAI.h"
 #include "BotMovement.h"
@@ -61,6 +62,7 @@ public:
             { "brain",        HandleBotBrainCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "worldstats",   HandleBotWorldStatsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "learnspec",    HandleBotLearnSpecCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "itemfit",      HandleBotItemFitCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "follow",       HandleBotFollowCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "stay",         HandleBotStayCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "stopattack",   HandleBotStopAttackCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -80,6 +82,7 @@ public:
             { "professiontrainer", HandleBotProfessionTrainerCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "economy",      HandleBotEconomyCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "movement",     HandleBotMovementCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "train", HandleTrainingCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "autodungeon",  HandleBotAutoDungeonCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
@@ -90,6 +93,12 @@ public:
         };
 
         return commandTable;
+    }
+
+    static bool HandleTrainingCommand(ChatHandler* handler, Tail args)
+    {
+        CoaTraining::Command(handler, std::string(args));
+        return true;
     }
 
     static bool HandleFixBotGear(ChatHandler* handler, Tail args)
@@ -550,6 +559,32 @@ public:
             return true;
         }
         BotAI::ReportStrategy(bot, handler);
+        return true;
+    }
+
+    // Read-only: score items for a bot, split into the kit-weapon part and the total.
+    static bool HandleBotItemFitCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, Tail itemList)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            handler->PSendSysMessage("itemfit: bot {} is not online.", charLowGuid);
+            return true;
+        }
+        std::istringstream stream{std::string(itemList)};
+        uint32 entry;
+        BotRole const role = BotAI::GetRole(bot->GetGUID());
+        while (stream >> entry)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+            if (!proto)
+            {
+                handler->PSendSysMessage("itemfit: item {} unknown.", entry);
+                continue;
+            }
+            handler->PSendSysMessage("itemfit: item={} class={} sub={} inv={} kitFit={:.0f} total={:.0f}", entry, proto->Class,
+                proto->SubClass, proto->InventoryType, BotAI::WeaponKitFit(bot, proto), BotAI::ScoreItemForBot(bot, proto, role));
+        }
         return true;
     }
 

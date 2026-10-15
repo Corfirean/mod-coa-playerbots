@@ -34,14 +34,13 @@ namespace
 constexpr uint32 SPELL_SEISMIC_TREMOR = 680442; // DoT + direct hit
 constexpr uint32 SPELL_MAGMA_FISSURE = 802793;  // 90s cooldown, free
 
-constexpr std::array<uint32, 8> SPELL_FILLERS = {
+constexpr std::array<uint32, 7> SPELL_FILLERS = {
     681119, // Terrasurge, 450 rage
     805462, // Seismic Wave, 400 rage
     300693, // Seismic Smash, 400 rage, 8s cd
     800178, // Totemic Smash, 350 rage, 6s cd
     681130, // Mountain Hammer, 200 rage
     500696, // Primal Rush, free
-    800144, // Spirit Charge, free
     803974, // Quake, free
 };
 

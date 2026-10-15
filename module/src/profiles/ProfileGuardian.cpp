@@ -14,9 +14,22 @@
 #include "engine/SpecStrategyRegistry.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 
 namespace BotAI
 {
+    unsigned int VanguardBaselineFormation()
+    {
+        SpellInfo const* stance = sSpellMgr->GetSpellInfo(803907);
+        SpellInfo const* ram = sSpellMgr->GetSpellInfo(573211);
+        if (stance && ram)
+            for (auto const& effect : stance->Effects)
+                if (effect.IsAura(SPELL_AURA_MOD_SHAPESHIFT))
+                    return ram->CheckShapeshift(effect.MiscValue) == SPELL_CAST_OK ? 800317u : 803130u;
+        return 803130u;
+    }
+
     void RegisterGuardianProfiles()
     {
         // =========================================================================
@@ -35,14 +48,23 @@ namespace BotAI
             p.role = BotRole::Tank;
             p.profileName = "Guardian_Vanguard_Tank";
 
-            // Mandatory Stance: Tower Formation
+            // Native Tower Formation also casts stance 803907 (MOD_SHAPESHIFT, form 36). Ram,
+            // Pulverize, Raise Shield and Shield Challenge carry SPELL_ATTR0_NOT_SHAPESHIFTED, so
+            // whenever form 36 is not a STANCE-flagged form (this world's spellshapeshiftform_dbc
+            // row 36 has Flags 0) the core rejects all of them in Tower: I17/I49 Vanguard cast only
+            // Reprisal (4 casts in 60 s) and held aggro 3 s of 15. Ask the core itself whether Tower
+            // allows the tank's strikes and fall back to Line Formation (which Gladiator and
+            // Inspiration use) when it does not; no cast guard is bypassed either way.
+            uint32 const vanguardFormation = VanguardBaselineFormation();
+
+            // Mandatory Stance: Tower Formation (or Line Formation when Tower blocks the kit)
             {
                 AbilityDescriptor d;
-                d.name = "Tower Formation";
-                d.rootSpellId = 800317;
+                d.name = vanguardFormation == 800317 ? "Tower Formation" : "Line Formation";
+                d.rootSpellId = vanguardFormation;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
-                d.missingAuraOnCaster = 800317;
+                d.missingAuraOnCaster = vanguardFormation;
                 d.internalThrottleMs = 4000;
                 d.baseScore = 500.0f;
                 p.abilities.push_back(d);
@@ -125,12 +147,12 @@ namespace BotAI
             s.specId = 21;
             s.role = BotRole::Tank;
             s.strategyName = "Vanguard_Tank_Strategy";
-            s.requiredState.formSpellId = 800317; // Tower Formation
-            s.requiredState.formAuraId = 800317;
+            s.requiredState.formSpellId = vanguardFormation;
+            s.requiredState.formAuraId = vanguardFormation;
 
-            s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
+            s.isReadyToPull = [vanguardFormation](Player* bot, CombatContext const&) -> bool
             {
-                return bot->HasAura(800317) && bot->GetHealthPct() >= 75.0f;
+                return bot->HasAura(vanguardFormation) && bot->GetHealthPct() >= 75.0f;
             };
 
             s.phaseModifiers[CombatPhase::Emergency] = {

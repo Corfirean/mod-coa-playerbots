@@ -74,6 +74,7 @@ ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatH
 // a small, deliberate debugging population, not a bulk spawn). Reports which classes (if any)
 // had no matching-faction template instead of silently skipping or substituting them.
 void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler = nullptr);
+ObjectGuid::LowType SpawnClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler = nullptr);
 }
 
 #endif // COA_PLAYERBOTS_BOT_SPAWN_RANDOM_H

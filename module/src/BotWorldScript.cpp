@@ -1,3 +1,4 @@
+#include "training/TrainingArenaManager.h"
 #include "BotAI.h"
 #include "BotMgr.h"
 #include "BotTalentBuilds.h"
@@ -19,6 +20,7 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        CoaTraining::Update(diff);
         sBotMgr->Update(diff);
     }
 
@@ -28,6 +30,7 @@ public:
     // upstream playerbots module, which brings a database of its own that this server does not use.)
     void OnShutdown() override
     {
+        CoaTraining::Shutdown();
         sBotMgr->LogoutAllBots();
     }
 
@@ -37,6 +40,7 @@ public:
     // dev/test session can still boot clean (no bots) when that's what's actually wanted.
     void OnStartup() override
     {
+        CoaTraining::Initialize();
         BotTalentBuilds::Initialize();
         BotAI::SpecStrategyRegistry::Validate();
         sBotMgr->LoadGuildGatherOrders();

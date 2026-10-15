@@ -85,3 +85,17 @@ CoaBots.Healer.CriticalHealPct = 50
 # expect to find them; lower MaxLevelAbove if they're picking fights they shouldn't win.
 CoaBots.Grind.SearchRadius = 30
 CoaBots.Grind.MaxLevelAbove = 3
+
+CoaBots.Training.Enable = 0
+CoaBots.Training.OutputDir = training/results
+CoaBots.Training.DefaultLevel = 60
+CoaBots.Training.DefaultDurationSec = 180
+CoaBots.Training.Deterministic = 1
+CoaBots.Training.LogDecisionTrace = 1
+CoaBots.Training.BossEntry = 31144
+
+CoaBots.Training.HazardSpellId = 5740
+CoaBots.Training.InterruptCastSpellId = 133
+
+# Reserved training phases: bits 30..27; configure only on isolated servers.
+CoaBots.Training.MaxParallelArenas = 1

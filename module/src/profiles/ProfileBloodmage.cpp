@@ -38,7 +38,33 @@ namespace BotAI
             p.role = BotRole::Tank;
             p.profileName = "Bloodmage_Eternal_Tank";
 
-            // Primary Taunt
+            // Mandatory form. Eternal Curse (800157, MOD_SHAPESHIFT form 57) is what makes the native
+            // Cursed Form markers 525031/524861 (AscensionBloodmageTalents SyncCursedFormRequirement)
+            // and the tank stance appear; Bare Fangs, Ravenous Strike, Bloodfang Bite, Claw Sweep and
+            // Rotclaw all list those markers as CasterAuraSpell. The profile never cast it (I17: 8
+            // "missing spell-defined caster aura" rejections, taunt/strikes unusable, aggroMs 1991/15000).
+            {
+                AbilityDescriptor d;
+                d.name = "Eternal Curse (Tank form)";
+                d.rootSpellId = 800157;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 800157;
+                d.internalThrottleMs = 4000;
+                d.baseScore = 500.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Primary Taunt: Bare Fangs (effect ATTACK_ME, 8 s cooldown, needs Cursed Form)
+            {
+                AbilityDescriptor d;
+                d.name = "Bare Fangs (Taunt)";
+                d.rootSpellId = 801957;
+                d.tags = AbilityTag::Taunt;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 460.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Taunt";
@@ -164,6 +190,48 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Cursed Form melee strikes (rage spenders, native weapon-style damage)
+            {
+                AbilityDescriptor d;
+                d.name = "Bloodfang Bite";
+                d.rootSpellId = 501695;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Rotclaw";
+                d.rootSpellId = 503476;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Blood Pact";
+                d.rootSpellId = 801955;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 801955;
+                d.internalThrottleMs = 120000;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Claw Sweep";
+                d.rootSpellId = 500169;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+
             // Builders
             {
                 AbilityDescriptor d;
@@ -192,10 +260,12 @@ namespace BotAI
             s.specId = 99;
             s.role = BotRole::Tank;
             s.strategyName = "Eternal_Tank_Strategy";
+            s.requiredState.formSpellId = 800157; // Eternal Curse
+            s.requiredState.formAuraId = 800157;
 
             s.isReadyToPull = [](Player* bot, CombatContext const&) -> bool
             {
-                return bot->GetHealthPct() >= 75.0f;
+                return bot->HasAura(800157) && bot->GetHealthPct() >= 75.0f;
             };
 
             s.phaseModifiers[CombatPhase::Emergency] = {
@@ -382,6 +452,24 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Bloodmage_Sanguine_Dps";
 
+            // Learned native Blood Tap restores 50% maximum Rage (ENERGIZE_PCT).
+            // Use it before affordable Bloodbolt actions collapse into low-output filler.
+            {
+                AbilityDescriptor d;
+                d.name = "Blood Tap";
+                d.rootSpellId = 707900;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.minSelfHpPct = 50.0f;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 350.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return ctx.botPowerPct < 40.0f ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
             // Emergency Defense
             {
                 AbilityDescriptor d;
@@ -411,7 +499,7 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Apotheosis";
-                d.rootSpellId = 804195;
+                d.rootSpellId = 804203; // Native class-granted Apotheosis
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::Self;
                 d.internalThrottleMs = 90000;
@@ -430,6 +518,101 @@ namespace BotAI
             }
 
             // Core Blood DoTs
+            // Blood Thirst (706613, max 10) spenders. Sanguine's real kit (Zyth45 reference order
+            // cross-checked against the learned book): Vampiric Fang at 10 stacks, Atherann's
+            // Anguish / Malediction at 7, Valanar's Vengeance at 5. The Vampyr's Kiss / Heartbreak /
+            // Veinburst / Hemoburst / Crimson Tide roots below are not in this spec's book at all
+            // (I17: "not known/resolvable" every decision), so Thirst was never spent.
+            {
+                AbilityDescriptor d;
+                d.name = "Vampiric Fang (Thirst 10)";
+                d.rootSpellId = 804726;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 310.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    Aura const* thirst = ctx.bot->GetAura(706613);
+                    return thirst && thirst->GetStackAmount() >= 10 ? 310.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Atherann's Anguish (Thirst 7)";
+                d.rootSpellId = 680680;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 300.0f;
+                d.internalThrottleMs = 90000;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    Aura const* thirst = ctx.bot->GetAura(706613);
+                    return thirst && thirst->GetStackAmount() >= 7 ? 300.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Malediction (Thirst 7)";
+                d.rootSpellId = 800776;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 295.0f;
+                d.internalThrottleMs = 30000;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    Aura const* thirst = ctx.bot->GetAura(706613);
+                    return thirst && thirst->GetStackAmount() >= 7 ? 295.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Valanar's Vengeance (Thirst 5)";
+                d.rootSpellId = 572795;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 290.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    Aura const* thirst = ctx.bot->GetAura(706613);
+                    return thirst && thirst->GetStackAmount() >= 5 ? 290.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Taldaram's Torment";
+                d.rootSpellId = 802580;
+                d.tags = AbilityTag::PeriodicDamage | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
+                d.baseScore = 275.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Transgression";
+                d.rootSpellId = 801076;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 801076;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 265.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Keleseth's Calamity";
+                d.rootSpellId = 561179;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
+
             {
                 AbilityDescriptor d;
                 d.name = "Crimson Tide";
@@ -609,6 +792,47 @@ namespace BotAI
             }
 
             // Execute Strike: Reave
+            // Learned Accursed kit that the profile never listed (Zyth45 order cross-checked with the learned
+            // book; Rotclaw/Vampiric Fang/Night Hunter's Howl roots below are not in this spec's book).
+            {
+                AbilityDescriptor d;
+                d.name = "Taldaram's Torment";
+                d.rootSpellId = 800772;
+                d.tags = AbilityTag::PeriodicDamage | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 275.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Blood Curse";
+                d.rootSpellId = 562720;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 262.0f;
+                d.missingAuraOnCaster = 562720;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Aortic Assault";
+                d.rootSpellId = 806212;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 255.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Bloodfang Bite";
+                d.rootSpellId = 572551;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Reave";

@@ -136,7 +136,12 @@ namespace BotAI
 
             bool immediateDanger = criticalTarget && (criticalHp < 15.0f ||
                 (criticalHp < 25.0f && !criticalTarget->getAttackers().empty()));
-            if (immediateDanger && SelectHealSpell(bot, criticalTarget) != 0 &&
+            Spell* current = GetProtectedSpell(bot);
+            // Restarting the heal already aimed at this critical ally postpones its landing
+            // forever while health stays below the emergency threshold.
+            bool healingCriticalTarget = IsCurrentHeal(bot) && current && criticalTarget &&
+                current->m_targets.GetUnitTargetGUID() == criticalTarget->GetGUID();
+            if (immediateDanger && !healingCriticalTarget && SelectHealSpell(bot, criticalTarget) != 0 &&
                 !(IsCurrentHeal(bot) && CurrentSpellRemainingMs(bot) <= 800))
             {
                 LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),

@@ -1,5 +1,11 @@
 # Class/spec role templates for role-aware bot AI
 
+2026-10-06 corrections: Mechanics (Tinker 28, spec 50) is ranged DPS; Grovekeeper
+(Primalist 31, spec 58) is Support, with both damage and party healing. Training
+groups use a separate Time healer rather than treating Grovekeeper as their sole
+healer. Ascension Sidekick is a community reference; native learned abilities,
+item requirements and combat telemetry remain the validation gates.
+
 Written 2026-09-12. Goal: know, for each of CoA's 21 custom classes and each of their specs,
 what role a bot playing that spec should fill in a group/raid (Tank / Healer / Melee DPS /
 Ranged DPS / Caster DPS / **Support**) — so future `BotAI` work can dispatch to a
@@ -100,7 +106,7 @@ backline caster like retail WoW's newer Augmentation-style kits. Only Fleshweave
 | | Valkyrie | Melee DPS | — | inferred (lowest heal signal of the four, some melee-keyword signal) |
 | Tinker (28) | Demolition | Ranged DPS | Agility | confirmed |
 | | Invention | Healer | Intellect | confirmed |
-| | Mechanics | Melee DPS | Agility | confirmed |
+| | Mechanics | Ranged DPS | Agility | confirmed |
 | Venomancer (29) | Fortitude | Tank | Intellect / Stamina | confirmed |
 | | Stalking | Melee DPS | Intellect | confirmed |
 | | Rot (site labels it "Venom") | — | — | unresolved: null role on the source site despite being a real, live-confirmed-playable spec (`ascension-class-status.md`) — worth testing directly rather than guessing, since this is the one class this project has actually played |
@@ -318,7 +324,7 @@ Methodology: The exiles-db structural pages (`mirror/db.exil.es/class/*.html`) c
 | | Seraphim | 48 | Tank | Exact spell-ID match; tank defensive/shield toolkit |
 | | Blessings | 98 | Healer | Exact spell-ID match; 24 healing talents |
 | **Tinker (28)** | Demolition | 49 | Dps (Ranged) | Exact spell-ID match against `CoATalentEntries` |
-| | Mechanics | 50 | Dps (Melee) | Exact spell-ID match against `CoATalentEntries` |
+| | Mechanics | 50 | Dps (Ranged) | Exact spell-ID match against `CoATalentEntries` |
 | | Invention | 51 | Healer | Live-confirmed: aura `708708` ('Medical Degree'), 22 healing talents, 41 heal spells seen by bot |
 | **Venomancer (29)** | Fortitude | 52 | Tank | Exact spell-ID match; live-confirmed tank tree |
 | | Stalking | 53 | Dps (Melee) | Exact spell-ID match; live-confirmed melee tree |

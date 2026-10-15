@@ -1,3 +1,4 @@
+#include "training/TrainingArenaManager.h"
 #include "engine/BotDebugLog.h"
 #include "BotMgr.h"
 #include "BotGear.h"
@@ -396,6 +397,27 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
 
     ObjectGuid playerGuid = ObjectGuid::Create<HighGuid::Player>(charLowGuid);
 
+    // Detached sessions do not pass through WorldSessionMgr's duplicate-login
+    // protection. A second Player with this GUID overwrites ObjectAccessor while
+    // FindBotPlayer still returns the first: native targeted casts then lose it.
+    if (WorldSession* existing = FindBotSession(charLowGuid))
+    {
+        if (handler) handler->PSendSysMessage("BotMgr: guid {} is already logged in; reusing its companion session.", charLowGuid);
+        if (onReady) onReady(existing->GetPlayer());
+        return;
+    }
+    if (auto pending = _pendingBotLogins.find(charLowGuid); pending != _pendingBotLogins.end())
+    {
+        if (onReady) pending->second.push_back(std::move(onReady));
+        if (handler) handler->PSendSysMessage("BotMgr: login for guid {} is already pending.", charLowGuid);
+        return;
+    }
+    if (ObjectAccessor::FindPlayer(playerGuid))
+    {
+        if (handler) handler->PSendSysMessage("BotMgr: guid {} is already online outside the companion manager.", charLowGuid);
+        return;
+    }
+
     uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(playerGuid);
     if (!accountId)
     {
@@ -430,6 +452,8 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
     }
 
     _botSessions.push_back(botSession);
+    auto& callbacks = _pendingBotLogins[charLowGuid];
+    if (onReady) callbacks.push_back(std::move(onReady));
 
     // Deliberately sWorld->AddQueryHolderCallback, not botSession->AddQueryHolderCallback:
     // a detached, null-socket session is never registered with WorldSessionMgr, so its own
@@ -438,9 +462,11 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
     // registration, so callbacks queued on the World-level processor still complete. See
     // pilot/README.md for the full story of how this was found.
     sWorld->AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder)).AfterComplete(
-        [botSession, onReady](SQLQueryHolderBase const& completedHolder)
+        [this, botSession, charLowGuid](SQLQueryHolderBase const& completedHolder)
         {
             botSession->HandlePlayerLoginFromDB(static_cast<LoginQueryHolder const&>(completedHolder));
+            auto callbacks = std::move(_pendingBotLogins[charLowGuid]);
+            _pendingBotLogins.erase(charLowGuid);
 
             if (Player* bot = botSession->GetPlayer())
             {
@@ -453,8 +479,8 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
                 // calling it twice is safe and idempotent.
                 BotZoneProgression::RelocateBot(bot, true /*force initial relocation*/);
 
-                if (onReady)
-                    onReady(bot);
+                for (auto& onReady : callbacks)
+                    if (onReady) onReady(bot);
             }
             else
             {
@@ -679,7 +705,7 @@ void BotMgr::FinishPendingTeleport(WorldSession* session)
 void BotMgr::TryReturnGhostToCorpseMap(WorldSession* session)
 {
     Player* bot = session->GetPlayer();
-    if (!bot || !bot->IsInWorld() || bot->IsAlive())
+    if (!bot || CoaTraining::Owns(bot->GetGUID()) || !bot->IsInWorld() || bot->IsAlive())
         return;
 
     if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
@@ -730,7 +756,7 @@ std::vector<Player*> BotMgr::GetOnlineBots() const
 void BotMgr::TryFollowLeaderAcrossMaps(WorldSession* session)
 {
     Player* bot = session->GetPlayer();
-    if (!bot || !bot->IsInWorld())
+    if (!bot || CoaTraining::Owns(bot->GetGUID()) || !bot->IsInWorld())
         return;
 
     // Already mid-teleport (this tick's own queue below, or something else entirely) --
@@ -1798,7 +1824,7 @@ void BotMgr::ProcessCraftOrders()
     for (auto itr = _craftOrders.begin(); itr != _craftOrders.end(); )
     {
         Player* crafter = FindBotPlayer(itr->first.GetCounter());
-        if (!crafter || !crafter->IsInWorld())
+        if (!crafter || CoaTraining::Owns(crafter->GetGUID()) || !crafter->IsInWorld())
         {
             ++itr;
             continue;
@@ -3275,7 +3301,7 @@ void BotMgr::Update(uint32 diff)
         for (ObjectGuid botGuid : due)
         {
             Player* bot = FindBotPlayer(botGuid.GetCounter());
-            if (bot && bot->GetGroup())
+            if (bot && !CoaTraining::Owns(bot->GetGUID()) && bot->GetGroup())
             {
                 LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' leaving its group -- no real player left in it.", bot->GetName());
                 bot->RemoveFromGroup(GROUP_REMOVEMETHOD_LEAVE);

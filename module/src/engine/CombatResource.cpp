@@ -66,6 +66,16 @@ namespace BotAI
             for (AscensionCompatData::ResourceRequirement const& custom :
                  AscensionCompatData::QueryAbilityResourceRequirements(classId, resolvedSpellId))
             {
+                // Ranger builders generate Advantage from zero. The native CheckCast gate
+                // applies only to spells explicitly requiring the Advantage caster aura;
+                // the compatibility query currently reports it for the whole spell family.
+                if (classId == 21 && custom.ResourceSpellId == 804329 &&
+                    custom.Consumption == AscensionCompatData::ResourceConsumption::None)
+                {
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(resolvedSpellId);
+                    if (info && info->CasterAuraSpell != 804329)
+                        continue;
+                }
                 if (set.count >= MAX_CACHED_REQUIREMENTS)
                 {
                     LOG_ERROR("module.coa-playerbots",

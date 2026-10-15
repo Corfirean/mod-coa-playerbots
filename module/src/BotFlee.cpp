@@ -3,6 +3,7 @@
 #include "engine/CombatContext.h"
 #include "engine/SpellPredicates.h"
 #include "BotMovement.h"
+#include "training/TrainingArenaManager.h"
 #include "Player.h"
 #include "Unit.h"
 #include <cmath>
@@ -110,6 +111,10 @@ namespace BotFlee
 
     bool IsStalemate(Unit* target, BotAI::CombatContext const& ctx, BotFleeState& state, uint32 nowMs)
     {
+        // A controlled training boss is deliberately immortal. Unchanged target HP
+        // cannot be used as evidence that this timed encounter should be abandoned.
+        if (ctx.bot && CoaTraining::Owns(ctx.bot->GetGUID()))
+            return false;
         if (!target)
         {
             state.stalemateTargetGuid.Clear();

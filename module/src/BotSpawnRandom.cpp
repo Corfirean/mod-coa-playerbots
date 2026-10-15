@@ -1170,7 +1170,7 @@ void GrantAllProfessions(Player* bot, uint8 level)
 
 void RepairGear(Player* bot)
 {
-    if (!bot || !BotGear::Ready())
+    if (!bot || !BotGear::Ready() || BotGear::TrainingLocked(bot))
         return;
     repairingGear = true;
     GearUpFreshBotForLevel(bot, bot->GetLevel());
@@ -1292,4 +1292,11 @@ void ProcessPendingLeveledBotSpawns(uint32 diff)
         g_pendingLeveledBotRequested = 0;
     }
 }
+ObjectGuid::LowType SpawnClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler)
+{
+    ObjectGuid::LowType guid = CreateClassBot(classId, race, level, handler);
+    if (guid) sBotMgr->SpawnBot(guid, handler, [level](Player* bot) { ApplyFreshBotSetup(bot, level); });
+    return guid;
+}
+
 }

@@ -253,6 +253,7 @@ namespace BotAI
             CombatProfile p;
             p.classId = 15;
             p.specId = 11; // Houndmaster
+            p.useRangedAutoRepeat = true;
             p.role = BotRole::Dps;
             p.profileName = "WitchHunter_Houndmaster_Ranged";
 
@@ -428,6 +429,18 @@ namespace BotAI
             p.profileName = "WitchHunter_BlackKnight_Tank";
 
             // 1. Primary Taunts
+            // Real taunt: Spell.dbc effect ATTACK_ME + MOD_TAUNT, 8 s native cooldown. The generic
+            // Taunt355 root is not a learned spell for Ascension classes ("not known/resolvable" in
+            // every I17 tank decision) and passive ids cannot be cast.
+            {
+                AbilityDescriptor d;
+                d.name = "Vicious Mockery (Taunt)";
+                d.rootSpellId = 802013;
+                d.tags = AbilityTag::Taunt;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 455.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Taunt";

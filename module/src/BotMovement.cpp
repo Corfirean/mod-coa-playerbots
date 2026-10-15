@@ -1460,6 +1460,10 @@ namespace BotMovement
     {
         if (!bot)
             return;
+        // Mechanics' native combat form uses a mounted aura. It is not a travel
+        // mount: stripping it tears down Mechsuit and forces endless rebuilds.
+        if (bot->IsInTinkerMechsuit())
+            return;
 
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
         MountTransitionResult trans;
@@ -1618,7 +1622,7 @@ namespace BotMovement
             }
         }
 
-        if (removeStaleAura && bot->IsMounted())
+        if (removeStaleAura && bot->IsMounted() && !bot->IsInTinkerMechsuit())
         {
             bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
         }

@@ -6,6 +6,9 @@
 
 #include "BotClassRotations.h"
 #include "BotMovement.h"
+#include "profiles/ProfileGuardian.h"
+#include "engine/SpellPredicates.h"
+#include "engine/SpellResolver.h"
 #include "engine/BotDebugLog.h"
 #include "CellImpl.h"
 #include "GridNotifiers.h"
@@ -14,6 +17,7 @@
 #include "Log.h"
 #include "Player.h"
 #include "SpellInfo.h"
+#include "SpellAuras.h"
 #include "SpellMgr.h"
 #include "Timer.h"
 #include <algorithm>
@@ -127,11 +131,12 @@ bool CanCastSpell(Player* bot, Unit* target, uint32 spellId, bool positiveRange 
         return false;
 
     SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-    if (!spellInfo)
+    if (!spellInfo || spellInfo->IsPassive())
         return false;
 
-    // Item/weapon check: prevents SPELL_FAILED_EQUIPPED_ITEM_CLASS (code 29)
-    if (!bot->HasItemFitToSpellRequirements(spellInfo))
+    // Item/weapon check: prevents SPELL_FAILED_EQUIPPED_ITEM_CLASS (code 29). The shared native-prerequisite check also
+    // covers off-hand/main-hand weapon slots, totem items and the spell's excluding caster auras.
+    if (NativeCastPrerequisiteFailure(bot, spellInfo))
         return false;
 
     // Aura state checks
@@ -178,7 +183,7 @@ bool CanCastSpell(Player* bot, Unit* target, uint32 spellId, bool positiveRange 
 // Attempts to find the highest learned rank of a spell and verifies it can be cast right now.
 uint32 TrySpell(Player* bot, Unit* target, uint32 rootSpellId, bool positiveRange = false)
 {
-    uint32 spellId = GetHighestLearnedRank(bot, rootSpellId);
+    uint32 spellId = SpellResolver::EffectiveSpell(bot, GetHighestLearnedRank(bot, rootSpellId));
     if (spellId && CanCastSpell(bot, target, spellId, positiveRange))
         return spellId;
     return 0;
@@ -235,7 +240,6 @@ Player* FindGroupHealTarget(Player* bot, float thresholdPct = 95.0f)
 uint32 SelectBarbarianRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec*/)
 {
     float dist = bot->GetDistance(target);
-    int32 rage = bot->GetPower(POWER_RAGE);
 
     // 1. Survival: A Grisly Meal (root 804765) if injured (< 60% HP)
     if (bot->GetHealthPct() < 60.0f)
@@ -259,13 +263,7 @@ uint32 SelectBarbarianRotationSpell(Player* bot, Unit* target, uint32 /*activeSp
             return spell;
     }
 
-    // 3. Savage Rage (root 800193) - self-buff / rage generation
-    // Use if rage is low (< 60) and Savage Rage is ready
-    if (rage < 60)
-    {
-        if (uint32 spell = TrySpell(bot, bot, 800193, true))
-            return spell;
-    }
+    // Battle Rhythm800193 is a native passive, not an active rage generator.
 
     // 4. Melee strikes priority (only if in melee range <= 6 yards)
     if (dist <= 6.0f)
@@ -523,11 +521,8 @@ uint32 SelectCultistRotationSpell(Player* bot, Unit* target, uint32 /*activeSpec
     if (uint32 spell = TrySpell(bot, target, 801964))
         return spell;
 
-    // Heavy spells: root 500715, 500711
-    if (uint32 spell = TrySpell(bot, target, 500715))
-        return spell;
-    if (uint32 spell = TrySpell(bot, target, 500711))
-        return spell;
+    // 500715 (Void Shield) and 500711 (Eldritch Mending) were listed here as "heavy spells" but both target an ally:
+    // casting them at the enemy failed with SPELL_FAILED_BAD_TARGETS on every retry. The profile engine owns them.
 
     // 3. Primary fillers:
     if (uint32 spell = TrySpell(bot, target, 500720))
@@ -599,8 +594,11 @@ uint32 SelectGuardianRotationSpell(Player* bot, Unit* target, uint32 activeSpec)
     // Other specs / default -> prefer Line Formation (803130) or Assault Formation (803417)
     if (activeSpec == 21)
     {
-        if (!bot->HasAura(800317))
-            if (uint32 spell = TrySpell(bot, bot, 800317, true))
+        // Same baseline as the Vanguard profile; casting the other formation here made the
+        // two alternate Tower/Line every ~1 s (I72: 11+10 casts in 30 s, energy drained).
+        uint32 const baseline = BotAI::VanguardBaselineFormation();
+        if (!bot->HasAura(baseline))
+            if (uint32 spell = TrySpell(bot, bot, baseline, true))
                 return spell;
     }
     else
@@ -1021,13 +1019,19 @@ uint32 SelectWitchDoctorRotationSpell(Player* bot, Unit* target, uint32 /*active
     if (uint32 spell = TryThrottledSpell(bot, target, 706542, 25000)) // Cursed Effigy
         return spell;
 
-    // Idols (IdolSlot - Dark / Swift / Spirit):
-    if (uint32 spell = TryThrottledSpell(bot, target, 507082, 25000)) // Dark Idol
-        return spell;
-    if (uint32 spell = TryThrottledSpell(bot, target, 804226, 25000)) // Swift Idol
-        return spell;
-    if (uint32 spell = TryThrottledSpell(bot, target, 500961, 25000)) // Spirit Idol
-        return spell;
+    // Native idols share one slot; offensive idols despawn the mana recovery idol.
+    bool const preserveManaIdol = bot->GetPlayerSetting("core.ascension_active_spec", 0).value == 4 &&
+        bot->GetMaxPower(POWER_MANA) > 0 &&
+        float(bot->GetPower(POWER_MANA)) / bot->GetMaxPower(POWER_MANA) < 0.70f;
+    if (!preserveManaIdol)
+    {
+        if (uint32 spell = TryThrottledSpell(bot, target, 507082, 25000)) // Dark Idol
+            return spell;
+        if (uint32 spell = TryThrottledSpell(bot, target, 804226, 25000)) // Swift Idol
+            return spell;
+        if (uint32 spell = TryThrottledSpell(bot, target, 500961, 25000)) // Spirit Idol
+            return spell;
+    }
 
     // 4. Curses & Jinxes (Debuffs on target):
     // Hex of Malice (root 801693) - core damage over time curse
@@ -1190,9 +1194,14 @@ uint32 SelectWitchHunterRotationSpell(Player* bot, Unit* target, uint32 /*active
     }
 
     // 7. Ranged Attacks (Guns / Crossbows / Ranged Spells):
-    // Sixfold Shot (root 807364) - channeled burst shot
-    if (uint32 spell = TrySpell(bot, target, 807364))
-        return spell;
+    // Native Sixfold requires its passive and five Bolt stacks. A temporary
+    // learned grant can remain visible after consumption; do not offer it again
+    // merely because HasSpell succeeds. The core remains the final authority.
+    if (bot->HasAura(500567))
+        if (Aura const* stacks = bot->GetAura(500569))
+            if (stacks->GetStackAmount() >= 5)
+                if (uint32 spell = TrySpell(bot, target, 807364))
+                    return spell;
 
     // Shadowblast (root 804191) - primary heavy shadow/ranged attack
     if (uint32 spell = TrySpell(bot, target, 804191))

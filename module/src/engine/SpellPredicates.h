@@ -93,6 +93,14 @@ namespace BotAI
     // spellId -- exposed separately so a caller that needs to pick a *specific* spell (e.g.
     // CombatUtility's dispel-type-compatible cleanse pairing, item 4) can reuse the exact same
     // castability checks instead of scanning the whole spellbook with a predicate function.
+    // Mirrors the native Spell::CheckCast/CheckItems prerequisites a bot cannot satisfy by waiting (excluding auras, required
+    // weapons in slots, totem items). Returns the failing rule or nullptr. The core stays authoritative; this only avoids futile casts.
+    char const* NativeCastPrerequisiteFailure(Player* bot, SpellInfo const* spellInfo);
+
+    // Turns the bot towards a hostile target that is outside its 180 degree front arc before a cast: the core rejects
+    // facing-gated spells with SPELL_FAILED_UNIT_NOT_INFRONT otherwise (Invention51 Sticky Bomb, 5 failures per minute).
+    void FaceHostileTargetForCast(Player* bot, Unit* target);
+
     bool IsKnownSpellCastable(Player* bot, uint32 spellId, Unit* target, bool positiveRange);
 
     // Shared scan shape for all "pick a ready, affordable, in-range known spell matching this

@@ -32,6 +32,8 @@ namespace BotAI
 
     bool SpecStrategy::CanUseLegacyFallback(CombatContext const& ctx) const
     {
+        if (ownsCombatRotation)
+            return false;
         if (!ctx.bot)
             return false;
 
@@ -55,7 +57,8 @@ namespace BotAI
             // Only enforce if the bot actually knows this form spell
             if (ctx.bot->HasSpell(formSpellId) || SpellResolver::ResolveSpell(ctx.bot, formSpellId) != 0)
             {
-                bool hasBaseline = ctx.bot->HasAura(baselineAura);
+                uint32 resolvedBaselineAura = SpellResolver::ResolveSpell(ctx.bot, baselineAura);
+                bool hasBaseline = ctx.bot->HasAura(resolvedBaselineAura ? resolvedBaselineAura : baselineAura);
                 if (!hasBaseline)
                 {
                     if (!allowLegacyInTemporaryState)
@@ -296,6 +299,18 @@ namespace BotAI
             }
         }
 
+        // A baseline that is a timed, long-cooldown form (Accursed Form 30 s cd, Bolstered Form 60 s cd) expires mid-fight and
+        // cannot be re-entered until the cooldown ends. Blocking the whole rotation until then idled Accursed27 for 26 s and
+        // Domination57 for 44 s of a 60 s fight. Spells that need the form are still rejected natively by their caster-aura rule.
+        {
+            uint32 formToCast = SpellResolver::ResolveSpell(bot, formSpellId);
+            if (formToCast && bot->GetSpellCooldownDelay(formToCast) > 5000)
+            {
+                runtime.lastStateStatus = CombatStateStatus::Ready;
+                return CombatStateStatus::Ready;
+            }
+        }
+
         // 3. Neither baseline nor allowed temporary state is present.
         // Check if a prerequisite setup action is needed (e.g. Tinker Mechanics Scrap generation)
         if (strategy->requiredState.isSetupNeeded && strategy->requiredState.isSetupNeeded(bot, ctx))
@@ -359,6 +374,19 @@ namespace BotAI
         uint32 now = getMSTime();
 
         // 3. Baseline Form / Stance enforcement
+        // Brigand's Elude is an out-of-combat opener, not a permanent combat form.
+        if (bot->getClass() == CLASS_RANGER && activeSpec == 30 &&
+            bot->HasSpell(801345) && !bot->HasAura(801345) && !bot->HasSpellCooldown(801345))
+        {
+            BotAction opener;
+            opener.spellId = 801345;
+            opener.rootSpellId = 801345;
+            opener.target = bot;
+            opener.score = 1800.0f;
+            opener.name = "Elude (PrePull)";
+            if (ActionEvaluator::ValidateAction(ctx, opener) && bot->CastSpell(bot, 801345, false) == SPELL_CAST_OK)
+                return PrePullResult::ActionExecuted;
+        }
         if (strategy->requiredState.formSpellId != 0 || strategy->requiredState.formAuraId != 0)
         {
             uint32 baselineAura = strategy->requiredState.formAuraId ? strategy->requiredState.formAuraId : strategy->requiredState.formSpellId;
@@ -366,7 +394,8 @@ namespace BotAI
 
             if (bot->HasSpell(formSpellId) || SpellResolver::ResolveSpell(bot, formSpellId) != 0)
             {
-                bool hasBaseline = bot->HasAura(baselineAura);
+                uint32 resolvedBaselineAura = SpellResolver::ResolveSpell(bot, baselineAura);
+                bool hasBaseline = bot->HasAura(resolvedBaselineAura ? resolvedBaselineAura : baselineAura);
                 if (!hasBaseline)
                 {
                     // Special case: Tinker Mechanics (spec 50) Scrap & Mechsuit:
@@ -377,15 +406,15 @@ namespace BotAI
                         CombatResourceSnapshot snap = CombatResourceEvaluator::BuildSnapshot(bot);
                         CombatResourceState const* scrapState = snap.Find(CombatResourceKey{CombatResourceKind::AuraStack, 0, 801816});
                         int32 scrapCount = scrapState ? scrapState->current : 0;
-                        if (scrapCount >= 10)
+                        if (scrapCount >= 40)
                         {
                             // Can build Mechsuit immediately
-                            uint32 resolvedMechsuit = SpellResolver::ResolveSpell(bot, 92141);
+                            uint32 resolvedMechsuit = SpellResolver::ResolveSpell(bot, formSpellId);
                             if (resolvedMechsuit)
                             {
                                 BotAction preAction;
                                 preAction.spellId = resolvedMechsuit;
-                                preAction.rootSpellId = 92141;
+                                preAction.rootSpellId = formSpellId;
                                 preAction.target = bot;
                                 preAction.score = 2000.0f;
                                 preAction.name = "Build: Mechsuit (PrePull)";
@@ -504,7 +533,8 @@ namespace BotAI
 
                 if (bot->HasSpell(formSpellId) || SpellResolver::ResolveSpell(bot, formSpellId) != 0)
                 {
-                    if (!bot->HasAura(baselineAura))
+                    uint32 resolvedBaselineAura = SpellResolver::ResolveSpell(bot, baselineAura);
+                    if (!bot->HasAura(resolvedBaselineAura ? resolvedBaselineAura : baselineAura))
                     {
                         // Tinker Mechanics spec 50: if Scrap < 10, Mechsuit cannot be cast out of combat.
                         // Allow controlled opener pull to get first hit Scrap!
@@ -513,7 +543,7 @@ namespace BotAI
                             CombatResourceSnapshot snap = CombatResourceEvaluator::BuildSnapshot(bot);
                             CombatResourceState const* scrapState = snap.Find(CombatResourceKey{CombatResourceKind::AuraStack, 0, 801816});
                             int32 scrapCount = scrapState ? scrapState->current : 0;
-                            if (scrapCount < 10)
+                            if (scrapCount < 40)
                             {
                                 // Allowed to pull to gain Scrap
                             }

@@ -1,3 +1,4 @@
+#include "training/TrainingArenaManager.h"
 #include "BotGear.h"
 #include "BotEconomy.h"
 
@@ -943,7 +944,7 @@ namespace BotEconomy
         {
             WorldSession* session = sessions[(g_rotation + i) % n];
             Player* bot = session->GetPlayer();
-            if (!bot || !bot->IsInWorld() || bot->IsInCombat() || !bot->IsAlive())
+            if (!bot || CoaTraining::Owns(bot->GetGUID()) || !bot->IsInWorld() || bot->IsInCombat() || !bot->IsAlive())
                 continue;
 
             auto [it, isNew] = g_nextScanAt.try_emplace(bot->GetGUID(), now);

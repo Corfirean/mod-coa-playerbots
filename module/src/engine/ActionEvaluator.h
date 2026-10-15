@@ -30,6 +30,8 @@ namespace BotAI
         // Unified action validation pipeline: verifies that any action (Profile, StateTransition, PrePull, Utility, Legacy)
         // satisfies all cast prerequisites, cooldowns, CombatResourceEvaluator::CanAfford, and state restrictions.
         static bool ValidateAction(CombatContext const& ctx, BotAction const& action, AbilityDescriptor const* desc = nullptr);
+        // Same checks as ValidateAction; returns the first failing gate or nullptr when the action is valid.
+        static char const* ValidateActionReason(CombatContext const& ctx, BotAction const& action, AbilityDescriptor const* desc = nullptr);
 
         // Validates all cast prerequisites (known, cooldown, failure backoff, power, item, range, auras, form state, entities).
         static bool CanCast(CombatContext const& ctx, AbilityDescriptor const& desc, uint32 resolvedSpellId, Unit* target);

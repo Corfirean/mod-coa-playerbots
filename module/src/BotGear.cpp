@@ -221,6 +221,17 @@ bool PreserveSlot(Player* bot, uint8 slot)
     return true;
 }
 
+bool TrainingLocked(Player* bot)
+{
+    return bot && bot->GetPlayerSetting("coa.bot.training_gear", 0).value != 0;
+}
+
+void LockTraining(Player* bot)
+{
+    if (bot)
+        bot->UpdatePlayerSetting("coa.bot.training_gear", 0, 1);
+}
+
 bool Archived(Item const* item)
 {
     if (!item)

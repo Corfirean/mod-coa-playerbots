@@ -29,6 +29,18 @@ namespace BotAI
             p.profileName = "Templar_Oathkeeper_Tank";
 
             // 1. Primary Taunt
+            // Real taunt: Spell.dbc effect ATTACK_ME + MOD_TAUNT, 8 s native cooldown. The generic
+            // Taunt355 root is not a learned spell for Ascension classes ("not known/resolvable" in
+            // every I17 tank decision) and passive ids cannot be cast.
+            {
+                AbilityDescriptor d;
+                d.name = "Beckon (Taunt)";
+                d.rootSpellId = 804914;
+                d.tags = AbilityTag::Taunt;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 455.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Taunt";
@@ -361,17 +373,9 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 4. Major Offensive Cooldown: Zealotry
-            {
-                AbilityDescriptor d;
-                d.name = "Zealotry";
-                d.rootSpellId = 92108;
-                d.tags = AbilityTag::OffensiveCD;
-                d.targetType = TargetType::Self;
-                d.internalThrottleMs = 30000;
-                d.baseScore = 280.0f;
-                p.abilities.push_back(d);
-            }
+            // Zealotry (92108) is a native passive off-hand proc, not an
+            // activated offensive cooldown. Its aura and native triggers remain
+            // responsible for casting the derived attack (801450).
 
             // 5. Gap Closer: Divine Charge (> 8 yards)
             {

@@ -28,6 +28,19 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Runemaster_Engravement_MeleeDps";
 
+            // Stable native tattoo baseline; its associated native talent
+            // remains responsible for any triggered defensive or movement effect.
+            {
+                AbilityDescriptor d;
+                d.name = "Runic Tattoos: Earth";
+                d.rootSpellId = 801094;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 801094;
+                d.baseScore = 300.0f;
+                p.abilities.push_back(d);
+            }
+
             // 1. Personal Defense: Runeshroud (< 50% HP)
             {
                 AbilityDescriptor d;
@@ -57,7 +70,7 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Fist of the Ancients";
                 d.rootSpellId = 712326;
-                d.tags = AbilityTag::MeleeAttack | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::MeleeAttack; // not OffensiveCD: a 15-second-throttle rotational attack; that tag scales the score by x0.15 outside boss/elite/PvP fights
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 15000;
                 d.baseScore = 190.0f;
@@ -189,6 +202,20 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Runemaster_Glyphic_RangedDps";
 
+            // Elemental tattoos are active self buffs, not the passive Runic
+            // Tattoos spell. Water also enables the native Unleashed Water
+            // helper when that talent is present; keep one stable baseline.
+            {
+                AbilityDescriptor d;
+                d.name = "Runic Tattoos: Water";
+                d.rootSpellId = 801107;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 801107;
+                d.baseScore = 300.0f;
+                p.abilities.push_back(d);
+            }
+
             // 1. Personal Defense
             {
                 AbilityDescriptor d;
@@ -271,6 +298,20 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Native Elemental Burst is also a glyph generator. Primordial Blast has
+            // an eight-second native cooldown; it alone cannot build three stages
+            // inside Frost's fifteen-second duration. Prefer this learned generator
+            // over the unrelated Frigid Blast filler while native cooldowns run.
+            {
+                AbilityDescriptor d;
+                d.name = "Elemental Burst (Glyph Generator)";
+                d.rootSpellId = 802202;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 100.0f;
+                p.abilities.push_back(d);
+            }
+
             // 6. Close-Range Defense
             {
                 AbilityDescriptor d;
@@ -283,6 +324,17 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Native generators build Frost -> Flame -> Arcane. Releasers consume
+            // every active glyph on hit, so do not discard the cycle after Frost.
+            for (auto& ability : p.abilities)
+                if (ability.rootSpellId == 801179 || ability.rootSpellId == 804550)
+                    ability.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                    {
+                        uint32 readyGlyph = ctx.bot->HasAura(805727) ? 520092 :
+                            ctx.bot->HasAura(705625) ? 520091 :
+                            ctx.bot->HasAura(92152) ? 520090 : 0;
+                        return !readyGlyph || ctx.bot->HasAura(readyGlyph, ctx.bot->GetGUID()) ? 0.0f : -1.0f;
+                    };
             ProfileRegistry::RegisterProfile(p);
 
             // SpecStrategy for Glyphic
@@ -291,6 +343,7 @@ namespace BotAI
             s.specId = 62;
             s.role = BotRole::Dps;
             s.strategyName = "Runemaster_Glyphic_RangedDps_Strategy";
+            s.ownsCombatRotation = true; // Legacy nukes must not bypass the native glyph-cycle scorer.
 
             s.phaseModifiers[CombatPhase::Opener] = {
                 { AbilityTag::PeriodicDamage, 1.5f, 40.0f },
@@ -323,6 +376,19 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Runemaster_Riftblade_MeleeDps";
 
+            // Stable native tattoo baseline; its associated native talent
+            // remains responsible for any triggered defensive or movement effect.
+            {
+                AbilityDescriptor d;
+                d.name = "Runic Tattoos: Air";
+                d.rootSpellId = 802630;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 802630;
+                d.baseScore = 300.0f;
+                p.abilities.push_back(d);
+            }
+
             // 1. Defense
             {
                 AbilityDescriptor d;
@@ -352,7 +418,7 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Fist of the Ancients";
                 d.rootSpellId = 712326;
-                d.tags = AbilityTag::MeleeAttack | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::MeleeAttack; // not OffensiveCD: a 15-second-throttle rotational attack; that tag scales the score by x0.15 outside boss/elite/PvP fights
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 15000;
                 d.baseScore = 190.0f;

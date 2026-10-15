@@ -1,3 +1,4 @@
+#include "training/TrainingArenaManager.h"
 #include "BotGear.h"
 /*
  * mod-coa-playerbots
@@ -99,6 +100,8 @@
 #include "ObjectDefines.h"
 #include "ObjectMgr.h"
 #include "PetDefines.h"
+#include "Pet.h"
+#include "CharmInfo.h"
 #include "PetitionMgr.h"
 #include "Player.h"
 #include "PlayerScript.h"
@@ -116,6 +119,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -197,8 +201,6 @@ struct BotAIState
     // Open-world "abandon this fight, it's unwinnable" response (BotFlee.h) -- unlike
     // stuckDetector above, this one *does* act on what it sees.
     BotFleeState flee;
-
-
 
     // Death handling (see UpdateDeathHandling): true once this death has already started its
     // grace-period wait for an incoming resurrect, so the wait isn't restarted every tick.
@@ -703,6 +705,135 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& /*state*/)
 
 namespace BotAI
 {
+namespace
+{
+// Which weapons the bot's learned kit can actually use. An Ascension spell may carry
+// EquippedItemClass=WEAPON with a subclass mask (Annihilan Strike: one-hand axe/mace/sword/dagger/fist only)
+// and SPELL_ATTR3_REQUIRES_OFF_HAND_WEAPON (Twin Slice). Item scoring used to ignore both, so a Slayer
+// could take a two-handed polearm and lose its whole weapon kit (training fixture: 686 -> 6800 dmg/s once
+// it carried two one-handers). Computed once per learned-spell count per bot.
+struct KitWeaponDemand
+{
+    size_t spellCount = 0;
+    std::vector<uint32> melee;  // one subclass mask per spell family that needs a melee weapon
+    std::vector<uint32> ranged; // ... that needs a ranged weapon (bow/gun/crossbow/thrown/wand)
+    uint32 needsOffHand = 0;    // spell families that require an off-hand weapon
+    uint32 needsShield = 0;     // spell families that require an equipped shield (Shieldgore, Pulverize, Ram, ...)
+    bool offHandProc = false;   // a learned passive whose native proc only fires on off-hand swings
+};
+
+// Passives that no Spell.dbc field marks as off-hand dependent. Templar Zealot's Zealotry (92108) procs only on
+// OFF_ATTACK hits (AscensionTemplarEvents.cpp, case 92108); without an off-hand weapon the spec's resource
+// loop never starts, and its only weapon-gated active spell (Righteous Upheaval) is too thin a signal.
+constexpr uint32 OFFHAND_PROC_PASSIVES[] = { 92108 };
+
+std::mutex s_kitWeaponMutex;
+std::unordered_map<ObjectGuid, KitWeaponDemand> s_kitWeapon;
+
+constexpr uint32 KIT_RANGED_SUBCLASSES = (1u << ITEM_SUBCLASS_WEAPON_BOW) | (1u << ITEM_SUBCLASS_WEAPON_GUN) |
+    (1u << ITEM_SUBCLASS_WEAPON_CROSSBOW) | (1u << ITEM_SUBCLASS_WEAPON_THROWN) | (1u << ITEM_SUBCLASS_WEAPON_WAND);
+constexpr float KIT_WEAPON_POINTS = 25.0f;
+constexpr float KIT_SUBCLASS_CAP = 75.0f;
+constexpr float KIT_DUAL_WIELD_POINTS = 150.0f;
+constexpr float KIT_DUAL_WIELD_ENABLE = 50.0f;
+constexpr float KIT_WEAPON_CAP = 200.0f;
+constexpr float KIT_SHIELD_POINTS = 100.0f;
+
+KitWeaponDemand GetKitWeaponDemand(Player* bot)
+{
+    std::lock_guard<std::mutex> lock(s_kitWeaponMutex);
+    KitWeaponDemand& demand = s_kitWeapon[bot->GetGUID()];
+    if (demand.spellCount == bot->GetSpellMap().size())
+        return demand;
+
+    demand = KitWeaponDemand();
+    demand.spellCount = bot->GetSpellMap().size();
+    std::unordered_set<uint32> families;
+    for (uint32 passive : OFFHAND_PROC_PASSIVES)
+        if (bot->HasSpell(passive))
+            demand.offHandProc = true;
+    for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+    {
+        if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->IsPassive() || info->EquippedItemSubClassMask <= 0)
+            continue;
+        if (info->EquippedItemClass == ITEM_CLASS_ARMOR && (info->EquippedItemSubClassMask & (1 << ITEM_SUBCLASS_ARMOR_SHIELD)))
+        {
+            if (families.insert(sSpellMgr->GetFirstSpellInChain(spellId)).second)
+                ++demand.needsShield;
+            continue;
+        }
+        if (info->EquippedItemClass != ITEM_CLASS_WEAPON)
+            continue;
+        if (!families.insert(sSpellMgr->GetFirstSpellInChain(spellId)).second)
+            continue;
+        uint32 mask = uint32(info->EquippedItemSubClassMask);
+        if (mask & ~KIT_RANGED_SUBCLASSES)
+            demand.melee.push_back(mask);
+        else
+            demand.ranged.push_back(mask);
+        if (info->HasAttribute(SPELL_ATTR3_REQUIRES_OFF_HAND_WEAPON))
+            ++demand.needsOffHand;
+    }
+    return demand;
+}
+} // namespace
+
+float WeaponKitFit(Player* bot, ItemTemplate const* proto)
+{
+    // Ascension classes only: the stock 1-11 classes are not built around these masks.
+    if (!bot || !proto || bot->getClass() < 12)
+        return 0.0f;
+    bool const isShield = proto->Class == ITEM_CLASS_ARMOR && proto->InventoryType == INVTYPE_SHIELD;
+    if (proto->Class != ITEM_CLASS_WEAPON && !isShield)
+        return 0.0f;
+
+    KitWeaponDemand const demand = GetKitWeaponDemand(bot);
+    // A learned spell that requires an equipped shield makes a shield decisive and a two-hander (which blocks the
+    // off-hand slot) a loss. Defiance's only such spell, Shieldgore, failed every retry with no shield equipped.
+    if (isShield)
+        return demand.needsShield ? KIT_SHIELD_POINTS : 0.0f;
+    uint32 const bit = 1u << proto->SubClass;
+    // Subclass fit: +/-25 per learned spell family that is gated on weapon subclass, bounded so a long
+    // kit cannot swamp item level and stats.
+    auto subclassFit = [&](std::vector<uint32> const& masks)
+    {
+        float sum = 0.0f;
+        for (uint32 mask : masks)
+            sum += (mask & bit) ? KIT_WEAPON_POINTS : -KIT_WEAPON_POINTS;
+        return std::max(-KIT_SUBCLASS_CAP, std::min(KIT_SUBCLASS_CAP, sum));
+    };
+    // A weapon kit with an off-hand-weapon spell is a dual-wield kit: a two-hander forfeits it (decisive), a
+    // one-hander or an off-hand weapon enables it. "Weapon kit" = at least three weapon-gated melee spell
+    // families: the Felsworn caster spec also learns Twin Slice but has no weapon kit, and its staff must
+    // not lose to two daggers (Reaper Soul's single Dirge family sits on a full weapon kit and does count).
+    bool const dualKit = demand.offHandProc || (demand.needsOffHand >= 1 && demand.melee.size() >= 3);
+    float fit = 0.0f;
+    switch (proto->InventoryType)
+    {
+        case INVTYPE_2HWEAPON:
+            fit = subclassFit(demand.melee) - (dualKit ? KIT_DUAL_WIELD_POINTS : 0.0f) - (demand.needsShield ? KIT_SHIELD_POINTS : 0.0f);
+            break;
+        case INVTYPE_WEAPON:
+        case INVTYPE_WEAPONMAINHAND:
+            fit = subclassFit(demand.melee) + (dualKit ? KIT_DUAL_WIELD_ENABLE : 0.0f);
+            break;
+        case INVTYPE_WEAPONOFFHAND:
+            fit = dualKit ? KIT_DUAL_WIELD_ENABLE : 0.0f;
+            break;
+        case INVTYPE_RANGED:
+        case INVTYPE_RANGEDRIGHT:
+        case INVTYPE_THROWN:
+            fit = subclassFit(demand.ranged);
+            break;
+        default:
+            break;
+    }
+    return std::max(-KIT_WEAPON_CAP, std::min(KIT_WEAPON_CAP, fit));
+}
+
 float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role)
 {
     uint8 cls = bot->getClass();
@@ -762,7 +893,7 @@ float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role)
         }
         score += float(value) * weight;
     }
-    return score;
+    return score + WeaponKitFit(bot, proto);
 }
 } // namespace BotAI
 
@@ -2933,6 +3064,7 @@ SpellCastResult LogCastAttempt(Player* bot, uint32 spellId, Unit* target, char c
         bot->SetFacingToObject(target);
     }
     SpellCastResult result = bot->CastSpell(target, spellId, false);
+    CoaTraining::CastResult(bot, spellId, uint32(result), target);
     LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' {} spell {} on '{}' (result {}).",
         bot->GetName(), verb, spellId, target->GetName(), uint32(result));
     BotAI::SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
@@ -3556,7 +3688,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     }
     else if (target && target->IsAlive() && bot->IsValidAttackTarget(target))
     {
-        if (bot->IsMounted())
+        if (bot->IsMounted() && !bot->IsInTinkerMechsuit())
             BotMovement::RequestDismount(bot, MoveOwner::Combat, DismountReason::Combat);
         state.lastCombatTargetGuid = target->GetGUID();
     }
@@ -3757,7 +3889,11 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     if (bot->HasUnitState(UNIT_STATE_STUNNED))
         return;
 
-    BotEngageProfile engageProfile = GetOrComputeBotEngageProfile(bot, combatRole, state);
+    BotEngageProfile engageProfile = GetOrComputeBotEngageProfile(bot, profileRole, state);
+    // Mechanics is ranged DPS in both its builder and Mechsuit windows.
+    if (bot->getClass() == CLASS_TINKER && bot->GetPlayerSetting("core.ascension_active_spec", 0).value == 50 &&
+        profileRole == BotRole::Dps)
+        engageProfile.preferredDist = 20.0f;
     float preferredDist = engageProfile.preferredDist;
     float distance = bot->GetDistance(target);
 
@@ -3809,8 +3945,31 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         }
     }
 
+    // A null-client bot must issue the same pet attack command a player would.
+    // Native passive pets intentionally ignore owner attacks without this command.
+    // Preserve an explicit pet Stay command and any existing living pet target.
+    if (Pet* pet = bot->GetPet())
+        if (pet->IsAlive() && pet->IsInWorld() && pet->IsAIEnabled &&
+            pet->GetOwnerGUID() == bot->GetGUID() && pet->GetMap() == bot->GetMap() &&
+            pet->InSamePhase(bot) && (!pet->GetVictim() || !pet->GetVictim()->IsAlive()))
+            if (CharmInfo* charm = pet->GetCharmInfo())
+                if (!charm->HasCommandState(COMMAND_STAY) && bot->GetSession())
+                    bot->GetSession()->HandlePetActionHelper(pet, pet->GetGUID(), COMMAND_ATTACK,
+                        ACT_COMMAND, target->GetGUID());
+
     if (preferredDist > MELEE_ENGAGE_RANGE)
     {
+        // This core's ChaseMovementGenerator::PositionOkay only enforces a maximum
+        // distance. ChaseRange alone cannot retreat a ranged bot out of its dead zone.
+        // Leave hysteresis below the chase stopping band: collision-distance rounding
+        // can otherwise leave the bot just below 70% forever, skipping every action.
+        if (distance < preferredDist * 0.6f)
+        {
+            float x, y, z;
+            target->GetNearPoint(bot, x, y, z, 0.0f, preferredDist, target->GetAngle(bot));
+            BotMovement::MoveTo(bot, MoveOwner::Combat, x, y, z);
+            return; // finish repositioning before a stationary filler stops the move
+        }
         // A comfortable band, not a razor-thin one -- retreats once the enemy closes past
         // ~70% of preferredDist, holds anywhere between that and preferredDist itself.
         BotMovement::Chase(bot, MoveOwner::Combat, target, ChaseRange(preferredDist * 0.7f, preferredDist));
@@ -3949,24 +4108,36 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
         spellId = BotAI::SelectClassRotationSpell(bot, target, bot->getClass(), activeSpec);
     }
+    // Older class adapters may return a raw root or inactive lower rank.
+    // Normalize at their shared boundary, then validate the actual cast target.
+    auto legacyCandidate = [&](uint32 selected) -> uint32
+    {
+        if (!selected) return 0;
+        uint32 first = sSpellMgr->GetFirstSpellInChain(selected);
+        uint32 resolved = BotAI::SpellResolver::ResolveCastSpell(bot, first ? first : selected);
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(resolved);
+        if (!info) return 0;
+        Unit* recipient = (info->IsPositive() || !info->NeedsExplicitUnitTarget()) ? bot : target;
+        return BotAI::IsKnownSpellCastable(bot, resolved, recipient, info->IsPositive()) ? resolved : 0;
+    };
     if (!spellId)
-        spellId = BotAI::SelectReaperRotationSpell(bot, target);
+        spellId = legacyCandidate(BotAI::SelectReaperRotationSpell(bot, target));
     if (!spellId)
-        spellId = BotAI::SelectFelswornRotationSpell(bot, target);
+        spellId = legacyCandidate(BotAI::SelectFelswornRotationSpell(bot, target));
     if (!spellId)
-        spellId = BotAI::SelectBloodmageRotationSpell(bot, target);
+        spellId = legacyCandidate(BotAI::SelectBloodmageRotationSpell(bot, target));
     if (!spellId)
-        spellId = BotAI::SelectStormbringerRotationSpell(bot, target);
+        spellId = legacyCandidate(BotAI::SelectStormbringerRotationSpell(bot, target));
     if (!spellId)
-        spellId = BotAI::SelectPrimalistRotationSpell(bot, target);
+        spellId = legacyCandidate(BotAI::SelectPrimalistRotationSpell(bot, target));
     if (!spellId)
-        spellId = BotAI::SelectRunemasterRotationSpell(bot, target);
+        spellId = legacyCandidate(BotAI::SelectRunemasterRotationSpell(bot, target));
     if (!spellId)
-        spellId = BotAI::SelectXorothRotationSpell(bot, target);
+        spellId = legacyCandidate(BotAI::SelectXorothRotationSpell(bot, target));
     if (!spellId)
-        spellId = BotAI::SelectChronomancerRotationSpell(bot, target);
+        spellId = legacyCandidate(BotAI::SelectChronomancerRotationSpell(bot, target));
     if (!spellId)
-        spellId = BotAI::SelectNecromancerRotationSpell(bot, target);
+        spellId = legacyCandidate(BotAI::SelectNecromancerRotationSpell(bot, target));
 
     // 6. Single-target offensive spell (when not in AoE condition, focus single-target without wasting AoE)
     if (!spellId && nearbyEnemies < 3)
@@ -4202,6 +4373,11 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     bool worthBreakingFormationFor = threat || (healTarget && healTarget->GetHealthPct() < criticalHealPct);
     if (!healTarget || !worthBreakingFormationFor)
     {
+        // Group utility still matters after a fight, including native resurrection
+        // spells that cannot be used in combat. Do not require a hostile victim.
+        CombatContext utilityContext = CombatContext::Build(bot, threat);
+        if (BotAI::CombatUtility::Execute(bot, utilityContext, diff, state.nextCastAllowedMs))
+            return;
         // Nobody needs healing right now -- a real healer doesn't stand idle with a full
         // group, they contribute damage. Dps, not Tank: a Healer bot has no business trying
         // to hold aggro just because there's nothing to heal this tick. profileRole is also
@@ -4500,6 +4676,22 @@ void Update(Player* bot, uint32 diff)
     // A taxi flight is a server-driven spline; anything that touches the MotionMaster now -- a
     // follow, a grind walk-back, an ambient leg -- would pull the bot off its gryphon mid-air.
     if (bot->IsInFlight())
+        return;
+
+    if (CoaTraining::Owns(bot->GetGUID()))
+    {
+        if (!CoaTraining::Running(bot->GetGUID()) || !bot->IsAlive()) return;
+        BotMovement::Update(bot, diff);
+        state.role = GetRoleForClassSpec(bot->getClass(), bot->GetPlayerSetting("core.ascension_active_spec", 0).value);
+        if (state.role == BotRole::Healer) UpdateHealer(bot, diff, state);
+        else if (state.role == BotRole::Support) UpdateSupport(bot, diff, state);
+        else UpdateOffensive(bot, diff, state.role, state.role, state);
+        return;
+    }
+
+    // Dedicated training actors wait for their next arena instead of starting
+    // open-world tasks after a reset clears their transient suspended state.
+    if (BotGear::TrainingLocked(bot))
         return;
 
     BotMovement::Update(bot, diff);

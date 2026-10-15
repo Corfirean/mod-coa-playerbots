@@ -120,6 +120,11 @@ namespace BotAI
     // Evaluates and scores an item for a bot based on role and class stat affinity.
     float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role);
 
+    // The weapon part of ScoreItemForBot on its own: points for weapons (and an off-hand weapon where a
+    // learned spell needs one) that the bot's learned Ascension kit can use, minus points for weapons that
+    // would make learned spells uncastable (wrong subclass, two-hander with an off-hand-only spell).
+    float WeaponKitFit(Player* bot, ItemTemplate const* proto);
+
     // Sets a manual movement/engagement command (see BotManualCommand above). pullTarget is
     // only used for Pull -- the guid of whatever the commanding player currently has
     // selected, resolved by the caller (BotAddonChat.cpp) so this API doesn't need to know
