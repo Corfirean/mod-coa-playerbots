@@ -579,6 +579,7 @@ namespace BotAI
                     Aura const* thirst = ctx.bot->GetAura(706613);
                     return thirst && thirst->GetStackAmount() >= 5 ? 290.0f : -1.0f;
                 };
+                d.minSelfHpPct = 40.0f; // pays health: below 40% it bled Sanguine to 1% with no incoming damage and sent it fleeing for ~30 s
                 p.abilities.push_back(d);
             }
             {
@@ -590,6 +591,7 @@ namespace BotAI
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 6000;
                 d.baseScore = 275.0f;
+                d.minSelfHpPct = 40.0f; // pays health: below 40% it bled Sanguine to 1% with no incoming damage and sent it fleeing for ~30 s
                 p.abilities.push_back(d);
             }
             {
@@ -610,6 +612,7 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 150.0f;
+                d.minSelfHpPct = 40.0f; // pays health: below 40% it bled Sanguine to 1% with no incoming damage and sent it fleeing for ~30 s
                 p.abilities.push_back(d);
             }
 
@@ -632,6 +635,7 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
                 d.baseScore = 240.0f;
+                d.minSelfHpPct = 40.0f; // pays health: below 40% it bled Sanguine to 1% with no incoming damage and sent it fleeing for ~30 s
                 p.abilities.push_back(d);
             }
 
@@ -696,6 +700,7 @@ namespace BotAI
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 160.0f;
+                d.minSelfHpPct = 40.0f; // pays health: below 40% it bled Sanguine to 1% with no incoming damage and sent it fleeing for ~30 s
                 p.abilities.push_back(d);
             }
 
