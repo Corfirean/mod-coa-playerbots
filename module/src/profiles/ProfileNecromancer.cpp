@@ -332,7 +332,60 @@ namespace BotAI
                 d.rootSpellId = 501969;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 170.0f;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // instant DoT, 35% of real casts
+                d.name = "Crypt Swarm";
+                d.rootSpellId = 500965;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 3000;
+                d.baseScore = 255.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Harvest Plague";
+                d.rootSpellId = 500968;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 30 s cooldown summon, 15% of real casts
+                d.name = "Animate: Skeletal Archer";
+                d.rootSpellId = 805040;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 245.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // energize effect: a 12 s cooldown mana refund
+                d.name = "Glacial Tap (mana)";
+                d.rootSpellId = 805369;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 12000;
+                d.baseScore = 190.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Unholy Frenzy";
+                d.rootSpellId = 805029;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 180000;
+                d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
 
@@ -491,6 +544,36 @@ namespace BotAI
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 180.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 6 s cooldown nuke, 64% of real casts
+                d.name = "Glacial Impact";
+                d.rootSpellId = 704355;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 255.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Corpse Explosion";
+                d.rootSpellId = 533236;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Unholy Frenzy";
+                d.rootSpellId = 805029;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 180000;
+                d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
 

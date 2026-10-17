@@ -203,8 +203,7 @@ namespace BotAI
                 d.rootSpellId = 800165;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 8000;
-                d.baseScore = 230.0f;
+                d.baseScore = 245.0f; // rage-limited main spender (48% of real casts); the 8 s throttle capped it at a third of that
                 p.abilities.push_back(d);
             }
 
@@ -240,6 +239,36 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 80.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // ranged weapon strike, 17% of real casts
+                d.name = "Damnation";
+                d.rootSpellId = 520062;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Dark Regeneration";
+                d.rootSpellId = 500094;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 45000;
+                d.baseScore = 180.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 400 rage ranged weapon strike; 17 casts in the baseline
+                d.name = "Shadowblast";
+                d.rootSpellId = 804191;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 225.0f;
                 p.abilities.push_back(d);
             }
 
@@ -412,6 +441,67 @@ namespace BotAI
                 d.maxSelfHpPct = 45.0f;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 270.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 6 s cooldown melee strike, 14.5% of real casts
+                d.name = "Purifier's Edge";
+                d.rootSpellId = 802019;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 250.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // rage spender, 20% of real casts
+                d.name = "Smite Evil";
+                d.rootSpellId = 802004;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f; // 1200 damage per cast for 400 rage
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // rage spender, 26% of real casts
+                d.name = "Dusk Blade";
+                d.rootSpellId = 802020;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 250.0f; // 2400 damage per cast for 300 rage
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Torchlight";
+                d.rootSpellId = 503662;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 300 rage; the legacy rotation cast it 90 times in the baseline
+                d.name = "Dawn Blade";
+                d.rootSpellId = 802024;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 252.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Brand of the Condemned";
+                d.rootSpellId = 562573;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 8000;
+                d.baseScore = 215.0f;
                 p.abilities.push_back(d);
             }
 

@@ -454,8 +454,8 @@ namespace BotAI
                 d.rootSpellId = 801191;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 195.0f;
+                
+                d.baseScore = 215.0f; // focus-limited main shot: 37-40% of real casts, the 6 s throttle capped it
                 p.abilities.push_back(d);
             }
             {
@@ -464,7 +464,7 @@ namespace BotAI
                 d.rootSpellId = 500073;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 5000;
+                d.internalThrottleMs = 15000; // real players cast it for 1% of their casts; every 5 s it took 29% of the bot
                 d.baseScore = 185.0f;
                 p.abilities.push_back(d);
             }
@@ -506,6 +506,27 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 120.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // focus-paid ranged weapon strike, 6% of real casts
+                d.name = "Deadshot";
+                d.rootSpellId = 520227;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Skirmish";
+                d.rootSpellId = 802039;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 8000;
+                d.missingAuraOnCaster = 802039;
+                d.baseScore = 205.0f;
                 p.abilities.push_back(d);
             }
 
@@ -685,6 +706,38 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 120.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // focus spender around the caster, needs Advantage; 19% of real casts
+                d.name = "Quills";
+                d.rootSpellId = 560966;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.baseScore = 140.0f; // 154 damage per cast for 30 focus: starves Skullpiercer (3900)
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Ravage";
+                d.rootSpellId = 803851;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Serrated Shot (Brigand)";
+                d.rootSpellId = 500073;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 8000;
+                d.baseScore = 230.0f; // 4900 damage per cast
                 p.abilities.push_back(d);
             }
 

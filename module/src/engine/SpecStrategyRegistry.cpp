@@ -302,9 +302,12 @@ namespace BotAI
         // A baseline that is a timed, long-cooldown form (Accursed Form 30 s cd, Bolstered Form 60 s cd) expires mid-fight and
         // cannot be re-entered until the cooldown ends. Blocking the whole rotation until then idled Accursed27 for 26 s and
         // Domination57 for 44 s of a 60 s fight. Spells that need the form are still rejected natively by their caster-aura rule.
+        // Only a cooldown that ends within FORM_WAIT_MS is worth waiting out: the previous 5 s limit still idled Accursed27 for
+        // the last 5 s of every cycle (8 gaps, 30 s of a 180 s fight).
         {
+            constexpr uint32 FORM_WAIT_MS = 1500;
             uint32 formToCast = SpellResolver::ResolveSpell(bot, formSpellId);
-            if (formToCast && bot->GetSpellCooldownDelay(formToCast) > 5000)
+            if (formToCast && bot->GetSpellCooldownDelay(formToCast) > FORM_WAIT_MS)
             {
                 runtime.lastStateStatus = CombatStateStatus::Ready;
                 return CombatStateStatus::Ready;

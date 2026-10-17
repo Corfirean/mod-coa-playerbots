@@ -214,12 +214,6 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::CrowdControl;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 240.0f;
-                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
-                {
-                    if (!ctx.victim) return -1.0f;
-                    float dist = ctx.bot->GetDistance(ctx.victim);
-                    return (dist >= 8.0f && dist <= 25.0f) ? 80.0f : -1.0f;
-                };
                 p.abilities.push_back(d);
             }
 
@@ -248,7 +242,28 @@ namespace BotAI
                 d.rootSpellId = 805150;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 185.0f;
+                d.minAoETargets = 1; // cheap cleave, real players spend energy on it even on one target (28-31% of casts)
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 15 s cooldown weapon strike
+                d.name = "Centurion Strike";
+                d.rootSpellId = 802286;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 250.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Standard of Valiance";
+                d.rootSpellId = 800319;
+                d.tags = AbilityTag::TotemOrWard | AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
 
@@ -326,8 +341,9 @@ namespace BotAI
                 d.rootSpellId = 805150;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 220.0f;
+                
+                d.minAoETargets = 1;
+                d.baseScore = 235.0f;
                 p.abilities.push_back(d);
             }
 
@@ -338,13 +354,7 @@ namespace BotAI
                 d.rootSpellId = 802284;
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::CrowdControl;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 210.0f;
-                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
-                {
-                    if (!ctx.victim) return -1.0f;
-                    float dist = ctx.bot->GetDistance(ctx.victim);
-                    return (dist >= 8.0f && dist <= 25.0f) ? 80.0f : -1.0f;
-                };
+                d.baseScore = 245.0f;
                 p.abilities.push_back(d);
             }
 
@@ -365,6 +375,37 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 175.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // energy spender around the caster, 28% of real casts
+                d.name = "Ballad of the Dragonslayer";
+                d.rootSpellId = 574364;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Standard of Rallying";
+                d.rootSpellId = 500263;
+                d.tags = AbilityTag::TotemOrWard | AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 190.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // about 1,600 damage per cast against 720 for Ballad of the Dragonslayer; it was only cast by the generic fallback
+                d.name = "Ballad of the Conqueror";
+                d.rootSpellId = 574340;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 240.0f;
                 p.abilities.push_back(d);
             }
 

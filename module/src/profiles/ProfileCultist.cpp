@@ -244,7 +244,7 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Sanity Tap";
                 d.rootSpellId = 802575;
-                d.tags = AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::Buff; // not OffensiveCD: a mana/insanity spell real players use constantly (21% of casts)
                 d.targetType = TargetType::Self;
                 d.minSelfHpPct = 55.0f;
                 d.baseScore = 300.0f;
@@ -288,6 +288,35 @@ namespace BotAI
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 130.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // weapon strike, 43% of real casts
+                d.name = "Blade of the Empire";
+                d.rootSpellId = 500720;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 150.0f; // free weapon strike: filler
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // needs the native Madness/Insanity aura
+                d.name = "Entropic Slam";
+                d.rootSpellId = 804152;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Hammer of Twilight";
+                d.rootSpellId = 805116;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 225.0f;
                 p.abilities.push_back(d);
             }
 
@@ -420,7 +449,56 @@ namespace BotAI
                 d.rootSpellId = 800416;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 170.0f;
+                d.baseScore = 220.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 20 s cooldown beam, 18% of real casts
+                d.name = "Obliteration Beam";
+                d.rootSpellId = 805572;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 245.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Blade of the Empire";
+                d.rootSpellId = 500720;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 150.0f; // free weapon strike: filler
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Entropic Slam";
+                d.rootSpellId = 804152;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Darkwither";
+                d.rootSpellId = 800446;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Eldritch Devastation";
+                d.rootSpellId = 802727;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
 
@@ -546,7 +624,47 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 6000;
-                d.baseScore = 180.0f;
+                d.baseScore = 245.0f; // 10 s cooldown: cast on cooldown instead of being starved by the free strikes;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 21% of real casts
+                d.name = "Entropic Slam";
+                d.rootSpellId = 804152;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 250.0f; // 3300 damage per cast against 1750 for Blade of the Empire
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Netherstrike";
+                d.rootSpellId = 806222;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Rift";
+                d.rootSpellId = 806250;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 45000;
+                d.baseScore = 220.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // free, needs the native aura 680602; 16 casts in the baseline
+                d.name = "Hammer of Twilight";
+                d.rootSpellId = 805116;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.requiredAuraOnCaster = 680602;
+                d.baseScore = 255.0f; // about 5,000 damage per cast against 1,750 for Blade of the Empire;
                 p.abilities.push_back(d);
             }
 

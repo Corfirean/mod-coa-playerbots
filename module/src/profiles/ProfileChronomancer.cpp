@@ -146,6 +146,37 @@ namespace BotAI
                 d.baseScore = 120.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // 5 s cooldown self shield, 21% of real casts
+                d.name = "Aeon of Protection";
+                d.rootSpellId = 806292;
+                d.tags = AbilityTag::Buff | AbilityTag::Shield;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 5000;
+                d.baseScore = 220.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Ripple";
+                d.rootSpellId = 806296;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Timeguard";
+                d.rootSpellId = 804441;
+                d.tags = AbilityTag::Shield;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.internalThrottleMs = 120000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 
@@ -255,8 +286,8 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 230.0f;
+                d.internalThrottleMs = 3000; // real players keep it rolling: 34% of casts
+                d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
 
@@ -289,6 +320,38 @@ namespace BotAI
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 170.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 15% of real casts; the DBC names a stance (mask 2^30), the native check decides
+                d.name = "Discordance";
+                d.rootSpellId = 503875;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 150.0f; // 580 damage per cast
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Accelerated Recovery";
+                d.rootSpellId = 800857;
+                d.tags = AbilityTag::PeriodicHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.maxTargetHpPct = 90.0f; // a heal-over-time cast on a healthy party only wasted the global cooldown
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 8000;
+                d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // about 1,750 damage per cast and no cooldown: the main damage spell, previously cast only by the generic fallback that the other descriptors starved
+                d.name = "Unmake";
+                d.rootSpellId = 574345;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
 
@@ -366,7 +429,7 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 6000;
-                d.baseScore = 240.0f;
+                d.baseScore = 180.0f;
                 p.abilities.push_back(d);
             }
 
@@ -390,7 +453,7 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 6000;
-                d.baseScore = 220.0f;
+                d.baseScore = 240.0f;
                 p.abilities.push_back(d);
             }
 
@@ -453,6 +516,26 @@ namespace BotAI
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 170.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Singularity Core";
+                d.rootSpellId = 804438;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 15000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Accelerated Recovery";
+                d.rootSpellId = 800857;
+                d.tags = AbilityTag::PeriodicHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.internalThrottleMs = 8000;
+                d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
 

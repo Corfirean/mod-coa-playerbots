@@ -409,6 +409,47 @@ namespace BotAI
                 d.baseScore = 140.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // real players cast it on its 3 s cooldown (15.7% of casts); weapon strike, native item rule applies
+                d.name = "Smash";
+                d.rootSpellId = 801755;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Ale of the God-King";
+                d.rootSpellId = 805780;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 15000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // cone damage, needs the native caster aura
+                d.name = "Breath of the Northlands";
+                d.rootSpellId = 800838;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Unbridled Rage";
+                d.rootSpellId = 801761;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.missingAuraOnCaster = 801761;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 

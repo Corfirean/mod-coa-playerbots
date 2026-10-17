@@ -124,6 +124,38 @@ namespace BotAI
                 };
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // 10 s cooldown nuke
+                d.name = "Lava Shard";
+                d.rootSpellId = 803950;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Blaze";
+                d.rootSpellId = 805500;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Meteor (single target)";
+                d.rootSpellId = 500135;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 30000;
+                d.minAoETargets = 1;
+                d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 
@@ -220,7 +252,8 @@ namespace BotAI
                 d.rootSpellId = 500135;
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 15000;
+                d.internalThrottleMs = 30000;
+                d.minAoETargets = 1; // 30 s cooldown ground nuke, real players use it on one target as well
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -266,7 +299,7 @@ namespace BotAI
                 d.rootSpellId = 803950;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 220.0f;
+                d.baseScore = 150.0f; // Lava Shard in Spell.dbc: the 10 s cooldown nuke, 44% of real casts
                 p.abilities.push_back(d);
             }
             {
@@ -287,7 +320,29 @@ namespace BotAI
                 d.rootSpellId = 800790;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 170.0f;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Blaze";
+                d.rootSpellId = 805500;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 255.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Fired Up!";
+                d.rootSpellId = 704823;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.missingAuraOnCaster = 704823;
+                d.baseScore = 235.0f;
                 p.abilities.push_back(d);
             }
 
@@ -410,7 +465,7 @@ namespace BotAI
                 d.rootSpellId = 803950;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 210.0f;
+                d.baseScore = 150.0f; // Lava Shard in Spell.dbc: 44% of real casts
                 p.abilities.push_back(d);
             }
 
@@ -421,7 +476,59 @@ namespace BotAI
                 d.rootSpellId = 800790;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 170.0f;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Meteor";
+                d.rootSpellId = 500135;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 30000;
+                d.minAoETargets = 1;
+                d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Draconic Invocation";
+                d.rootSpellId = 802119;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 180000;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Eruption";
+                d.rootSpellId = 800103;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 120000;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Aspect's Blessing";
+                d.rootSpellId = 802168;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Blaze";
+                d.rootSpellId = 805500;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 255.0f;
                 p.abilities.push_back(d);
             }
 

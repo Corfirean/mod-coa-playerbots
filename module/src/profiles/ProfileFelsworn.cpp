@@ -460,6 +460,57 @@ namespace BotAI
                 d.baseScore = 140.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // energy-free filler that needs the native caster aura; 52% of real casts
+                d.name = "Sargeron Smite";
+                d.rootSpellId = 802060;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 130.0f; // free filler: paid spenders go first (a free filler at 225 starved the energy spenders and cost Infernal 63% of its damage)
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Bane of Fire";
+                d.rootSpellId = 707901;
+                d.tags = AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Hateforged Barrier";
+                d.rootSpellId = 705129;
+                d.tags = AbilityTag::Buff | AbilityTag::Shield;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 30 energy, needs the native caster aura 803468; the legacy rotation cast it 36 times in the baseline and it vanished once the profile always found a filler
+                d.name = "Ruin";
+                d.rootSpellId = 801895;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 35 energy; 26 casts in the baseline
+                d.name = "Fel Fireball";
+                d.rootSpellId = 801312;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 

@@ -289,6 +289,26 @@ namespace BotAI
                 };
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                d.name = "Moonflow";
+                d.rootSpellId = 575030;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.internalThrottleMs = 10000;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // needs Scattered Stars on the target (native)
+                d.name = "Lunar Lance";
+                d.rootSpellId = 801132;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
 
             AddLunarEclipse(p);
             ProfileRegistry::RegisterProfile(std::move(p));
@@ -426,7 +446,7 @@ namespace BotAI
                 d.rootSpellId = 801978;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 230.0f;
+                d.baseScore = 245.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -549,7 +569,7 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 4000;
-                d.baseScore = 240.0f;
+                d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -559,7 +579,7 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 4000;
-                d.baseScore = 230.0f;
+                d.baseScore = 245.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -591,6 +611,47 @@ namespace BotAI
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 170.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 20 s cooldown melee DoT, 17% of real casts
+                d.name = "Astral Blade";
+                d.rootSpellId = 805563;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 20000;
+                d.baseScore = 250.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // needs Scattered Stars on the target (native)
+                d.name = "Lunar Lance";
+                d.rootSpellId = 801132;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Fan of Knives";
+                d.rootSpellId = 680703;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 15000;
+                d.minAoETargets = 1;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Umbral Blade";
+                d.rootSpellId = 680704;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
 

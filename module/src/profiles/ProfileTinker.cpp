@@ -292,6 +292,37 @@ namespace BotAI
                 d.baseScore = 180.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // 20% of real casts
+                d.name = "Build: Sentry Turret";
+                d.rootSpellId = 500239;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 210.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Build: Shield Beacon";
+                d.rootSpellId = 801799;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 190.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 6 s cooldown weapon strike
+                d.name = "Spanner Smash";
+                d.rootSpellId = 805351;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 205.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
         }
@@ -399,6 +430,47 @@ namespace BotAI
                 d.targetType = TargetType::Self;
                 d.internalThrottleMs = 6000;
                 d.baseScore = 120.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 17% of real casts
+                d.name = "Build: Replenishment Beacon";
+                d.rootSpellId = 560750;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Build: Restorative Beacon";
+                d.rootSpellId = 801801;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Build: Shield Beacon";
+                d.rootSpellId = 801799;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 190.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Nanobot Recharger";
+                d.rootSpellId = 803552;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.internalThrottleMs = 15000;
+                d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
 
@@ -529,6 +601,26 @@ namespace BotAI
                 d.targetType = TargetType::Self;
                 d.internalThrottleMs = 5000;
                 d.baseScore = 170.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 8 s cooldown bomb, 51% of real casts
+                d.name = "Bomb Toss";
+                d.rootSpellId = 801005;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 260.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Build: Sentry Turret";
+                d.rootSpellId = 500239;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
 

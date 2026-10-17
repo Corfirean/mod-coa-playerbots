@@ -411,6 +411,51 @@ namespace BotAI
                 d.baseScore = 140.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // the real main filler (47% of casts); pays health, cannot be cast in a Cursed Form
+                d.name = "Sanguine Rupture";
+                d.rootSpellId = 800774;
+                d.tags = AbilityTag::AoEDamage | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.minSelfHpPct = 40.0f;
+                d.baseScore = 110.0f; // deals no damage in the support kit (0 of 137 casts); as a filler it must not displace the heals and damage spells
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // needs the native Cursed Form requirement aura
+                d.name = "Ravenous Strike";
+                d.rootSpellId = 500123;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 185.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Taldaram's Torment (damage)";
+                d.rootSpellId = 800772;
+                d.tags = AbilityTag::PeriodicDamage | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.minSelfHpPct = 40.0f;
+                d.baseScore = 190.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // health-paid damage spell the legacy rotation used (66 casts in the baseline)
+                d.name = "Bloodmoon Blast";
+                d.rootSpellId = 500125;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.minSelfHpPct = 40.0f;
+                d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 
@@ -703,6 +748,18 @@ namespace BotAI
                 d.minSelfHpPct = 40.0f; // pays health: below 40% it bled Sanguine to 1% with no incoming damage and sent it fleeing for ~30 s
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // 65% of real casts: the filler between the Thirst spenders; pays health
+                d.name = "Sanguine Rupture";
+                d.rootSpellId = 800774;
+                d.tags = AbilityTag::AoEDamage | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.minSelfHpPct = 40.0f;
+                d.baseScore = 140.0f; // free filler between the Thirst spenders
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 
@@ -885,6 +942,48 @@ namespace BotAI
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 170.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // rage cleave inside the form, 12% of real casts
+                d.name = "Claw Sweep";
+                d.rootSpellId = 500169;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.baseScore = 175.0f; // 180 damage per cast on one target for 300 rage
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Bloodbolt";
+                d.rootSpellId = 804685;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // usable only outside the form (native exclusion)
+                d.name = "Sanguine Rupture";
+                d.rootSpellId = 800774;
+                d.tags = AbilityTag::AoEDamage | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.minSelfHpPct = 40.0f;
+                d.baseScore = 140.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Animated Blood";
+                d.rootSpellId = 573299;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
 

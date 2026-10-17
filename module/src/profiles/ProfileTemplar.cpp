@@ -400,9 +400,9 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Titanstrike (2H Holy Weapon Strike)";
                 d.rootSpellId = 806521;
-                d.tags = AbilityTag::MeleeAttack | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 15000;
+                
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -434,8 +434,8 @@ namespace BotAI
                 d.rootSpellId = 803157;
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::CrowdControl;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 220.0f;
+                // about 4,600 damage per cast, no native cooldown: cast whenever it is ready
+                d.baseScore = 255.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -485,7 +485,7 @@ namespace BotAI
                 d.rootSpellId = 801443;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 180.0f;
+                d.baseScore = 240.0f; // the real main spender: 41% of casts
                 p.abilities.push_back(d);
             }
             {
@@ -503,7 +503,26 @@ namespace BotAI
                 d.rootSpellId = 801445;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 160.0f;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Vindication";
+                d.rootSpellId = 801446;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Righteous Upheaval";
+                d.rootSpellId = 501562;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 20000;
+                d.baseScore = 215.0f;
                 p.abilities.push_back(d);
             }
 
@@ -641,9 +660,9 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Titanstrike";
                 d.rootSpellId = 806521;
-                d.tags = AbilityTag::MeleeAttack | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 15000;
+                
                 d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
@@ -718,7 +737,8 @@ namespace BotAI
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 4000;
-                d.baseScore = 185.0f;
+                d.minAoETargets = 1;
+                d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -736,7 +756,27 @@ namespace BotAI
                 d.rootSpellId = 804906;
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 165.0f;
+                d.baseScore = 225.0f; // damage over time strike, 13% of real casts
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 5 s cooldown weapon strike, 26% of real casts
+                d.name = "Argent Blade";
+                d.rootSpellId = 804929;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 245.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 25 energy; 13 casts in the baseline
+                d.name = "Chastise";
+                d.rootSpellId = 803157;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
 

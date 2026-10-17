@@ -292,7 +292,7 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::Execute;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 5000;
-                d.baseScore = 200.0f;
+                d.baseScore = 235.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -302,7 +302,7 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 4000;
-                d.baseScore = 180.0f;
+                d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -342,6 +342,36 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 120.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // needs the native aura 803031; 13% of real casts
+                d.name = "Doomrend";
+                d.rootSpellId = 800172;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 245.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Crow's Harvest";
+                d.rootSpellId = 504011;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.baseScore = 130.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Reliquary of the Lost";
+                d.rootSpellId = 500631;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 20000;
+                d.baseScore = 215.0f;
                 p.abilities.push_back(d);
             }
 
@@ -459,8 +489,9 @@ namespace BotAI
                 d.rootSpellId = 800174;
                 d.tags = AbilityTag::AoEDamage | AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 140.0f;
+                
+                d.minAoETargets = 1; // runic-power cleave, 12% of real casts even on one target
+                d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -510,6 +541,46 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 100.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // weapon strike, 27% of real casts
+                d.name = "Dirge";
+                d.rootSpellId = 801328;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f; // free weapon strike: filler
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // needs the native aura 803031
+                d.name = "Deathchaser";
+                d.rootSpellId = 805190;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Reliquary of the Lost";
+                d.rootSpellId = 500631;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 20000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Ghostly Weapon";
+                d.rootSpellId = 803997;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 803997;
+                d.baseScore = 205.0f;
                 p.abilities.push_back(d);
             }
 

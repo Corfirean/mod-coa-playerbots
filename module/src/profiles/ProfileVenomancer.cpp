@@ -152,6 +152,66 @@ namespace BotAI
                 d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // rage spender around the caster, 33% of real casts
+                d.name = "Carapace Crash";
+                d.rootSpellId = 803199;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.baseScore = 250.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Venomtip Poison";
+                d.rootSpellId = 803195;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Expulsion";
+                d.rootSpellId = 805094;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Barbed Stinger";
+                d.rootSpellId = 803196;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 20000;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 200 rage; 34 casts in the baseline
+                d.name = "Hivebreak";
+                d.rootSpellId = 803193;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 245.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Spider Pheromones";
+                d.rootSpellId = 803177;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 190.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 
@@ -636,6 +696,27 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 170.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 8 s cooldown nuke, 66% of real casts
+                d.name = "Serpent's Fang";
+                d.rootSpellId = 800946;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 255.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Wilt";
+                d.rootSpellId = 804982;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 245.0f;
                 p.abilities.push_back(d);
             }
 

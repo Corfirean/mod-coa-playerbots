@@ -346,6 +346,36 @@ namespace BotAI
                 };
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // the real main heal: 33% of casts
+                d.name = "Daybreak";
+                d.rootSpellId = 500147;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 5 s category strike healers use between heals (17% of casts)
+                d.name = "Gavel of Wrath";
+                d.rootSpellId = 800617;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Radiance";
+                d.rootSpellId = 800054;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 120000;
+                d.baseScore = 210.0f;
+                p.abilities.push_back(d);
+            }
 
             AddSunClericMechanics(p);
             ProfileRegistry::RegisterProfile(p);
@@ -443,7 +473,7 @@ namespace BotAI
                 d.rootSpellId = 800614;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 225.0f;
+                d.baseScore = 250.0f; // shares its 5 s category with Gavel of Light; real players use Grace (22% of casts), never Light
                 p.abilities.push_back(d);
             }
             {
@@ -545,6 +575,17 @@ namespace BotAI
                 d.baseScore = 40.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // 45 s cooldown, needs the native aura 807440
+                d.name = "Sunslam";
+                d.rootSpellId = 805629;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 45000;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
 
             AddSunClericMechanics(p);
             ProfileRegistry::RegisterProfile(p);
@@ -609,19 +650,18 @@ namespace BotAI
                 d.rootSpellId = 500154;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 150.0f;
+                
+                d.baseScore = 255.0f; // 25 s cooldown nuke, 27% of real casts; the 6 s throttle and low score kept it at a third of that
                 p.abilities.push_back(d);
             }
             {
                 AbilityDescriptor d;
                 d.name = "Sunset";
                 d.rootSpellId = 804584;
-                d.tags = AbilityTag::PeriodicDamage;
-                d.targetType = TargetType::CurrentTarget;
-                d.requireAuraMissingOnTarget = true;
-                d.internalThrottleMs = 4000;
-                d.baseScore = 140.0f;
+                d.tags = AbilityTag::Buff; // Dawn in Spell.dbc: a self spell gated by the native Dawn auras (16% of real casts)
+                d.targetType = TargetType::Self;
+                
+                d.baseScore = 245.0f;
                 p.abilities.push_back(d);
             }
 
@@ -645,6 +685,37 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 4000;
                 d.baseScore = 60.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Solar Concord";
+                d.rootSpellId = 301266;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Solar Invocation: Conquest";
+                d.rootSpellId = 800764;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 220.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Dawnfall";
+                d.rootSpellId = 806118;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 120000;
+                d.minAoETargets = 1;
+                d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
 

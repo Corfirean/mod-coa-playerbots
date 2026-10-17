@@ -281,6 +281,45 @@ namespace BotAI
                 };
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                d.name = "Potion Toss";
+                d.rootSpellId = 801661;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.baseScore = 175.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Mojo Beam";
+                d.rootSpellId = 500950;
+                d.tags = AbilityTag::PeriodicHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.internalThrottleMs = 14000;
+                d.baseScore = 190.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Shadow Effigy";
+                d.rootSpellId = 505339;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 12000;
+                d.baseScore = 185.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Stasis Ward";
+                d.rootSpellId = 801678;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 170.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
         }
@@ -321,7 +360,7 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Shadow Avatar";
                 d.rootSpellId = 705943;
-                d.tags = AbilityTag::OffensiveCD | AbilityTag::Buff;
+                d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 705943;
                 d.internalThrottleMs = 60000;
@@ -444,6 +483,27 @@ namespace BotAI
                 d.baseScore = 60.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // 10 s cooldown nuke, 11% of real casts
+                d.name = "Spirit Eclipse";
+                d.rootSpellId = 801607;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Call of Sseratus";
+                d.rootSpellId = 681222;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 40000;
+                d.missingAuraOnCaster = 681222;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
         }
@@ -559,7 +619,7 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 5000;
-                d.baseScore = 150.0f;
+                d.baseScore = 235.0f; // 18 s cooldown, real players keep it on cooldown (13% of casts)
                 p.abilities.push_back(d);
             }
             {
@@ -581,6 +641,26 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 60.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 10 s cooldown nuke, 17% of real casts
+                d.name = "Hexfire";
+                d.rootSpellId = 807042;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 245.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // free filler that the legacy rotation used: 14 casts in the baseline
+                d.name = "Malefic Wrath (filler)";
+                d.rootSpellId = 807037;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 120.0f;
                 p.abilities.push_back(d);
             }
 

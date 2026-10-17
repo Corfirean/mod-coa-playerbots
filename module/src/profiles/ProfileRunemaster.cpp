@@ -153,6 +153,17 @@ namespace BotAI
                 d.baseScore = 50.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // 8 s cooldown, 15% of real casts
+                d.name = "Primordial Blast";
+                d.rootSpellId = 800732;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 8000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(p);
 
@@ -321,6 +332,26 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 15000;
                 d.baseScore = 60.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Primordial Pulse";
+                d.rootSpellId = 300578;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 20000;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Glyphic Overload";
+                d.rootSpellId = 520099;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 45000;
+                d.baseScore = 225.0f;
                 p.abilities.push_back(d);
             }
 

@@ -16,6 +16,21 @@
 
 namespace BotAI
 {
+    namespace
+    {
+        // Discharge (spells 805288.. / 807254..) damages only enemies within 5 yards of the caster and refunds 15% of the
+        // mana bar. Cast from range it hit nothing: Wind and Lightning spent 40-46 global cooldowns per 180 s on it for
+        // zero damage (log-gap pass, I115). From range it stays available only as an emergency mana refund.
+        float DischargeScorer(CombatContext const& ctx, AbilityDescriptor const&)
+        {
+            constexpr float DISCHARGE_RADIUS = 5.0f;
+            constexpr float MANA_REFUND_BELOW_PCT = 40.0f;
+            if (ctx.bot && ctx.victim && ctx.bot->IsWithinDist(ctx.victim, DISCHARGE_RADIUS + ctx.victim->GetCombatReach(), false))
+                return 0.0f;
+            return ctx.botPowerPct < MANA_REFUND_BELOW_PCT ? 0.0f : -1.0f;
+        }
+    }
+
     void RegisterStormbringerProfiles()
     {
         // -------------------------------------------------------------
@@ -72,11 +87,12 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Discharge (AoE Spender)";
                 d.rootSpellId = 805288;
+                d.customScorer = DischargeScorer;
                 // Native Static spender/mana recovery is useful even with one enemy.
                 d.minAoETargets = 1;
-                d.tags = AbilityTag::AoEDamage | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 15000;
+                d.internalThrottleMs = 2500; // not a cooldown: real players spend Static on it constantly (16-26% of casts); OffensiveCD scaled it x0.15 on normal targets
                 d.baseScore = 210.0f;
                 p.abilities.push_back(d);
             }
@@ -88,8 +104,8 @@ namespace BotAI
                 d.rootSpellId = 804020;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 4000;
-                d.baseScore = 190.0f;
+                // free, no cooldown: the 4 s throttle left Maelstrom channelling Stormflow (310 damage/s) instead
+                d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
 
@@ -102,7 +118,7 @@ namespace BotAI
                 d.rootSpellId = 501421;
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 175.0f;
+                d.baseScore = 260.0f; // finishing blow (native: target below 35% health), 22-46% of real casts
                 p.abilities.push_back(d);
             }
             {
@@ -120,7 +136,7 @@ namespace BotAI
                 d.rootSpellId = 500928;
                 d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 215.0f;
+                d.baseScore = 160.0f;
                 d.requireAuraMissingOnTarget = true;
                 d.internalThrottleMs = 6000;
                 p.abilities.push_back(d);
@@ -167,6 +183,34 @@ namespace BotAI
                 d.missingAuraOnCaster = 804018;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 140.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Eye of the Storm";
+                d.rootSpellId = 806307;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Conjure Storm";
+                d.rootSpellId = 800227;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Charge";
+                d.rootSpellId = 804826;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 215.0f;
                 p.abilities.push_back(d);
             }
 
@@ -275,11 +319,12 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Discharge";
                 d.rootSpellId = 805288;
+                d.customScorer = DischargeScorer;
                 // Native Static spender/mana recovery is useful even with one enemy.
                 d.minAoETargets = 1;
-                d.tags = AbilityTag::AoEDamage | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 15000;
+                d.internalThrottleMs = 2500;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
@@ -291,8 +336,45 @@ namespace BotAI
                 d.rootSpellId = 804020;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 4000;
+                // free, no cooldown: the 4 s throttle left Maelstrom channelling Stormflow (310 damage/s) instead
                 d.baseScore = 180.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // finishing blow: the native rule needs a target below 35% health (aura state 13); 43% of real casts
+                d.name = "Electrocute";
+                d.rootSpellId = 801844;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 260.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Eye of the Storm";
+                d.rootSpellId = 806307;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Updraft";
+                d.rootSpellId = 570166;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Gale";
+                d.rootSpellId = 804036;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 130.0f; // free filler (700 damage per cast), below the spenders
                 p.abilities.push_back(d);
             }
 
@@ -367,11 +449,12 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Discharge (Burst)";
                 d.rootSpellId = 805288;
+                d.customScorer = DischargeScorer;
                 // Native Static spender/mana recovery is useful even with one enemy.
                 d.minAoETargets = 1;
-                d.tags = AbilityTag::AoEDamage | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 15000;
+                d.internalThrottleMs = 2500; // not a cooldown: real players spend Static on it constantly (16-26% of casts); OffensiveCD scaled it x0.15 on normal targets
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
@@ -395,7 +478,7 @@ namespace BotAI
                 d.rootSpellId = 804020;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 4000;
+                // free, no cooldown: the 4 s throttle left Maelstrom channelling Stormflow (310 damage/s) instead
                 d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
@@ -409,7 +492,7 @@ namespace BotAI
                 d.rootSpellId = 501421;
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 175.0f;
+                d.baseScore = 260.0f; // finishing blow (native: target below 35% health), 22-46% of real casts
                 p.abilities.push_back(d);
             }
             {
@@ -442,6 +525,54 @@ namespace BotAI
                 d.tags = AbilityTag::Filler | AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 120.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Conjure Storm";
+                d.rootSpellId = 800227;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Charge";
+                d.rootSpellId = 804826;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Drown";
+                d.rootSpellId = 806407;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 220.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Body of Lightning";
+                d.rootSpellId = 500041;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 90000;
+                d.baseScore = 205.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Eye of the Storm";
+                d.rootSpellId = 806307;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
 

@@ -117,6 +117,16 @@ namespace BotAI
                 d.baseScore = 140.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // rage cleave, 7% of real casts
+                d.name = "Meatsaw";
+                d.rootSpellId = 800340;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 
@@ -188,7 +198,7 @@ namespace BotAI
                 d.rootSpellId = 801016;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 240.0f;
+                d.baseScore = 245.0f;
                 p.abilities.push_back(d);
             }
 
@@ -224,6 +234,67 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 12000;
                 d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // main rage spender, 30% of real casts
+                d.name = "Meatsaw";
+                d.rootSpellId = 800340;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 175.0f; // 45 rage for about 600 damage: a rage sink behind Skulltaker, Gore and Infernal Strike;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 6 s cooldown, needs the native Blood aura; 11% of real casts
+                d.name = "Warbringer";
+                d.rootSpellId = 802586;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Gore";
+                d.rootSpellId = 805555;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 250.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Burning Blade";
+                d.rootSpellId = 524920;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // free with the native Demonfire aura, about 2,960 damage per cast: the best of the kit, previously cast only by the generic fallback that the other descriptors starved
+                d.name = "Skulltaker";
+                d.rootSpellId = 803900;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.requiredAuraOnCaster = 500906;
+                d.baseScore = 265.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 15 s cooldown, about 5,700 damage per cast
+                d.name = "Brimstone Bludgeon";
+                d.rootSpellId = 520005;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 15000;
+                d.baseScore = 270.0f;
                 p.abilities.push_back(d);
             }
 

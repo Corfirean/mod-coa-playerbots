@@ -99,7 +99,7 @@ namespace BotAI
                 d.rootSpellId = 802557;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 190.0f;
+                d.baseScore = 235.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -108,7 +108,7 @@ namespace BotAI
                 d.rootSpellId = 560171;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 170.0f;
+                d.baseScore = 205.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -117,7 +117,7 @@ namespace BotAI
                 d.rootSpellId = 520566;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 150.0f;
+                d.baseScore = 190.0f; // rage-limited main strike: 47% of real casts
                 p.abilities.push_back(d);
             }
             {
@@ -158,6 +158,16 @@ namespace BotAI
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 80.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Seismic Crash";
+                d.rootSpellId = 803981;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 8000;
+                d.baseScore = 235.0f;
                 p.abilities.push_back(d);
             }
 
@@ -626,7 +636,7 @@ namespace BotAI
                 d.rootSpellId = 681119;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 120.0f;
+                d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
             {
