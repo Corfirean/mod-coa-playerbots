@@ -15,10 +15,12 @@ public:
     coa_training_spellscript() : AllSpellScript("coa_training_spellscript",
         {ALLSPELLHOOK_ON_SPELL_CHECK_CAST, ALLSPELLHOOK_ON_CAST_CANCEL, ALLSPELLHOOK_ON_CAST,
             ALLSPELLHOOK_ON_SUCCESSFUL_DISPEL, ALLSPELLHOOK_ON_HIT_RESULT}) { }
-    void OnSpellHitResult(Spell* spell, Unit* target, uint8 miss, uint32 damage, uint32, bool) override
+    void OnSpellHitResult(Spell* spell, Unit* target, uint8 miss, uint32 damage, uint32 healing, bool) override
     {
         if (miss == SPELL_MISS_NONE && damage && spell && spell->GetCaster())
             CoaTraining::RecordSpellDamage(spell->GetCaster(), target, spell->GetSpellInfo()->Id, damage, false);
+        if (miss == SPELL_MISS_NONE && healing && spell && spell->GetCaster())
+            CoaTraining::RecordSpellHeal(spell->GetCaster(), target, spell->GetSpellInfo()->Id, healing);
     }
     void OnSpellSuccessfulDispel(Spell* spell, Unit* target, SpellEffIndex, uint32 count) override
     {

@@ -763,6 +763,17 @@ void RecordSpellDamage(Unit* attacker, Unit* target, uint32 spell, uint32 amount
     Json row; row["type"] = "spell_damage"; row["spellId"] = spell; row["amount"] = std::min(amount, target->GetHealth());
     row["periodic"] = periodic; s->Event(row);
 }
+void RecordSpellHeal(Unit* healer, Unit* target, uint32 spell, uint32 amount)
+{
+    // Direct heals only (the hit-result hook has no periodic-heal counterpart): per-spell healing of the candidate on its own party.
+    if (!Enabled.load(std::memory_order_relaxed) || !target || !healer || !amount) return;
+    std::lock_guard lock(mutex);
+    Session* s = Lookup(target->GetGUID());
+    ObjectGuid principal = Principal(healer);
+    if (!s || !s->running || principal != s->candidate || Lookup(principal) != s) return;
+    Json row; row["type"] = "spell_heal"; row["spellId"] = spell; row["amount"] = amount;
+    row["target"] = uint64(target->GetGUID().GetCounter()); s->Event(row);
+}
 void RecordAura(Unit* target, uint32 spell, ObjectGuid caster, char const* event, uint32 stacks)
 {
     if (!Enabled.load(std::memory_order_relaxed) || !target) return;
