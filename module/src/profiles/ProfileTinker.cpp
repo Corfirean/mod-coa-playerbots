@@ -15,6 +15,7 @@
 #include "engine/SpecStrategyRegistry.h"
 #include "engine/SpellResolver.h"
 #include "Player.h"
+#include "Item.h"
 
 namespace BotAI
 {
@@ -346,10 +347,11 @@ namespace BotAI
                 d.name = "Nanobot Reconstruction";
                 d.rootSpellId = 801809;
                 d.tags = AbilityTag::Shield;
-                d.targetType = TargetType::LowestHealthAlly;
-                d.maxTargetHpPct = 60.0f;
+                d.targetType = TargetType::TankAlly; // one target at a time: keep the 60 s heal over time on the tank, as the guide says
+                d.maxTargetHpPct = 100.0f;
                 d.requireAuraMissingOnTarget = true;
-                d.internalThrottleMs = 8000;
+                d.refreshBelowMs = 5000;
+                d.internalThrottleMs = 2000;
                 d.baseScore = 340.0f;
                 p.abilities.push_back(d);
             }
@@ -362,7 +364,7 @@ namespace BotAI
                 d.tags = AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 80.0f;
-                d.baseScore = 280.0f;
+                d.baseScore = 255.0f; // 432 mana for about 1,100 healing over a 2.5 s cast; Emergency Heal does the same in 1.5 s for 234 mana
                 p.abilities.push_back(d);
             }
 
@@ -384,12 +386,12 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Build: ZIGGI-6K (Healing Turret)";
-                d.rootSpellId = 92140;
+                d.rootSpellId = 524840; // the real Build: ZIGGI-6K (92140 was a passive and never cast)
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
                 d.trackedEntityType = TrackedEntityType::Turret;
                 d.trackedEntityEntry = 500481;
-                d.internalThrottleMs = 30000;
+                d.internalThrottleMs = 120000;
                 d.baseScore = 220.0f;
                 p.abilities.push_back(d);
             }
@@ -439,8 +441,14 @@ namespace BotAI
                 d.rootSpellId = 560750;
                 d.tags = AbilityTag::TotemOrWard;
                 d.targetType = TargetType::Self;
-                d.internalThrottleMs = 30000;
-                d.baseScore = 230.0f;
+                d.internalThrottleMs = 15000; // 3 charges, 15 s recharge
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // 5% of base mana to every ally every 2.5 s for 15 s. Invention emptied its 12,000 mana pool in 90 s of a 180 s fight
+                    // while three charges sat unused: place it whenever mana drops under two thirds.
+                    return ctx.botPowerPct < 65.0f ? 0.0f : -1.0f;
+                };
+                d.baseScore = 420.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -449,8 +457,9 @@ namespace BotAI
                 d.rootSpellId = 801801;
                 d.tags = AbilityTag::TotemOrWard;
                 d.targetType = TargetType::Self;
-                d.internalThrottleMs = 30000;
-                d.baseScore = 225.0f;
+                d.internalThrottleMs = 8000; // 3 charges, 15 s recharge
+                d.minInjuredAllies = 2;
+                d.baseScore = 300.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -471,6 +480,68 @@ namespace BotAI
                 d.targetType = TargetType::LowestHealthAlly;
                 d.internalThrottleMs = 15000;
                 d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 1.5 s cast, 234 mana, 525 + 0.385 bonus healing: the efficient main direct heal (it was cast once per fight by the generic fallback)
+                d.name = "Emergency Heal";
+                d.rootSpellId = 802691;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.maxTargetHpPct = 90.0f;
+                d.baseScore = 310.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // instant long-range heal worth 1.5 bonus healing (Repair Shot 0.7), 15 s cooldown: cast on cooldown
+                d.name = "Zap!";
+                d.rootSpellId = 681298;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.maxTargetHpPct = 95.0f;
+                d.baseScore = 335.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 9 s area heal for panic windows, 180 s cooldown
+                d.name = "My Greatest Invention!";
+                d.rootSpellId = 560744;
+                d.tags = AbilityTag::AoEHeal;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 170000;
+                d.minInjuredAllies = 3;
+                d.baseScore = 400.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // overcharges every active beacon
+                d.name = "Overcharge";
+                d.rootSpellId = 524835;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 20000;
+                d.baseScore = 235.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // gun enchant (hour long): every direct heal splashes onto 3 to 5 more allies
+                d.name = "Stim Augmentation";
+                d.rootSpellId = 653239;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // Stim Augmentation is a temporary enchant (id 9997) on the gun, not an aura: cast it only while the gun does not carry it.
+                    Item* gun = ctx.bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+                    return (gun && gun->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) == 9997) ? -1.0f : 0.0f;
+                };
+                d.baseScore = 450.0f;
                 p.abilities.push_back(d);
             }
 
