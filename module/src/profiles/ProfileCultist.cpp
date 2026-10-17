@@ -186,6 +186,8 @@ namespace BotAI
             p.specId = 40; // Heretic
             p.role = BotRole::Healer;
             p.profileName = "Cultist_Heretic_Healer";
+            // Malevolence (5 yards) and Blade of the Empire are the main throughput of the spec: the guide has the Heretic heal standing in melee range.
+            p.preferredEngageDistance = PROFILE_MELEE_ENGAGE_DISTANCE;
 
             // Critical Direct Heal
             {
@@ -317,6 +319,84 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 225.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 60 s cooldown: the next Eldritch Mendings and Malevolences are instant and critical
+                d.name = "Eldritch Eye";
+                d.rootSpellId = 802049;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 360.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // main throughput per the guide: damages the enemy and puts Black Blood on nearby allies; 5 yard range
+                d.name = "Malevolence";
+                d.rootSpellId = 502241;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 320.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 30 minute tether on the tank, the guide recasts it every dungeon
+                d.name = "Abyssal Covenant";
+                d.rootSpellId = 500751;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::TankAlly;
+                d.internalThrottleMs = 120000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 380.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 3 charges, 30 s recharge: heals the next time the ally takes damage
+                d.name = "Dark Infusion";
+                d.rootSpellId = 570249;
+                d.tags = AbilityTag::PeriodicHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.internalThrottleMs = 6000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 320.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // shield on every party member
+                d.name = "Forbidden Ritual";
+                d.rootSpellId = 800105;
+                d.tags = AbilityTag::Shield;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 330.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // allies nearby receive increased healing for 30 s
+                d.name = "Tentacle of Yogg-Saron";
+                d.rootSpellId = 802042;
+                d.tags = AbilityTag::TotemOrWard;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 31000;
+                d.baseScore = 300.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // instant heal worth 0.416 bonus healing for 20 Insanity, 8 s cooldown
+                d.name = "Eldritch Shock";
+                d.rootSpellId = 808038;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.maxTargetHpPct = 90.0f;
+                d.baseScore = 285.0f;
                 p.abilities.push_back(d);
             }
 

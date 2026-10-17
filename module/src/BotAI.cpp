@@ -1447,6 +1447,10 @@ BotEngageProfile GetOrComputeBotEngageProfile(Player* bot, BotRole role, BotAISt
     else if (role == BotRole::Healer)
     {
         profile.preferredDist = RANGED_ENGAGE_DISTANCE;
+        // A healer whose healing is dealt through melee-range attacks (Heretic's Malevolence and Blade of the Empire) asks for it in its profile.
+        if (CombatProfile const* healerProfile = ProfileRegistry::FindProfile(classId, activeSpec, role))
+            if (healerProfile->preferredEngageDistance > 0.0f)
+                profile.preferredDist = healerProfile->preferredEngageDistance;
         profile.useRangedAutoRepeat = false;
     }
     else // Dps / Support

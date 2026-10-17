@@ -73,18 +73,6 @@ namespace BotAI
             }
 
             // Group Temporal Heal
-            {
-                AbilityDescriptor d;
-                d.name = "Waves of Time";
-                d.rootSpellId = 801277;
-                d.tags = AbilityTag::AoEHeal;
-                d.targetType = TargetType::Self;
-                d.minInjuredAllies = 2;
-                d.injuredAllyHpPctThreshold = 80.0f;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 310.0f;
-                p.abilities.push_back(d);
-            }
 
             // Primary Direct Heal
             {
@@ -117,12 +105,13 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Fortify Timeline";
-                d.rootSpellId = 804491;
-                d.tags = AbilityTag::Buff;
+                d.rootSpellId = 807458; // instant heal of the whole party (0.4 spell power) that also extends Accelerated Recovery
+                d.tags = AbilityTag::AoEHeal | AbilityTag::DirectHeal;
+                d.minInjuredAllies = 2;
                 d.targetType = TargetType::Self;
-                d.missingAuraOnCaster = 804491;
-                d.internalThrottleMs = 30000;
-                d.baseScore = 200.0f;
+                // 60 s cooldown: use on every cooldown while the party is hurt
+                d.internalThrottleMs = 60000;
+                d.baseScore = 350.0f;
                 p.abilities.push_back(d);
             }
 
@@ -151,11 +140,12 @@ namespace BotAI
                 AbilityDescriptor d;
                 // 5 s cooldown self shield, 21% of real casts
                 d.name = "Aeon of Protection";
-                d.rootSpellId = 806292;
+                d.rootSpellId = 806291; // Aeon of Resilience: Epoch casts faster and cheaper and bounces Accelerated Recovery (the throughput Aeon; Protection only adds an absorb)
+                d.missingAuraOnCaster = 806291;
                 d.tags = AbilityTag::Buff | AbilityTag::Shield;
                 d.targetType = TargetType::Self;
                 d.internalThrottleMs = 5000;
-                d.baseScore = 220.0f;
+                d.baseScore = 450.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -187,6 +177,30 @@ namespace BotAI
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 95.0f;
                 d.baseScore = 295.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 2.5 s party heal of 0.42 bonus healing, no cooldown
+                d.name = "Correct the Mistake";
+                d.rootSpellId = 572360;
+                d.tags = AbilityTag::AoEHeal | AbilityTag::DirectHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.maxTargetHpPct = 85.0f;
+                d.minInjuredAllies = 2;
+                d.baseScore = 305.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // stores half of the damage taken for 10 s and heals it back: use when several allies are hurt
+                d.name = "Temporal Anomaly";
+                d.rootSpellId = 806315;
+                d.tags = AbilityTag::AoEHeal;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 120000;
+                d.minInjuredAllies = 3;
+                d.baseScore = 390.0f;
                 p.abilities.push_back(d);
             }
 
