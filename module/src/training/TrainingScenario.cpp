@@ -34,6 +34,8 @@ bool Scenario::Find(std::string const& name, Scenario& s)
         s.partyDamage = 900; s.targetedDamage = 1400; return true;
     }
     if (name == "THREAT_STRESS") { s.group = true; s.melee = 200; s.threatPerSecond = 1000; return true; }
+    if (name == "HEAL_RAMP") { s.group = true; s.rampStep = 100; return true; }
+    if (name == "HEAL_POOL") { s.group = true; s.poolRefill = true; return true; }
     if (name == "SUPPORT_GROUP") { s.group = true; s.melee = 150; s.partyDamage = 300; return true; }
     return false;
 }
@@ -64,6 +66,9 @@ std::vector<Mechanic> Scenario::Timeline(uint32_t seed, uint32_t members) const
     if (movement) append(10000, 15000, "boss_move", 0, false);
     if (threatPerSecond) append(1000, 1000, "threat_pressure", threatPerSecond, false);
     if (dispelDebuffSpell) append(3000, 15000, "dispel_debuff", dispelDebuffSpell, false);
+    if (rampStep)
+        for (uint32_t t = 2000, k = 1; t < durationMs; t += rampIntervalMs, ++k) result.push_back({t, "ramp_hit", rampStep * k, 0});
+    if (poolRefill) append(2000, 1000, "pool_refill", 50, false);
     if (resurrectionDiagnostic) append(3000, durationMs, "resurrection_death", 0, false);
     std::stable_sort(result.begin(), result.end(), [](auto const& a, auto const& b) { return a.timeMs < b.timeMs; });
     return result;

@@ -119,6 +119,9 @@ struct Scenario
     uint32_t hazardDamage = 0;
     uint32_t threatPerSecond = 0;
     uint32_t enemyCount = 1;
+    uint32_t rampStep = 0;          // HEAL_RAMP: the k-th boss hit on its victim deals k * rampStep damage (healer ceiling test)
+    uint32_t rampIntervalMs = 2000;
+    bool poolRefill = false;        // HEAL_POOL: every second all other party members are brought back down to 50% health (healer throughput test)
     uint32_t targetHealthPct = 100; // EXECUTE: the dummy starts below the finishing-blow thresholds (e.g. 35% for Electrocute)
     uint32_t dispelDebuffSpell = 0;
     bool resurrectionDiagnostic = false;

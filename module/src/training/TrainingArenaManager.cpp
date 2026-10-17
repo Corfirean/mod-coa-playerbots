@@ -216,7 +216,7 @@ void MechanicEvent(Session& s, Mechanic const& m)
         Unit::DealDamage(boss, target, m.amount, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
         s.avoidableEvent = false;
     };
-    if (m.kind == "melee" || m.kind == "tankbuster")
+    if (m.kind == "melee" || m.kind == "tankbuster" || m.kind == "ramp_hit")
     {
         boss->GetThreatMgr().UpdateVictimForTesting();
         if (Unit* victim = boss->GetThreatMgr().GetCurrentVictim()) boss->Attack(victim, true);
@@ -256,6 +256,18 @@ void MechanicEvent(Session& s, Mechanic const& m)
                     if (Player* p = sBotMgr->FindBotPlayer(member.guid.GetCounter())) p->CombatStop(true);
                 Json ended; ended["type"] = "diagnostic_combat_ended"; s.Event(ended);
             }
+        }
+    }
+    else if (m.kind == "pool_refill")
+    {
+        // Healer throughput test: keep every other party member at 50% health so the healer always has something to heal.
+        for (auto const& member : s.members)
+        {
+            if (member.guid == s.candidate) continue;
+            Player* p = sBotMgr->FindBotPlayer(member.guid.GetCounter());
+            if (!p || !p->IsAlive() || p->GetHealth() * 2 <= p->GetMaxHealth()) continue;
+            s.avoidableEvent = false;
+            Unit::DealDamage(boss, p, p->GetHealth() - p->GetMaxHealth() / 2, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
         }
     }
     else if (m.kind == "party_aoe")
