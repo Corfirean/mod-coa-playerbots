@@ -105,10 +105,11 @@ namespace BotAI
                 d.rootSpellId = 800857;
                 d.tags = AbilityTag::PeriodicHeal;
                 d.targetType = TargetType::LowestHealthAlly;
-                d.maxTargetHpPct = 90.0f;
+                d.maxTargetHpPct = 100.0f; // free instant 15 s heal over time (49% of real healing): keep it rolling on every ally
                 d.requireAuraMissingOnTarget = true;
-                d.internalThrottleMs = 4000;
-                d.baseScore = 250.0f;
+                d.refreshBelowMs = 4000;
+                d.internalThrottleMs = 1500;
+                d.baseScore = 330.0f;
                 p.abilities.push_back(d);
             }
 
@@ -175,6 +176,17 @@ namespace BotAI
                 d.targetType = TargetType::LowestHealthAlly;
                 d.internalThrottleMs = 120000;
                 d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 2 s heal worth half the spell power that also grants Sands of Time, the resource Reverse Wound spends; it was cast only by the generic fallback, which the heal-over-time upkeep starved
+                d.name = "Epoch";
+                d.rootSpellId = 501779;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.maxTargetHpPct = 95.0f;
+                d.baseScore = 295.0f;
                 p.abilities.push_back(d);
             }
 

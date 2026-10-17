@@ -323,7 +323,7 @@ namespace BotAI
                 d.tags = AbilityTag::DirectHeal;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.maxTargetHpPct = 80.0f;
-                d.baseScore = 290.0f;
+                d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
 
@@ -373,6 +373,54 @@ namespace BotAI
                 d.tags = AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 120.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 10 s heal over time on every ally within 30 yards, 2 s cast, free: the main heal of the spec
+                d.name = "Mending Mist (Fog)";
+                d.rootSpellId = 800899;
+                d.tags = AbilityTag::PeriodicHeal | AbilityTag::AoEHeal;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 7000;
+                d.minInjuredAllies = 1;
+                d.baseScore = 340.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 24 s heal over time kept rolling on every ally, refreshed shortly before it ends
+                d.name = "Shadra's Prayer (HoT upkeep)";
+                d.rootSpellId = 800870;
+                d.tags = AbilityTag::PeriodicHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.internalThrottleMs = 1500;
+                d.requireAuraMissingOnTarget = true;
+                d.refreshBelowMs = 4500;
+                d.baseScore = 310.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // heal plus an absorb shield on a hurt ally
+                d.name = "Emerald Veil";
+                d.rootSpellId = 800926;
+                d.tags = AbilityTag::DirectHeal | AbilityTag::Shield;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.internalThrottleMs = 2500;
+                d.maxTargetHpPct = 75.0f;
+                d.baseScore = 285.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 2 charges, 12 s recharge; heals and extends Shadra's Prayer
+                d.name = "Alkahest";
+                d.rootSpellId = 504342;
+                d.tags = AbilityTag::DirectHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.maxTargetHpPct = 85.0f;
+                d.baseScore = 275.0f;
                 p.abilities.push_back(d);
             }
 
