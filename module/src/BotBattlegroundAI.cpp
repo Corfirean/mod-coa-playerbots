@@ -212,9 +212,28 @@ bool BotBattlegroundAI::Update(Player* bot, uint32 diff)
         return false;
     }
 
-    // Battleground Objectives have priority over proactive combat acquisition.
-    // Flag carriers should not abandon the flag to fight a random enemy.
-    // Objective handlers will defend against attackers while completing objectives.
+    // Acquire before objective handling returns to BotAI. Otherwise a bot without a
+    // victim never reaches the role combat code, including its retaliation fallback.
+    // Carriers keep moving towards the objective instead of initiating random fights.
+    bool const carryingFlag = bot->HasAura(BG_WS_SPELL_WARSONG_FLAG) ||
+        bot->HasAura(BG_WS_SPELL_SILVERWING_FLAG) || bot->HasAura(BG_EY_NETHERSTORM_FLAG_SPELL);
+    if (state.scanCooldownMs > diff)
+        state.scanCooldownMs -= diff;
+    else
+    {
+        state.scanCooldownMs = 500;
+        if (!carryingFlag)
+        {
+            if (Unit* target = FindHostilePvPTarget(bot, 40.0f))
+            {
+                BotMovement::ForceStopOwner(bot, MoveOwner::Battleground);
+                BotMovement::RequestDismount(bot, MoveOwner::Battleground, DismountReason::Combat);
+                if (bot->Attack(target, true))
+                    return false;
+            }
+        }
+    }
+
     BattlegroundTypeId bgType = bg->GetBgTypeID(true);
     switch (bgType)
     {
