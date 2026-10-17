@@ -230,7 +230,7 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Satiate (Self Channel)";
                 d.rootSpellId = 804275;
-                d.tags = AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::Buff; // not OffensiveCD: that tag scaled it to 15% on a normal target and it was never cast
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 804275;
                 d.baseScore = 220.0f;
@@ -238,7 +238,8 @@ namespace BotAI
                 {
                     float mana = 100.0f * ctx.bot->GetPower(POWER_MANA) /
                         std::max(1u, ctx.bot->GetMaxPower(POWER_MANA));
-                    return mana < 70.0f || ctx.lowestAllyHpPct < 85.0f ? 0.0f : -1.0f;
+                    // 6 s channel that restores mana (180 s cooldown) and raises damage taken: only when mana is low and nobody needs a heal
+                    return (mana < 40.0f && ctx.lowestAllyHpPct >= 70.0f) ? 0.0f : -1.0f;
                 };
                 p.abilities.push_back(d);
             }
