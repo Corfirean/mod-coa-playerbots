@@ -575,6 +575,47 @@ namespace BotAI
                 d.baseScore = 230.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // the finisher of the guide: 40 Static for 1.5 spell power plus the Conduction proc; it was never cast
+                d.name = "Torrential Wrath";
+                d.rootSpellId = 503359;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 290.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 50 Static, 1 spell power
+                d.name = "Call Lightning";
+                d.rootSpellId = 501395;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 230.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 50 Static area spell for packs
+                d.name = "Deluge";
+                d.rootSpellId = 807716;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // the target takes more damage from your spells for 15 s
+                d.name = "Stormcloud";
+                d.rootSpellId = 801859;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 330.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 

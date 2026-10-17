@@ -590,6 +590,117 @@ namespace BotAI
                 d.baseScore = 190.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // the active venom: harmful spells poison the enemy; lasts 2 hours
+                d.name = "Blight Venom";
+                d.rootSpellId = 805776;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.missingAuraOnCaster = 805776;
+                d.baseScore = 460.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // shadow bite and a 15 s damage over time, applies a Brood Mark
+                d.name = "Nerubian Sting";
+                d.rootSpellId = 502911;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 2000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 300.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 21 s damage over time, applies a Brood Mark
+                d.name = "Withering Venom";
+                d.rootSpellId = 707090;
+                d.tags = AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 2000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 295.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // finisher: consumes Brood Marks for a 24 s rot (the bot sat on 7 unspent marks all fight)
+                d.name = "Rotfang";
+                d.rootSpellId = 807605;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 2000;
+                d.requireAuraMissingOnTarget = true;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // finishers consume Brood Marks: wait for two
+                    auto const* res = ctx.resources.Find(CombatResourceKey{ CombatResourceKind::AuraStack, 0, 804972 });
+                    int32 marks = res ? res->current : 0;
+                    return marks >= 2 ? 0.0f : -1.0f;
+                };
+                d.baseScore = 335.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // finisher: consumes Brood Marks, sprays nearby enemies
+                d.name = "Facemelter";
+                d.rootSpellId = 572901;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // finishers consume Brood Marks: wait for two
+                    auto const* res = ctx.resources.Find(CombatResourceKey{ CombatResourceKind::AuraStack, 0, 804972 });
+                    int32 marks = res ? res->current : 0;
+                    return marks >= 2 ? 0.0f : -1.0f;
+                };
+                d.baseScore = 325.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // finisher: consumes Brood Marks, ramps below 35% health
+                d.name = "Widowmaker";
+                d.rootSpellId = 573342;
+                d.tags = AbilityTag::MeleeAttack | AbilityTag::Execute;
+                d.targetType = TargetType::CurrentTarget;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // finishers consume Brood Marks: wait for two
+                    auto const* res = ctx.resources.Find(CombatResourceKey{ CombatResourceKind::AuraStack, 0, 804972 });
+                    int32 marks = res ? res->current : 0;
+                    return marks >= 2 ? 0.0f : -1.0f;
+                };
+                d.baseScore = 330.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 12 s enrage of damage and energy
+                d.name = "Noxious Empowerment";
+                d.rootSpellId = 804964;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 180000;
+                d.baseScore = 350.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 15 s: periodic damage can burst
+                d.name = "Contagion";
+                d.rootSpellId = 503851;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 300.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 

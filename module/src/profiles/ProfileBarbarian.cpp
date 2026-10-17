@@ -86,10 +86,10 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Berserker Axe";
                 d.rootSpellId = 804138;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
+                d.tags = AbilityTag::RangedAttack; // not OffensiveCD: 3 charges of 8 s, native Enraged requirement
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 8000;
-                d.baseScore = 230.0f;
+                // the charges decide the rate
+                d.baseScore = 285.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -137,6 +137,49 @@ namespace BotAI
                 d.tags = AbilityTag::AoEDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 40 energy spear, 6 s cooldown, feeds Born in Blood on crits
+                d.name = "Barbed Spear";
+                d.rootSpellId = 560558;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 280.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 50 energy frontal line, 6 s cooldown
+                d.name = "Impaling Spear";
+                d.rootSpellId = 503092;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 270.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 20 energy bleed that spreads
+                d.name = "Gutspiller";
+                d.rootSpellId = 806887;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 3000;
+                d.requireAuraMissingOnTarget = true;
+                d.baseScore = 260.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 8 s enrage of Physical damage (the Berserker Axe needs an enrage)
+                d.name = "Unbridled Rage";
+                d.rootSpellId = 801761;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.baseScore = 340.0f;
                 p.abilities.push_back(d);
             }
 

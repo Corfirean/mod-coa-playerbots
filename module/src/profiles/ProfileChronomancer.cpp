@@ -564,6 +564,39 @@ namespace BotAI
                 d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // enemy takes more magic damage from you for 8 s
+                d.name = "Past Mistakes";
+                d.rootSpellId = 520043;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 90000;
+                d.baseScore = 330.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // haste for 12 s, opens the burn together with Past Mistakes
+                d.name = "Hasten";
+                d.rootSpellId = 801304;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 90000;
+                d.baseScore = 320.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // delayed big Chromatic explosion, 90 s cooldown
+                d.name = "Gravity Bomb";
+                d.rootSpellId = 801281;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 90000;
+                d.baseScore = 285.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
 

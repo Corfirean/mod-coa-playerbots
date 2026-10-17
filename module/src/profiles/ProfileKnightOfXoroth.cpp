@@ -367,7 +367,7 @@ namespace BotAI
                 d.rootSpellId = 801016;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 200.0f;
+                d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
 
@@ -393,6 +393,73 @@ namespace BotAI
                 d.maxSelfHpPct = 70.0f;
                 d.internalThrottleMs = 30000;
                 d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // nearby enemies take more Fire damage from you; the guide keeps it up almost constantly
+                d.name = "Pestilence of Apocalypse";
+                d.rootSpellId = 804786;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.missingAuraOnCaster = 804786;
+                d.baseScore = 450.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 15 s of more Fire damage and crit chance
+                d.name = "Hellfire Form";
+                d.rootSpellId = 805696;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 120000;
+                d.baseScore = 380.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 20 rage, 2 Demonfire and about 2,000 Fire damage: cheaper and stronger than Infernal Strike (40 rage, 700 damage)
+                d.name = "Seeking Flame";
+                d.rootSpellId = 560668;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 270.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 20 rage, about 5,300 damage and it scales with the Demonfire consumed
+                d.name = "Hellmaw";
+                d.rootSpellId = 573336;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // dump the Demonfire stack (maximum 6) when it is high
+                    auto const* res = ctx.resources.Find(CombatResourceKey{ CombatResourceKind::AuraStack, 0, 500906 });
+                    int32 fire = res ? res->current : 0;
+                    return fire >= 4 ? 0.0f : -1.0f;
+                };
+                d.baseScore = 300.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // free, deals more damage per Demonfire consumed
+                d.name = "Skulltaker";
+                d.rootSpellId = 803900;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // dump the Demonfire stack (maximum 6) when it is high
+                    auto const* res = ctx.resources.Find(CombatResourceKey{ CombatResourceKind::AuraStack, 0, 500906 });
+                    int32 fire = res ? res->current : 0;
+                    return fire >= 4 ? 0.0f : -1.0f;
+                };
+                d.baseScore = 290.0f;
                 p.abilities.push_back(d);
             }
 

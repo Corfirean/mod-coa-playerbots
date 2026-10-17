@@ -47,10 +47,10 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Boon of the Hawk";
-                d.rootSpellId = 500943;
+                d.rootSpellId = 500939; // Boon of the Bear: attack power, melee haste and rage from auto attacks (Hawk is the caster boon and only one Boon can be active)
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
-                d.missingAuraOnCaster = 500943;
+                d.missingAuraOnCaster = 500939;
                 d.internalThrottleMs = 15000;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
@@ -117,7 +117,7 @@ namespace BotAI
                 d.rootSpellId = 520566;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 190.0f; // rage-limited main strike: 47% of real casts
+                d.baseScore = 205.0f; // rage-limited main strike: 47% of real casts
                 p.abilities.push_back(d);
             }
             {
@@ -126,8 +126,8 @@ namespace BotAI
                 d.rootSpellId = 706490;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 6000;
-                d.baseScore = 140.0f;
+                // 2 charges of 10 s: 200 rage for about 1,100 damage, the best damage per rage of the kit
+                d.baseScore = 245.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -146,7 +146,7 @@ namespace BotAI
                 d.rootSpellId = 681112;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 110.0f;
+                d.baseScore = 40.0f; // 400 rage for about 560 damage: it ate the rage of Rylak's Bite and Totemic Smash;
                 p.abilities.push_back(d);
             }
 
@@ -179,7 +179,7 @@ namespace BotAI
             s.specId = 59;
             s.role = BotRole::Dps;
             s.strategyName = "Primalist_Wildwalker_Dps_Strategy";
-            s.requiredState = RequiredCombatState{ 500943, 500943, {} };
+            s.requiredState = RequiredCombatState{ 500939, 500939, {} }; // Boon of the Bear: the guide's offensive Boon for the melee spec (Hawk is the caster Boon)
 
             s.phaseModifiers[CombatPhase::Opener] = {
                 { AbilityTag::MeleeAttack,  1.3f, 30.0f },
@@ -645,7 +645,33 @@ namespace BotAI
                 d.rootSpellId = 681112;
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 80.0f;
+                d.baseScore = 185.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // main spammable filler of the spec and its rage generator (the guide: Geode Barrage and the Seismic spells feed Rage); it was never cast and the bot idled 140 s of 180 s waiting for rage
+                d.name = "Geode Barrage";
+                d.rootSpellId = 502776;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
+                d.targetType = TargetType::CurrentTarget;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // build rage only while a spender is unaffordable (Stoneshard 40, Terrasurge 45 rage)
+                    return ctx.bot->GetPower(POWER_RAGE) < 500 ? 0.0f : -1.0f;
+                };
+                d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // ground damage over time, 2 s cast, mana only
+                d.name = "Earthquake";
+                d.rootSpellId = 520745;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 9000;
+                d.baseScore = 175.0f;
                 p.abilities.push_back(d);
             }
 

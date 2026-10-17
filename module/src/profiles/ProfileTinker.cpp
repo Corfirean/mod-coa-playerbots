@@ -324,6 +324,44 @@ namespace BotAI
                 d.baseScore = 205.0f;
                 p.abilities.push_back(d);
             }
+            {
+                AbilityDescriptor d;
+                // the permanent pet of the spec (6 s cast): the bot never built it
+                d.name = "Build: Scrapmaw";
+                d.rootSpellId = 500242;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 300000;
+                d.baseScore = 480.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // 2 charges of 8 s, generates 10 Scrap: the hard hitter of the guide
+                d.name = "Makeshift Dynamite";
+                d.rootSpellId = 572888;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 270.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                // gun enchant (an hour): extra Arcane damage on every shot
+                d.name = "Aether Augmentation";
+                d.rootSpellId = 653130;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    // a temporary enchant (id 10000) on the gun, not an aura
+                    Item* gun = ctx.bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+                    return (gun && gun->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) == 10000) ? -1.0f : 0.0f;
+                };
+                d.baseScore = 460.0f;
+                p.abilities.push_back(d);
+            }
 
             ProfileRegistry::RegisterProfile(std::move(p));
         }
