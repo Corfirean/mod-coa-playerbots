@@ -14,7 +14,12 @@ class coa_training_spellscript final : public AllSpellScript
 public:
     coa_training_spellscript() : AllSpellScript("coa_training_spellscript",
         {ALLSPELLHOOK_ON_SPELL_CHECK_CAST, ALLSPELLHOOK_ON_CAST_CANCEL, ALLSPELLHOOK_ON_CAST,
-            ALLSPELLHOOK_ON_SUCCESSFUL_DISPEL}) { }
+            ALLSPELLHOOK_ON_SUCCESSFUL_DISPEL, ALLSPELLHOOK_ON_HIT_RESULT}) { }
+    void OnSpellHitResult(Spell* spell, Unit* target, uint8 miss, uint32 damage, uint32, bool) override
+    {
+        if (miss == SPELL_MISS_NONE && damage && spell && spell->GetCaster())
+            CoaTraining::RecordSpellDamage(spell->GetCaster(), target, spell->GetSpellInfo()->Id, damage, false);
+    }
     void OnSpellSuccessfulDispel(Spell* spell, Unit* target, SpellEffIndex, uint32 count) override
     {
         CoaTraining::RecordSpellLifecycle(spell->GetCaster()->ToUnit(), target->GetGUID(),
@@ -53,6 +58,7 @@ public:
     void OnPeriodicDamageResult(Unit* target, Unit* attacker, uint32 damage, SpellInfo const* info) override
     {
         CoaTraining::RecordPeriodicDamage(attacker, target, damage, info ? info->Id : 0);
+        if (info) CoaTraining::RecordSpellDamage(attacker, target, info->Id, damage, true);
     }
     void OnAuraApply(Unit* target, Aura* aura) override
     {

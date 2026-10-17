@@ -11,6 +11,7 @@ bool Scenario::Find(std::string const& name, Scenario& s)
     if (name == "RESOURCE_ENDURANCE") { s.durationMs = 600000; return true; }
     if (name == "ST_MOVEMENT") { s.movement = true; return true; }
     if (name == "CLEAVE") { s.enemyCount = 2; return true; }
+    if (name == "EXECUTE") { s.targetHealthPct = 30; return true; }
     if (name == "AOE") { s.enemyCount = 5; return true; }
     if (name == "SURVIVAL") { s.melee = 400; s.tankbuster = 1800; return true; }
     if (name == "GROUND_HAZARDS") { s.hazardDamage = 1800; return true; }

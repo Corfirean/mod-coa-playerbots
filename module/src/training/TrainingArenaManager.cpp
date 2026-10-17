@@ -156,6 +156,8 @@ void Spawn(Session& s)
         enemy->SetFaction(14);
         enemy->SetLevel(bot->GetLevel());
         InstallBossAI(enemy);
+        if (s.scenario.targetHealthPct < 100)
+            enemy->SetHealth(std::max<uint32>(1, uint32(uint64(enemy->GetMaxHealth()) * s.scenario.targetHealthPct / 100)));
         s.enemies.push_back(enemy->GetGUID()); owners[enemy->GetGUID()] = &s;
     }
     s.boss = s.enemies.front();
@@ -468,6 +470,30 @@ void Command(ChatHandler* h, std::string const& args)
             h->PSendSysMessage("Training equipment saved: guid={} gear={}", guid, Gear(bot).Dump());
             return;
         }
+        if (verb == "clearbags")
+        {
+            // Frees bag space of a dedicated training bot: earlier loadouts push every replaced item into the bags until none is left
+            // for new items (totem tools). Equipped gear and items with a TotemCategory (tools) stay.
+            uint32 guid = 0; input >> guid;
+            Player* bot = sBotMgr->FindBotPlayer(guid);
+            if (!bot || bot->GetSession()->GetAccountId() == 1 || !BotMgr::IsBotAccountId(bot->GetSession()->GetAccountId()))
+                throw std::runtime_error("clearbags requires a dedicated online bot");
+            if (Lookup(bot->GetGUID())) throw std::runtime_error("Stop training before clearing bags");
+            uint32 removed = 0;
+            auto drop = [&](uint8 bagPos, uint8 slot)
+            {
+                Item* item = bot->GetItemByPos(bagPos, slot);
+                if (!item || item->GetTemplate()->TotemCategory) return;
+                bot->DestroyItem(bagPos, slot, true); ++removed;
+            };
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot) drop(INVENTORY_SLOT_BAG_0, slot);
+            for (uint8 bagPos = INVENTORY_SLOT_BAG_START; bagPos < INVENTORY_SLOT_BAG_END; ++bagPos)
+                if (Bag* bag = bot->GetBagByPos(bagPos))
+                    for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot) drop(bagPos, uint8(slot));
+            bot->SaveToDB(false, false);
+            h->PSendSysMessage("Training bags cleared: guid={} removed={}", guid, removed);
+            return;
+        }
         if (verb == "actor")
         {
             uint32 classId = 0;
@@ -711,6 +737,19 @@ void RecordPeriodicDamage(Unit* attacker, Unit* target, uint32 amount, uint32 sp
     }
     Json row; row["type"] = "avoidable_periodic_damage"; row["spellId"] = spell;
     row["target"] = uint64(target->GetGUID().GetCounter()); row["amount"] = amount; s->Event(row);
+}
+// Damage attributed to the spell that dealt it (direct hits from the spell hit hook, ticks from the periodic hook). Only damage the
+// session candidate deals to its enemies is logged; it is used to rank abilities by damage per cast, not for the episode totals.
+void RecordSpellDamage(Unit* attacker, Unit* target, uint32 spell, uint32 amount, bool periodic)
+{
+    if (!Enabled.load(std::memory_order_relaxed) || !target || !attacker || !amount) return;
+    std::lock_guard lock(mutex);
+    Session* s = Lookup(target->GetGUID());
+    ObjectGuid principal = Principal(attacker);
+    if (!s || !s->running || principal != s->candidate || Lookup(principal) != s) return;
+    if (std::find(s->enemies.begin(), s->enemies.end(), target->GetGUID()) == s->enemies.end()) return;
+    Json row; row["type"] = "spell_damage"; row["spellId"] = spell; row["amount"] = std::min(amount, target->GetHealth());
+    row["periodic"] = periodic; s->Event(row);
 }
 void RecordAura(Unit* target, uint32 spell, ObjectGuid caster, char const* event, uint32 stacks)
 {

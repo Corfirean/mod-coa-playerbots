@@ -119,6 +119,7 @@ struct Scenario
     uint32_t hazardDamage = 0;
     uint32_t threatPerSecond = 0;
     uint32_t enemyCount = 1;
+    uint32_t targetHealthPct = 100; // EXECUTE: the dummy starts below the finishing-blow thresholds (e.g. 35% for Electrocute)
     uint32_t dispelDebuffSpell = 0;
     bool resurrectionDiagnostic = false;
     bool resurrectionEndCombat = false;

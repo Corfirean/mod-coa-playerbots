@@ -22,6 +22,7 @@ bool Running(ObjectGuid guid);
 void RecordDamage(Unit* attacker, Unit* victim, uint32 damage);
 void RecordHeal(Unit* healer, Unit* target, uint32 effective);
 void RecordPeriodicDamage(Unit* attacker, Unit* target, uint32 damage, uint32 spell);
+void RecordSpellDamage(Unit* attacker, Unit* target, uint32 spell, uint32 amount, bool periodic);
 void RecordAura(Unit* target, uint32 spellId, ObjectGuid caster, char const* event, uint32 stacks);
 void BeginDecision(BotAI::CombatContext const& ctx);
 void Candidate(ObjectGuid bot, uint32 spell, char const* name, bool valid, float score, char const* reason);
