@@ -166,6 +166,8 @@ struct BotAIState
     uint32 nextCastAllowedMs = 0;
     uint32 noCandidateLogMs = 0;
     uint32 nextBuffCheckMs = 0;
+    uint32 nextPetCheckMs = 0;
+    uint8 petAttempts = 0;
     BotRole role = BotRole::Dps;
     bool manualRoleOverride = false;
     uint8 lastLevel = 0;
@@ -3081,6 +3083,66 @@ SpellCastResult LogCastAttempt(Player* bot, uint32 spellId, Unit* target, char c
 // on a multi-minute cadence at most doesn't need to run 20x/second) tries to (re)apply a
 // party/raid buff. Runs independent of combat/target state -- a real support player keeps
 // their buff up whether or not anyone's fighting right now, not just mid-encounter.
+// The Wildwalker is a pet class: Primal Shred, Savage Frenzy (NO_PET) and the pet rush of Rylak's Bite all need a pet and the
+// Sidekick guide builds the spec around it. Taming means a 20 s channel on a wild beast, which a bot cannot arrange on its own, so a
+// bot without a pet gets a tamed beast of the plainest tameable family through the call GMs use (Player::CreatePet), and a stabled one
+// is called back. The "Beastmaster's Whistle" items do not help here: their spells are dummy effects with no handler in the core.
+uint32 FindSpiritBeastEntry()
+{
+    static uint32 cached = 0;
+    static bool searched = false;
+    if (searched)
+        return cached;
+    searched = true;
+    for (auto const& pair : *sObjectMgr->GetCreatureTemplates())
+    {
+        CreatureTemplate const& t = pair.second;
+        if (t.type == CREATURE_TYPE_BEAST && t.family == CREATURE_FAMILY_WOLF && t.rank == 0 && !t.IsExotic() &&
+            t.IsTameable(false) && (!cached || t.Entry < cached))
+            cached = t.Entry;
+    }
+    return cached;
+}
+
+void TryMaintainClassPet(Player* bot, uint32 diff, BotAIState& state)
+{
+    constexpr uint32 SPELL_SPIRIT_BEAST_MASTER = 92148;
+    constexpr uint32 SPELL_CALL_ANIMAL_SPIRIT = 574302;
+    constexpr uint32 SPELL_TAME_BEAST = 574304;
+    constexpr uint32 WILDWALKER_SPEC = 59;
+    constexpr uint8 MAX_ATTEMPTS = 5;
+
+    if (bot->getClass() != CLASS_WILDWALKER)
+        return;
+    if (state.nextPetCheckMs > diff)
+    {
+        state.nextPetCheckMs -= diff;
+        return;
+    }
+    state.nextPetCheckMs = 5000;
+    if (!bot->IsAlive() || bot->IsInFlight() || bot->IsMounted())
+        return;
+    if (Pet* pet = bot->GetPet())
+    {
+        state.petAttempts = 0;
+        // A pet made through CreatePet came up PASSIVE in the training runs (it never attacked); it must assist its owner
+        if (pet->GetReactState() == REACT_PASSIVE)
+            pet->SetReactState(REACT_DEFENSIVE);
+        return;
+    }
+    if (state.petAttempts >= MAX_ATTEMPTS || bot->GetPlayerSetting("core.ascension_active_spec", 0).value != WILDWALKER_SPEC ||
+        !bot->HasSpell(SPELL_SPIRIT_BEAST_MASTER))
+        return;
+    ++state.petAttempts;
+    if (bot->IsExistPet())
+        bot->CastSpell(bot, SPELL_CALL_ANIMAL_SPIRIT, true);
+    else if (uint32 entry = FindSpiritBeastEntry())
+    {
+        if (Pet* pet = bot->CreatePet(entry, SPELL_TAME_BEAST))
+            pet->SetReactState(REACT_DEFENSIVE);
+    }
+}
+
 void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
 {
     if (state.nextBuffCheckMs > diff)
@@ -4686,6 +4748,7 @@ void Update(Player* bot, uint32 diff)
     {
         if (!CoaTraining::Running(bot->GetGUID()) || !bot->IsAlive()) return;
         BotMovement::Update(bot, diff);
+        TryMaintainClassPet(bot, diff, state);
         state.role = GetRoleForClassSpec(bot->getClass(), bot->GetPlayerSetting("core.ascension_active_spec", 0).value);
         if (state.role == BotRole::Healer) UpdateHealer(bot, diff, state);
         else if (state.role == BotRole::Support) UpdateSupport(bot, diff, state);
@@ -4743,6 +4806,8 @@ void Update(Player* bot, uint32 diff)
     // Mount ownership and gear upgrades matter regardless of role/combat/group state -- same
     // reasoning as TryMaintainBuff running independent of combat state.
     TryMaintainProgression(bot, diff, state);
+
+    TryMaintainClassPet(bot, diff, state);
 
     // Checked every tick, not throttled -- mounting is something the player expects to see
     // react immediately, and this is cheap (a couple of aura/state lookups, no scans). Safe to

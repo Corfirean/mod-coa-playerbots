@@ -545,6 +545,19 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
             {
+                // Continuum spell: generates an Echo Fragment every second for 5 s (15 s cooldown). Shatter Echo and Singularity Core
+                // were rejected for "missing spell-defined caster aura" in 22-38 decisions with at most 2 fragments banked, and the
+                // guide says to bank fragments ahead with Paradox Cannon; the profile never cast it.
+                AbilityDescriptor d;
+                d.name = "Paradox Cannon";
+                d.rootSpellId = 806203;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 15000;
+                d.baseScore = 252.0f;
+                p.abilities.push_back(d);
+            }
+            {
                 AbilityDescriptor d;
                 d.name = "Singularity Core";
                 d.rootSpellId = 804438;

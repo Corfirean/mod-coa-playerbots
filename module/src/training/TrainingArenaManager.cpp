@@ -13,6 +13,7 @@
 #include "Config.h"
 #include "DBCStores.h"
 #include "Creature.h"
+#include "Pet.h"
 #include "Group.h"
 #include "GroupMgr.h"
 #include "Log.h"
@@ -725,7 +726,7 @@ void RecordDamage(Unit* attacker, Unit* victim, uint32 amount)
     }
     Json row; row["type"] = "damage"; row["source"] = uint64(principal.GetCounter());
     row["target"] = uint64(victim->GetGUID().GetCounter()); row["amount"] = effective;
-    row["avoidable"] = s->avoidableEvent; s->Event(row);
+    row["avoidable"] = s->avoidableEvent; if (attacker && attacker->GetGUID() != principal) row["viaOwned"] = 1; s->Event(row);
 }
 void RecordHeal(Unit* healer, Unit* target, uint32 amount)
 {
@@ -814,6 +815,18 @@ void BeginDecision(BotAI::CombatContext const& ctx)
         resources.Push(row);
     }
     s->decision["resources"] = resources;
+    if (Pet* pet = ctx.bot->GetPet())
+    {
+        s->decision["pet"] = 1;
+        s->decision["petAttacking"] = pet->GetVictim() ? 1 : 0;
+        s->decision["petReact"] = uint32(pet->GetReactState());
+        s->decision["petDistance"] = pet->GetDistance(ctx.bot);
+    }
+    else
+        s->decision["pet"] = 0;
+    // Rage as a secondary active power (Primalist): the primary bar is mana, so the resource snapshot never showed it.
+    if (ctx.bot->getPowerType() != POWER_RAGE && ctx.bot->HasActivePowerType(POWER_RAGE))
+        s->decision["rage"] = ctx.bot->GetPower(POWER_RAGE);
 }
 void Candidate(ObjectGuid bot, uint32 spell, char const* name, bool valid, float score, char const* reason)
 {

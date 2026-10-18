@@ -102,6 +102,44 @@ namespace BotAI
                 d.baseScore = 235.0f;
                 p.abilities.push_back(d);
             }
+            // Pet-dependent kit from the Sidekick guide; the bot has a Spirit Beast now (BotAI::TryMaintainClassPet).
+            {
+                // enrage for 18 s: damage, attack speed and movement speed for the bot and its pet (180 s cooldown); failed NO_PET before
+                AbilityDescriptor d;
+                d.name = "Savage Frenzy";
+                d.rootSpellId = 806549;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 270.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                // generates rage and raises the party's maximum health (120 s cooldown); the spec is rage-limited
+                AbilityDescriptor d;
+                d.name = "Protective Roar";
+                d.rootSpellId = 802782;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 260.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    return ctx.bot->GetPower(POWER_RAGE) < 500 ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+            {
+                // the pet shreds the target and makes it bleed (250 rage)
+                AbilityDescriptor d;
+                d.name = "Primal Shred";
+                d.rootSpellId = 500940;
+                d.tags = AbilityTag::PeriodicDamage | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 12000;
+                d.baseScore = 215.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Seismic Spike";
@@ -545,10 +583,22 @@ namespace BotAI
                 AbilityDescriptor d;
                 d.name = "Magma Fissure";
                 d.rootSpellId = 802793;
-                d.tags = AbilityTag::OffensiveCD | AbilityTag::AoEDamage;
+                d.tags = AbilityTag::RangedAttack; // a line nuke (1.0 spell coefficient, piercing absorbs) that also makes the next spell instant; the AoE/OffensiveCD tags kept its score at zero
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 20000;
-                d.baseScore = 200.0f;
+                d.baseScore = 238.0f;
+                p.abilities.push_back(d);
+            }
+
+            {
+                // 120 s cooldown, 20 s of extra haste and armor and casting while moving (the guide's burst window); never cast before
+                AbilityDescriptor d;
+                d.name = "Golem Form";
+                d.rootSpellId = 805335;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 262.0f;
                 p.abilities.push_back(d);
             }
 
