@@ -118,6 +118,42 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Learned disease kit the skeleton never listed (Sidekick guide: Plague of Undeath -> Flesh to Worms -> Lichplague, whose
+            // damage grows per Necromancer disease on the target). Plague of Undeath was only cast by the generic fallback and
+            // Lichplague / Harvest Plague hardly at all.
+            {
+                AbilityDescriptor d;
+                d.name = "Plague of Undeath";
+                d.rootSpellId = 801945;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
+                d.baseScore = 262.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Lichplague";
+                d.rootSpellId = 802132;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 18000;
+                d.baseScore = 256.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Harvest Plague";
+                d.rootSpellId = 500968;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 6000;
+                d.baseScore = 236.0f;
+                p.abilities.push_back(d);
+            }
+
             // Heavy Spenders
             {
                 AbilityDescriptor d;
@@ -365,6 +401,39 @@ namespace BotAI
                 d.targetType = TargetType::Self;
                 d.internalThrottleMs = 30000;
                 d.baseScore = 245.0f;
+                p.abilities.push_back(d);
+            }
+            // Sidekick guide: dump the Runic Power from Crypt Swarm into the Animate summons and March of the Dead. Only the
+            // Skeletal Archer was listed, so Bone Wraith / Plaguefather / March of the Dead never fired.
+            {
+                AbilityDescriptor d;
+                d.name = "Animate: Bone Wraith";
+                d.rootSpellId = 805032;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 244.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Animate: Plaguefather";
+                d.rootSpellId = 805048;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 120000;
+                d.baseScore = 243.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "March of the Dead";
+                d.rootSpellId = 707007;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.minAoETargets = 1;
+                d.internalThrottleMs = 10000;
+                d.baseScore = 242.0f;
                 p.abilities.push_back(d);
             }
             {

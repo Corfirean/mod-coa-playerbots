@@ -490,6 +490,36 @@ namespace BotAI
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
             }
+            // Learned nukes the profile never listed. Flare Bolt (0.571 Fire coefficient, 1.5 s cast) carried 70% of the damage while
+            // Explode (1.13), Destroyer's Maw (1.0, 15 s cooldown, +30 Heat) and Firefall (8 s cooldown, +10 Heat per target) hit
+            // roughly twice as hard per cast and were never cast.
+            {
+                AbilityDescriptor d;
+                d.name = "Destroyer's Maw";
+                d.rootSpellId = 802107;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 246.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Firefall";
+                d.rootSpellId = 801905;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 244.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Explode";
+                d.rootSpellId = 800792;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 242.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Draconic Invocation";

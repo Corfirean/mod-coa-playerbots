@@ -956,6 +956,29 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
             {
+                // Mortal-form nuke (0.85 SP + 0.25 AP, 15 s cooldown, +25% on bleeding targets): the Accursed bot spent its
+                // ~30 s mortal windows on 544-damage Bloodbolts and never cast it.
+                AbilityDescriptor d;
+                d.name = "Veinburst";
+                d.rootSpellId = 504819;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 245.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                // Mortal-form burst: +Shadow damage and spell haste for 20 s, 180 s cooldown.
+                AbilityDescriptor d;
+                d.name = "Bloodsurge";
+                d.rootSpellId = 553267;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 553267;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 265.0f;
+                p.abilities.push_back(d);
+            }
+            {
                 AbilityDescriptor d;
                 d.name = "Bloodbolt";
                 d.rootSpellId = 804685;

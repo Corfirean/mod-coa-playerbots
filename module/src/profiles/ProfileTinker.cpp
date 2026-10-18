@@ -600,6 +600,34 @@ namespace BotAI
 
             // 1. Emergency Defense: Kinetic Shield (< 40% HP)
             {
+                // gun enchant (an hour): extra Arcane damage on every shot, the same temporary enchant Mechanics already uses
+                AbilityDescriptor d;
+                d.name = "Aether Augmentation";
+                d.rootSpellId = 653130;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.internalThrottleMs = 30000;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float
+                {
+                    Item* gun = ctx.bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+                    return (gun && gun->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) == 10000) ? -1.0f : 0.0f;
+                };
+                d.baseScore = 460.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                // empowers the next 6 (10 talented) Scrap Shots / Rocket Launchers for 30 s, 180 s cooldown
+                AbilityDescriptor d;
+                d.name = "Rockadier";
+                d.rootSpellId = 801827;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 801827;
+                d.internalThrottleMs = 60000;
+                d.baseScore = 300.0f;
+                p.abilities.push_back(d);
+            }
+            {
                 AbilityDescriptor d;
                 d.name = "Kinetic Shield";
                 d.rootSpellId = 806224;

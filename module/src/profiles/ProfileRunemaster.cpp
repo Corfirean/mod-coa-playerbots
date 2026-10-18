@@ -28,15 +28,16 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Runemaster_Engravement_MeleeDps";
 
-            // Stable native tattoo baseline; its associated native talent
-            // remains responsible for any triggered defensive or movement effect.
+            // Water tattoo: restores mana every 5 s and cuts spell costs. Engravement's nukes (Primordial Blast, Elemental Burst,
+            // Fist of the Ancients) run on mana; with the Earth tattoo the bot sat at ~100/2590 mana from second 40 and rejected
+            // ~40% of its decisions as "can't afford" (the Sidekick guide: "Water if your own mana margin is thin").
             {
                 AbilityDescriptor d;
-                d.name = "Runic Tattoos: Earth";
-                d.rootSpellId = 801094;
+                d.name = "Runic Tattoos: Water";
+                d.rootSpellId = 801107;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
-                d.missingAuraOnCaster = 801094;
+                d.missingAuraOnCaster = 801107;
                 d.baseScore = 300.0f;
                 p.abilities.push_back(d);
             }
