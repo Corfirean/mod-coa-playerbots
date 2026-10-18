@@ -814,6 +814,18 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Lunge (25 s cooldown): leaps behind the enemy, which is one of Reave's three bonus conditions, and generates Rage.
+            // Zyth45's CoA rotations list it for Accursed; the learned book has it but the profile only had Bloodleaper (not in the book).
+            {
+                AbilityDescriptor d;
+                d.name = "Lunge";
+                d.rootSpellId = 500126;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 252.0f;
+                p.abilities.push_back(d);
+            }
+
             // Gap Closer: Bloodleaper
             {
                 AbilityDescriptor d;
