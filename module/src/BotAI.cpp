@@ -28,6 +28,7 @@
  */
 
 #include "BotAI.h"
+#include "BotSpecStats.h"
 #include "AscensionCollectibleSpellData.h"
 #include "BotClassRotations.h"
 #include "BotMgr.h"
@@ -863,6 +864,23 @@ float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role)
     bool wantsDpsRatings = role == BotRole::Dps;
     bool wantsHealPower = role == BotRole::Healer || role == BotRole::Support;
 
+    // The class-only guesses above get Reaper / Primalist / Runemaster mixed up and cannot tell the specs of one class apart
+    // (Sanguine and Artificer scale with Spirit, Accursed and Zealot with Agility, Stormbringer with Intellect, Sun Cleric damage
+    // specs were not listed at all). When the active specialization is known, its Sidekick stat model decides.
+    SpecStatModel const* model = FindSpecStatModel(cls, bot->GetPlayerSetting("core.ascension_active_spec", 0).value);
+    auto statWeight = [&](uint8 stat, float fallback) -> float
+    {
+        if (!model)
+            return fallback;
+        if (model->primary == stat)
+            return 1.0f;
+        if (model->secondary == stat)
+            return 0.55f;
+        return 0.0f;
+    };
+    if (model && role == BotRole::Support && (model->usesAttackPower || model->usesSpellPower))
+        wantsDpsRatings = true;
+
     // Effective (quality-adjusted) item level as the base score -- still the floor, same as
     // before, just no longer the *only* signal: a stat-appropriate rare can now outscore a
     // stat-inappropriate epic of similar ilvl instead of always losing on raw ItemLevel alone.
@@ -877,19 +895,19 @@ float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role)
         switch (proto->ItemStat[i].ItemStatType)
         {
             case ITEM_MOD_STAMINA:             weight = wantsTankStats ? 1.0f : 0.3f; break;
-            case ITEM_MOD_INTELLECT:           weight = wantsInt ? 1.0f : 0.0f; break;
-            case ITEM_MOD_SPIRIT:              weight = wantsSpirit ? 0.8f : 0.0f; break;
-            case ITEM_MOD_STRENGTH:            weight = wantsStrength ? 1.0f : 0.0f; break;
-            case ITEM_MOD_AGILITY:             weight = wantsAgility ? 1.0f : 0.0f; break;
+            case ITEM_MOD_INTELLECT:           weight = statWeight(5, wantsInt ? 1.0f : 0.0f); break;
+            case ITEM_MOD_SPIRIT:              weight = model ? std::max(statWeight(6, 0.0f), wantsSpirit ? 0.5f : 0.0f) : (wantsSpirit ? 0.8f : 0.0f); break;
+            case ITEM_MOD_STRENGTH:            weight = statWeight(4, wantsStrength ? 1.0f : 0.0f); break;
+            case ITEM_MOD_AGILITY:             weight = statWeight(3, wantsAgility ? 1.0f : 0.0f); break;
             case ITEM_MOD_DEFENSE_SKILL_RATING:
             case ITEM_MOD_DODGE_RATING:
             case ITEM_MOD_PARRY_RATING:
             case ITEM_MOD_BLOCK_RATING:         weight = wantsTankStats ? 0.6f : 0.0f; break;
             case ITEM_MOD_HIT_RATING:
             case ITEM_MOD_CRIT_RATING:
-            case ITEM_MOD_HASTE_RATING:
-            case ITEM_MOD_ATTACK_POWER:         weight = wantsDpsRatings ? 0.4f : 0.0f; break;
-            case ITEM_MOD_SPELL_POWER:          weight = (wantsHealPower || wantsInt) ? 0.4f : 0.0f; break;
+            case ITEM_MOD_HASTE_RATING:         weight = wantsDpsRatings ? 0.4f : 0.0f; break;
+            case ITEM_MOD_ATTACK_POWER:         weight = wantsDpsRatings ? ((!model || model->usesAttackPower) ? 0.4f : 0.0f) : 0.0f; break;
+            case ITEM_MOD_SPELL_POWER:          weight = model ? ((wantsHealPower || model->usesSpellPower) ? 0.4f : 0.0f) : ((wantsHealPower || wantsInt) ? 0.4f : 0.0f); break;
             case ITEM_MOD_MANA_REGENERATION:    weight = wantsHealPower ? 0.4f : 0.0f; break;
             default: break;
         }
