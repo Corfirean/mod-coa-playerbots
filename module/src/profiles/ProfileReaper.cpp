@@ -285,6 +285,16 @@ namespace BotAI
             }
 
             // 3. Melee Slashes & Finishers
+            // Wraithblade: a 30 s weapon spender (about 5.6k per cast) that the Harvest profile never listed.
+            {
+                AbilityDescriptor d;
+                d.name = "Wraithblade";
+                d.rootSpellId = 805258;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 228.0f;
+                p.abilities.push_back(d);
+            }
             {
                 AbilityDescriptor d;
                 d.name = "Murder (Execution Strike)";
