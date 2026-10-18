@@ -60,7 +60,7 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Zenith (Burst)";
-                d.rootSpellId = 712325;
+                d.rootSpellId = 712389;
                 d.tags = AbilityTag::OffensiveCD;
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 30000;

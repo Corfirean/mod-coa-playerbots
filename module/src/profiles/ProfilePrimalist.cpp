@@ -105,7 +105,7 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Seismic Spike";
-                d.rootSpellId = 560171;
+                d.rootSpellId = 804433;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 205.0f;
@@ -560,8 +560,7 @@ namespace BotAI
                 d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
-                d.internalThrottleMs = 4000;
-                d.baseScore = 160.0f;
+                d.baseScore = 228.0f;
                 p.abilities.push_back(d);
             }
 
@@ -601,21 +600,19 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Seismic Crash";
-                d.rootSpellId = 503258;
+                d.rootSpellId = 803981;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 8000;
-                d.baseScore = 175.0f;
+                d.baseScore = 232.0f;
                 p.abilities.push_back(d);
             }
             {
                 AbilityDescriptor d;
                 d.name = "Seismic Spike";
-                d.rootSpellId = 560171;
+                d.rootSpellId = 804433;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 8000;
-                d.baseScore = 170.0f;
+                d.baseScore = 236.0f;
                 p.abilities.push_back(d);
             }
 
