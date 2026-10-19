@@ -27,3 +27,7 @@ dist/bin/
 
 # Private local training server configuration and reports
 .agents/training-live/
+
+# Python
+__pycache__/
+*.py[cod]

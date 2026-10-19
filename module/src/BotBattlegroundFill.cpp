@@ -247,6 +247,21 @@ void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueue
         return;
     }
 
+    // Reuse an existing offline bot character before creating a brand new one
+    std::unordered_set<ObjectGuid::LowType> excludedGuids;
+    for (auto const& p : pendingLogins)
+        excludedGuids.insert(p.guid);
+
+    uint8 minLvl = bracketEntry ? bracketEntry->minLevel : 0;
+    uint8 maxLvl = bracketEntry ? bracketEntry->maxLevel : 80;
+    ObjectGuid::LowType candidateGuid = sBotMgr->FindEligibleOfflineBot(team, minLvl, maxLvl, excludedGuids);
+    if (candidateGuid)
+    {
+        sBotMgr->SpawnBot(candidateGuid, nullptr);
+        pendingLogins.push_back({ candidateGuid, bgTypeId, bgQueueTypeId, bracketEntry });
+        return;
+    }
+
     uint8 race = PickRaceForTeam(team);
     ObjectGuid::LowType newGuid = BotSpawn::CreateOneRandomBot(race, nullptr);
     if (!newGuid)
@@ -359,7 +374,7 @@ public:
 
     void OnPlayerJoinBG(Player* player) override
     {
-        if (!sConfigMgr->GetOption<bool>("CoaBots.BGFill.Enable", true))
+        if (!sBotMgr->BotsEnabled() || !sConfigMgr->GetOption<bool>("CoaBots.BGFill.Enable", true))
             return;
 
         // Confirmed live crash: a *grouped* real-player join (WorldSession::HandleBattlemasterJoinOpcode's
@@ -441,6 +456,16 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        if (!sBotMgr->BotsEnabled() || !sConfigMgr->GetOption<bool>("CoaBots.BGFill.Enable", true))
+        {
+            if (!pendingLogins.empty() || !queuedBots.empty())
+            {
+                pendingLogins.clear();
+                queuedBots.clear();
+            }
+            return;
+        }
+
         ProcessPendingLogins(diff);
         ProcessQueuedBots();
         NudgeStalledQueues(diff);
@@ -458,6 +483,13 @@ namespace BotBGFill
 {
 bool JoinBotToBattlegroundQueue(Player* bot, uint32 bgTypeId_, ChatHandler* handler)
 {
+    if (!sBotMgr->BotsEnabled())
+    {
+        if (handler)
+            handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+        return false;
+    }
+
     if (!sBattlemasterListStore.LookupEntry(bgTypeId_))
     {
         if (handler)

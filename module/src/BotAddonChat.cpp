@@ -361,7 +361,7 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     Player* bot = ResolveAuthorizedBot(commander, botGuidLow);
     if (!bot)
     {
-        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAddonChat: '{}' sent COABOT verb '{}' for guid {} but it failed authorization "
+        LOG_DEBUG("module.coa-playerbots", "BotAddonChat: '{}' sent COABOT verb '{}' for guid {} but it failed authorization "
             "(not a tracked bot session, or not grouped with the sender) -- dropped.",
             commander->GetName(), verb, botGuidLow);
         return;
@@ -492,6 +492,9 @@ public:
 
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 language, std::string& message, Player* receiver) override
     {
+        if (!sBotMgr->BotsEnabled())
+            return true;
+
         if (type != CHAT_MSG_WHISPER || language != LANG_ADDON || receiver != player)
             return true;
         if (message.compare(0, PROTOCOL_PREFIX_LEN, PROTOCOL_PREFIX) != 0)

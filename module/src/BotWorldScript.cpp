@@ -31,6 +31,8 @@ public:
     void OnShutdown() override
     {
         CoaTraining::Shutdown();
+        if (!sBotMgr->BotsEnabled())
+            return;
         sBotMgr->LogoutAllBots();
     }
 
@@ -41,6 +43,9 @@ public:
     void OnStartup() override
     {
         CoaTraining::Initialize();
+        if (!sBotMgr->BotsEnabled())
+            return;
+
         BotTalentBuilds::Initialize();
         BotAI::SpecStrategyRegistry::Validate();
         sBotMgr->LoadGuildGatherOrders();
@@ -61,7 +66,7 @@ public:
 
     void OnPlayerRewardKillRewarder(Player* player, KillRewarder* rewarder, bool /*isDungeon*/, float& /*rate*/) override
     {
-        if (!player || !rewarder)
+        if (!sBotMgr->BotsEnabled() || !player || !rewarder)
             return;
 
         Unit* victim = rewarder->GetVictim();

@@ -4,6 +4,11 @@
 
 [worldserver]
 
+# Allow bots to open corpses and take items and money while in a party or raid.
+# Disabled by default so grouped players can loot themselves. Solo bots still loot.
+# Does not change Need/Greed rolls or gathering and fishing loot.
+CoaBots.Loot.AutoLootInGroup = 0
+
 #
 #    CoaBots.Enable
 #        Description: The master switch of the companions. 0 = no bot is ever logged in (no spawn commands, no login at
@@ -13,6 +18,18 @@
 #
 
 CoaBots.Enable = 1
+
+#
+#    CoaBots.CustomRaces.Enable
+#        Description: Allow companion bots to use custom races only when both
+#                     CoACustomRaces.Enable and CoACustomRaces.BotsEnable are enabled.
+#                     Set to 0 to restrict companions to stock races independently.
+#                     Both AiPlayerbot.ExcludedBotRaces and CoaBots.ExcludedBotRaces apply.
+#        Default:     1 - (Follows the custom races module permissions)
+#
+
+CoaBots.CustomRaces.Enable = 1
+
 
 
 # Number of bots '.botcmd spawnrandom' creates when no count is given on the command line.

@@ -144,6 +144,9 @@ bool JoinBotToLfg(Player* bot, uint8 roleBit, lfg::LfgDungeonSet dungeons, uint6
 void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, ObjectGuid excludeGuid,
     std::vector<ObjectGuid>& attemptedThisPass, uint64 opId)
 {
+    if (!sBotMgr->BotsEnabled())
+        return;
+
     std::vector<Player*> eligible;
     for (Player* bot : sBotMgr->GetOnlineBots())
     {
@@ -208,11 +211,41 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
             return;
     }
 
-    // Pass 4: Spawn a new random bot if attempts allow.
+    // Pass 4: Reuse existing offline bot if available, or spawn a new random bot if attempts allow.
     auto itOp = activeOperations.find(opId);
     if (itOp != activeOperations.end() && itOp->second.creationAttempts >= 5)
     {
         LOG_WARN("module.coa-playerbots", "BotLfgFill: op {} reached creation limit (5), aborting new bot spawn.", opId);
+        return;
+    }
+
+    std::unordered_set<ObjectGuid::LowType> excludedGuids;
+    for (auto const& p : pendingLogins)
+        excludedGuids.insert(p.guid);
+
+    uint8 minLvl = 1;
+    uint8 maxLvl = 80;
+    for (uint32 dId : dungeons)
+    {
+        if (LFGDungeonEntry const* d = sLFGDungeonStore.LookupEntry(dId))
+        {
+            if (d->MinLevel > minLvl)
+                minLvl = d->MinLevel;
+            if (d->MaxLevel && d->MaxLevel < maxLvl)
+                maxLvl = d->MaxLevel;
+        }
+    }
+
+    ObjectGuid::LowType candidateGuid = sBotMgr->FindEligibleOfflineBot(team, minLvl, maxLvl, excludedGuids);
+    if (candidateGuid)
+    {
+        if (itOp != activeOperations.end())
+        {
+            ++itOp->second.creationAttempts;
+            itOp->second.spawnedBotGuids.insert(candidateGuid);
+        }
+        sBotMgr->SpawnBot(candidateGuid, nullptr);
+        pendingLogins.push_back({ candidateGuid, roleBit, dungeons, 0, opId });
         return;
     }
 
@@ -417,7 +450,7 @@ public:
 
     bool OnPlayerCanJoinLfg(Player* player, uint8 roles, std::set<uint32>& dungeons, std::string const& /*comment*/) override
     {
-        if (filling || dungeons.empty() || !sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true))
+        if (filling || dungeons.empty() || !sBotMgr->BotsEnabled() || !sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true))
             return true;
 
         LFGDungeonEntry const* firstDungeon = sLFGDungeonStore.LookupEntry(*dungeons.begin());
@@ -510,6 +543,18 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        if (!sBotMgr->BotsEnabled() || !sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true))
+        {
+            if (!pendingLogins.empty() || !queuedBots.empty() || !activeOperations.empty())
+            {
+                pendingLogins.clear();
+                queuedBots.clear();
+                activeOperations.clear();
+                initiatorToOpId.clear();
+            }
+            return;
+        }
+
         ProcessPendingLogins(diff);
         ProcessQueuedBots();
         ProcessGroupRoleChecks();
@@ -524,7 +569,7 @@ public:
 
     bool HasLfgAutoFillProvider() const override
     {
-        return sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true);
+        return sBotMgr->BotsEnabled() && sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true);
     }
 };
 }

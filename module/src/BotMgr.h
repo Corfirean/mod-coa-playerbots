@@ -15,6 +15,7 @@
 #define COA_PLAYERBOTS_BOT_MGR_H
 
 #include "ObjectGuid.h"
+#include "SharedDefines.h"
 #include "BotAI.h"
 #include "BotFormations.h"
 #include <functional>
@@ -415,6 +416,11 @@ public:
     // queue, without needing BotMgr to track a separate faction-indexed roster of its own.
     std::vector<Player*> GetOnlineBots() const;
 
+    // Finds an existing offline bot character created under CoaBots.RandomSpawn.AccountPrefix,
+    // matching team and level constraints. Returns 0 if none found.
+    ObjectGuid::LowType FindEligibleOfflineBot(TeamId team, uint8 minLevel = 0, uint8 maxLevel = 80,
+        std::unordered_set<ObjectGuid::LowType> const& excludedGuids = {}) const;
+
     // Called every world tick via a WorldScript hook. Auto-accepts any
     // pending group invite and auto-rolls Greed on any pending loot roll for
     // every active bot (both checked every tick, not throttled — a human
@@ -573,6 +579,7 @@ private:
     // Trading with a player: how long each bot's open trade window has existed, and whether bots take part at all.
     std::unordered_map<ObjectGuid, uint32> _tradeAgeMs;
     bool _tradeEnabled = true;
+    bool _autoLootInGroup = false;
     void UpdateTrades(uint32 diff);
     std::mutex _killEventLock;
     std::vector<KillEvent> _killEvents;
@@ -587,6 +594,7 @@ public:
     // with. Also callable directly (e.g. from a GM command) to (re)populate the queue against an
     // already-running server without needing a restart.
     void QueueAllBotsForAutoLogin();
+    bool AutoLootInGroup() const { return _autoLootInGroup; }
 };
 
 #define sBotMgr BotMgr::instance()
