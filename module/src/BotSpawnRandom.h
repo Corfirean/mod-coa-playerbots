@@ -61,6 +61,9 @@ uint32 CancelPendingSpawns();
 // original hand-made test characters predate it and have zero profession skills).
 void RepairGear(Player* bot);
 
+// Training A/B only: strips all equipment and equips by the live gear-up logic (see the definition).
+void GearUpForTraining(Player* bot);
+
 void GrantAllProfessions(Player* bot, uint8 level);
 
 // Creates and logs in one bot of an EXACT class (unlike CreateOneRandomBot's random pick) --

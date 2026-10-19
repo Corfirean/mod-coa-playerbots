@@ -125,6 +125,9 @@ namespace BotAI
     // would make learned spells uncastable (wrong subclass, two-hander with an off-hand-only spell).
     float WeaponKitFit(Player* bot, ItemTemplate const* proto);
 
+    // Training A/B switch: true makes ScoreItemForBot use the old class-only stat guess instead of the spec stat model.
+    void SetLegacyGearScoring(bool legacy);
+
     // Sets a manual movement/engagement command (see BotManualCommand above). pullTarget is
     // only used for Pull -- the guid of whatever the commanding player currently has
     // selected, resolved by the caller (BotAddonChat.cpp) so this API doesn't need to know

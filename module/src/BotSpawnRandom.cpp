@@ -1168,6 +1168,18 @@ void GrantAllProfessions(Player* bot, uint8 level)
         bot->learnSpell(7620);
 }
 
+void GearUpForTraining(Player* bot)
+{
+    if (!bot)
+        return;
+    // Training only: empty every equipment slot, then run the same level-bracketed gear-up fresh bots get, so the result
+    // shows what the live scoring picks (the normal training loadout is a fixed plan and never touches ScoreItemForBot).
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
+    GearUpFreshBotForLevel(bot, bot->GetLevel());
+}
+
 void RepairGear(Player* bot)
 {
     if (!bot || !BotGear::Ready() || BotGear::TrainingLocked(bot))

@@ -483,6 +483,25 @@ void Command(ChatHandler* h, std::string const& args)
             h->PSendSysMessage("Training equipment saved: guid={} gear={}", guid, Gear(bot).Dump());
             return;
         }
+        if (verb == "livegear")
+        {
+            // livegear <guid> <old|new>: strip the dedicated bot and equip it by the live gear-up with the old class-only or the spec
+            // stat model, so the effect of the item scoring can be compared on damage dealt (the plan loadout never uses it).
+            uint32 guid = 0; std::string model; input >> guid >> model;
+            Player* bot = sBotMgr->FindBotPlayer(guid);
+            if (!bot || bot->GetSession()->GetAccountId() == 1 || !BotMgr::IsBotAccountId(bot->GetSession()->GetAccountId()))
+                throw std::runtime_error("livegear requires a dedicated online bot");
+            if (Lookup(bot->GetGUID())) throw std::runtime_error("Stop training before changing equipment");
+            if (model != "old" && model != "new") throw std::runtime_error("livegear needs old or new");
+            Reset(bot);
+            BotAI::SetLegacyGearScoring(model == "old");
+            BotSpawn::GearUpForTraining(bot);
+            BotAI::SetLegacyGearScoring(false);
+            BotGear::LockTraining(bot);
+            bot->SaveToDB(false, false);
+            h->PSendSysMessage("Training equipment saved: guid={} gear={}", guid, Gear(bot).Dump());
+            return;
+        }
         if (verb == "clearbags")
         {
             // Frees bag space of a dedicated training bot: earlier loadouts push every replaced item into the bags until none is left

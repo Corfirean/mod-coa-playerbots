@@ -118,6 +118,7 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <mutex>
@@ -837,6 +838,16 @@ float WeaponKitFit(Player* bot, ItemTemplate const* proto)
     return std::max(-KIT_WEAPON_CAP, std::min(KIT_WEAPON_CAP, fit));
 }
 
+namespace
+{
+std::atomic<bool> s_legacyGearScoring{false};
+}
+
+void SetLegacyGearScoring(bool legacy)
+{
+    s_legacyGearScoring.store(legacy, std::memory_order_relaxed);
+}
+
 float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role)
 {
     uint8 cls = bot->getClass();
@@ -867,7 +878,8 @@ float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role)
     // The class-only guesses above get Reaper / Primalist / Runemaster mixed up and cannot tell the specs of one class apart
     // (Sanguine and Artificer scale with Spirit, Accursed and Zealot with Agility, Stormbringer with Intellect, Sun Cleric damage
     // specs were not listed at all). When the active specialization is known, its Sidekick stat model decides.
-    SpecStatModel const* model = FindSpecStatModel(cls, bot->GetPlayerSetting("core.ascension_active_spec", 0).value);
+    SpecStatModel const* model = s_legacyGearScoring.load(std::memory_order_relaxed) ? nullptr :
+        FindSpecStatModel(cls, bot->GetPlayerSetting("core.ascension_active_spec", 0).value);
     auto statWeight = [&](uint8 stat, float fallback) -> float
     {
         if (!model)
