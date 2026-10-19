@@ -39,6 +39,8 @@ private:
     static void HandleEyeOfTheStorm(Player* bot, BattlegroundEY* bg, uint32 diff);
     static void HandleWarsongGulch(Player* bot, BattlegroundWS* bg, uint32 diff);
     static void HandleArathiBasin(Player* bot, BattlegroundAB* bg, uint32 diff);
+    static void HandleAlteracValley(Player* bot, Battleground* bg, uint32 diff);
+    static void HandleArena(Player* bot, Battleground* bg, uint32 diff);
     static void HandleGenericBattleground(Player* bot, Battleground* bg, uint32 diff);
 
     static bool TryMountForTravel(Player* bot);
