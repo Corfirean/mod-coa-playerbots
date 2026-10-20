@@ -224,7 +224,9 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     if (verb == "FORMATION" && parts.size() >= 3)
     {
         Group* group = commander->GetGroup();
-        if (!group || group->GetLeaderGUID() != commander->GetGUID())
+        bool isAuthorizedLeader = group && (group->GetLeaderGUID() == commander->GetGUID() ||
+            BotAI::GetEffectiveFollowTarget(commander, group) == commander);
+        if (!isAuthorizedLeader)
         {
             LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' sent FORMATION but isn't the group leader -- dropped.",
                 commander->GetName());
@@ -252,7 +254,8 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     if (verb == "GETFORMATION")
     {
         Group* group = commander->GetGroup();
-        ObjectGuid leaderGuid = group ? group->GetLeaderGUID() : commander->GetGUID();
+        Player* effectiveLeader = group ? BotAI::GetEffectiveFollowTarget(commander, group) : nullptr;
+        ObjectGuid leaderGuid = effectiveLeader ? effectiveLeader->GetGUID() : (group ? group->GetLeaderGUID() : commander->GetGUID());
         SendCoaBotReply(commander, std::string("FORMATION:") + FormationToString(sBotMgr->GetGroupFormation(leaderGuid)));
         return;
     }
@@ -372,7 +375,7 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         parts.size() >= 3 ? " arg='" : "", parts.size() >= 3 ? parts[2] + "'" : "");
 
     if (verb == "FOLLOW")
-        BotAI::SetManualCommand(bot->GetGUID(), BotManualCommand::Follow);
+        BotAI::SetManualCommand(bot->GetGUID(), BotManualCommand::Follow, ObjectGuid::Empty, commander->GetGUID());
     else if (verb == "STAY")
         BotAI::SetManualCommand(bot->GetGUID(), BotManualCommand::Stay);
     else if (verb == "PULL")

@@ -69,7 +69,7 @@ namespace BotAI
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(action.spellId);
         if (!CombatMovement::ReadyToCast(bot, spellInfo))
         {
-            nextCastAllowedMs = RETRY_GATE_MS;
+            nextCastAllowedMs = 0;
             return CombatResult::Busy;
         }
 

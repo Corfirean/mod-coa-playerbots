@@ -132,7 +132,12 @@ namespace BotAI
     // only used for Pull -- the guid of whatever the commanding player currently has
     // selected, resolved by the caller (BotAddonChat.cpp) so this API doesn't need to know
     // anything about who issued the command.
-    void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid pullTarget = ObjectGuid::Empty);
+    void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid pullTarget = ObjectGuid::Empty, ObjectGuid commanderGuid = ObjectGuid::Empty);
+
+    // Resolves the effective leader/player to follow in a group. In a group with human players,
+    // bots always follow the human commander/leader rather than another bot (e.g. in LFG groups
+    // where a bot was nominally designated leader).
+    Player* GetEffectiveFollowTarget(Player* bot, Group* group = nullptr);
 
     // Immediately stops the bot's current attack and reverts any manual command to None
     // (falls back to normal follow/idle behavior next tick).

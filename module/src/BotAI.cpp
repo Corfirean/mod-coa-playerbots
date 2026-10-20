@@ -677,7 +677,7 @@ void TryMatchLeaderMountState(Player* bot, BotAIState& /*state*/)
     if (!group)
         return;
 
-    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    Player* leader = GetEffectiveFollowTarget(bot, group);
     if (!leader || leader == bot || !leader->IsInWorld() || leader->GetMap() != bot->GetMap())
         return;
 
@@ -1715,7 +1715,7 @@ bool TryProcessPendingLoot(Player* bot, uint32 /*diff*/, BotAIState& state)
     // If leader is far away or fighting, abort looting to stay with group
     if (Group* group = bot->GetGroup())
     {
-        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+        if (Player* leader = GetEffectiveFollowTarget(bot, group))
         {
             if (leader->IsInCombat() || bot->GetDistance(leader) > 40.0f)
                 return false;
@@ -1825,7 +1825,7 @@ bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& sta
             }
         }
 
-        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+        if (Player* leader = GetEffectiveFollowTarget(bot, group))
         {
             if (leader->IsMounted() || bot->GetDistance(leader) > 35.0f)
             {
@@ -2038,7 +2038,7 @@ void TryAutoPullInInstance(Player* bot)
     if (!group)
         return;
 
-    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    Player* leader = GetEffectiveFollowTarget(bot, group);
     if (!leader || leader->IsInCombat())
         return; // already fighting something -- let normal target-inheritance handle it
 
@@ -2960,6 +2960,49 @@ void ClearActiveFollow(Player* bot)
     BotMovement::ForceStopOwner(bot, MoveOwner::Travel);
 }
 
+Player* GetEffectiveFollowTarget(Player* bot, Group* group)
+{
+    if (!bot)
+        return nullptr;
+
+    if (!group)
+        group = bot->GetGroup();
+
+    if (!group)
+        return nullptr;
+
+    auto isHumanPlayer = [](Player const* player) -> bool
+    {
+        if (!player)
+            return false;
+        WorldSession* session = player->GetSession();
+        if (!session)
+            return false;
+        if (session->IsBot() || session->GetSocket() == nullptr || BotMgr::IsBotAccountId(session->GetAccountId()))
+            return false;
+        return true;
+    };
+
+    // 1. If nominal leader is a real human player, always follow the leader.
+    Player* nominalLeader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    if (nominalLeader && nominalLeader != bot && isHumanPlayer(nominalLeader))
+        return nominalLeader;
+
+    // 2. If nominal leader is a bot or missing, search group for any connected human player.
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (member && member != bot && member->IsInWorld() && isHumanPlayer(member))
+            return member;
+    }
+
+    // 3. Bot-only group fallback (e.g. WorldParties): follow nominal leader if not self.
+    if (nominalLeader && nominalLeader != bot)
+        return nominalLeader;
+
+    return nullptr;
+}
+
 void ResumeFollowingLeader(Player* bot, BotAIState& state)
 {
     // Suppress follow movement while a mount attempt is pending or the bot is actively casting
@@ -2991,7 +3034,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
         return;
     }
 
-    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    Player* leader = GetEffectiveFollowTarget(bot, group);
     if (!leader || leader == bot)
     {
         ClearActiveFollow(bot);
@@ -2999,7 +3042,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
     }
 
     Map* map = bot->GetMap();
-    if (map && (map->IsDungeon() || map->IsRaid()) && sBotMgr->IsAutoDungeonModeEnabled(group->GetLeaderGUID()))
+    if (map && (map->IsDungeon() || map->IsRaid()) && sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID()))
     {
         // In auto-dungeon mode, followers follow the Tank (the point runner) rather than the player leader,
         // or if this bot IS the tank, it navigates toward the current boss/trash rather than following anyone.
@@ -4264,7 +4307,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         // and auto-attack/auto-repeat (already engaged up front) are untouched either way.
         if (!BotAI::CombatMovement::ReadyToCast(bot, spellInfo))
         {
-            state.nextCastAllowedMs = AI_REACTION_GATE_MS;
+            state.nextCastAllowedMs = 0;
             return;
         }
 
@@ -4566,7 +4609,7 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
         SpellInfo const* healSpellInfo = sSpellMgr->GetSpellInfo(spellId);
         if (!BotAI::CombatMovement::ReadyToCast(bot, healSpellInfo))
         {
-            state.nextCastAllowedMs = AI_REACTION_GATE_MS;
+            state.nextCastAllowedMs = 0;
             return;
         }
 
@@ -5187,7 +5230,7 @@ void ClearRoleOverride(ObjectGuid botGuid)
     }
 }
 
-void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid pullTarget)
+void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid pullTarget, ObjectGuid commanderGuid)
 {
     BotAIState& state = states[botGuid];
     state.manualCommand = command;
@@ -5202,17 +5245,17 @@ void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid p
         {
             if (!bot->IsNonMeleeSpellCast(false))
             {
-                if (Group* group = bot->GetGroup())
+                Player* followTarget = nullptr;
+                if (!commanderGuid.IsEmpty())
+                    followTarget = ObjectAccessor::FindPlayer(commanderGuid);
+                if (!followTarget)
+                    followTarget = GetEffectiveFollowTarget(bot);
+
+                if (followTarget && followTarget != bot && followTarget->GetMap() == bot->GetMap())
                 {
-                    if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
-                    {
-                        if (leader != bot && leader->GetMap() == bot->GetMap())
-                        {
-                            float followDist = BotAI::ComputeFollowDistance(bot);
-                            float followAngle = BotAI::ComputeFollowAngle(bot);
-                            BotMovement::Follow(bot, MoveOwner::Travel, leader, followDist, followAngle);
-                        }
-                    }
+                    float followDist = BotAI::ComputeFollowDistance(bot);
+                    float followAngle = BotAI::ComputeFollowAngle(bot);
+                    BotMovement::Follow(bot, MoveOwner::Travel, followTarget, followDist, followAngle);
                 }
             }
         }
@@ -5351,14 +5394,16 @@ float ComputeFollowAngle(Player* bot)
     if (!group)
         return 0.0f;
 
-    BotGroupFormation formation = sBotMgr->GetGroupFormation(group->GetLeaderGUID());
+    Player* effectiveLeader = GetEffectiveFollowTarget(const_cast<Player*>(bot), const_cast<Group*>(group));
+    ObjectGuid leaderGuid = effectiveLeader ? effectiveLeader->GetGUID() : group->GetLeaderGUID();
+    BotGroupFormation formation = sBotMgr->GetGroupFormation(leaderGuid);
 
     uint32 memberIndex = 0;
     uint32 totalFollowers = 0;
     for (GroupReference const* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         Player const* member = itr->GetSource();
-        if (!member || member->GetGUID() == group->GetLeaderGUID())
+        if (!member || member->GetGUID() == leaderGuid)
             continue;
         if (member == bot)
             memberIndex = totalFollowers;
@@ -5456,7 +5501,9 @@ float ComputeFollowDistance(Player* bot)
     if (!group)
         return BOT_FOLLOW_DIST;
 
-    BotGroupFormation formation = sBotMgr->GetGroupFormation(group->GetLeaderGUID());
+    Player* effectiveLeader = GetEffectiveFollowTarget(const_cast<Player*>(bot), const_cast<Group*>(group));
+    ObjectGuid leaderGuid = effectiveLeader ? effectiveLeader->GetGUID() : group->GetLeaderGUID();
+    BotGroupFormation formation = sBotMgr->GetGroupFormation(leaderGuid);
     float baseDist = BOT_FOLLOW_DIST;
 
     switch (formation)
@@ -5479,7 +5526,7 @@ float ComputeFollowDistance(Player* bot)
             {
                 if (itr->GetSource() == bot)
                     break;
-                if (itr->GetSource()->GetGUID() != group->GetLeaderGUID())
+                if (itr->GetSource()->GetGUID() != leaderGuid)
                     ++rank;
             }
             baseDist = 2.0f + float((rank + 1) / 2) * 2.0f;
@@ -5492,7 +5539,7 @@ float ComputeFollowDistance(Player* bot)
             {
                 if (itr->GetSource() == bot)
                     break;
-                if (itr->GetSource()->GetGUID() != group->GetLeaderGUID())
+                if (itr->GetSource()->GetGUID() != leaderGuid)
                     ++rank;
             }
             baseDist = float((rank + 1) / 2) * 2.5f;

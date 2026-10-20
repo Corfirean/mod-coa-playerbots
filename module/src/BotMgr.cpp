@@ -502,13 +502,18 @@ namespace
     // a genuinely different map/instance (can't walk there at all) or a real gap on the same map
     // (fell behind, needs more than a plain MoveFollow tick to close) justifies a teleport.
     constexpr float LEADER_TELEPORT_DISTANCE_YD = 100.0f;
+    constexpr float LEADER_TELEPORT_DUNGEON_DISTANCE_YD = 40.0f;
 
     bool NeedsTeleportToLeader(Player const* bot, Player const* leader)
     {
         if (bot->GetMapId() != leader->GetMapId() || bot->GetInstanceId() != leader->GetInstanceId())
             return true; // different map/instance: no walkable route exists at all, must teleport
 
-        return bot->GetDistance(leader) > LEADER_TELEPORT_DISTANCE_YD;
+        float maxDist = (bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
+            ? LEADER_TELEPORT_DUNGEON_DISTANCE_YD
+            : LEADER_TELEPORT_DISTANCE_YD;
+
+        return bot->GetDistance(leader) > maxDist;
     }
 }
 
@@ -538,7 +543,7 @@ void BotMgr::DoAcceptInvite(WorldSession* session)
 
     LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' is now in a group, leader guid {}.", bot->GetName(), group->GetLeaderGUID().ToString());
 
-    if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+    if (Player* leader = BotAI::GetEffectiveFollowTarget(bot, group))
     {
         LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: resolved leader '{}' (in world: {}).", leader->GetName(), leader->IsInWorld());
         if (leader != bot && NeedsTeleportToLeader(bot, leader))
@@ -695,7 +700,7 @@ void BotMgr::FinishPendingTeleport(WorldSession* session)
     // before the ack would give MoveFollow a stale/pre-teleport position to work from.
     if (Group* group = bot->GetGroup())
     {
-        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+        if (Player* leader = BotAI::GetEffectiveFollowTarget(bot, group))
         {
             if (leader != bot)
                 BotMovement::Follow(bot, MoveOwner::Travel, leader, BotAI::ComputeFollowDistance(bot), BotAI::ComputeFollowAngle(bot));
@@ -814,7 +819,7 @@ void BotMgr::TryFollowLeaderAcrossMaps(WorldSession* session)
     if (!group)
         return;
 
-    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    Player* leader = BotAI::GetEffectiveFollowTarget(bot, group);
     if (!leader || leader == bot || !leader->IsInWorld())
         return;
 

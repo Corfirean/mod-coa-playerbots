@@ -1,4 +1,5 @@
 #include "BotMovement.h"
+#include "BotAI.h"
 #include "AscensionCollectibleSpellData.h"
 #include "Optional.h"
 #include "GridTerrainData.h"
@@ -1523,14 +1524,7 @@ namespace BotMovement
             return;
         }
 
-        ObjectGuid leaderGuid = group->GetLeaderGUID();
-        if (leaderGuid.IsEmpty() || leaderGuid == bot->GetGUID())
-        {
-            SetLeaderMountPreference(bot, DesiredMountState::None);
-            return;
-        }
-
-        Player* leader = ObjectAccessor::FindPlayer(leaderGuid);
+        Player* leader = BotAI::GetEffectiveFollowTarget(bot, group);
         if (!leader || !leader->IsInWorld() || leader->GetMapId() != bot->GetMapId())
         {
             SetLeaderMountPreference(bot, DesiredMountState::None);
