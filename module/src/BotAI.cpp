@@ -127,6 +127,8 @@
 
 namespace
 {
+using BotAI::GetEffectiveFollowTarget;
+
 // Real per-spell GCD is now queried directly off the engine's own Player::GetGlobalCooldownMgr()
 // (populated automatically by every real CastSpell -- see engine/SpellPredicates.h's
 // IsOffGlobalCooldown), not approximated. After a successful cast this AI reaction gate is all
@@ -214,6 +216,7 @@ struct BotAIState
     // Manual command from the bot-control addon -- see BotManualCommand's comment in BotAI.h.
     BotManualCommand manualCommand = BotManualCommand::None;
     ObjectGuid pullTargetGuid;
+    ObjectGuid manualCommanderGuid;
 
     // See BotAI::SetSuspended's comment in BotAI.h.
     bool suspended = false;
@@ -931,6 +934,7 @@ float ScoreItemForBot(Player* bot, ItemTemplate const* proto, BotRole role)
 
 namespace
 {
+using BotAI::GetEffectiveFollowTarget;
 using BotAI::ScoreItemForBot;
 
 // Periodic, throttled bag scan for a gear upgrade -- same shape as TryMaintainBuff. Reuses the
@@ -2960,6 +2964,10 @@ void ClearActiveFollow(Player* bot)
     BotMovement::ForceStopOwner(bot, MoveOwner::Travel);
 }
 
+} // namespace
+
+namespace BotAI
+{
 Player* GetEffectiveFollowTarget(Player* bot, Group* group)
 {
     if (!bot)
@@ -2978,7 +2986,7 @@ Player* GetEffectiveFollowTarget(Player* bot, Group* group)
         WorldSession* session = player->GetSession();
         if (!session)
             return false;
-        if (session->IsBot() || session->GetSocket() == nullptr || BotMgr::IsBotAccountId(session->GetAccountId()))
+        if (session->IsBot() || session->IsSocketClosed() || BotMgr::IsBotAccountId(session->GetAccountId()))
             return false;
         return true;
     };
@@ -2989,12 +2997,21 @@ Player* GetEffectiveFollowTarget(Player* bot, Group* group)
         return nominalLeader;
 
     // 2. If nominal leader is a bot or missing, search group for any connected human player.
+    // If multiple humans exist, prefer group assistants, otherwise first human member slot (deterministic for all bots).
+    Player* firstHuman = nullptr;
     for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         Player* member = itr->GetSource();
         if (member && member != bot && member->IsInWorld() && isHumanPlayer(member))
-            return member;
+        {
+            if (group->IsAssistant(member->GetGUID()))
+                return member;
+            if (!firstHuman)
+                firstHuman = member;
+        }
     }
+    if (firstHuman)
+        return firstHuman;
 
     // 3. Bot-only group fallback (e.g. WorldParties): follow nominal leader if not self.
     if (nominalLeader && nominalLeader != bot)
@@ -3002,7 +3019,10 @@ Player* GetEffectiveFollowTarget(Player* bot, Group* group)
 
     return nullptr;
 }
+} // namespace BotAI
 
+namespace
+{
 void ResumeFollowingLeader(Player* bot, BotAIState& state)
 {
     // Suppress follow movement while a mount attempt is pending or the bot is actively casting
@@ -3034,7 +3054,17 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
         return;
     }
 
-    Player* leader = GetEffectiveFollowTarget(bot, group);
+    Player* leader = nullptr;
+    if (state.manualCommand == BotManualCommand::Follow && !state.manualCommanderGuid.IsEmpty())
+    {
+        leader = ObjectAccessor::FindPlayer(state.manualCommanderGuid);
+        if (!leader || !leader->IsInWorld() || leader->GetMap() != bot->GetMap())
+            leader = nullptr;
+    }
+
+    if (!leader)
+        leader = GetEffectiveFollowTarget(bot, group);
+
     if (!leader || leader == bot)
     {
         ClearActiveFollow(bot);
@@ -5235,6 +5265,7 @@ void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid p
     BotAIState& state = states[botGuid];
     state.manualCommand = command;
     state.pullTargetGuid = (command == BotManualCommand::Pull) ? pullTarget : ObjectGuid::Empty;
+    state.manualCommanderGuid = (command == BotManualCommand::Follow) ? commanderGuid : ObjectGuid::Empty;
 
     if (command == BotManualCommand::Follow)
     {
@@ -5272,6 +5303,7 @@ void StopAttack(ObjectGuid botGuid)
     BotAIState& state = states[botGuid];
     state.manualCommand = BotManualCommand::None;
     state.pullTargetGuid = ObjectGuid::Empty;
+    state.manualCommanderGuid = ObjectGuid::Empty;
 
     if (Player* bot = ObjectAccessor::FindPlayer(botGuid))
         bot->AttackStop();

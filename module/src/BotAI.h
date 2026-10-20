@@ -14,6 +14,7 @@
 #include "ObjectGuid.h"
 
 class ChatHandler;
+class Group;
 class Player;
 struct ItemTemplate;
 struct Loot;

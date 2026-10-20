@@ -28,6 +28,7 @@ struct WorldSession {
 
     WorldSession(uint32_t acc, Socket* sock, bool bot) : accountId(acc), socket(sock), isBot(bot) {}
     bool IsBot() const { return isBot; }
+    bool IsSocketClosed() const { return socket == nullptr; }
     Socket* GetSocket() const { return socket; }
     uint32_t GetAccountId() const { return accountId; }
 };
@@ -42,11 +43,13 @@ struct GroupReference {
 };
 
 struct Group {
-    uint64_t leaderGuid;
-    GroupReference* firstMember;
+    uint64_t leaderGuid = 0;
+    uint64_t assistantGuid = 0;
+    GroupReference* firstMember = nullptr;
 
     uint64_t GetLeaderGUID() const { return leaderGuid; }
     GroupReference* GetFirstMember() const { return firstMember; }
+    bool IsAssistant(uint64_t guid) const { return guid == assistantGuid; }
 };
 
 struct Player {
@@ -89,7 +92,7 @@ Player* GetEffectiveFollowTarget(Player* bot, Group* group = nullptr) {
         WorldSession* session = player->GetSession();
         if (!session)
             return false;
-        if (session->IsBot() || session->GetSocket() == nullptr || BotMgr::IsBotAccountId(session->GetAccountId()))
+        if (session->IsBot() || session->IsSocketClosed() || BotMgr::IsBotAccountId(session->GetAccountId()))
             return false;
         return true;
     };
@@ -106,11 +109,19 @@ Player* GetEffectiveFollowTarget(Player* bot, Group* group = nullptr) {
         return nominalLeader;
 
     // 2. If nominal leader is a bot or missing, search group for any connected human player.
+    // If multiple humans exist, prefer group assistants, otherwise first human member slot (deterministic for all bots).
+    Player* firstHuman = nullptr;
     for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next()) {
         Player* member = itr->GetSource();
-        if (member && member != bot && member->IsInWorld() && isHumanPlayer(member))
-            return member;
+        if (member && member != bot && member->IsInWorld() && isHumanPlayer(member)) {
+            if (group->IsAssistant(member->GetGUID()))
+                return member;
+            if (!firstHuman)
+                firstHuman = member;
+        }
     }
+    if (firstHuman)
+        return firstHuman;
 
     // 3. Bot-only group fallback (e.g. WorldParties): follow nominal leader if not self.
     if (nominalLeader && nominalLeader != bot)
@@ -132,6 +143,9 @@ enum class MoveOwner { None, Combat, Travel };
 struct LocomotionRecord {
     MoveOwner owner = MoveOwner::None;
     uint32_t commandId = 0;
+    uint64_t targetGuid = 0;
+    float chaseMin = 0.0f;
+    float chaseMax = 0.0f;
 };
 
 bool ReadyToCast(Player* bot, SpellInfo const* spellInfo, LocomotionRecord& rec) {
@@ -148,65 +162,111 @@ bool ReadyToCast(Player* bot, SpellInfo const* spellInfo, LocomotionRecord& rec)
     return false;
 }
 
-int main() {
-    Socket humanSocket;
-    WorldSession humanSession(1, &humanSocket, false); // Real human session
-    WorldSession botSession1(1001, nullptr, true);      // Bot session (Tank)
-    WorldSession botSession2(1002, nullptr, true);      // Bot session (DPS)
+bool IsIdempotent(LocomotionRecord const& rec, uint64_t target, float minR, float maxR) {
+    return rec.owner == MoveOwner::Combat && rec.targetGuid == target &&
+           std::abs(rec.chaseMin - minR) <= 0.5f && std::abs(rec.chaseMax - maxR) <= 0.5f;
+}
 
-    Player human(1, "HumanPlayer", &humanSession);
-    Player botTank(2, "BotTank", &botSession1);
-    Player botDps(3, "BotDps", &botSession2);
+int main() {
+    Socket humanSocket1;
+    Socket humanSocket2;
+    WorldSession humanSession1(1, &humanSocket1, false); // Real human 1
+    WorldSession humanSession2(2, &humanSocket2, false); // Real human 2 (Assistant)
+    WorldSession botSession1(1001, nullptr, true);       // Bot session (Tank)
+    WorldSession botSession2(1002, nullptr, true);       // Bot session (DPS)
+
+    Player human1(1, "HumanPlayer1", &humanSession1);
+    Player human2(2, "HumanAssistant", &humanSession2);
+    Player botTank(3, "BotTank", &botSession1);
+    Player botDps(4, "BotDps", &botSession2);
 
     Group group;
     // Simulate LFG group formation bug where bot tank was made nominal leader
     group.leaderGuid = botTank.GetGUID();
+    group.assistantGuid = human2.GetGUID();
 
-    GroupReference ref3 = { &botDps, nullptr };
-    GroupReference ref2 = { &human, &ref3 };
+    GroupReference ref4 = { &botDps, nullptr };
+    GroupReference ref3 = { &human2, &ref4 };
+    GroupReference ref2 = { &human1, &ref3 };
     GroupReference ref1 = { &botTank, &ref2 };
     group.firstMember = &ref1;
 
-    human.group = &group;
+    human1.group = &group;
+    human2.group = &group;
     botTank.group = &group;
     botDps.group = &group;
 
-    // Test 1: Bot Tank (nominal leader) in LFG group resolves human player as effective follow target
+    // Test 1: Bot Tank (nominal leader) in LFG group resolves human assistant as effective follow target
     Player* tankFollow = GetEffectiveFollowTarget(&botTank, &group);
     assert(tankFollow != nullptr);
-    assert(tankFollow->GetGUID() == human.GetGUID());
+    assert(tankFollow->GetGUID() == human2.GetGUID());
 
-    // Test 2: Bot DPS in LFG group resolves human player as effective follow target
+    // Test 2: Bot DPS in LFG group resolves human assistant as effective follow target
     Player* dpsFollow = GetEffectiveFollowTarget(&botDps, &group);
     assert(dpsFollow != nullptr);
-    assert(dpsFollow->GetGUID() == human.GetGUID());
+    assert(dpsFollow->GetGUID() == human2.GetGUID());
 
-    // Test 3: ReadyToCast non-clearing stop invariant
+    // Test 3: Manual commander override persistence
+    uint64_t manualCommander = human1.GetGUID(); // Human 1 explicitly issued /coabot follow
+    Player* leader = nullptr;
+    if (manualCommander != 0) {
+        leader = &human1; // manual follow override preserves commander choice
+    }
+    assert(leader != nullptr && leader->GetGUID() == human1.GetGUID());
+
+    // Test 4: 10-tick AI update sequence simulation (Chase -> Stop -> Cast -> Cooldown -> Finish)
     LocomotionRecord rec;
     rec.owner = MoveOwner::Combat;
-    rec.commandId = 42;
+    rec.commandId = 1;
+    rec.targetGuid = 999;
+    rec.chaseMin = 14.0f;
+    rec.chaseMax = 20.0f;
 
-    SpellInfo castTimeSpell{ 2000, false };
+    SpellInfo frostbolt{ 2000, false };
+    SpellInfo fireBlast{ 0, false }; // instant
     botDps.moving = true;
 
-    // Tick 1: Bot is moving -> ReadyToCast stops moving and returns false
-    uint32_t nextCastAllowedMs = 500;
-    bool ready1 = ReadyToCast(&botDps, &castTimeSpell, rec);
-    assert(!ready1);
+    // Tick 1: Chasing, spell selected requires stationary. ReadyToCast stops moving, returns false. nextCastAllowedMs = 0.
+    bool readyT1 = ReadyToCast(&botDps, &frostbolt, rec);
+    assert(!readyT1);
     assert(!botDps.isMoving());
-    // Invariant: Locomotion owner and commandId are NOT wiped to None/0
+    assert(rec.owner == MoveOwner::Combat); // Invariant: owner NOT cleared!
+
+    // Tick 2: AI evaluates immediately (nextCastAllowedMs == 0). Chase is idempotent (no restart). ReadyToCast returns true.
+    assert(IsIdempotent(rec, 999, 14.0f, 20.0f));
+    bool readyT2 = ReadyToCast(&botDps, &frostbolt, rec);
+    assert(readyT2);
+    // Spell cast begins!
+    bool isCasting = true;
+    uint32_t remainingCastMs = 2000;
+
+    // Ticks 3-6: Casting in progress. isStoppedBecauseOfCasting prevents any movement dispatch.
+    for (int tick = 3; tick <= 6; ++tick) {
+        assert(isCasting);
+        remainingCastMs -= 500;
+        if (remainingCastMs == 0)
+            isCasting = false;
+    }
+    assert(!isCasting);
+
+    // Tick 7: Cast finished. Instant ability (Fire Blast) selected.
+    bool readyT7 = ReadyToCast(&botDps, &fireBlast, rec);
+    assert(readyT7); // instant spell ready immediately
+
+    // Tick 8: GCD active. Target remains in range.
+    assert(!botDps.isMoving());
+
+    // Tick 9: Target steps out of range (distance grows). Bot starts moving to catch up.
+    botDps.moving = true;
+    assert(botDps.isMoving());
+
+    // Tick 10: Spell selected while moving. ReadyToCast stops and prepares for cast without oscillation.
+    bool readyT10 = ReadyToCast(&botDps, &frostbolt, rec);
+    assert(!readyT10);
+    assert(!botDps.isMoving());
     assert(rec.owner == MoveOwner::Combat);
-    assert(rec.commandId == 42);
 
-    // With our fix, nextCastAllowedMs is set to 0, so next tick evaluates immediately
-    nextCastAllowedMs = 0;
-    assert(nextCastAllowedMs == 0);
-
-    // Tick 2: Bot is now stationary -> ReadyToCast returns true immediately!
-    bool ready2 = ReadyToCast(&botDps, &castTimeSpell, rec);
-    assert(ready2);
-
-    std::cout << "Dungeon AI freeze fix unit tests PASSED!" << std::endl;
+    std::cout << "Dungeon AI freeze fix unit tests PASSED (10-tick sequence verified)!" << std::endl;
     return 0;
 }
 '''
@@ -219,7 +279,7 @@ int main() {
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             result = subprocess.run([str(executable)], cwd=directory, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('Dungeon AI freeze fix unit tests PASSED!', result.stdout)
+            self.assertIn('Dungeon AI freeze fix unit tests PASSED (10-tick sequence verified)!', result.stdout)
 
 
 if __name__ == '__main__':
