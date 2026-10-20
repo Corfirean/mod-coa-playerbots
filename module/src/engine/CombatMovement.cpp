@@ -26,11 +26,12 @@ namespace BotAI
         if (!bot->isMoving())
             return true; // already stationary
 
-        // Begin stopping -- the movement flag doesn't clear until the stop is actually processed,
-        // so the cast itself is deferred to whichever tick next observes !bot->isMoving().
-        // Stop physical movement without wiping locomotion ownership so ChaseCommandComparator::IsIdempotent
-        // preserves the active chase intent rather than restarting movement in an oscillation loop.
+        // Stop movement immediately for cast-time / channeled spells.
+        // StopMoving() synchronously clears UNIT_STATE_MOVING and halts spline movement.
+        // Returning true allows the spell cast to begin immediately in this AI tick.
+        // Once the cast begins, TargetedMovementGenerator::DoUpdate detects owner->IsNonMeleeSpellCast()
+        // and keeps movement safely paused until the cast finishes, preventing chase oscillations.
         bot->StopMoving();
-        return false;
+        return true;
     }
 }

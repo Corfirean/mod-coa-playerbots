@@ -509,6 +509,11 @@ namespace
         if (bot->GetMapId() != leader->GetMapId() || bot->GetInstanceId() != leader->GetInstanceId())
             return true; // different map/instance: no walkable route exists at all, must teleport
 
+        // If on the same map and instance:
+        // NEVER teleport a dead bot or any bot currently in combat!
+        if (!bot->IsAlive() || bot->IsInCombat() || leader->IsInCombat())
+            return false;
+
         float maxDist = (bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
             ? LEADER_TELEPORT_DUNGEON_DISTANCE_YD
             : LEADER_TELEPORT_DISTANCE_YD;
@@ -807,7 +812,7 @@ std::vector<Player*> BotMgr::GetOnlineBots() const
 void BotMgr::TryFollowLeaderAcrossMaps(WorldSession* session)
 {
     Player* bot = session->GetPlayer();
-    if (!bot || CoaTraining::Owns(bot->GetGUID()) || !bot->IsInWorld())
+    if (!bot || CoaTraining::Owns(bot->GetGUID()) || !bot->IsInWorld() || !bot->IsAlive())
         return;
 
     // Already mid-teleport (this tick's own queue below, or something else entirely) --

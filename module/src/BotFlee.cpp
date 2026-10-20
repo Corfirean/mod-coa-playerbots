@@ -144,6 +144,14 @@ namespace BotFlee
 
     FleeReason Evaluate(Player* bot, Unit* target, BotAI::CombatContext const& ctx, BotFleeState& state, uint32 nowMs)
     {
+        if (!bot || !bot->GetMap())
+            return FleeReason::None;
+
+        // Never flee in dungeons or raids: instances require standing ground with the group.
+        // Fleeing in dungeons causes erratic running into trash, leashes, and wipe cascades.
+        if (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid())
+            return FleeReason::None;
+
         // Lethal checked first: a bot about to die takes priority over a merely-unwinnable fight.
         if (IsLethal(bot, ctx, state, nowMs))
             return FleeReason::Lethal;

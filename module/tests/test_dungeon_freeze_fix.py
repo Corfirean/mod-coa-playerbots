@@ -157,9 +157,9 @@ bool ReadyToCast(Player* bot, SpellInfo const* spellInfo, LocomotionRecord& rec)
     if (!bot->isMoving())
         return true;
 
-    // Surgical fix invariant: stop physical motion, DO NOT wipe rec.owner
+    // Surgical fix invariant: stop physical motion and start cast immediately
     bot->StopMoving();
-    return false;
+    return true;
 }
 
 bool IsIdempotent(LocomotionRecord const& rec, uint64_t target, float minR, float maxR) {
@@ -226,22 +226,17 @@ int main() {
     SpellInfo fireBlast{ 0, false }; // instant
     botDps.moving = true;
 
-    // Tick 1: Chasing, spell selected requires stationary. ReadyToCast stops moving, returns false. nextCastAllowedMs = 0.
+    // Tick 1: Chasing, spell selected requires stationary. ReadyToCast stops moving and returns true immediately.
     bool readyT1 = ReadyToCast(&botDps, &frostbolt, rec);
-    assert(!readyT1);
+    assert(readyT1);
     assert(!botDps.isMoving());
     assert(rec.owner == MoveOwner::Combat); // Invariant: owner NOT cleared!
-
-    // Tick 2: AI evaluates immediately (nextCastAllowedMs == 0). Chase is idempotent (no restart). ReadyToCast returns true.
-    assert(IsIdempotent(rec, 999, 14.0f, 20.0f));
-    bool readyT2 = ReadyToCast(&botDps, &frostbolt, rec);
-    assert(readyT2);
-    // Spell cast begins!
+    // Spell cast begins immediately in Tick 1!
     bool isCasting = true;
     uint32_t remainingCastMs = 2000;
 
-    // Ticks 3-6: Casting in progress. isStoppedBecauseOfCasting prevents any movement dispatch.
-    for (int tick = 3; tick <= 6; ++tick) {
+    // Ticks 2-6: Casting in progress. isStoppedBecauseOfCasting prevents any movement dispatch.
+    for (int tick = 2; tick <= 6; ++tick) {
         assert(isCasting);
         remainingCastMs -= 500;
         if (remainingCastMs == 0)
