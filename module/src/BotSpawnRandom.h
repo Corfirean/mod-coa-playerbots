@@ -59,6 +59,8 @@ uint32 CancelPendingSpawns();
 // online bot (or every online bot, if omitted) at its current level's skill cap. Standalone from
 // ApplyFreshBotSetup so it can backfill a bot that never went through that path (this project's
 // original hand-made test characters predate it and have zero profession skills).
+void RepairGear(Player* bot);
+
 void GrantAllProfessions(Player* bot, uint8 level);
 
 // Creates and logs in one bot of an EXACT class (unlike CreateOneRandomBot's random pick) --

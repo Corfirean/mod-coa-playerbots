@@ -1,3 +1,4 @@
+#include "BotGear.h"
 #include "BotAI.h"
 #include "BotBattlegroundFill.h"
 #include "BotEconomy.h"
@@ -82,10 +83,17 @@ public:
 
         static ChatCommandTable commandTable =
         {
-            { "botcmd", botcmdCommandTable }
+            { "botcmd", botcmdCommandTable },
+            { "fixbotgear", HandleFixBotGear, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
 
         return commandTable;
+    }
+
+    static bool HandleFixBotGear(ChatHandler* handler, Tail args)
+    {
+        BotGear::Command(handler, std::string(args));
+        return true;
     }
 
     // What bots would sell and why (plan only): see BotEconomy.h.
@@ -252,15 +260,16 @@ public:
                     handler->PSendSysMessage("BotMgr: no online bot with guid {}.", *charLowGuid);
                 return true;
             }
+            if (bot->IsInCombat() || bot->GetTradeData() || bot->IsBeingTeleported())
+            {
+                handler->SendSysMessage("Bot gear: this bot is busy; try again when idle.");
+                return true;
+            }
             sBotMgr->GearUpBot(bot, handler);
             return true;
         }
 
-        std::vector<Player*> bots = sBotMgr->GetOnlineBots();
-        for (Player* bot : bots)
-            sBotMgr->GearUpBot(bot, nullptr);
-        if (handler)
-            handler->PSendSysMessage("BotMgr: gear-trainer pass done for {} online bot(s).", uint32(bots.size()));
+        BotGear::Command(handler, "");
         return true;
     }
 

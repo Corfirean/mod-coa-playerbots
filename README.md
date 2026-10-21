@@ -121,3 +121,5 @@ This project is free software under the [GNU Affero General Public License v3.0]
 AzerothCore module convention used in the source headers.
 
 Builds on research into [mod-playerbots](https://github.com/mod-playerbots/mod-playerbots) (GPL-2.0, per AzerothCore conventions) and [azerothcore-wotlk-coa](https://github.com/jealous-sound/azerothcore-wotlk-coa). All custom class combat profiles and utility AI engines are original works developed specifically for Conquest of AzerothCore project.
+
+See [bot equipment rules and gradual repair commands](docs/bot-gear.md) for `.fixbotgear`.

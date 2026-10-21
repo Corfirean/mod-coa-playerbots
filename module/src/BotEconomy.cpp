@@ -1,3 +1,4 @@
+#include "BotGear.h"
 #include "BotEconomy.h"
 
 #include "AuctionHouseMgr.h"
@@ -266,7 +267,8 @@ namespace
     {
         for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
             if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-                fn(item);
+                if (!BotGear::Archived(item))
+                    fn(item);
         for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
         {
             Bag* pBag = bot->GetBagByPos(bag);
@@ -274,7 +276,8 @@ namespace
                 continue;
             for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
                 if (Item* item = pBag->GetItemByPos(j))
-                    fn(item);
+                    if (!BotGear::Archived(item))
+                        fn(item);
         }
     }
 

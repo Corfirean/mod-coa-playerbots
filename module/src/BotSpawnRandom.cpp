@@ -26,6 +26,7 @@
  */
 
 #include "BotSpawnRandom.h"
+#include "BotGear.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
 #include "BotMgr.h"
@@ -733,48 +734,29 @@ struct LevelItemCandidate
     uint32 quality;
 };
 
-// Confirmed live: querying item_template fresh per bot per slot (`ORDER BY ABS(ItemLevel - X)`
-// has no usable index, so every call was a full table scan) took a worldserver tick over 70
-// SECONDS once real bots started spawning -- fine for one admin testing gear on a single 80,
-// catastrophic multiplied across 8 slots x several candidate types x 1000+ bots. Each distinct
-// (class, subclass, InventoryType) combination is now queried ONCE per server run (a plain,
-// unsorted SELECT -- one scan, not one per bot) and cached; every bot after that does an
-// in-memory scan of at most a few hundred rows instead of a fresh round trip to MySQL.
+// Index the already-loaded item templates once; repairing a bot never scans the item SQL table.
 std::vector<LevelItemCandidate> const& CandidatePool(uint32 itemClass, uint32 subclass, uint32 inventoryType)
 {
     static std::unordered_map<uint64, std::vector<LevelItemCandidate>> cache;
-    uint64 key = (uint64(itemClass) << 40) | (uint64(subclass) << 24) | uint64(inventoryType);
-
-    auto itr = cache.find(key);
-    if (itr != cache.end())
-        return itr->second;
-
-    std::vector<LevelItemCandidate> pool;
-    QueryResult result = WorldDatabase.Query(
-        "SELECT entry, ItemLevel, RequiredLevel, Quality FROM item_template WHERE class={} AND subclass={} "
-        "AND InventoryType={} AND Quality BETWEEN 1 AND 4 AND AllowableClass=-1 "
-        // Placeholder and test rows that exist in item_template but no player can ever obtain --
-        // the first test batch equipped "RPGITEM PH - Plate Shoulder" and "CoA Test Bow".
-        "AND name NOT LIKE '%RPGITEM%' AND name NOT LIKE '%[PH]%' AND name NOT LIKE '% PH %' "
-        "AND name NOT LIKE '%Test%' AND name NOT LIKE 'Monster - %' AND name NOT LIKE '%Deprecated%' "
-        "AND name NOT LIKE '%[DND]%' AND name NOT LIKE 'NPC %' "
-        // Items with a requirement a fresh bot cannot meet. CanEquipNewItem rejects them anyway, but
-        // they sort to the top of a quality-ordered pool, so on the first test batches whole weapon
-        // pools were nothing but these and two bots ended up with no weapon at all.
-        "AND RequiredSkill=0 AND requiredspell=0 AND requiredhonorrank=0 AND RequiredCityRank=0 "
-        "AND RequiredReputationFaction=0 AND Map=0 AND area=0 AND HolidayId=0 "
-        "AND (AllowableRace=-1 OR (AllowableRace & 1791)=1791)",
-        itemClass, subclass, inventoryType);
-    if (result)
+    static bool loaded = false;
+    if (!loaded)
     {
-        do
+        loaded = true;
+        for (auto const& [entry, item] : *sObjectMgr->GetItemTemplateStore())
         {
-            Field* fields = result->Fetch();
-            pool.push_back({ fields[2].Get<uint32>(), fields[1].Get<uint32>(), fields[0].Get<uint32>(),
-                fields[3].Get<uint32>() });
-        } while (result->NextRow());
+            if ((item.Class != ITEM_CLASS_WEAPON && item.Class != ITEM_CLASS_ARMOR) ||
+                item.Quality < ITEM_QUALITY_NORMAL || item.Quality > ITEM_QUALITY_EPIC ||
+                item.AllowableClass != uint32(-1) || item.RequiredSkill || item.RequiredSpell ||
+                item.RequiredHonorRank || item.RequiredCityRank || item.RequiredReputationFaction ||
+                item.Map || item.Area || item.HolidayId ||
+                (item.AllowableRace != uint32(-1) && (item.AllowableRace & 1791) != 1791))
+                continue;
+            uint64 key = (uint64(item.Class) << 40) | (uint64(item.SubClass) << 24) | item.InventoryType;
+            cache[key].push_back({item.RequiredLevel, item.ItemLevel, entry, item.Quality});
+        }
     }
-    return cache.emplace(key, std::move(pool)).first->second;
+    uint64 key = (uint64(itemClass) << 40) | (uint64(subclass) << 24) | inventoryType;
+    return cache[key];
 }
 
 // Highest quality one gear slot may roll for a bot of this level: mostly greens while levelling,
@@ -797,22 +779,26 @@ uint32 RollQualityCap(uint8 level)
 // level", amounted to exactly that). Falls back to anything wearable when that window is empty for a
 // slot, which happens at the lowest levels and for rarer item types. Several candidates are returned
 // so TryEquipBestOf's role-aware scoring still has a real choice.
-std::vector<uint32> GearPool(uint32 itemClass, uint32 subclass, uint32 inventoryType, uint8 level,
-    uint32 qualityCap, size_t maxCount = 6)
+std::vector<uint32> GearPool(Player* bot, uint32 itemClass, uint32 subclass, uint32 inventoryType, uint8 level,
+    uint32 qualityCap, size_t maxCount = 64)
 {
     std::vector<LevelItemCandidate> matches;
     for (uint32 window : { 5u, 255u })
     {
         for (LevelItemCandidate const& candidate : CandidatePool(itemClass, subclass, inventoryType))
             if (candidate.requiredLevel <= level && candidate.requiredLevel + window >= level &&
-                candidate.quality <= qualityCap)
+                candidate.quality <= qualityCap && BotGear::Allowed(bot, sObjectMgr->GetItemTemplate(candidate.entry)))
                 matches.push_back(candidate);
         if (!matches.empty())
             break;
     }
 
-    std::sort(matches.begin(), matches.end(), [](LevelItemCandidate const& a, LevelItemCandidate const& b)
+    std::sort(matches.begin(), matches.end(), [bot](LevelItemCandidate const& a, LevelItemCandidate const& b)
     {
+        float aPower = BotGear::PowerScore(bot, sObjectMgr->GetItemTemplate(a.entry));
+        float bPower = BotGear::PowerScore(bot, sObjectMgr->GetItemTemplate(b.entry));
+        if (aPower != bPower)
+            return aPower > bPower;
         if (a.quality != b.quality)
             return a.quality > b.quality;
         if (a.requiredLevel != b.requiredLevel)
@@ -829,8 +815,14 @@ std::vector<uint32> GearPool(uint32 itemClass, uint32 subclass, uint32 inventory
 // Same "check CanEquipNewItem before ever touching what's already there" shape as
 // BotMgr::GearUpBot -- see its header comment for why the order matters (a candidate this bot's
 // class/spec genuinely can't use must never cost it whatever it already had equipped).
+bool repairingGear = false;
+
 bool TryEquipBestOf(Player* bot, uint8 slot, std::vector<uint32> const& candidates, uint8 level)
 {
+    if (repairingGear)
+        if (Item* existing = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            if (BotGear::Allowed(bot, existing->GetTemplate()) || BotAI::IsProfessionTool(existing->GetTemplate()))
+                return false;
     uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
     BotRole role = BotAI::GetRoleForClassSpec(bot->getClass(), activeSpec);
 
@@ -839,8 +831,8 @@ bool TryEquipBestOf(Player* bot, uint8 slot, std::vector<uint32> const& candidat
 
     if (Item* existing = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
     {
-        if (ItemTemplate const* existingTmpl = existing->GetTemplate())
-            bestScore = BotAI::ScoreItemForBot(bot, existingTmpl, role);
+        if (ItemTemplate const* existingTmpl = existing->GetTemplate(); BotGear::Allowed(bot, existingTmpl))
+            bestScore = BotAI::ScoreItemForBot(bot, existingTmpl, role) + BotGear::PowerScore(bot, existingTmpl);
     }
 
     // Small, deterministic per-(bot, slot, item) jitter -- purely to stop every bot of the same
@@ -861,14 +853,14 @@ bool TryEquipBestOf(Player* bot, uint8 slot, std::vector<uint32> const& candidat
         if (!itemId)
             continue;
         ItemTemplate const* tmpl = sObjectMgr->GetItemTemplate(itemId);
-        if (!tmpl)
+        if (!BotGear::Allowed(bot, tmpl) || !sBotMgr->MatchesGearPreference(bot, itemId))
             continue;
 
         uint16 dest = uint16(slot) | (uint16(INVENTORY_SLOT_BAG_0) << 8);
         if (bot->CanEquipNewItem(NULL_SLOT, dest, itemId, true) != EQUIP_ERR_OK)
             continue;
 
-        float score = BotAI::ScoreItemForBot(bot, tmpl, role) + jitter(itemId);
+        float score = BotAI::ScoreItemForBot(bot, tmpl, role) + BotGear::PowerScore(bot, tmpl) + jitter(itemId);
         if (score > bestScore)
         {
             bestScore = score;
@@ -885,8 +877,8 @@ bool TryEquipBestOf(Player* bot, uint8 slot, std::vector<uint32> const& candidat
                 if (!BotAI::MoveEquippedToolToBags(bot, slot))
                     return false;
             }
-            else
-                bot->DestroyItemCount(existing->GetEntry(), 1, true);
+            else if (!BotGear::PreserveSlot(bot, slot))
+                return false;
         }
         return bot->StoreNewItemInBestSlots(bestItem, 1);
     }
@@ -914,17 +906,17 @@ void GearUpFreshBotForLevel(Player* bot, uint8 level)
         std::vector<uint32> candidates;
         for (uint8 subclass : armorSubclasses)
         {
-            for (uint32 item : GearPool(4, subclass, armorInventoryTypes[i], level, cap))
+            for (uint32 item : GearPool(bot, 4, subclass, armorInventoryTypes[i], level, cap))
                 candidates.push_back(item);
             if (armorInventoryTypes[i] == 5) // chest: cloth robes use InventoryType=20, not 5
-                for (uint32 robe : GearPool(4, subclass, 20, level, cap))
+                for (uint32 robe : GearPool(bot, 4, subclass, 20, level, cap))
                     candidates.push_back(robe);
         }
         TryEquipBestOf(bot, armorSlots[i], candidates, level);
     }
 
-    TryEquipBestOf(bot, EQUIPMENT_SLOT_NECK, GearPool(4, 0, 2, level, RollQualityCap(level)), level);
-    TryEquipBestOf(bot, EQUIPMENT_SLOT_BACK, GearPool(4, 1, 16, level, RollQualityCap(level)), level);
+    TryEquipBestOf(bot, EQUIPMENT_SLOT_NECK, GearPool(bot, 4, 0, 2, level, RollQualityCap(level)), level);
+    TryEquipBestOf(bot, EQUIPMENT_SLOT_BACK, GearPool(bot, 4, 1, 16, level, RollQualityCap(level)), level);
 
     // Split a shared pool into two disjoint (alternating) candidate lists so the two ring and the
     // two trinket slots can never land on the same item id (confirmed live: every bot once got the
@@ -937,14 +929,14 @@ void GearUpFreshBotForLevel(Player* bot, uint8 level)
         return std::make_pair(a, b);
     };
 
-    auto [ringPoolA, ringPoolB] = splitAlternating(GearPool(4, 0, 11, level, RollQualityCap(level), 10));
+    auto [ringPoolA, ringPoolB] = splitAlternating(GearPool(bot, 4, 0, 11, level, RollQualityCap(level), 10));
     if (!ringPoolA.empty() || !ringPoolB.empty())
     {
         TryEquipBestOf(bot, EQUIPMENT_SLOT_FINGER1, ringPoolA.empty() ? ringPoolB : ringPoolA, level);
         TryEquipBestOf(bot, EQUIPMENT_SLOT_FINGER2, ringPoolB.empty() ? ringPoolA : ringPoolB, level);
     }
 
-    auto [trinketPoolA, trinketPoolB] = splitAlternating(GearPool(4, 0, 12, level, RollQualityCap(level), 10));
+    auto [trinketPoolA, trinketPoolB] = splitAlternating(GearPool(bot, 4, 0, 12, level, RollQualityCap(level), 10));
     if (!trinketPoolA.empty() || !trinketPoolB.empty())
     {
         TryEquipBestOf(bot, EQUIPMENT_SLOT_TRINKET1, trinketPoolA.empty() ? trinketPoolB : trinketPoolA, level);
@@ -962,7 +954,7 @@ void GearUpFreshBotForLevel(Player* bot, uint8 level)
     uint32 weaponCap = RollQualityCap(level);
     std::vector<uint32> mainHand;
     for (auto const& [subclass, invType] : mainHandTypes)
-        for (uint32 item : GearPool(2, subclass, invType, level, weaponCap, 12))
+        for (uint32 item : GearPool(bot, 2, subclass, invType, level, weaponCap, 12))
             mainHand.push_back(item);
     TryEquipBestOf(bot, EQUIPMENT_SLOT_MAINHAND, mainHand, level);
 
@@ -977,14 +969,14 @@ void GearUpFreshBotForLevel(Player* bot, uint8 level)
         std::vector<uint32> offHand;
         uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
         if (BotAI::GetRoleForClassSpec(bot->getClass(), activeSpec) == BotRole::Tank)
-            for (uint32 item : GearPool(4, 6, 14, level, offCap))
+            for (uint32 item : GearPool(bot, 4, 6, 14, level, offCap))
                 offHand.push_back(item);
-        for (uint32 item : GearPool(4, 0, 23, level, offCap))
+        for (uint32 item : GearPool(bot, 4, 0, 23, level, offCap))
             offHand.push_back(item);
         if (bot->CanDualWield())
             for (uint32 subclass : { 0u, 4u, 7u, 13u, 15u })
                 for (uint32 invType : { 13u, 22u })
-                    for (uint32 item : GearPool(2, subclass, invType, level, offCap))
+                    for (uint32 item : GearPool(bot, 2, subclass, invType, level, offCap))
                         offHand.push_back(item);
         TryEquipBestOf(bot, EQUIPMENT_SLOT_OFFHAND, offHand, level);
     }
@@ -994,7 +986,7 @@ void GearUpFreshBotForLevel(Player* bot, uint8 level)
     uint32 rangedCap = RollQualityCap(level);
     std::vector<uint32> ranged;
     for (auto const& [subclass, invType] : rangedTypes)
-        for (uint32 item : GearPool(2, subclass, invType, level, rangedCap))
+        for (uint32 item : GearPool(bot, 2, subclass, invType, level, rangedCap))
             ranged.push_back(item);
     TryEquipBestOf(bot, EQUIPMENT_SLOT_RANGED, ranged, level);
 }
@@ -1174,6 +1166,19 @@ void GrantAllProfessions(Player* bot, uint8 level)
 
     if (!bot->HasSpell(7620))
         bot->learnSpell(7620);
+}
+
+void RepairGear(Player* bot)
+{
+    if (!bot || !BotGear::Ready())
+        return;
+    repairingGear = true;
+    GearUpFreshBotForLevel(bot, bot->GetLevel());
+    repairingGear = false;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            if (!BotAI::IsProfessionTool(item->GetTemplate()) && !BotGear::Allowed(bot, item->GetTemplate()))
+                BotGear::PreserveSlot(bot, slot);
 }
 
 void SpawnLeveledBots(uint32 requestedCount, ChatHandler* handler)

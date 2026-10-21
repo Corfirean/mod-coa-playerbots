@@ -1,3 +1,4 @@
+#include "BotGear.h"
 /*
  * mod-coa-playerbots
  *
@@ -110,6 +111,11 @@ bool BotMatchesRole(Player* bot, uint8 roleBit)
 bool JoinBotToLfg(Player* bot, uint8 roleBit, lfg::LfgDungeonSet dungeons, uint64 opId)
 {
     filling = true;
+    if (bot->GetPlayerSetting("coa.bot.gear", 0).value != 0)
+    {
+        bot->UpdatePlayerSetting("coa.bot.gear", 0, 0);
+        BotGear::Queue(bot);
+    }
     sLFGMgr->JoinLfg(bot, roleBit, dungeons, "");
     filling = false;
 

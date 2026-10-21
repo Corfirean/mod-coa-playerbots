@@ -4,6 +4,11 @@
 
 [worldserver]
 
+# Allow bots to open corpses and take items and money while in a party or raid.
+# Disabled by default so grouped players can loot themselves. Solo bots still loot.
+# Does not change Need/Greed rolls or gathering and fishing loot.
+CoaBots.Loot.AutoLootInGroup = 0
+
 #
 #    CoaBots.Enable
 #        Description: The master switch of the companions. 0 = no bot is ever logged in (no spawn commands, no login at
