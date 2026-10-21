@@ -319,6 +319,13 @@ uint32 SelectVenomancerRotationSpell(Player* bot, Unit* target, uint32 activeSpe
             if (uint32 spell = TrySpell(bot, bot, 803183, true))
                 return spell;
     }
+    else if (activeSpec == 101)
+    {
+        // Vizier (healer) keeps its caster form; Spider Form is the damage specs' form.
+        if (!bot->HasAura(800912))
+            if (uint32 spell = TrySpell(bot, bot, 800912, true))
+                return spell;
+    }
     else
     {
         if (!bot->HasAura(800841) && !bot->HasAura(803183))

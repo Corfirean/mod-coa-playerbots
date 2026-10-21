@@ -188,6 +188,12 @@ public:
         if (!creature || !creature->IsAlive() || !_bot->IsHostileTo(creature))
             return false;
 
+        // Only a boss's pulse is something to walk out of. An ordinary mob with a permanent damage aura (Gnomeregan's irradiated gnomes, for one)
+        // is simply fought: avoiding it made every bot in the group step out of the aura, get pulled back in by combat, and step out again, so the
+        // tank, the healer and the melee never engaged.
+        if (!creature->IsDungeonBoss() && !creature->isWorldBoss())
+            return false;
+
         for (auto const& [spellId, application] : creature->GetAppliedAuras())
         {
             Aura const* aura = application->GetBase();

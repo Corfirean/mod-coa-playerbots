@@ -823,6 +823,10 @@ void BotMgr::TryFollowLeaderAcrossMaps(WorldSession* session)
     if (!leader || leader == bot || !leader->IsInWorld())
         return;
 
+    // A leader who is dead or running back as a ghost is not followed across maps: the ghost is at the graveyard, the group stays where it fell.
+    if (!leader->IsAlive() || leader->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+        return;
+
     if (!NeedsTeleportToLeader(bot, leader))
         return; // same map, close enough -- ResumeFollowingLeader's plain MoveFollow closes this
 

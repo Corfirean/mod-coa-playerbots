@@ -3002,6 +3002,16 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
         return;
     }
 
+    // A dead leader, or one running back as a ghost, is not led: the bots stay where they are (and rezzing or fighting goes on as usual) instead
+    // of trailing the ghost to the graveyard.
+    if (!leader->IsAlive() || leader->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+    {
+        ClearActiveFollow(bot);
+        state.followWaitingReaction = false;
+        state.followReactionElapsed = false;
+        return;
+    }
+
     Map* map = bot->GetMap();
     if (map && (map->IsDungeon() || map->IsRaid()) && sBotMgr->IsAutoDungeonModeEnabled(group->GetLeaderGUID()))
     {
@@ -4520,6 +4530,16 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     // Only falls back to chasing the ally directly when no hostile threat is identifiable at
     // all (e.g. topping someone off between pulls, or healing a target that's run off alone).
 
+    // Closing the distance to the ally comes first: a standoff from the enemy is no use when the person who needs the heal is out of the healer's
+    // range or out of its line of sight (the group fighting down a stair or round a corner), and a healer that keeps its distance from the enemy
+    // then never heals and the group dies. Stays well inside heal range (80%) so the healer does not walk into melee reach of the boss.
+    bool allyOutOfReach = healTarget != bot &&
+        (bot->GetDistance(healTarget) > healRange || !bot->IsWithinLOSInMap(healTarget));
+    if (allyOutOfReach)
+    {
+        BotMovement::Chase(bot, MoveOwner::Combat, healTarget, ChaseRange(0.0f, healRange * 0.8f));
+        return;
+    }
     if (threat && threat->IsAlive() && bot->IsValidAttackTarget(threat))
     {
         BotMovement::Chase(bot, MoveOwner::Combat, threat, ChaseRange(RANGED_ENGAGE_DISTANCE * 0.7f, RANGED_ENGAGE_DISTANCE));
