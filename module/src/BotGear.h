@@ -13,6 +13,8 @@ namespace BotGear
 {
 bool Ready();
 bool TrainingLocked(Player* bot);
+// Dungeon probe (training server only): lets a dedicated bot act like a normal one until the probe ends, in memory only.
+void SetProbeUnlock(Player* bot, bool unlocked);
 void LockTraining(Player* bot);
 bool Allowed(Player* bot, ItemTemplate const* item);
 bool AllowedAtLevel(uint8 level, ItemTemplate const* item);

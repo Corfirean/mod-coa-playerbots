@@ -13,6 +13,7 @@
 #include "Config.h"
 #include "DBCStores.h"
 #include "Creature.h"
+#include "CreatureAI.h"
 #include "Pet.h"
 #include "Group.h"
 #include "GroupMgr.h"
@@ -34,6 +35,11 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+
+namespace BotAI
+{
+std::string DebugState(Player* bot);
+}
 
 namespace CoaTraining
 {
@@ -414,6 +420,142 @@ void Shutdown()
     sessions.clear(); owners.clear();
 }
 
+// ---- Dungeon probe: a group of bots led by an inert leader (a suspended bot that stands still like a player who has not touched
+// the keyboard) walks into a dungeon, so the group behaviour a real player sees -- follow, tank, heal, assist -- can be measured on the
+// isolated training server. Verbs: dgroup, dgo, dmove, dpull, dstat, dfree. Dedicated bot accounts only, never account 1.
+Player* DungeonBot(uint32 guid)
+{
+    Player* p = sBotMgr->FindBotPlayer(guid);
+    if (!p || p->GetSession()->GetAccountId() == 1 || !BotMgr::IsBotAccountId(p->GetSession()->GetAccountId()))
+        throw std::runtime_error("dedicated online bot required: " + std::to_string(guid));
+    if (Lookup(p->GetGUID())) throw std::runtime_error("bot belongs to a training session: " + std::to_string(guid));
+    return p;
+}
+
+void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& input)
+{
+    uint32 leaderGuid = 0; input >> leaderGuid;
+    Player* leader = DungeonBot(leaderGuid);
+    if (verb == "dgroup")
+    {
+        std::vector<Player*> members;
+        uint32 guid;
+        while (input >> guid) members.push_back(DungeonBot(guid));
+        if (members.empty() || members.size() > 4) throw std::runtime_error("dgroup <leader> <1..4 members>");
+        std::vector<Player*> all{leader};
+        all.insert(all.end(), members.begin(), members.end());
+        for (Player* p : all)
+            if (Group* old = p->GetGroup())
+            {
+                for (auto const& slot : old->GetMemberSlots())
+                    if (!BotMgr::IsBotAccountId(sCharacterCache->GetCharacterAccountIdByGuid(slot.guid)))
+                        throw std::runtime_error("an existing group contains a non-bot account");
+                old->Disband();
+            }
+        Group* group = new Group();
+        if (!group->Create(leader)) { delete group; throw std::runtime_error("cannot create group"); }
+        sGroupMgr->AddGroup(group);
+        for (Player* m : members)
+            if (!group->AddMember(m)) throw std::runtime_error("cannot add " + m->GetName());
+        for (Player* p : all)
+            BotGear::SetProbeUnlock(p, true);
+        h->PSendSysMessage("dgroup: leader {} + {} members", leader->GetName(), members.size());
+        return;
+    }
+    if (verb == "dgo")
+    {
+        uint32 map = 0; float x = 0, y = 0, z = 0, o = 0; std::string all;
+        if (!(input >> map >> x >> y >> z >> o)) throw std::runtime_error("dgo <leader> <map> <x> <y> <z> <o> [all]");
+        input >> all;
+        leader->TeleportTo(map, x, y, z, o);
+        if (all == "all")
+            if (Group* group = leader->GetGroup())
+                for (auto const& slot : group->GetMemberSlots())
+                    if (Player* m = ObjectAccessor::FindPlayer(slot.guid))
+                        if (m != leader) m->TeleportTo(map, x, y, z, o);
+        h->PSendSysMessage("dgo: leader to map {} ({:.1f} {:.1f} {:.1f})", map, x, y, z);
+        return;
+    }
+    if (verb == "dmove")
+    {
+        float x = 0, y = 0, z = 0;
+        if (!(input >> x >> y >> z)) throw std::runtime_error("dmove <leader> <x> <y> <z>");
+        leader->GetMotionMaster()->MovePoint(1, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, false);
+        h->PSendSysMessage("dmove: leader to ({:.1f} {:.1f} {:.1f})", x, y, z);
+        return;
+    }
+    if (verb == "dpull")
+    {
+        float range = 40.0f; input >> range;
+        Unit* target = leader->SelectNearbyTarget(nullptr, range);
+        Creature* c = target ? target->ToCreature() : nullptr;
+        if (!c || !c->IsAlive()) { h->SendSysMessage("dpull: nothing to pull"); return; }
+        c->SetInCombatWith(leader);
+        leader->SetInCombatWith(c);
+        if (c->AI()) c->AI()->AttackStart(leader);
+        h->PSendSysMessage("dpull: {} (entry {}, level {}) at {:.0f} yd", c->GetName(), c->GetEntry(), c->GetLevel(), leader->GetDistance(c));
+        return;
+    }
+    if (verb == "dstat")
+    {
+        Group* group = leader->GetGroup();
+        Json out;
+        out["map"] = leader->GetMapId();
+        out["inCombat"] = leader->IsInCombat();
+        std::set<Unit*> attackers;
+        std::vector<Player*> members;
+        if (group)
+            for (auto const& slot : group->GetMemberSlots())
+                if (Player* m = ObjectAccessor::FindPlayer(slot.guid)) members.push_back(m);
+        if (members.empty()) members.push_back(leader);
+        for (Player* m : members)
+        {
+            Json j;
+            j["name"] = m->GetName();
+            j["role"] = int(BotAI::GetRole(m->GetGUID()));
+            j["alive"] = m->IsAlive();
+            j["map"] = m->GetMapId();
+            j["hp"] = m->GetMaxHealth() ? int(m->GetHealth() * 100 / m->GetMaxHealth()) : 0;
+            uint32 maxPower = m->GetMaxPower(m->getPowerType());
+            j["pw"] = maxPower ? int(m->GetPower(m->getPowerType()) * 100 / maxPower) : 0;
+            j["x"] = m->GetPositionX(); j["y"] = m->GetPositionY(); j["z"] = m->GetPositionZ();
+            j["d"] = m == leader ? 0.0f : (m->GetMapId() == leader->GetMapId() ? m->GetDistance(leader) : -1.0f);
+            j["cmb"] = m->IsInCombat();
+            j["moving"] = m->isMoving();
+            if (Unit* v = m->GetVictim()) j["tgt"] = v->GetName();
+            if (m != leader) j["dbg"] = BotAI::DebugState(m);
+            Spell* cur = m->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            if (!cur) cur = m->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+            if (cur && cur->GetSpellInfo()) j["cast"] = cur->GetSpellInfo()->Id;
+            out["members"].Push(j);
+            for (Unit* a : m->getAttackers())
+                if (a && a->IsAlive()) attackers.insert(a);
+        }
+        for (Unit* a : attackers)
+        {
+            Json j;
+            j["name"] = a->GetName();
+            j["hp"] = a->GetMaxHealth() ? int(a->GetHealth() * 100 / a->GetMaxHealth()) : 0;
+            if (Unit* v = a->GetVictim()) j["on"] = v->GetName();
+            out["mobs"].Push(j);
+        }
+        h->SendSysMessage(("DSTAT " + out.Dump()).c_str());
+        return;
+    }
+    if (verb == "dfree")
+    {
+        if (Group* group = leader->GetGroup())
+        {
+            for (auto const& slot : group->GetMemberSlots())
+                if (Player* m = ObjectAccessor::FindPlayer(slot.guid)) BotGear::SetProbeUnlock(m, false);
+            group->Disband();
+        }
+        h->SendSysMessage("dfree: group disbanded");
+        return;
+    }
+    throw std::runtime_error("unknown dungeon probe verb");
+}
+
 void Command(ChatHandler* h, std::string const& args)
 {
     if (!Enabled.load(std::memory_order_relaxed)) { h->SendSysMessage("Training is disabled in server configuration."); return; }
@@ -423,6 +565,11 @@ void Command(ChatHandler* h, std::string const& args)
     std::string verb; input >> verb;
     try
     {
+        if (verb == "dgroup" || verb == "dgo" || verb == "dmove" || verb == "dpull" || verb == "dstat" || verb == "dfree")
+        {
+            DungeonProbe(h, verb, input);
+            return;
+        }
         if (verb == "ungroup")
         {
             uint32 guid = 0; input >> guid;

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cctype>
 #include <deque>
+#include <set>
 #include <fstream>
 #include <unordered_set>
 #include <unordered_map>
@@ -221,9 +222,24 @@ bool PreserveSlot(Player* bot, uint8 slot)
     return true;
 }
 
+namespace
+{
+std::set<ObjectGuid> probeUnlocked;
+}
+
+void SetProbeUnlock(Player* bot, bool unlocked)
+{
+    if (!bot)
+        return;
+    if (unlocked)
+        probeUnlocked.insert(bot->GetGUID());
+    else
+        probeUnlocked.erase(bot->GetGUID());
+}
+
 bool TrainingLocked(Player* bot)
 {
-    return bot && bot->GetPlayerSetting("coa.bot.training_gear", 0).value != 0;
+    return bot && !probeUnlocked.count(bot->GetGUID()) && bot->GetPlayerSetting("coa.bot.training_gear", 0).value != 0;
 }
 
 void LockTraining(Player* bot)
