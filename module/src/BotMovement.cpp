@@ -263,6 +263,16 @@ namespace
         // Token-safe: Issue leg under explicit Navigate MoveMode and carry request generation guard.
         MovementDispatchGuard guard{req.requestGeneration, req.goalId};
         LocomotionToken token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+        if (!token.IsValid() && req.recoveryMode == RecoveryMode::None && (tx != req.x || ty != req.y))
+        {
+            // The leg point is a straight-line guess towards the goal. In a cave or a corridor it lies inside rock, has no path, and the first leg
+            // used to fail for good (an auto-dungeon tank stood at the entrance because of it). Ask for the path to the goal itself instead: the
+            // navigation mesh finds the way, and the next leg continues from wherever that path ends.
+            tx = req.x;
+            ty = req.y;
+            tz = req.z;
+            token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+        }
         if (!token.IsValid())
             return {};
 
