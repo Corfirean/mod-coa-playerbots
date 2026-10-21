@@ -14,43 +14,9 @@
 #include "engine/CombatContext.h"
 #include "engine/SpecStrategyRegistry.h"
 #include "Player.h"
-#include <algorithm>
 
 namespace BotAI
 {
-    namespace
-    {
-        void AddSunClericMechanics(CombatProfile& profile)
-        {
-            // Native vows are mutually exclusive. Select one role-specific vow,
-            // and let the core own its effects and Solar Power generation.
-            uint32 vow = profile.specId == 46 ? 807435 :
-                profile.specId == 47 ? 807749 : profile.specId == 48 ? 807547 : 803719;
-            AbilityDescriptor d;
-            d.name = "Preferred Vow";
-            d.rootSpellId = vow;
-            d.tags = AbilityTag::Buff;
-            d.targetType = TargetType::Self;
-            d.missingAuraOnCaster = vow;
-            d.baseScore = 400.0f;
-            profile.abilities.push_back(d);
-
-            // Dawn is a self empowerment, not an enemy periodic damage spell.
-            // Native resource/aura gates require 20 Solar Power and no active Dawn.
-            profile.abilities.erase(std::remove_if(profile.abilities.begin(), profile.abilities.end(),
-                [](AbilityDescriptor const& ability) { return ability.rootSpellId == 804584; }),
-                profile.abilities.end());
-            d = AbilityDescriptor{};
-            d.name = "Dawn";
-            d.rootSpellId = 804584;
-            d.tags = AbilityTag::OffensiveCD;
-            d.targetType = TargetType::Self;
-            d.missingAuraOnCaster = 807440;
-            d.baseScore = 300.0f;
-            profile.abilities.push_back(d);
-        }
-    }
-
     void RegisterSunClericProfiles()
     {
         // -------------------------------------------------------------
@@ -124,7 +90,7 @@ namespace BotAI
                 d.rootSpellId = 800764;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
-                // Native cooldown governs this resource invocation, not a nonexistent aura.
+                d.missingAuraOnCaster = 704396;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 150.0f;
                 p.abilities.push_back(d);
@@ -200,7 +166,6 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            AddSunClericMechanics(p);
             ProfileRegistry::RegisterProfile(p);
 
             // SpecStrategy for Seraphim
@@ -209,8 +174,7 @@ namespace BotAI
             s.specId = 48;
             s.role = BotRole::Tank;
             s.strategyName = "SunCleric_Seraphim_Tank_Strategy";
-            // Conquest energizes Solar Power; native effects do not apply a persistent form aura.
-            s.requiredState = RequiredCombatState{};
+            s.requiredState = {};
 
             s.phaseModifiers[CombatPhase::Opener] = {
                 { AbilityTag::Taunt,       2.0f, 80.0f },
@@ -346,38 +310,7 @@ namespace BotAI
                 };
                 p.abilities.push_back(d);
             }
-            {
-                AbilityDescriptor d;
-                // the real main heal: 33% of casts
-                d.name = "Daybreak";
-                d.rootSpellId = 500147;
-                d.tags = AbilityTag::DirectHeal;
-                d.targetType = TargetType::LowestHealthAlly;
-                d.baseScore = 240.0f;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                // 5 s category strike healers use between heals (17% of casts)
-                d.name = "Gavel of Wrath";
-                d.rootSpellId = 800617;
-                d.tags = AbilityTag::MeleeAttack;
-                d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 150.0f;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Radiance";
-                d.rootSpellId = 800054;
-                d.tags = AbilityTag::Buff;
-                d.targetType = TargetType::Self;
-                d.internalThrottleMs = 120000;
-                d.baseScore = 210.0f;
-                p.abilities.push_back(d);
-            }
 
-            AddSunClericMechanics(p);
             ProfileRegistry::RegisterProfile(p);
 
             // SpecStrategy for Blessings
@@ -436,7 +369,7 @@ namespace BotAI
                 d.rootSpellId = 800764;
                 d.tags = AbilityTag::Buff;
                 d.targetType = TargetType::Self;
-                // Native cooldown governs this resource invocation, not a nonexistent aura.
+                d.missingAuraOnCaster = 704396;
                 d.internalThrottleMs = 20000;
                 d.baseScore = 190.0f;
                 p.abilities.push_back(d);
@@ -461,76 +394,8 @@ namespace BotAI
                 d.rootSpellId = 800611;
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                // Main Solar Power builder (Dawn needs 20 stacks): the former 4 s throttle left it
-                // "internal throttle" in 31 of 41 decisions and Solar peaked at 12 in 30 s while the
-                // bot cast the 2 s ranged Sunflare filler instead.
-                d.baseScore = 230.0f;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Gavel of Grace";
-                d.rootSpellId = 800614;
-                d.tags = AbilityTag::MeleeAttack;
-                d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 250.0f; // shares its 5 s category with Gavel of Light; real players use Grace (22% of casts), never Light
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Glorious Execution";
-                d.rootSpellId = 800626;
-                d.tags = AbilityTag::MeleeAttack;
-                d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 240.0f;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Justice";
-                d.rootSpellId = 520359;
-                d.tags = AbilityTag::MeleeAttack;
-                d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 200.0f;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Champion of the Sun";
-                d.rootSpellId = 800612;
-                d.tags = AbilityTag::Buff;
-                d.targetType = TargetType::Self;
-                d.baseScore = 245.0f;
-                d.missingAuraOnCaster = 800612;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Radiance";
-                d.rootSpellId = 800054;
-                d.tags = AbilityTag::Buff;
-                d.targetType = TargetType::Self;
-                d.baseScore = 225.0f;
-                d.missingAuraOnCaster = 800054;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Dawnfall";
-                d.rootSpellId = 806118;
-                d.tags = AbilityTag::MeleeAttack | AbilityTag::AoEDamage;
-                d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 215.0f;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Paragon";
-                d.rootSpellId = 680639;
-                d.tags = AbilityTag::Buff;
-                d.targetType = TargetType::Self;
-                d.baseScore = 300.0f;
-                d.missingAuraOnCaster = 680639;
+                d.internalThrottleMs = 4000;
+                d.baseScore = 140.0f;
                 p.abilities.push_back(d);
             }
             {
@@ -575,19 +440,7 @@ namespace BotAI
                 d.baseScore = 40.0f;
                 p.abilities.push_back(d);
             }
-            {
-                AbilityDescriptor d;
-                // 45 s cooldown, needs the native aura 807440
-                d.name = "Sunslam";
-                d.rootSpellId = 805629;
-                d.tags = AbilityTag::MeleeAttack;
-                d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 45000;
-                d.baseScore = 235.0f;
-                p.abilities.push_back(d);
-            }
 
-            AddSunClericMechanics(p);
             ProfileRegistry::RegisterProfile(p);
 
             // SpecStrategy for Valkyrie
@@ -596,8 +449,7 @@ namespace BotAI
             s.specId = 47;
             s.role = BotRole::Dps;
             s.strategyName = "SunCleric_Valkyrie_MeleeDps_Strategy";
-            // Conquest energizes Solar Power; native effects do not apply a persistent form aura.
-            s.requiredState = RequiredCombatState{};
+            s.requiredState = {};
 
             s.phaseModifiers[CombatPhase::Opener] = {
                 { AbilityTag::MeleeAttack, 1.5f, 40.0f }
@@ -650,18 +502,19 @@ namespace BotAI
                 d.rootSpellId = 500154;
                 d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                
-                d.baseScore = 255.0f; // 25 s cooldown nuke, 27% of real casts; the 6 s throttle and low score kept it at a third of that
+                d.internalThrottleMs = 6000;
+                d.baseScore = 150.0f;
                 p.abilities.push_back(d);
             }
             {
                 AbilityDescriptor d;
                 d.name = "Sunset";
                 d.rootSpellId = 804584;
-                d.tags = AbilityTag::Buff; // Dawn in Spell.dbc: a self spell gated by the native Dawn auras (16% of real casts)
-                d.targetType = TargetType::Self;
-                
-                d.baseScore = 245.0f;
+                d.tags = AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.requireAuraMissingOnTarget = true;
+                d.internalThrottleMs = 4000;
+                d.baseScore = 140.0f;
                 p.abilities.push_back(d);
             }
 
@@ -687,39 +540,7 @@ namespace BotAI
                 d.baseScore = 60.0f;
                 p.abilities.push_back(d);
             }
-            {
-                AbilityDescriptor d;
-                d.name = "Solar Concord";
-                d.rootSpellId = 301266;
-                d.tags = AbilityTag::Buff;
-                d.targetType = TargetType::Self;
-                d.internalThrottleMs = 30000;
-                d.baseScore = 225.0f;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Solar Invocation: Conquest";
-                d.rootSpellId = 800764;
-                d.tags = AbilityTag::Buff;
-                d.targetType = TargetType::Self;
-                d.internalThrottleMs = 30000;
-                d.baseScore = 220.0f;
-                p.abilities.push_back(d);
-            }
-            {
-                AbilityDescriptor d;
-                d.name = "Dawnfall";
-                d.rootSpellId = 806118;
-                d.tags = AbilityTag::AoEDamage;
-                d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 120000;
-                d.minAoETargets = 1;
-                d.baseScore = 230.0f;
-                p.abilities.push_back(d);
-            }
 
-            AddSunClericMechanics(p);
             ProfileRegistry::RegisterProfile(p);
 
             // SpecStrategy for Piety

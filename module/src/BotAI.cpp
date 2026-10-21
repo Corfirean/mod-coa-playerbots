@@ -4734,10 +4734,6 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
         if (bot->InBattleground())
             return;
 
-        Corpse* corpse = bot->GetCorpse();
-        if (!corpse)
-            return;
-
         // A dungeon's nearest graveyard can be outside the instance entirely (confirmed live
         // in Deadmines: RepopAtGraveyard() sent the ghost to a Westfall graveyard on the
         // Eastern Kingdoms continent map while the corpse stayed on the instance map) --
@@ -4745,8 +4741,12 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
         // they're not even in the same coordinate space. BotMgr::TryReturnGhostToCorpseMap
         // handles getting the bot onto the corpse's map first (a real client would walk back
         // through the dungeon entrance themselves; a bot has nothing to walk through, same
-        // reasoning as the leader-follow teleport) -- nothing to do here until that lands.
-        if (corpse->GetMapId() != bot->GetMapId())
+        // reasoning as the leader-follow teleport) -- wait until that lands.
+        if (bot->HasCorpse() && bot->GetCorpseLocation().GetMapId() != bot->GetMapId())
+            return;
+
+        Corpse* corpse = bot->GetCorpse();
+        if (!corpse)
             return;
 
         if (bot->GetDistance(corpse) > CORPSE_RECLAIM_RADIUS)

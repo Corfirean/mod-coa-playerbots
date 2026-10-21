@@ -727,14 +727,17 @@ void BotMgr::TryReturnGhostToCorpseMap(WorldSession* session)
     if (!bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) || bot->InBattleground())
         return;
 
-    Corpse* corpse = bot->GetCorpse();
-    if (!corpse || corpse->GetMapId() == bot->GetMapId())
+    if (!bot->HasCorpse())
+        return;
+
+    WorldLocation const& corpseLoc = bot->GetCorpseLocation();
+    if (corpseLoc.GetMapId() == bot->GetMapId())
         return;
 
     LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: ghost '{}' is on map {} but its corpse is on map {} -- teleporting to the corpse's map.",
-        bot->GetName(), bot->GetMapId(), corpse->GetMapId());
+        bot->GetName(), bot->GetMapId(), corpseLoc.GetMapId());
 
-    bot->TeleportTo(corpse->GetMapId(), corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), bot->GetOrientation());
+    bot->TeleportTo(corpseLoc.GetMapId(), corpseLoc.GetPositionX(), corpseLoc.GetPositionY(), corpseLoc.GetPositionZ(), bot->GetOrientation());
     _pendingTeleportAck.push_back(session);
 }
 

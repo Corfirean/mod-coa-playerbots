@@ -28,6 +28,10 @@
 #include "SharedDefines.h"
 #include "Unit.h"
 #include "WorldPacket.h"
+#include "DBCStores.h"
+#include "DBCStructure.h"
+#include "LFGMgr.h"
+#include "World.h"
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -488,23 +492,93 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     }
 }
 
+void SendCoaScaleProfiles(Player* player)
+{
+    if (!player)
+        return;
+
+    uint32 maxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    if (!maxLevel)
+        maxLevel = 80;
+
+    auto send = [player](std::string const& body)
+    {
+        WorldPacket packet;
+        ChatHandler::BuildChatPacket(packet, CHAT_MSG_WHISPER, LANG_ADDON,
+            player->GetGUID(), player->GetGUID(), "COASCALE\t" + body,
+            0, player->GetName(), player->GetName(), 0, false);
+        player->SendDirectMessage(&packet);
+    };
+
+    send("BEGIN:" + std::to_string(maxLevel));
+
+    for (uint32 i = 0; i < sLFGDungeonStore.GetNumRows(); ++i)
+    {
+        LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(i);
+        if (!dungeon)
+            continue;
+
+        if (dungeon->MinLevel >= 100)
+            continue;
+
+        if (dungeon->TypeID != lfg::LFG_TYPE_DUNGEON &&
+            dungeon->TypeID != lfg::LFG_TYPE_HEROIC &&
+            dungeon->TypeID != lfg::LFG_TYPE_RANDOM)
+            continue;
+
+        uint32 minLevel = dungeon->MinLevel;
+        if (minLevel == 0)
+            minLevel = 1;
+
+        uint32 maxDungeonLevel = std::max<uint32>(dungeon->MaxLevel, maxLevel);
+
+        send("D:" + std::to_string(dungeon->ID) + ":" +
+            std::to_string(minLevel) + ":" +
+            std::to_string(maxDungeonLevel) + ":" +
+            std::to_string(dungeon->TypeID));
+    }
+
+    send("END");
+}
+
 class coa_bot_addon_chat_script : public PlayerScript
 {
 public:
-    coa_bot_addon_chat_script() : PlayerScript("coa_bot_addon_chat_script", { PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT }) { }
+    coa_bot_addon_chat_script() : PlayerScript("coa_bot_addon_chat_script", { PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT, PLAYERHOOK_ON_LOGIN }) { }
+
+    void OnLogin(Player* player) override
+    {
+        SendCoaScaleProfiles(player);
+    }
 
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 language, std::string& message, Player* receiver) override
     {
-        if (!sBotMgr->BotsEnabled())
-            return true;
-
         if (type != CHAT_MSG_WHISPER || language != LANG_ADDON || receiver != player)
             return true;
-        if (message.compare(0, PROTOCOL_PREFIX_LEN, PROTOCOL_PREFIX) != 0)
-            return true;
 
-        HandleCoaBotMessage(player, message.substr(PROTOCOL_PREFIX_LEN));
-        return false; // consume -- a self-whisper carrying our protocol never needs real delivery
+        if (message.compare(0, PROTOCOL_PREFIX_LEN, PROTOCOL_PREFIX) == 0)
+        {
+            if (!sBotMgr->BotsEnabled())
+                return true;
+            HandleCoaBotMessage(player, message.substr(PROTOCOL_PREFIX_LEN));
+            return false;
+        }
+
+        if (message.compare(0, 9, "COASCALE\t") == 0)
+        {
+            std::string body = message.substr(9);
+            if (body == "REQUEST")
+            {
+                SendCoaScaleProfiles(player);
+                return false;
+            }
+            if (body == "MODE:BOTS" || body == "MODE:SOLO")
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 };
 }
