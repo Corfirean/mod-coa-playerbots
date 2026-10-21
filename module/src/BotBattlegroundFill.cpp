@@ -195,6 +195,8 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
         return;
     if (!bot->CanJoinToBattleground(bgTemplate) || !bot->HasFreeBattlegroundQueueId())
         return;
+    if (bracketEntry && (bot->GetLevel() < bracketEntry->minLevel || bot->GetLevel() > bracketEntry->maxLevel))
+        return; // never queue a bot into a bracket its level does not belong to
 
     BattlegroundQueue& bgQueue = sBattlegroundMgr->GetBattlegroundQueue(bgQueueTypeId);
 
@@ -237,11 +239,18 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
 void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueueTypeId bgQueueTypeId,
     PvPDifficultyEntry const* bracketEntry)
 {
+    uint8 const minLvl = bracketEntry ? bracketEntry->minLevel : 0;
+    uint8 const maxLvl = bracketEntry ? bracketEntry->maxLevel : 80;
+
     for (Player* bot : sBotMgr->GetOnlineBots())
     {
         if (bot->GetTeamId() != team || !bot->IsAlive())
             continue;
         if (bot->InBattleground() || bot->InBattlegroundQueue())
+            continue;
+        // The queue is the bracket of the player who queued; a bot outside its level range was put there anyway (a level 20 player got level 30+
+        // and even level 80 bots), so only bots whose own level fits the bracket are taken.
+        if (bot->GetLevel() < minLvl || bot->GetLevel() > maxLvl)
             continue;
         JoinBotToQueue(bot, bgTypeId, bgQueueTypeId, bracketEntry);
         return;
@@ -252,8 +261,6 @@ void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueue
     for (auto const& p : pendingLogins)
         excludedGuids.insert(p.guid);
 
-    uint8 minLvl = bracketEntry ? bracketEntry->minLevel : 0;
-    uint8 maxLvl = bracketEntry ? bracketEntry->maxLevel : 80;
     ObjectGuid::LowType candidateGuid = sBotMgr->FindEligibleOfflineBot(team, minLvl, maxLvl, excludedGuids);
     if (candidateGuid)
     {

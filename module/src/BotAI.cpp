@@ -2038,20 +2038,35 @@ bool IsDungeonFullyCleared(Map* map, Player* leader)
 // creature spawn data and CREATURE_FLAG_EXTRA_DUNGEON_BOSS flags.
 void TryAutoPullInInstance(Player* bot)
 {
+    // Why the tank is not running point, one line per reason change (at most every 5 s per bot): without it a tank that just stands there
+    // gives no hint which of the checks below stopped it.
+    auto note = [bot](char const* reason)
+    {
+        static std::unordered_map<ObjectGuid, std::pair<std::string, uint32>> last;
+        auto& entry = last[bot->GetGUID()];
+        uint32 now = getMSTime();
+        if (entry.first == reason && now - entry.second < 5000)
+            return;
+        entry = { reason, now };
+        LOG_INFO("module.coa-playerbots", "AutoDungeon: tank '{}': {}.", bot->GetName(), reason);
+    };
+
     Group* group = bot->GetGroup();
     if (!group)
         return;
 
     Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
-    if (!leader || leader->IsInCombat())
-        return; // already fighting something -- let normal target-inheritance handle it
+    if (!leader)
+        return note("group leader not found");
+    if (leader->IsInCombat())
+        return note("leader is in combat, waiting");
 
     Map* map = bot->GetMap();
     if (!map || (!map->IsDungeon() && !map->IsRaid()))
-        return;
+        return note("not inside a dungeon or raid map");
 
     if (!sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID()))
-        return;
+        return note("auto dungeon is off for this group's leader");
 
     // Point runner Tank check
     bool isPointRunner = (BotAI::GetRole(bot->GetGUID()) == BotRole::Tank);
@@ -2060,6 +2075,7 @@ void TryAutoPullInInstance(Player* bot)
 
     if (IsDungeonFullyCleared(map, leader))
     {
+        note("every boss on this map counts as cleared");
         if (sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID()))
         {
             LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
@@ -2107,6 +2123,7 @@ void TryAutoPullInInstance(Player* bot)
         BotAI::PullReadinessInfo pullInfo = BotAI::SpecStrategyRegistry::EvaluateGroupPullReadiness(bot, group);
         if (!pullInfo.IsReady())
         {
+            note((std::string("pull not ready: ") + pullInfo.reason).c_str());
             if (now >= tankRuntime.lastLogTimeMs + 2000 || tankRuntime.lastLoggedPullReason != pullInfo.reason)
             {
                 tankRuntime.lastLogTimeMs = now;
@@ -2224,8 +2241,11 @@ void TryAutoPullInInstance(Player* bot)
         _autoDungeonCommittedBoss[leader->GetGUID()] = chosen->spawnId;
     }
 
+    if (!chosen)
+        note("no uncleared boss to head for");
     if (chosen)
     {
+        note("heading for the next boss");
         uint64 bestBossSpawnId = chosen->spawnId;
         Position const& bestBossPos = chosen->pos;
         // Navigate() (not the old single-shot MoveTo) so the boss approach gets the same

@@ -827,6 +827,12 @@ void BotMgr::TryFollowLeaderAcrossMaps(WorldSession* session)
     if (!leader->IsAlive() || leader->HasPlayerFlag(PLAYER_FLAGS_GHOST))
         return;
 
+    // Inside a battleground or arena the battleground AI plays the bot (BotBattlegroundAI). Teleporting it to the group leader on top of that, as this
+    // did once the bot was further than 100 yards from the leader, made the two fight: the bot was pulled back to the leader every few seconds. A
+    // bot and a leader in different battlegrounds, or one in and one out, cannot be brought together by a plain teleport anyway.
+    if (bot->InBattleground() || leader->InBattleground())
+        return;
+
     if (!NeedsTeleportToLeader(bot, leader))
         return; // same map, close enough -- ResumeFollowingLeader's plain MoveFollow closes this
 
