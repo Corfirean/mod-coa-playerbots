@@ -9,6 +9,7 @@
 #include "BotMgr.h"
 #include "WorldBrain.h"
 #include "BotSpawnRandom.h"
+#include "BotTalentBuilds.h"
 #include "Chat.h"
 #include "CommandScript.h"
 #include "LFGMgr.h"
@@ -84,6 +85,7 @@ public:
             { "economy",      HandleBotEconomyCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "movement",     HandleBotMovementCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "pathtest",     HandleBotPathTestCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "talenttest",   HandleBotTalentTestCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "train", HandleTrainingCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "autodungeon",  HandleBotAutoDungeonCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
@@ -549,6 +551,21 @@ public:
             return true;
         }
         WorldBrain::Describe(bot, handler);
+        return true;
+    }
+
+    // Which picks of the bot's talent build the talent budget refuses, and why.
+    static bool HandleBotTalentTestCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        if (handler)
+            handler->PSendSysMessage("{}", BotTalentBuilds::DescribeBuildPicks(bot));
         return true;
     }
 

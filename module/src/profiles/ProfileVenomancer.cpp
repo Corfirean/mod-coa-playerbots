@@ -408,7 +408,9 @@ namespace BotAI
                 d.tags = AbilityTag::DirectHeal | AbilityTag::Shield;
                 d.targetType = TargetType::LowestHealthAlly;
                 d.internalThrottleMs = 2500;
-                d.maxTargetHpPct = 75.0f;
+                d.maxTargetHpPct = 60.0f;
+                d.reservePowerPct = 35.0f; // the expensive heal: a healer on its last third of mana keeps it for emergencies
+                d.resourceEfficiency = 0.2f;
                 d.baseScore = 285.0f;
                 p.abilities.push_back(d);
             }

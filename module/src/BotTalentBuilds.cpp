@@ -229,6 +229,33 @@ void ApplyBuildForLevel(Player* bot, uint8 toLevel)
     bot->SetFreeTalentPoints(totalEarned >= pointsSpent ? totalEarned - pointsSpent : 0);
 }
 
+std::string DescribeBuildPicks(Player* bot)
+{
+    if (!bot)
+        return "no bot";
+    uint32 const specId = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+    TalentBuild const* build = GetBuild(bot->getClass(), specId);
+    if (!build)
+        return "no build for class " + std::to_string(bot->getClass()) + " spec " + std::to_string(specId);
+
+    std::string out = "level " + std::to_string(bot->GetLevel()) + ", spec " + std::to_string(specId) + ", " + std::to_string(build->picks.size()) + " picks\n";
+    for (TalentPick const& pick : build->picks)
+    {
+        if (pick.level > std::min<uint8>(bot->GetLevel(), 60))
+            break;
+        AscensionCompatData::CoATalentEntry const* entry = FindTalentEntry(pick.entryId);
+        if (!entry)
+        {
+            out += "level " + std::to_string(pick.level) + " entry " + std::to_string(pick.entryId) + ": not in the talent table\n";
+            continue;
+        }
+        std::string error;
+        if (!AscensionClassServiceBridge::SetTalentRank(bot, *entry, pick.rank, error))
+            out += "level " + std::to_string(pick.level) + " entry " + std::to_string(pick.entryId) + " rank " + std::to_string(pick.rank) + ": " + error + "\n";
+    }
+    return out;
+}
+
 uint32 ChooseSpecForBot(Player* bot)
 {
     if (!bot)

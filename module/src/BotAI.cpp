@@ -1829,7 +1829,11 @@ bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& sta
             }
         }
 
-        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+        // In an auto-dungeon the group follows the tank, not the player leader, who may be anywhere; the tank waits for the bots to recover, so they
+        // have to be able to sit and drink wherever they stand.
+        Map* restMap = bot->GetMap();
+        bool const autoDungeon = restMap && (restMap->IsDungeon() || restMap->IsRaid()) && sBotMgr->IsAutoDungeonModeEnabled(group->GetLeaderGUID());
+        if (Player* leader = autoDungeon ? nullptr : ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
         {
             if (leader->IsMounted() || bot->GetDistance(leader) > 35.0f)
             {
@@ -1991,6 +1995,114 @@ bool TryGrindWhenSolo(Player* bot, uint32 diff, BotAIState& state)
     return false;
 }
 
+// The tank runs point and the other bots follow it, so a pull that starts while the healer or a damage dealer is out of mana, hurt, dead or far behind
+// ends in a wipe. Why the tank should stand still instead of walking on or pulling, empty when the group is fit to go. Starts waiting a little earlier
+// than it stops (hysteresis) so the group is not left half recovered, and gives up after 150 s so one bot that never recovers cannot hold the run
+// for good. Players in the group are not waited for.
+std::string AutoDungeonWaitReason(Player* tank, Group* group)
+{
+    struct WaitState
+    {
+        bool waiting = false;
+        uint32 sinceMs = 0;
+        uint32 giveUpUntilMs = 0;
+    };
+    static std::unordered_map<ObjectGuid, WaitState> states;
+    WaitState& st = states[tank->GetGUID()];
+    uint32 const now = getMSTime();
+    if (now < st.giveUpUntilMs)
+        return {};
+
+    float const farLimit = st.waiting ? 25.0f : 35.0f;
+    float const manaLimit = st.waiting ? 80.0f : 60.0f;
+    float const hpLimit = st.waiting ? 90.0f : 70.0f;
+
+    std::string reason;
+    for (GroupReference const* ref = group->GetFirstMember(); ref && reason.empty(); ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == tank || !member->IsBot())
+            continue;
+
+        if (!member->IsAlive())
+            reason = member->GetName() + " is dead and on the way back";
+        else if (member->GetMap() != tank->GetMap() || tank->GetDistance(member) > farLimit)
+            reason = member->GetName() + " is too far behind";
+        else if (member->getPowerType() == POWER_MANA && member->GetMaxPower(POWER_MANA) > 0 &&
+                 member->GetPower(POWER_MANA) * 100.0f / member->GetMaxPower(POWER_MANA) < manaLimit)
+            reason = member->GetName() + " is low on mana";
+        else if (member->GetHealthPct() < hpLimit)
+            reason = member->GetName() + " is hurt";
+    }
+
+    if (reason.empty())
+    {
+        st.waiting = false;
+        return {};
+    }
+    if (!st.waiting)
+    {
+        st.waiting = true;
+        st.sinceMs = now;
+    }
+    else if (now - st.sinceMs > 150000)
+    {
+        st.waiting = false;
+        st.giveUpUntilMs = now + 120000;
+        LOG_INFO("module.coa-playerbots", "AutoDungeon: tank '{}' has waited 150 s for the group ({}), going on.", tank->GetName(), reason);
+        return {};
+    }
+    return reason;
+}
+
+// A mob that has turned on a damage dealer or the healer belongs on the tank. Standing and fighting it there, or running anywhere else, drags the
+// next pack in; running to the tank lets the tank pick it up. Returns true when the bot is running to the tank this tick.
+bool RunToTankIfTargeted(Player* bot)
+{
+    Group* group = bot->GetGroup();
+    if (!group || !bot->IsAlive())
+        return false;
+    Map* map = bot->GetMap();
+    if (!map || (!map->IsDungeon() && !map->IsRaid()))
+        return false;
+    if (BotAI::GetRole(bot->GetGUID()) == BotRole::Tank)
+        return false;
+
+    Player* tank = nullptr;
+    for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (member && member != bot && member->IsAlive() && member->GetMap() == map && BotAI::GetRole(member->GetGUID()) == BotRole::Tank)
+        {
+            tank = member;
+            break;
+        }
+    }
+    if (!tank)
+        return false;
+
+    bool targeted = false;
+    for (Unit* attacker : bot->getAttackers())
+    {
+        if (attacker && attacker->IsAlive() && attacker->GetTypeId() == TYPEID_UNIT && attacker->GetVictim() == bot)
+        {
+            targeted = true;
+            break;
+        }
+    }
+    if (!targeted)
+        return false;
+
+    float const dist = bot->GetDistance(tank);
+    if (dist <= 6.0f || dist > 60.0f)
+        return false;
+
+    if (dist > 10.0f)
+        bot->InterruptNonMeleeSpells(false);
+    BotMovement::Follow(bot, MoveOwner::Combat, tank, 3.0f, 0.0f);
+    return true;
+}
+
 // Commit-and-hold for TryAutoPullInInstance's boss selection, per group leader: once a boss is
 // chosen, keep heading to that exact spawnId for as long as it's still a valid (uncleared)
 // candidate, instead of re-ranking every tick -- straight-line distance swings as the bot rounds
@@ -2083,6 +2195,15 @@ void TryAutoPullInInstance(Player* bot)
                 bot->GetName());
             sBotMgr->SetAutoDungeonMode(leader->GetGUID(), false);
         }
+        return;
+    }
+
+    // Nothing starts - no pull, no walk to the next boss - until the group has caught up and recovered.
+    std::string const waitReason = AutoDungeonWaitReason(bot, group);
+    if (!waitReason.empty())
+    {
+        note(("waiting: " + waitReason).c_str());
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
         return;
     }
 
@@ -4064,6 +4185,9 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     if (BotAvoidance::TryAvoidGroundHazards(bot))
         return;
 
+    if (RunToTankIfTargeted(bot))
+        return;
+
     // Boss avoidance (frontal cleaves, point-blank AoE / whirlwind)
     if (BotAvoidance::TryAvoidBossTelegraphedAttacks(bot, target))
         return;
@@ -4493,6 +4617,9 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
         return;
 
     if (BotAvoidance::TryAvoidGroundHazards(bot))
+        return;
+
+    if (RunToTankIfTargeted(bot))
         return;
 
     // HealUrgencyScore (item 10/#4, Phase 2): missing HP, incoming-damage trend, role, whether

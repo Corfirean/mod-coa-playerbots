@@ -46,6 +46,9 @@ namespace BotTalentBuilds
     // Safely removes obsolete lower ranks, learns new ranks, and updates free talent points.
     void ApplyBuildForLevel(Player* bot, uint8 toLevel);
 
+    // Debug: why each pick of the bot's build up to its level was or was not accepted by the talent budget (one line per refused pick).
+    std::string DescribeBuildPicks(Player* bot);
+
     // Chooses and assigns a specialization around level 10 if none is set.
     // Weighted toward roles the current bot population is short on (Tanks < 20%, Healers < 20%).
     uint32 ChooseSpecForBot(Player* bot);
