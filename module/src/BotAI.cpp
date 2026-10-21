@@ -315,6 +315,10 @@ struct BotAIState
     // Natural follow latency
     uint32 followReactionDelayMs = 0;
     bool followWaitingReaction = false;
+    // Set while the bot is dead or a ghost; the first tick it is alive again logs where it came back (dungeon-death diagnosis).
+    bool wasDead = false;
+    // The reaction delay has run out and the bot may now start following; consumed by ResumeFollowingLeader.
+    bool followReactionElapsed = false;
 };
 
 // How long a freshly-dead bot waits, body not yet released, before giving up on a real
@@ -3037,15 +3041,27 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
     {
         ClearActiveFollow(bot);
         state.followWaitingReaction = false;
+        state.followReactionElapsed = false;
         return;
     }
 
-    // Reaction latency when leader moves:
-    if (leader->isMoving() && !state.followWaitingReaction && BotMovement::CurrentMode(bot) != MoveMode::Follow)
+    // Reaction latency when the leader moves: wait a fraction of a second, then follow. The delay used to be re-armed
+    // the moment it ran out (the timer clears the flag, this function saw "not waiting" and started it again), so a bot
+    // never got to the Follow call below while its leader was running and stood still until the leader stopped.
+    // A bot that has already fallen far behind does not wait at all.
+    if (leader->isMoving() && BotMovement::CurrentMode(bot) != MoveMode::Follow && dist < followDist * 3.0f + 10.0f)
     {
-        state.followWaitingReaction = true;
-        state.followReactionDelayMs = 150 + (bot->GetGUID().GetCounter() % 250);
-        return;
+        if (state.followReactionElapsed)
+            state.followReactionElapsed = false;
+        else
+        {
+            if (!state.followWaitingReaction)
+            {
+                state.followWaitingReaction = true;
+                state.followReactionDelayMs = 150 + (bot->GetGUID().GetCounter() % 250);
+            }
+            return;
+        }
     }
 
     if (state.followWaitingReaction)
@@ -4642,6 +4658,7 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
     // The open-world task survives death: the brain drops its live target and area claims and
     // re-evaluates the area once the bot is back on its feet.
     WorldBrain::OnDeath(bot);
+    state.wasDead = true;
 
     if (bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
     {
@@ -4744,9 +4761,14 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
         return;
     }
 
+    float const deathX = bot->GetPositionX(), deathY = bot->GetPositionY(), deathZ = bot->GetPositionZ();
+    uint32 const deathMap = bot->GetMapId();
     WorldPacket repopPacket;
     repopPacket << uint8(0);
     bot->GetSession()->HandleRepopRequestOpcode(repopPacket);
+    LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' released its spirit on map {} at ({:.0f} {:.0f} {:.0f}); alive={} ghost={} map={} at ({:.0f} {:.0f} {:.0f}) teleportPending={}.",
+        bot->GetName(), deathMap, deathX, deathY, deathZ, bot->IsAlive(), bot->HasPlayerFlag(PLAYER_FLAGS_GHOST), bot->GetMapId(),
+        bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar());
 
     // HandleRepopRequestOpcode -> Player::RepopAtGraveyard() calls TeleportTo() internally to
     // move the released ghost to its graveyard -- exactly like the module's own explicit
@@ -4767,6 +4789,22 @@ void AddSC_coa_bot_petition_script()
 
 namespace BotAI
 {
+// Training dungeon probe: one line of what the bot AI is currently holding on to, for stuck-bot diagnosis.
+std::string DebugState(Player* bot)
+{
+    auto it = states.find(bot->GetGUID());
+    if (it == states.end())
+        return "no-state";
+    BotAIState const& st = it->second;
+    std::string out = "susp=" + std::to_string(st.suspended) + " rest=" + std::to_string(st.isResting) + " wait=" + std::to_string(st.followWaitingReaction) +
+        " loot=" + std::to_string(st.pendingLootGuids.size()) + " cmd=" + std::to_string(int(st.manualCommand)) +
+        " mode=" + std::to_string(int(BotMovement::CurrentMode(bot))) + " owner=" + std::to_string(int(BotMovement::CurrentOwner(bot))) +
+        " gen=" + std::to_string(int(bot->GetMotionMaster()->GetCurrentMovementGeneratorType())) +
+        " cmb=" + std::to_string(bot->IsInCombat()) + " cast=" + std::to_string(bot->IsNonMeleeSpellCast(false)) +
+        " stand=" + std::to_string(int(bot->getStandState())) + " mnt=" + std::to_string(bot->IsMounted());
+    return out;
+}
+
 void Update(Player* bot, uint32 diff)
 {
     if (!bot || !bot->IsInWorld())
@@ -4826,6 +4864,14 @@ void Update(Player* bot, uint32 diff)
         return;
     }
     state.ghostDurationMs = 0;
+    if (state.wasDead)
+    {
+        state.wasDead = false;
+        Player* lead = bot->GetGroup() ? ObjectAccessor::FindPlayer(bot->GetGroup()->GetLeaderGUID()) : nullptr;
+        LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' is alive again on map {} at ({:.0f} {:.0f} {:.0f}), {:.0f} yd from its leader.",
+            bot->GetName(), bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+            lead && lead->GetMapId() == bot->GetMapId() ? bot->GetDistance(lead) : -1.0f);
+    }
 
     // Resolve any completed or interrupted mount cast
     ResolvePendingMountCast(bot, state);
@@ -4838,6 +4884,7 @@ void Update(Player* bot, uint32 diff)
         {
             state.followReactionDelayMs = 0;
             state.followWaitingReaction = false;
+            state.followReactionElapsed = true;
         }
     }
 

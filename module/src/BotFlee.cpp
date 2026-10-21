@@ -4,6 +4,7 @@
 #include "engine/SpellPredicates.h"
 #include "BotMovement.h"
 #include "training/TrainingArenaManager.h"
+#include "Map.h"
 #include "Player.h"
 #include "Unit.h"
 #include <cmath>
@@ -83,9 +84,22 @@ namespace
 
 namespace BotFlee
 {
-    bool IsLethal(Player* bot, BotAI::CombatContext const& ctx, BotFleeState& state, uint32 nowMs)
+    // Running away is an open-world response. In a dungeon, a raid, a battleground or an arena the group fights it out: a tank or a healer
+    // that walked off mid-pull would drop the group's aggro and healing, and a boss that does not lose health for a while is a phase, not a
+    // lost fight.
+    bool FleeAllowedHere(Player const* bot)
     {
         if (!bot)
+            return false;
+        if (bot->InBattleground())
+            return false;
+        Map const* map = bot->GetMap();
+        return !map || (!map->IsDungeon() && !map->IsRaid());
+    }
+
+    bool IsLethal(Player* bot, BotAI::CombatContext const& ctx, BotFleeState& state, uint32 nowMs)
+    {
+        if (!bot || !FleeAllowedHere(bot))
         {
             state.lethalFirstSeenMs = 0;
             return false;
@@ -115,6 +129,11 @@ namespace BotFlee
         // cannot be used as evidence that this timed encounter should be abandoned.
         if (ctx.bot && CoaTraining::Owns(ctx.bot->GetGUID()))
             return false;
+        if (!FleeAllowedHere(ctx.bot))
+        {
+            state.stalemateTargetGuid.Clear();
+            return false;
+        }
         if (!target)
         {
             state.stalemateTargetGuid.Clear();
@@ -156,6 +175,14 @@ namespace BotFlee
     {
         if (!bot)
             return false;
+
+        // A retreat that began outside and carried the bot into an instance ends there.
+        if (!FleeAllowedHere(bot))
+        {
+            state.fleeing = false;
+            state.reason = FleeReason::None;
+            return false;
+        }
 
         if (!state.fleeing)
         {

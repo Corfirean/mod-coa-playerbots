@@ -508,6 +508,11 @@ namespace
         if (bot->GetMapId() != leader->GetMapId() || bot->GetInstanceId() != leader->GetInstanceId())
             return true; // different map/instance: no walkable route exists at all, must teleport
 
+        // Inside one dungeon instance the leader is reachable on foot, however far ahead: a player who died and came back at the
+        // start runs to the group, and so does a bot.
+        if (Map const* map = bot->GetMap(); map && (map->IsDungeon() || map->IsRaid()))
+            return false;
+
         return bot->GetDistance(leader) > LEADER_TELEPORT_DISTANCE_YD;
     }
 }
