@@ -4,4 +4,4 @@ type: fixed
 audience: players
 title: Auto-dungeon tanks find their way through caves and corridors
 ---
-Long walks of a bot (the auto-dungeon tank heading for a boss, among others) were made in straight-line steps of 40 yards. In a cave or a corridor the first step often ended inside rock, no path existed, and the bot never moved. When a step has no path, the bot now asks for the path to the real destination and follows the navigation mesh.
+A bot could not start a walk whose route was longer than about 300 yards: the game refuses such a path for bots, and in a winding dungeon like Ragefire Chasm the way to the first boss alone is about 470 yards, so the auto-dungeon tank stood at the entrance. A long walk is now split along the navigation mesh into legs of up to 150 yards, and when a straight-line leg point lies inside rock the bot asks for the path to the real destination instead.

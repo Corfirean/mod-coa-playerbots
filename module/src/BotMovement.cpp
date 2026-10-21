@@ -6,6 +6,8 @@
 #include "Group.h"
 #include "Log.h"
 #include "LocalLevelScaling.h"
+#include "Map.h"
+#include "MapCollisionData.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
@@ -20,6 +22,7 @@
 #include <cstring>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -227,6 +230,84 @@ namespace
         return false;
     }
 
+    // PathGenerator refuses a bot's path with NOPATH once it needs more than MAX_POINT_PATH_LENGTH smooth points (74 of 4 yards, about 300 yards of
+    // walking). A winding cave is longer than that long before its end: from the Ragefire Chasm entrance the way to the first boss is some 470 yards
+    // and to the last one over 1200, so a bot told to walk there never moved. Ask the navigation mesh for the whole corridor ourselves and return a
+    // point on it that PathGenerator can still reach; the next leg continues from there.
+    constexpr float ROUTE_STEP_YARDS = 150.0f;
+
+    // A route waypoint already carries the navigation mesh's own height. Looking the ground up again would snap it to whatever floor lies under it in a
+    // dungeon with stacked levels (a corridor at -37 became -52 below it) and the point would be off the mesh.
+    thread_local bool g_trustGivenZ = false;
+
+    bool RouteWaypoint(Player* bot, float gx, float gy, float gz, float& ox, float& oy, float& oz)
+    {
+        Map* map = bot->GetMap();
+        if (!map || bot->CanFly())
+            return false;
+        dtNavMeshQuery const* query = map->GetMapCollisionData().GetMMapData().GetNavMeshQuery();
+        if (!query)
+            return false;
+
+        dtQueryFilter filter;
+        filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
+        filter.setExcludeFlags(0);
+
+        // Detour works in (y, z, x) of the world coordinates.
+        float const start[3] = { bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX() };
+        float const end[3] = { gy, gz, gx };
+        float const extents[3] = { 5.0f, 20.0f, 5.0f };
+        dtPolyRef startRef = 0, endRef = 0;
+        float startPt[3], endPt[3];
+        if (dtStatusFailed(query->findNearestPoly(start, extents, &filter, &startRef, startPt)) || !startRef)
+            return false;
+        if (dtStatusFailed(query->findNearestPoly(end, extents, &filter, &endRef, endPt)) || !endRef)
+            return false;
+
+        constexpr int MAX_POLYS = 1024;
+        constexpr int MAX_POINTS = 512;
+        dtPolyRef polys[MAX_POLYS];
+        int polyCount = 0;
+        if (dtStatusFailed(query->findPath(startRef, endRef, startPt, endPt, &filter, polys, &polyCount, MAX_POLYS)) || polyCount <= 0)
+            return false;
+
+        float closestEnd[3];
+        bool overPoly = false;
+        if (dtStatusFailed(query->closestPointOnPoly(polys[polyCount - 1], endPt, closestEnd, &overPoly)))
+            return false;
+
+        float points[MAX_POINTS * 3];
+        int pointCount = 0;
+        if (dtStatusFailed(query->findStraightPath(startPt, closestEnd, polys, polyCount, points, nullptr, nullptr, &pointCount, MAX_POINTS)) || pointCount < 2)
+            return false;
+
+        float walked = 0.0f;
+        float lastX = points[0], lastY = points[1], lastZ = points[2];
+        for (int i = 1; i < pointCount; ++i)
+        {
+            float const dx = points[i * 3] - lastX, dy = points[i * 3 + 1] - lastY, dz = points[i * 3 + 2] - lastZ;
+            float const seg = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (walked + seg >= ROUTE_STEP_YARDS)
+            {
+                float const t = seg > 0.0f ? (ROUTE_STEP_YARDS - walked) / seg : 0.0f;
+                // back to world coordinates: x = detour z, y = detour x, z = detour y
+                ox = lastZ + dz * t;
+                oy = lastX + dx * t;
+                oz = lastY + dy * t;
+                return true;
+            }
+            walked += seg;
+            lastX = points[i * 3];
+            lastY = points[i * 3 + 1];
+            lastZ = points[i * 3 + 2];
+        }
+        // the whole corridor is short enough: go to its end
+        ox = lastZ;
+        oy = lastX;
+        oz = lastY;
+        return true;
+    }
+
     LocomotionToken IssueLeg(Player* bot, MovementRequest& req)
     {
         float bx = bot->GetPositionX();
@@ -272,6 +353,19 @@ namespace
             ty = req.y;
             tz = req.z;
             token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+        }
+        if (!token.IsValid() && req.recoveryMode == RecoveryMode::None)
+        {
+            float wx = 0.0f, wy = 0.0f, wz = 0.0f;
+            if (RouteWaypoint(bot, req.x, req.y, req.z, wx, wy, wz) && Dist2d(bx, by, wx, wy) > SAME_POINT_YARDS)
+            {
+                tx = wx;
+                ty = wy;
+                tz = wz;
+                g_trustGivenZ = true;
+                token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+                g_trustGivenZ = false;
+            }
         }
         if (!token.IsValid())
             return {};
@@ -376,19 +470,42 @@ namespace BotMovement
     // Arbitrated Locomotion Primitives (Linearized Physical Dispatch & Token-Safe)
     // =========================================================================
 
+    // Why a movement request of the auto-dungeon owner was refused: one line per bot and reason every 5 seconds. A bot that is told to walk and does not
+    // gives no other trace, as every refusal below is a silent "return {}".
+    static void NoteMoveRefusal(Player* bot, MoveOwner owner, char const* reason, float x, float y)
+    {
+        if (owner != MoveOwner::AutoDungeon)
+            return;
+        static std::unordered_map<ObjectGuid, std::pair<std::string, uint32>> last;
+        auto& entry = last[bot->GetGUID()];
+        uint32 const now = getMSTime();
+        std::string const key = Acore::StringFormat("{} {:.0f} {:.0f}", reason, x, y);
+        if (entry.first == key && now - entry.second < 5000)
+            return;
+        entry = { key, now };
+        LOG_INFO("module.coa-playerbots", "AutoDungeon: movement of '{}' refused: {} (goal {:.0f} {:.0f}, now {:.0f} {:.0f} {:.0f}).",
+            bot->GetName(), reason, x, y, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    }
+
     LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard)
     {
         if (!bot || !bot->IsInWorld() || !bot->IsAlive())
             return {};
 
         if (bot->IsNonMeleeSpellCast(false))
+        {
+            NoteMoveRefusal(bot, owner, "the bot is casting a spell", x, y);
             return {};
+        }
 
         if (IsExternallyControlled(bot))
+        {
+            NoteMoveRefusal(bot, owner, "the bot is externally controlled (flight, stun, charge, ...)", x, y);
             return {};
+        }
 
         uint32 now = NowMs();
-        float groundZ = ResolveGroundZ(bot, x, y, z);
+        float groundZ = g_trustGivenZ ? z : ResolveGroundZ(bot, x, y, z);
         LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
 
         // Step 1: Pre-validation and plan ticket allocation under shard state lock.
@@ -398,7 +515,10 @@ namespace BotMovement
             std::lock_guard<std::mutex> lock(shard.mutex);
 
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
+            {
+                NoteMoveRefusal(bot, owner, "another movement owner holds the bot", x, y);
                 return {};
+            }
 
             myPlanTicket = LocomotionStateStore::AllocatePlanTicketLocked(shard, bot->GetGUID(), owner);
 
@@ -425,6 +545,7 @@ namespace BotMovement
                 std::fabs(cached->second.y - y) <= SAME_POINT_YARDS &&
                 std::fabs(cached->second.z - groundZ) <= SAME_POINT_YARDS * 3.0f)
             {
+                NoteMoveRefusal(bot, owner, "no path to this point (cached)", x, y);
                 return {};
             }
         }
@@ -432,6 +553,7 @@ namespace BotMovement
         // Step 2: Outside shard state lock AND outside dispatch gate: compute PathGenerator!
         // This ensures unrelated bots sharing the striped dispatch gate are not blocked during pathfinding.
         bool pathValid = true;
+        uint32 failedPathType = 0;
         if (!bot->CanFly())
         {
             PathGenerator path(bot);
@@ -439,6 +561,7 @@ namespace BotMovement
             if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH))
             {
                 pathValid = false;
+                failedPathType = uint32(path.GetPathType());
             }
         }
 
@@ -453,6 +576,7 @@ namespace BotMovement
             entry.y = y;
             entry.z = groundZ;
             entry.expiresAtMs = now + NOPATH_RECHECK_COOLDOWN_MS;
+            NoteMoveRefusal(bot, owner, Acore::StringFormat("the navigation mesh has no path to this point (path type {}, z {:.1f})", failedPathType, groundZ).c_str(), x, y);
             return {};
         }
 

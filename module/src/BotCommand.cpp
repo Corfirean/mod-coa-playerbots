@@ -14,6 +14,7 @@
 #include "LFGMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
+#include "PathGenerator.h"
 #include "Player.h"
 #include "RBAC.h"
 #include "ScriptMgr.h"
@@ -82,6 +83,7 @@ public:
             { "professiontrainer", HandleBotProfessionTrainerCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "economy",      HandleBotEconomyCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "movement",     HandleBotMovementCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "pathtest",     HandleBotPathTestCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "train", HandleTrainingCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "autodungeon",  HandleBotAutoDungeonCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
         };
@@ -547,6 +549,30 @@ public:
             return true;
         }
         WorldBrain::Describe(bot, handler);
+        return true;
+    }
+
+    // Navigation-mesh query from the bot's own position to a point: path type, point count, where the path really ends.
+    static bool HandleBotPathTestCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, float x, float y, float z)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        for (bool force : { false, true })
+        {
+            PathGenerator path(bot);
+            bool const ok = path.CalculatePath(x, y, z, force);
+            auto const& pts = path.GetPath();
+            G3D::Vector3 const end = path.GetActualEndPosition();
+            if (handler)
+                handler->PSendSysMessage("pathtest force={} ok={} type={} points={} length={:.0f} actualEnd=({:.0f}, {:.0f}, {:.0f}) from ({:.0f}, {:.0f}, {:.0f}) to ({:.0f}, {:.0f}, {:.0f})",
+                    force, ok, uint32(path.GetPathType()), pts.size(), path.getPathLength(), end.x, end.y, end.z,
+                    bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), x, y, z);
+        }
         return true;
     }
 
