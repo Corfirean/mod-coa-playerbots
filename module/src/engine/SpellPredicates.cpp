@@ -260,10 +260,12 @@ namespace BotAI
         return false;
     }
 
-    bool GetDamagingCastOn(Unit* enemy, Unit* target, float& outDamage, uint32& outRemainingMs)
+    bool GetDamagingCastOn(Unit* enemy, Unit* target, float& outDamage, uint32& outRemainingMs, uint32* outSchoolMask)
     {
         outDamage = 0.0f;
         outRemainingMs = 0;
+        if (outSchoolMask)
+            *outSchoolMask = 0;
         if (!enemy || !target || !enemy->IsAlive())
             return false;
         for (uint32 i = CURRENT_GENERIC_SPELL; i <= CURRENT_CHANNELED_SPELL; ++i)
@@ -293,6 +295,8 @@ namespace BotAI
                 continue;
             outDamage = total;
             outRemainingMs = uint32(std::max(0, spell->GetCastTimeRemaining()));
+            if (outSchoolMask)
+                *outSchoolMask = uint32(info->GetSchoolMask());
             return true;
         }
         return false;

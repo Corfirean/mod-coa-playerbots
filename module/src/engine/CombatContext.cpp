@@ -103,8 +103,7 @@ namespace BotAI
         // a real incoming-damage trend implying death soon, or the current victim being both
         // dangerous (boss/elite mid-cast) and actually targeting the bot all count.
         ctx.botIncomingDps = DamageTracker::SampleIncomingDps(bot);
-        float timeToDieSec = (ctx.botIncomingDps > 1.0f)
-            ? (float(bot->GetHealth()) / ctx.botIncomingDps) : 999.0f;
+        float timeToDieSec = Decisions::TimeToDieSec(bot->GetHealth(), HealEvaluator::UsableAbsorb(bot, 4000, 0), ctx.botIncomingDps);
         bool dangerousBossOnBot = ctx.targetIsBossOrElite && ctx.victim && ctx.victim->GetVictim() == bot
             && ctx.victimIsCastingInterruptible;
         ctx.worthDefensiveCooldown = ctx.botHpPct < 25.0f
@@ -119,8 +118,11 @@ namespace BotAI
             {
                 float damage = 0.0f;
                 uint32 remainingMs = 0;
-                if (!GetDamagingCastOn(attacker, bot, damage, remainingMs))
+                uint32 schoolMask = 0;
+                if (!GetDamagingCastOn(attacker, bot, damage, remainingMs, &schoolMask))
                     continue;
+                // Only what gets past the shields that are still up when the cast lands reaches health.
+                damage = std::max(0.0f, damage - float(HealEvaluator::UsableAbsorb(bot, std::max<uint32>(remainingMs, 1), schoolMask)));
                 float pct = damage * 100.0f / float(maxHealth);
                 if (pct > ctx.predictedBurstPct)
                 {

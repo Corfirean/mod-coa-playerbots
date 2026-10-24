@@ -100,8 +100,10 @@ namespace BotAI
         bool isHealingAction = spellInfo && HasTag(action.tags, HEALING_RESERVATION_TAGS);
         if (isHealingAction)
         {
-            // Pure HoTs and script-only heals have no immediate direct amount to reserve.
-            uint32 expectedHeal = HealEvaluator::EstimateDirectHeal(bot, action.target, spellInfo);
+            // Pure HoTs and script-only heals have no known direct amount to reserve. What is reserved is the part that will land on health
+            // (see Decisions::ReservationAmount), not the raw spell amount and not the deficit of this instant.
+            Decisions::HealForecast forecast = HealEvaluator::ForecastHeal(bot, action.target, spellInfo);
+            uint32 expectedHeal = forecast.amountKnown ? Decisions::ReservationAmount(forecast) : 0;
             uint32 castTimeMs = spellInfo->CalcCastTime(bot);
             if (expectedHeal > 0)
                 CombatReservations::ReserveHeal(bot->GetGUID(), action.target->GetGUID(), action.spellId, expectedHeal, castTimeMs);

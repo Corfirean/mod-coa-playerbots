@@ -47,11 +47,9 @@ namespace BotAI
         // independent, unlike a raw incomingDps number (see item 10's own comment).
         constexpr float SIGNIFICANT_INCOMING_PCT_PER_SEC = 2.0f;
         constexpr float URGENT_TTD_SEC = 8.0f;
-        // A direct heal above this health is judged on how much of it would be useful; below it the heal is always allowed.
-        constexpr float OVERHEAL_EXEMPT_HP_PCT = 60.0f;
-        // Smallest share of a direct heal that has to land on missing health (after heals already in flight) for the
-        // cast to be worth its mana, while the target is not in danger.
-        constexpr float MIN_USEFUL_HEAL_FRACTION = 0.4f;
+        // How far ahead a shield has to last to be counted when judging how long an ally survives (about two heal casts).
+        constexpr uint32 ABSORB_HORIZON_MS = 4000;
+        constexpr uint32 MAX_TRACKED_SHIELDS = 16;
         // Pre-heal rules: only for a cast landing within this window, and only when the ally would end under this share of its health.
         constexpr uint32 BURST_LOOKAHEAD_MS = 4500;
         constexpr float LETHAL_MARGIN_PCT = 20.0f;
@@ -60,17 +58,6 @@ namespace BotAI
 
     namespace
     {
-        // What the ally's absorb shields still soak (damage that will not reach its health): a shield already on a target is healing that
-        // has been done, so it must not be healed again as if the health were missing.
-        uint32 RemainingAbsorb(Unit const* unit)
-        {
-            int64 total = 0;
-            for (AuraEffect const* effect : unit->GetAuraEffectsByType(SPELL_AURA_SCHOOL_ABSORB))
-                if (effect->GetAmount() > 0)
-                    total += effect->GetAmount();
-            return uint32(std::min<int64>(total, 0xFFFFFFFF));
-        }
-
         // True when a damaging cast that an enemy is aiming at `ally` would leave the ally below LETHAL_MARGIN_PCT of its health
         // if nothing heals it first: the case for a pre-heal before a tankbuster, when the tank is not yet hurt.
         bool BurstWouldBeDangerous(Player* ally)
@@ -85,9 +72,12 @@ namespace BotAI
             {
                 float damage = 0.0f;
                 uint32 remainingMs = 0;
-                if (!GetDamagingCastOn(attacker, ally, damage, remainingMs) || remainingMs > BURST_LOOKAHEAD_MS)
+                uint32 schoolMask = 0;
+                if (!GetDamagingCastOn(attacker, ally, damage, remainingMs, &schoolMask) || remainingMs > BURST_LOOKAHEAD_MS)
                     continue;
-                if (float(ally->GetHealth()) - damage < float(maxHealth) * LETHAL_MARGIN_PCT / 100.0f)
+                // A shield that is still up when the cast lands takes its share of the hit; one that expires first does not.
+                uint32 absorb = HealEvaluator::UsableAbsorb(ally, std::max<uint32>(remainingMs, 1), schoolMask);
+                if (Decisions::BurstIsDangerous(damage, ally->GetHealth(), maxHealth, absorb, LETHAL_MARGIN_PCT))
                     return true;
             }
             return false;
@@ -105,13 +95,9 @@ namespace BotAI
         if (maxHealth <= 0.0f)
             return false;
 
+        // Missing health is missing health, shield or not: an absorb is not restored health, the deficit is still there when it is gone.
         if (100.0f - candidate->GetHealthPct() >= MIN_MISSING_HP_PCT)
-        {
-            // ...unless a shield on the ally already covers what is missing.
-            float missing = maxHealth - float(candidate->GetHealth());
-            if (float(RemainingAbsorb(candidate)) < missing)
-                return true;
-        }
+            return true;
 
         // Pre-heal: a damaging cast is about to land on this ally and would leave it dangerously low.
         if (BurstWouldBeDangerous(candidate))
@@ -122,7 +108,8 @@ namespace BotAI
         {
             if ((incomingDps / maxHealth) * 100.0f >= SIGNIFICANT_INCOMING_PCT_PER_SEC)
                 return true;
-            if (float(candidate->GetHealth()) / incomingDps < URGENT_TTD_SEC)
+            // Shields count as extra health for how long the ally lasts.
+            if (Decisions::TimeToDieSec(candidate->GetHealth(), UsableAbsorb(candidate, ABSORB_HORIZON_MS, 0), incomingDps) < URGENT_TTD_SEC)
                 return true;
         }
 
@@ -148,7 +135,7 @@ namespace BotAI
         // topped off by someone else's heal already in flight.
         float missingHealth = maxHealth - float(candidate->GetHealth());
         uint32 reserved = CombatReservations::GetReservedIncomingHeal(candidate->GetGUID(), healer->GetGUID());
-        missingHealth = std::max(0.0f, missingHealth - float(reserved) - float(RemainingAbsorb(candidate)));
+        missingHealth = std::max(0.0f, missingHealth - float(reserved));
         float missingPct = missingHealth / maxHealth * 100.0f;
 
         float score = missingPct * 2.0f;
@@ -165,7 +152,7 @@ namespace BotAI
         // TTD stays in real seconds (not normalized) -- explicitly called out as its own
         // important factor regardless of scale: a 3-second TTD matters the same whether it's a
         // huge tank or a squishy DPS about to die.
-        float timeToDieSec = (incomingDps > 1.0f) ? (float(candidate->GetHealth()) / incomingDps) : 999.0f;
+        float timeToDieSec = Decisions::TimeToDieSec(candidate->GetHealth(), UsableAbsorb(candidate, ABSORB_HORIZON_MS, 0), incomingDps);
         if (timeToDieSec < URGENT_TTD_SEC)
             score += (URGENT_TTD_SEC - timeToDieSec) * 30.0f;
 
@@ -226,14 +213,19 @@ namespace BotAI
         return best;
     }
 
-    uint32 HealEvaluator::EstimateDirectHeal(Player* healer, Unit* target, SpellInfo const* spellInfo)
+    uint32 HealEvaluator::EstimateRawHeal(Player* healer, Unit* target, SpellInfo const* spellInfo)
     {
         if (!healer || !target || !spellInfo)
             return 0;
-        uint32 expected = 0;
+        uint64 expected = 0;
         for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
         {
             SpellEffectInfo const& effect = spellInfo->Effects[i];
+            if (effect.Effect == SPELL_EFFECT_HEAL_MAX_HEALTH)
+            {
+                expected += target->GetMaxHealth();
+                continue;
+            }
             int32 base = effect.CalcValue(healer);
             if (base <= 0)
                 continue;
@@ -243,32 +235,55 @@ namespace BotAI
                 expected += target->SpellHealingBonusTaken(healer, spellInfo, amount, HEAL);
             }
             else if (effect.Effect == SPELL_EFFECT_HEAL_PCT)
-                expected += uint32(uint64(target->GetMaxHealth()) * uint32(base) / 100);
+                expected += uint64(target->GetMaxHealth()) * uint32(base) / 100;
         }
-        uint32 missing = target->GetMaxHealth() > target->GetHealth() ? target->GetMaxHealth() - target->GetHealth() : 0;
-        return std::min(expected, missing);
+        return uint32(std::min<uint64>(expected, 0xFFFFFFFF));
     }
 
-    bool HealEvaluator::IsDirectHealWorthCasting(Player* healer, Player* target, uint32 expectedHeal)
+    uint32 HealEvaluator::UsableAbsorb(Unit const* unit, uint32 horizonMs, uint32 schoolMask)
+    {
+        if (!unit)
+            return 0;
+        Decisions::AbsorbShield shields[MAX_TRACKED_SHIELDS];
+        size_t count = 0;
+        for (AuraEffect const* effect : unit->GetAuraEffectsByType(SPELL_AURA_SCHOOL_ABSORB))
+        {
+            if (count >= MAX_TRACKED_SHIELDS)
+                break; // bounded: further shields are ignored, which can only make the estimate conservative
+            if (!effect || effect->GetAmount() <= 0)
+                continue;
+            Aura const* aura = effect->GetBase();
+            shields[count].amount = uint32(effect->GetAmount());
+            shields[count].remainingMs = aura ? aura->GetDuration() : Decisions::SHIELD_NO_EXPIRY;
+            shields[count].schoolMask = uint32(effect->GetMiscValue());
+            ++count;
+        }
+        return Decisions::UsableAbsorb(shields, count, horizonMs, schoolMask);
+    }
+
+    Decisions::HealForecast HealEvaluator::ForecastHeal(Player* healer, Unit* target, SpellInfo const* spellInfo)
+    {
+        uint32 raw = EstimateRawHeal(healer, target, spellInfo);
+        uint32 castMs = spellInfo ? spellInfo->CalcCastTime(healer) : 0;
+        uint32 reserved = CombatReservations::GetReservedIncomingHeal(target->GetGUID(), healer->GetGUID());
+        // The shield has to last through the cast to take its share of what arrives meanwhile.
+        uint32 absorb = UsableAbsorb(target, std::max<uint32>(castMs, 1), 0);
+        return Decisions::ForecastDirectHeal(raw, target->GetHealth(), target->GetMaxHealth(), reserved,
+            DamageTracker::SampleIncomingDps(target), castMs, absorb);
+    }
+
+    bool HealEvaluator::IsDirectHealWorthCasting(Player* healer, Player* target, SpellInfo const* spellInfo)
     {
         if (!ShouldConsiderHealing(healer, target))
             return false;
-        if (expectedHeal == 0)
-            return true;
 
-        // A target in real danger is always worth a heal, whatever the numbers say.
-        if (target->GetHealthPct() < OVERHEAL_EXEMPT_HP_PCT)
-            return true;
-        float incomingDps = DamageTracker::SampleIncomingDps(target);
-        if (incomingDps > 1.0f && float(target->GetHealth()) / incomingDps < URGENT_TTD_SEC)
-            return true;
-
-        // What is still missing after the heals other healers already have in flight; a heal that would
-        // fill less than MIN_USEFUL_HEAL_FRACTION of itself is mostly overheal.
-        uint32 missing = target->GetMaxHealth() > target->GetHealth() ? target->GetMaxHealth() - target->GetHealth() : 0;
-        uint32 reserved = CombatReservations::GetReservedIncomingHeal(target->GetGUID(), healer->GetGUID());
-        uint32 netMissing = missing > reserved ? missing - reserved : 0;
-        return float(netMissing) >= float(expectedHeal) * MIN_USEFUL_HEAL_FRACTION;
+        Decisions::HealGateInput in;
+        in.forecast = ForecastHeal(healer, target, spellInfo);
+        in.targetHpPct = target->GetHealthPct();
+        in.timeToDieSec = Decisions::TimeToDieSec(target->GetHealth(), UsableAbsorb(target, ABSORB_HORIZON_MS, 0),
+            DamageTracker::SampleIncomingDps(target));
+        in.lethalBurstIncoming = BurstWouldBeDangerous(target);
+        return Decisions::IsDirectHealWorthCasting(in);
     }
 
     float HealEvaluator::BestKnownHealRange(Player* healer, float fallback)

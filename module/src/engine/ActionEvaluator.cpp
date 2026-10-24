@@ -8,6 +8,7 @@
 #include "engine/ActionEvaluator.h"
 #include "engine/BotDebugLog.h"
 #include "engine/CombatResource.h"
+#include "engine/DamageTracker.h"
 #include "engine/HealEvaluator.h"
 #include "engine/SpellPredicates.h"
 #include "engine/SpellResolver.h"
@@ -362,10 +363,26 @@ namespace BotAI
         {
             if (Player* healTarget = target->ToPlayer())
             {
-                uint32 expectedHeal = HealEvaluator::EstimateDirectHeal(bot, target, spellInfo);
-                if (!HealEvaluator::IsDirectHealWorthCasting(bot, healTarget, expectedHeal))
+                if (!HealEvaluator::IsDirectHealWorthCasting(bot, healTarget, spellInfo))
                     return reject("heal would be wasted (target needs no healing or it would mostly overheal)");
             }
+        }
+
+        // A pure absorb shield is worth casting when it adds protection: not when shields already on the target cover what is expected to
+        // arrive while it lasts and are at least half as large as the new one (two healers, or a shield cast again too early).
+        if (HasTag(desc.tags, AbilityTag::Shield) && !HasTag(desc.tags, AbilityTag::DirectHeal) && !HasTag(desc.tags, AbilityTag::EmergencyHeal) &&
+            bot->IsFriendlyTo(target))
+        {
+            uint32 added = 0;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                if (spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_SCHOOL_ABSORB)
+                    if (int32 value = spellInfo->Effects[i].CalcValue(bot); value > 0)
+                        added += uint32(value);
+            constexpr uint32 SHIELD_HORIZON_MS = 6000;
+            uint32 existing = HealEvaluator::UsableAbsorb(target, SHIELD_HORIZON_MS, 0);
+            float expectedDamage = DamageTracker::SampleIncomingDps(target) * float(SHIELD_HORIZON_MS) / 1000.0f;
+            if (Decisions::ShieldIsRedundant(existing, added, expectedDamage))
+                return reject("an absorb already covers what is expected to arrive");
         }
 
         // Persistent entity tracking (Pets, Minions, Turrets, Wards)

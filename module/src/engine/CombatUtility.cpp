@@ -13,15 +13,19 @@
 #include "engine/CombatReservations.h"
 #include "engine/GroupDirector.h"
 #include "engine/CombatResource.h"
+#include "engine/CombatDecisions.h"
+#include "engine/HealEvaluator.h"
 #include "engine/SpecStrategyRegistry.h"
 #include "engine/SpellPredicates.h"
 #include "engine/SpellResolver.h"
 #include "BotClassRotations.h"
+#include "Config.h"
 #include "Group.h"
 #include "Log.h"
 #include "Player.h"
 #include "SharedDefines.h"
 #include "SpellAuras.h"
+#include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include <algorithm>
@@ -96,18 +100,87 @@ namespace BotAI
         // that only knows Remove Curse would still try (and fail) against a Magic debuff. Bounded
         // cost: the bot's own known-dispel-spell list is gathered once (usually 0-2 entries for
         // any class), then checked against each candidate ally's own (usually small) debuff list.
-        // True for a debuff that cannot wait behind a heal: it disables the ally (stun, fear, charm, sleep, polymorph, silence,
-        // disorient, root-like control) or the ally is already in critical health.
-        bool IsUrgentDebuff(Unit const* ally, SpellInfo const* debuffInfo)
+        // Time a heal cast now needs to land (a typical cast plus latency): the window in which a debuff must not be able to kill the ally.
+        constexpr uint32 HEAL_LANDING_ASSUMED_MS = 2500;
+
+        // Damage per second the aura itself deals to `victim` (periodic damage and periodic percent damage effects). Stack amounts are taken as
+        // the effect reports them; an aura whose effect amount excludes the stack count is under-estimated, which only makes the dispel rarer.
+        float DebuffDamagePerSecond(Aura const* aura, Unit const* victim)
+        {
+            float dps = 0.0f;
+            SpellInfo const* info = aura->GetSpellInfo();
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                AuraEffect const* effect = aura->GetEffect(i);
+                if (!effect || effect->GetAmplitude() == 0)
+                    continue;
+                AuraType type = AuraType(info->Effects[i].ApplyAuraName);
+                float perTick = 0.0f;
+                if (type == SPELL_AURA_PERIODIC_DAMAGE)
+                    perTick = float(std::max(effect->GetAmount(), 0));
+                else if (type == SPELL_AURA_PERIODIC_DAMAGE_PERCENT)
+                    perTick = float(victim->GetMaxHealth()) * float(std::max(effect->GetAmount(), 0)) / 100.0f;
+                else
+                    continue;
+                dps += perTick * 1000.0f / float(effect->GetAmplitude());
+            }
+            return dps;
+        }
+
+        // True for a debuff that cannot wait behind a heal (see Decisions::CleanseOutranksHeal): it controls the unit, it silences the healer
+        // itself, or it would kill the unit before a heal could land. A harmless debuff on a badly hurt ally is not urgent: the heal comes first.
+        bool IsUrgentDebuff(Player const* bot, Unit const* ally, Aura const* aura)
         {
             constexpr uint64 CONTROL_MECHANICS =
                 (1ULL << MECHANIC_STUN) | (1ULL << MECHANIC_FEAR) | (1ULL << MECHANIC_CHARM) | (1ULL << MECHANIC_SLEEP) |
-                (1ULL << MECHANIC_POLYMORPH) | (1ULL << MECHANIC_SILENCE) | (1ULL << MECHANIC_DISORIENTED) |
+                (1ULL << MECHANIC_POLYMORPH) | (1ULL << MECHANIC_DISORIENTED) |
                 (1ULL << MECHANIC_HORROR) | (1ULL << MECHANIC_BANISH) | (1ULL << MECHANIC_SHACKLE);
-            return (debuffInfo->GetAllEffectsMechanicMask() & CONTROL_MECHANICS) != 0 || ally->GetHealthPct() < 40.0f;
+            uint64 mechanics = aura->GetSpellInfo()->GetAllEffectsMechanicMask();
+            Decisions::CleanseFacts facts;
+            facts.controlMechanic = (mechanics & CONTROL_MECHANICS) != 0;
+            facts.silenceMechanic = (mechanics & (1ULL << MECHANIC_SILENCE)) != 0;
+            facts.debuffOnSelf = ally == bot;
+            facts.debuffDps = DebuffDamagePerSecond(aura, ally);
+            facts.debuffedHealth = float(ally->GetHealth());
+            facts.healLandingMs = HEAL_LANDING_ASSUMED_MS;
+            return Decisions::CleanseOutranksHeal(facts);
         }
 
-        // `healFirst`: someone in the group is critical, so an ordinary cleanse must not delay the heal that keeps them alive.
+        // True when the enemy cast `enemy` is going to kill a groupmate that no heal this bot could land first would save: the cast does at
+        // least as much damage as the target has (shields included) plus the best heal the bot knows. Then the kick is the action that works.
+        bool InterruptOutranksHeal(Player* bot, Unit* enemy)
+        {
+            Group* group = bot->GetGroup();
+            if (!group)
+                return false;
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (!member || !member->IsAlive() || !member->IsInWorld() || !member->IsWithinDistInMap(bot, CLEANSE_SEARCH_RANGE))
+                    continue;
+                float damage = 0.0f;
+                uint32 remainingMs = 0, schoolMask = 0;
+                if (!GetDamagingCastOn(enemy, member, damage, remainingMs, &schoolMask))
+                    continue;
+                float shield = float(HealEvaluator::UsableAbsorb(member, std::max<uint32>(remainingMs, 1), schoolMask));
+                float bestHeal = 0.0f;
+                for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+                {
+                    if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                        continue;
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+                    if (!IsUsableHealSpell(info))
+                        continue;
+                    bestHeal = std::max(bestHeal, float(HealEvaluator::EstimateRawHeal(bot, member, info)));
+                }
+                if (Decisions::InterruptOutranksEmergencyHeal(damage, float(member->GetHealth()) + shield, bestHeal))
+                    return true;
+            }
+            return false;
+        }
+
+        // `healFirst`: this bot is a healer and someone in the group is critical, so an ordinary cleanse must not delay the heal that keeps
+        // them alive. Only a debuff that IsUrgentDebuff still goes first. Bots that do not heal are never held back by it.
         CleansePlan FindCleansePlan(Player* bot, bool healFirst)
         {
             CleansePlan plan;
@@ -140,7 +213,7 @@ namespace BotAI
                     SpellInfo const* debuffInfo = aura ? aura->GetSpellInfo() : nullptr;
                     if (!debuffInfo || debuffInfo->Dispel == DISPEL_NONE)
                         continue;
-                    if (healFirst && !IsUrgentDebuff(ally, debuffInfo))
+                    if (healFirst && !IsUrgentDebuff(bot, ally, aura))
                         continue;
 
                     for (uint32 dispelSpellId : knownDispelSpells)
@@ -233,14 +306,19 @@ namespace BotAI
         // 2. Interrupt -- any role, reservation-gated (see engine/CombatReservations.h) so
         // several bots that all happen to know an interrupt don't all spend it on the same cast.
         // A healer with a critical groupmate spends its GCD on the heal first; a kick that can wait does not outrank keeping someone alive.
+        // The exception is a cast that kills someone no heal could save (InterruptOutranksHeal): there the kick is the only thing that works.
         bool const healerHasEmergency = ctx.role == BotRole::Healer && ctx.criticalAllyCount > 0;
 
         // A grouped bot kicks what the group director assigned to it (any enemy fighting the group, one primary and one backup per
         // cast, casts that do not matter ignored). A bot without a group keeps the own-target logic below.
-        if (bot->GetGroup() && !healerHasEmergency)
+        static bool const useDirector = sConfigMgr->GetOption<bool>("CoaBots.Combat.GroupInterruptDirector", true);
+        if (useDirector && bot->GetGroup())
         {
             uint32 assignedSpell = 0;
-            if (Unit* assigned = GroupDirector::GetInterruptTarget(bot, assignedSpell))
+            Unit* assigned = GroupDirector::GetInterruptTarget(bot, assignedSpell);
+            if (assigned && healerHasEmergency && !InterruptOutranksHeal(bot, assigned))
+                assigned = nullptr;
+            if (assigned)
             {
                 bool const cast = TryCast(bot, ctx, assignedSpell, assigned, "assigned interrupt", nextCastAllowedMs);
                 GroupDirector::ReportInterruptAttempt(bot, assigned->GetGUID(), cast);
@@ -286,7 +364,7 @@ namespace BotAI
         // selection and cast), and recording a failure-cooldown for it is correct.
         // A healer (or anyone with a heal button) with a critical groupmate heals first; only a debuff that disables someone, or one on
         // the critical ally itself, is still worth the GCD.
-        CleansePlan cleansePlan = FindCleansePlan(bot, ctx.criticalAllyCount > 0);
+        CleansePlan cleansePlan = FindCleansePlan(bot, healerHasEmergency);
         if (cleansePlan.target && cleansePlan.spellId)
         {
             if (TryCast(bot, ctx, cleansePlan.spellId, cleansePlan.target, "cleansed", nextCastAllowedMs))
