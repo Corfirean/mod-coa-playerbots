@@ -11,6 +11,7 @@
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
 #include "engine/CombatReservations.h"
+#include "engine/GroupDirector.h"
 #include "engine/CombatResource.h"
 #include "engine/SpecStrategyRegistry.h"
 #include "engine/SpellPredicates.h"
@@ -95,7 +96,19 @@ namespace BotAI
         // that only knows Remove Curse would still try (and fail) against a Magic debuff. Bounded
         // cost: the bot's own known-dispel-spell list is gathered once (usually 0-2 entries for
         // any class), then checked against each candidate ally's own (usually small) debuff list.
-        CleansePlan FindCleansePlan(Player* bot)
+        // True for a debuff that cannot wait behind a heal: it disables the ally (stun, fear, charm, sleep, polymorph, silence,
+        // disorient, root-like control) or the ally is already in critical health.
+        bool IsUrgentDebuff(Unit const* ally, SpellInfo const* debuffInfo)
+        {
+            constexpr uint64 CONTROL_MECHANICS =
+                (1ULL << MECHANIC_STUN) | (1ULL << MECHANIC_FEAR) | (1ULL << MECHANIC_CHARM) | (1ULL << MECHANIC_SLEEP) |
+                (1ULL << MECHANIC_POLYMORPH) | (1ULL << MECHANIC_SILENCE) | (1ULL << MECHANIC_DISORIENTED) |
+                (1ULL << MECHANIC_HORROR) | (1ULL << MECHANIC_BANISH) | (1ULL << MECHANIC_SHACKLE);
+            return (debuffInfo->GetAllEffectsMechanicMask() & CONTROL_MECHANICS) != 0 || ally->GetHealthPct() < 40.0f;
+        }
+
+        // `healFirst`: someone in the group is critical, so an ordinary cleanse must not delay the heal that keeps them alive.
+        CleansePlan FindCleansePlan(Player* bot, bool healFirst)
         {
             CleansePlan plan;
 
@@ -126,6 +139,8 @@ namespace BotAI
                     Aura const* aura = app->GetBase();
                     SpellInfo const* debuffInfo = aura ? aura->GetSpellInfo() : nullptr;
                     if (!debuffInfo || debuffInfo->Dispel == DISPEL_NONE)
+                        continue;
+                    if (healFirst && !IsUrgentDebuff(ally, debuffInfo))
                         continue;
 
                     for (uint32 dispelSpellId : knownDispelSpells)
@@ -217,7 +232,23 @@ namespace BotAI
 
         // 2. Interrupt -- any role, reservation-gated (see engine/CombatReservations.h) so
         // several bots that all happen to know an interrupt don't all spend it on the same cast.
-        if (ctx.victimIsCastingInterruptible && ctx.victim)
+        // A healer with a critical groupmate spends its GCD on the heal first; a kick that can wait does not outrank keeping someone alive.
+        bool const healerHasEmergency = ctx.role == BotRole::Healer && ctx.criticalAllyCount > 0;
+
+        // A grouped bot kicks what the group director assigned to it (any enemy fighting the group, one primary and one backup per
+        // cast, casts that do not matter ignored). A bot without a group keeps the own-target logic below.
+        if (bot->GetGroup() && !healerHasEmergency)
+        {
+            uint32 assignedSpell = 0;
+            if (Unit* assigned = GroupDirector::GetInterruptTarget(bot, assignedSpell))
+            {
+                bool const cast = TryCast(bot, ctx, assignedSpell, assigned, "assigned interrupt", nextCastAllowedMs);
+                GroupDirector::ReportInterruptAttempt(bot, assigned->GetGUID(), cast);
+                if (cast)
+                    return true;
+            }
+        }
+        else if (ctx.victimIsCastingInterruptible && ctx.victim && !healerHasEmergency)
         {
             ObjectGuid enemyGuid = ctx.victim->GetGUID();
             CombatReservations::ReconcileInterruptReservation(enemyGuid, ctx.victimCastingSpellId);
@@ -253,7 +284,9 @@ namespace BotAI
         // ever returns a type-compatible pair, so there's nothing incompatible to fail on here --
         // if TryCast still fails, that's a genuine transient issue (range/LoS changed between
         // selection and cast), and recording a failure-cooldown for it is correct.
-        CleansePlan cleansePlan = FindCleansePlan(bot);
+        // A healer (or anyone with a heal button) with a critical groupmate heals first; only a debuff that disables someone, or one on
+        // the critical ally itself, is still worth the GCD.
+        CleansePlan cleansePlan = FindCleansePlan(bot, ctx.criticalAllyCount > 0);
         if (cleansePlan.target && cleansePlan.spellId)
         {
             if (TryCast(bot, ctx, cleansePlan.spellId, cleansePlan.target, "cleansed", nextCastAllowedMs))

@@ -70,6 +70,15 @@ namespace BotAI
     // long-cooldown burst/defensive button," see CombatContext's fight-value fields.
     bool IsBossOrEliteTarget(Unit const* target);
 
+    // True while the unit sits eating, drinking or bandaging: any positive aura that breaks when the unit stands up (the real food and
+    // drink auras, whatever their spell id), or a bandage mechanic. Replaces three hand-written id lists that disagreed with each other
+    // (the drink aura bots actually use, 431, was missing from two of them).
+    bool IsEatingOrDrinking(Unit const* unit);
+
+    // Is a cast worth spending an interrupt on? A hostile spell (damage, control, debuff) or one that heals, summons or buffs another
+    // enemy. A cast whose only effect is a harmless self-buff is not: the kick is a cooldown the next real cast may need.
+    bool IsInterruptWorthwhile(SpellInfo const* spellInfo);
+
     // True when `unit` is under a hard-CC mechanic that breaks on damage (fear/polymorph/sleep/
     // banish/shackle/sap/charm/horror/disorient) -- used to avoid a target-selection pass
     // attacking straight through a groupmate's crowd control (item 1/#8's "CC target -> huge

@@ -354,6 +354,20 @@ namespace BotAI
                 return reject("emergency-only, nobody critical");
         }
 
+        // A direct heal is only worth its mana when the target needs it and the heal would not mostly overheal; a profile
+        // heal with the default maxTargetHpPct of 100 used to land on any ally the urgency ranking liked, full health included.
+        // Heals that carry an absorb (Shield tag) are valued for more than their health and keep their own descriptor limits.
+        if ((HasTag(desc.tags, AbilityTag::DirectHeal) || HasTag(desc.tags, AbilityTag::EmergencyHeal)) &&
+            !HasTag(desc.tags, AbilityTag::Shield) && bot->IsFriendlyTo(target))
+        {
+            if (Player* healTarget = target->ToPlayer())
+            {
+                uint32 expectedHeal = HealEvaluator::EstimateDirectHeal(bot, target, spellInfo);
+                if (!HealEvaluator::IsDirectHealWorthCasting(bot, healTarget, expectedHeal))
+                    return reject("heal would be wasted (target needs no healing or it would mostly overheal)");
+            }
+        }
+
         // Persistent entity tracking (Pets, Minions, Turrets, Wards)
         if (desc.trackedEntityType == TrackedEntityType::Pet)
         {

@@ -13,7 +13,9 @@ plan.json
   "git_revision": "966e054",                      # recorded as given
   "episodes": [
      {"scenario": "HEAL_RAMP", "candidate": 105988, "party": [105913, 105945, 105986, 105915],
-      "seconds": 60, "seeds": [1001, 1002, 1003]}
+      "seconds": 60, "seeds": [1001, 1002, 1003],
+      "before": ["botcmd learnspec 105988 101"],      # optional console commands run before every seed of this episode
+      "name": "vizier"}                               # optional: result folder name instead of <scenario>-<candidate>
   ]
 }
 
@@ -68,6 +70,9 @@ def main(plan_path):
     for ep in plan['episodes']:
         for seed in ep['seeds']:
             ra.run('botcmd train stop')
+            for command in ep.get('before', []):
+                ra.run(command)
+                time.sleep(2)
             if ep.get('party'):
                 ra.run('botcmd train party ' + ' '.join(str(g) for g in ep['party']))
             reply = ra.run(f"botcmd train start {ep['candidate']} {ep['scenario']} {ep['seconds']} {seed}")
@@ -80,7 +85,7 @@ def main(plan_path):
                                    every=5, limit=ep['seconds'] * 3 + 600)
             line = next(l for l in status.splitlines() if session in l)
             folder = Path(re.search(r'output=(.+)$', line).group(1).strip())
-            dest = out / f"{ep['scenario']}-{ep['candidate']}-{seed}"
+            dest = out / f"{ep.get('name') or ep['scenario'] + '-' + str(ep['candidate'])}-{seed}"
             dest.mkdir(exist_ok=True)
             shutil.copy2(folder / 'summary.json', dest / 'summary.json')
             for extra in ('abilities.json', 'threat.json', 'healing.json', 'resources.json', 'support.json', 'mechanics.json'):

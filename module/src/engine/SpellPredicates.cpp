@@ -213,6 +213,53 @@ namespace BotAI
         return false;
     }
 
+    bool IsEatingOrDrinking(Unit const* unit)
+    {
+        if (!unit)
+            return false;
+        if (unit->HasAuraWithMechanic(1 << MECHANIC_BANDAGE))
+            return true;
+        for (auto const& pair : unit->GetAppliedAuras())
+        {
+            AuraApplication const* app = pair.second;
+            if (!app || !app->IsPositive())
+                continue;
+            SpellInfo const* info = app->GetBase() ? app->GetBase()->GetSpellInfo() : nullptr;
+            if (info && (info->AuraInterruptFlags & AURA_INTERRUPT_FLAG_NOT_SEATED))
+                return true;
+        }
+        return false;
+    }
+
+    bool IsInterruptWorthwhile(SpellInfo const* spellInfo)
+    {
+        if (!spellInfo)
+            return false;
+        // Aimed at us (negative) - damage, crowd control, debuffs.
+        if (!spellInfo->IsPositive())
+            return true;
+        // A positive cast still matters when it heals or revives other enemies or brings in more of them.
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            switch (spellInfo->Effects[i].Effect)
+            {
+                case SPELL_EFFECT_HEAL:
+                case SPELL_EFFECT_HEAL_PCT:
+                case SPELL_EFFECT_HEAL_MAX_HEALTH:
+                case SPELL_EFFECT_SUMMON:
+                case SPELL_EFFECT_SUMMON_PET:
+                case SPELL_EFFECT_RESURRECT:
+                case SPELL_EFFECT_RESURRECT_NEW:
+                    return true;
+                default:
+                    break;
+            }
+            if (spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_PERIODIC_HEAL)
+                return true;
+        }
+        return false;
+    }
+
     bool IsTargetCastingInterruptibleSpell(Unit const* target)
     {
         uint32 unusedSpellId, unusedFinishTime;

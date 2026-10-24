@@ -56,6 +56,7 @@
 #include "engine/CastGuard.h"
 #include "engine/CombatResource.h"
 #include "engine/CombatReservations.h"
+#include "engine/GroupDirector.h"
 #include "engine/CombatUtility.h"
 #include "engine/DamageTracker.h"
 #include "engine/HealEvaluator.h"
@@ -5127,6 +5128,7 @@ void Forget(ObjectGuid botGuid)
     SpellResolver::Invalidate(botGuid);
     ActionEvaluator::ClearThrottles(botGuid);
     CombatReservations::ForgetBot(botGuid);
+    GroupDirector::ForgetBot(botGuid);
     DamageTracker::Forget(botGuid);
     HealEvaluator::ForgetBot(botGuid);
     TargetEvaluator::ForgetBot(botGuid);

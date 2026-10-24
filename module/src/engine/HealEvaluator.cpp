@@ -13,6 +13,7 @@
 #include "Player.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "Unit.h"
 #include "Timer.h"
 #include <algorithm>
 #include <unordered_map>
@@ -43,6 +44,11 @@ namespace BotAI
         // independent, unlike a raw incomingDps number (see item 10's own comment).
         constexpr float SIGNIFICANT_INCOMING_PCT_PER_SEC = 2.0f;
         constexpr float URGENT_TTD_SEC = 8.0f;
+        // A direct heal above this health is judged on how much of it would be useful; below it the heal is always allowed.
+        constexpr float OVERHEAL_EXEMPT_HP_PCT = 60.0f;
+        // Smallest share of a direct heal that has to land on missing health (after heals already in flight) for the
+        // cast to be worth its mana, while the target is not in danger.
+        constexpr float MIN_USEFUL_HEAL_FRACTION = 0.4f;
     }
 
     bool HealEvaluator::ShouldConsiderHealing(Player* healer, Player* candidate)
@@ -162,6 +168,51 @@ namespace BotAI
                 consider(ref->GetSource());
 
         return best;
+    }
+
+    uint32 HealEvaluator::EstimateDirectHeal(Player* healer, Unit* target, SpellInfo const* spellInfo)
+    {
+        if (!healer || !target || !spellInfo)
+            return 0;
+        uint32 expected = 0;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            SpellEffectInfo const& effect = spellInfo->Effects[i];
+            int32 base = effect.CalcValue(healer);
+            if (base <= 0)
+                continue;
+            if (effect.Effect == SPELL_EFFECT_HEAL)
+            {
+                uint32 amount = healer->SpellHealingBonusDone(target, spellInfo, uint32(base), HEAL, i);
+                expected += target->SpellHealingBonusTaken(healer, spellInfo, amount, HEAL);
+            }
+            else if (effect.Effect == SPELL_EFFECT_HEAL_PCT)
+                expected += uint32(uint64(target->GetMaxHealth()) * uint32(base) / 100);
+        }
+        uint32 missing = target->GetMaxHealth() > target->GetHealth() ? target->GetMaxHealth() - target->GetHealth() : 0;
+        return std::min(expected, missing);
+    }
+
+    bool HealEvaluator::IsDirectHealWorthCasting(Player* healer, Player* target, uint32 expectedHeal)
+    {
+        if (!ShouldConsiderHealing(healer, target))
+            return false;
+        if (expectedHeal == 0)
+            return true;
+
+        // A target in real danger is always worth a heal, whatever the numbers say.
+        if (target->GetHealthPct() < OVERHEAL_EXEMPT_HP_PCT)
+            return true;
+        float incomingDps = DamageTracker::SampleIncomingDps(target);
+        if (incomingDps > 1.0f && float(target->GetHealth()) / incomingDps < URGENT_TTD_SEC)
+            return true;
+
+        // What is still missing after the heals other healers already have in flight; a heal that would
+        // fill less than MIN_USEFUL_HEAL_FRACTION of itself is mostly overheal.
+        uint32 missing = target->GetMaxHealth() > target->GetHealth() ? target->GetMaxHealth() - target->GetHealth() : 0;
+        uint32 reserved = CombatReservations::GetReservedIncomingHeal(target->GetGUID(), healer->GetGUID());
+        uint32 netMissing = missing > reserved ? missing - reserved : 0;
+        return float(netMissing) >= float(expectedHeal) * MIN_USEFUL_HEAL_FRACTION;
     }
 
     float HealEvaluator::BestKnownHealRange(Player* healer, float fallback)
