@@ -109,6 +109,16 @@ class VerdictTests(unittest.TestCase):
         self.assertIsNone(row['relativePct'])
         self.assertEqual(row['state'], 'IMPROVEMENT')
 
+    def test_neutral_counts_never_become_improvement_or_regression(self):
+        base, cand = runs([100] * 6), runs([100] * 6)
+        for i, (b, c) in enumerate(zip(base.values(), cand.values())):
+            b['mechanics'] = {'interruptKicksAccepted': 11 + i % 2}
+            c['mechanics'] = {'interruptKicksAccepted': 4 + i % 2}
+        r = ci.compare(base, cand, ['mechanics.interruptKicksAccepted'])
+        row = r['groups']['13/4/Dps/ST_STATIC']['metrics'][0]
+        self.assertEqual(row['state'], 'INCONCLUSIVE')
+        self.assertIn('no good direction', row['note'])
+
     def test_missing_metric(self):
         base, cand = runs([100] * 6), runs([110] * 6)
         r = ci.compare(base, cand, ['combat.hps'])

@@ -100,6 +100,8 @@ namespace BotAI
             // Throttle only the ability that was actually cast, keyed on its root spell id (not
             // every internalThrottleMs-bearing entry in the whole profile -- see item 1 of the
             // combat-engine rework), and only now that the cast has genuinely succeeded.
+            if (HasTag(action.tags, AbilityTag::DefensiveCD))
+                ActionEvaluator::NoteDefensiveCast(bot->GetGUID());
             if (action.internalThrottleMs > 0 && action.rootSpellId != 0)
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
 

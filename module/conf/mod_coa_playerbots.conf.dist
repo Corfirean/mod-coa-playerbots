@@ -460,5 +460,12 @@ CoaBots.Training.InterruptCastSpellId = 133
 CoaBots.Training.RealisticDamage = 0
 CoaBots.Training.RealisticDamageSpellId = 686
 
+#    CoaBots.Training.RealisticDamageLegacyPath
+#        Description: Training only. 1 selects the first approximation of RealisticDamage (damage-taken modifiers and absorbs,
+#                     then plain DealDamage) instead of the spell-hit steps. Only for runs that must stay comparable with earlier ones.
+#        Default:     0
+#
+CoaBots.Training.RealisticDamageLegacyPath = 0
+
 # Reserved training phases: bits 30..27; configure only on isolated servers.
 CoaBots.Training.MaxParallelArenas = 1

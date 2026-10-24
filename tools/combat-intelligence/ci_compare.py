@@ -39,6 +39,9 @@ DEFAULT_METRICS = [
 # For these, a larger number is worse.
 LOWER_IS_BETTER = {'combat.damageTaken', 'combat.deaths', 'combat.noTargetIdleMs', 'combat.movingMs', 'healing.oomMs',
                    'healing.criticalPersonSeconds', 'threat.aggroLosses', 'mechanics.avoidableDamage', 'mechanics.avoidableHits'}
+# Counts with no good direction (how many kicks were spent says nothing about whether the result was better): a difference is reported but never
+# as IMPROVEMENT or REGRESSION.
+NEUTRAL_METRICS = {'mechanics.interruptKicksAttempted', 'mechanics.interruptKicksAccepted', 'mechanics.interruptCasts'}
 # What decides whether a change helped, per role. The rest are context.
 PRIMARY_BY_ROLE = {
     'Tank': ['threat.aggroLosses', 'threat.aggroMs', 'combat.deaths', 'combat.damageTaken', 'mechanics.avoidableDamage'],
@@ -197,6 +200,10 @@ def analyse(metric, pairs, min_pairs):
     if median != 0 and (median > 0) != (mean_diff > 0):
         out['state'] = 'INCONCLUSIVE'
         out['note'] = 'mean and median point in different directions (outlier-driven)'
+        return out
+    if metric in NEUTRAL_METRICS:
+        out['state'] = 'INCONCLUSIVE'
+        out['note'] = 'significant change, but this count has no good direction'
         return out
     better = (mean_diff < 0) if lower_better else (mean_diff > 0)
     out['state'] = 'IMPROVEMENT' if better else 'REGRESSION'

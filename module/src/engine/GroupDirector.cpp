@@ -358,7 +358,7 @@ namespace BotAI
         return nullptr;
     }
 
-    void GroupDirector::ReportInterruptAttempt(Player* bot, ObjectGuid enemy, bool accepted)
+    void GroupDirector::ReportInterruptAttempt(Player* bot, ObjectGuid enemy, bool accepted, bool applied)
     {
         if (!bot)
             return;
@@ -374,6 +374,8 @@ namespace BotAI
             ++s_stats.accepted;
         else
             ++s_stats.refused;
+        if (applied)
+            ++s_stats.applied;
         for (CastWatch& watch : itr->second.watches)
         {
             if (watch.enemy != enemy)
@@ -385,7 +387,16 @@ namespace BotAI
                 {
                     watch.acceptedBy = bot->GetGUID();
                     if (watch.primary == bot->GetGUID())
+                    {
                         watch.primaryAcceptedMs = now;
+                        // Accepted but the cast is still running: it did not take effect, the backup need not wait for the confirmation window.
+                        if (!applied)
+                        {
+                            watch.primaryUnconfirmed = true;
+                            watch.primaryAcceptedMs = 0;
+                            ++s_stats.unconfirmed;
+                        }
+                    }
                 }
             }
             else if (watch.primary == bot->GetGUID())

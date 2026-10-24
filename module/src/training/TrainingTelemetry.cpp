@@ -39,7 +39,7 @@ void Session::ResetTelemetry()
     interruptStartMs = interruptExpectedEndMs = 0;
     multiCasts.clear();
     interruptCasts = interruptsStopped = 0;
-    kickAttempts = kicksAccepted = interruptsByKick = 0;
+    kickAttempts = kicksAccepted = kicksApplied = interruptsByKick = 0;
     lastKickMs.clear();
     abilities.clear(); auras.clear(); cappedMs.clear(); starvedMs.clear();
     buffCoverageMs.clear(); debuffUptimeMs.clear();

@@ -194,6 +194,22 @@ static void InterruptVersusHeal()
     CHECK(!InterruptOutranksEmergencyHeal(0.0f, 2000.0f, 4000.0f));
 }
 
+static void DefensiveBudget()
+{
+    // Nothing mitigating yet (never cast, or cast long ago): the first answer to a hit is always allowed.
+    CHECK(StackedDefensiveAllowed(30.0f, 100.0f, 0xFFFFFFFFu));
+    CHECK(StackedDefensiveAllowed(30.0f, 100.0f, 6000));
+    // A defensive was cast 1 s ago: a 30% hit at full health does not get a second one (measured: both were spent on the first cast).
+    CHECK(!StackedDefensiveAllowed(30.0f, 100.0f, 1000));
+    CHECK(!StackedDefensiveAllowed(25.0f, 80.0f, 1000));
+    // A large hit (50%) does.
+    CHECK(StackedDefensiveAllowed(50.0f, 100.0f, 1000));
+    CHECK(StackedDefensiveAllowed(40.0f, 100.0f, 5999));
+    // A bot that would end below 35% after the hit does, even for a moderate one.
+    CHECK(StackedDefensiveAllowed(30.0f, 60.0f, 1000));
+    CHECK(!StackedDefensiveAllowed(30.0f, 70.0f, 1000));
+}
+
 static InterruptCandidate Cand(uint64 id, int pref, float dist, bool usable = true)
 {
     InterruptCandidate c; c.id = id; c.preference = pref; c.distance = dist; c.usable = usable; return c;
@@ -275,6 +291,7 @@ int main()
     AbsorbModel();
     CleansePriority();
     InterruptVersusHeal();
+    DefensiveBudget();
     InterruptAssignment();
     InterruptTimingRules();
     std::printf("combat_decisions_tests: %d checks, %d failures\n", g_checks, g_failures);

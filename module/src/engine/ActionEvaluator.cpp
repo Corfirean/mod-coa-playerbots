@@ -162,9 +162,20 @@ namespace BotAI
         s_internalThrottles[botGuid][rootSpellId] = getMSTime() + durationMs;
     }
 
+    namespace
+    {
+        std::unordered_map<ObjectGuid, uint32> s_lastDefensiveMs;
+    }
+
+    void ActionEvaluator::NoteDefensiveCast(ObjectGuid botGuid)
+    {
+        s_lastDefensiveMs[botGuid] = getMSTime();
+    }
+
     void ActionEvaluator::ClearThrottles(ObjectGuid botGuid)
     {
         s_internalThrottles.erase(botGuid);
+        s_lastDefensiveMs.erase(botGuid);
     }
 
     Unit* ActionEvaluator::ResolveTarget(CombatContext const& ctx, TargetType targetType, AbilityDescriptor const& desc, uint32 resolvedSpellId)
@@ -501,7 +512,15 @@ namespace BotAI
 
         // A defensive with a health ceiling is meant for a hurt bot; when a damaging cast is about to land on the bot it is worth using at
         // any health (the tank is at full health when a tankbuster starts casting).
-        bool const burstOverridesCeiling = ctx.burstIncoming && HasTag(desc.tags, AbilityTag::DefensiveCD);
+        bool burstOverridesCeiling = ctx.burstIncoming && HasTag(desc.tags, AbilityTag::DefensiveCD);
+        if (burstOverridesCeiling)
+        {
+            // One defensive answers a moderate hit: a second one is spent only on a large hit or when the bot would end up low.
+            auto last = s_lastDefensiveMs.find(ctx.bot->GetGUID());
+            uint32 since = last == s_lastDefensiveMs.end() ? 0xFFFFFFFFu : getMSTime() - last->second;
+            if (!Decisions::StackedDefensiveAllowed(ctx.predictedBurstPct, ctx.botHpPct, since))
+                burstOverridesCeiling = false;
+        }
         if (ctx.botHpPct < desc.minSelfHpPct || (ctx.botHpPct > desc.maxSelfHpPct && !burstOverridesCeiling))
             return -1.0f;
 

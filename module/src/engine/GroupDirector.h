@@ -28,8 +28,9 @@ namespace BotAI
         // served; a bot without a group keeps the old own-target behaviour in CombatUtility.
         static Unit* GetInterruptTarget(Player* bot, uint32& outSpellId);
 
-        // The bot's cast of `spellId` at `enemy` was accepted (`landed`) or refused; a refusal hands the cast to the backup immediately.
-        static void ReportInterruptAttempt(Player* bot, ObjectGuid enemy, bool accepted);
+        // The bot's kick at `enemy`: refused by the game (`accepted` false), accepted (`accepted`), and accepted and seen to stop the enemy's cast
+        // (`applied`). A refusal, or an accepted kick that left the cast running, hands the cast to the backup at once.
+        static void ReportInterruptAttempt(Player* bot, ObjectGuid enemy, bool accepted, bool applied = false);
 
         // Drops everything held for a bot / a group (despawn, group disband, map change).
         static void ForgetBot(ObjectGuid botGuid);
@@ -46,6 +47,7 @@ namespace BotAI
             uint32 castsSeen = 0;
             uint32 attempts = 0;
             uint32 accepted = 0;
+            uint32 applied = 0; // accepted and the enemy cast was gone when the cast call returned
             uint32 refused = 0;
             uint32 unconfirmed = 0;
             uint32 confirmedStopped = 0;

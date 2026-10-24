@@ -49,6 +49,10 @@ namespace BotAI
         static bool IsThrottled(ObjectGuid botGuid, uint32 rootSpellId);
         static void SetThrottle(ObjectGuid botGuid, uint32 rootSpellId, uint32 durationMs);
         static void ClearThrottles(ObjectGuid botGuid);
+
+        // Defensive-cooldown budget: engines note every defensive they cast; ScoreAbility asks how long ago the last one was before it spends a
+        // second one on the same predicted hit (Decisions::StackedDefensiveAllowed).
+        static void NoteDefensiveCast(ObjectGuid botGuid);
     };
 }
 

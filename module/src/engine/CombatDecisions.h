@@ -172,6 +172,23 @@ namespace BotAI::Decisions
     }
 
     // ---------------------------------------------------------------------------------------------------------------------------------
+    // Defensive cooldown budget
+    // ---------------------------------------------------------------------------------------------------------------------------------
+
+    // A predicted hit is answered with one defensive; a second one for the same hit is spent only when the hit is large or the bot would end
+    // up low anyway. Measured (TANKBUSTER_PCT, Fortitude): a 30% hit drew both defensives on the first cast and left none for the next three.
+    constexpr float STACKED_DEFENSIVE_BURST_PCT = 40.0f;
+    constexpr float STACKED_DEFENSIVE_FLOOR_HP_PCT = 35.0f;
+    constexpr uint32 STACKED_DEFENSIVE_WINDOW_MS = 6000; // a defensive cast this recently is still mitigating the hit being answered
+
+    inline bool StackedDefensiveAllowed(float burstPct, float botHpPct, uint32 msSinceLastDefensive)
+    {
+        if (msSinceLastDefensive >= STACKED_DEFENSIVE_WINDOW_MS)
+            return true; // nothing is mitigating yet (or it is long over): this is the first answer to the hit
+        return burstPct >= STACKED_DEFENSIVE_BURST_PCT || botHpPct - burstPct < STACKED_DEFENSIVE_FLOOR_HP_PCT;
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------------------------
     // Dispel vs heal
     // ---------------------------------------------------------------------------------------------------------------------------------
 

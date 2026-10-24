@@ -7,6 +7,8 @@ python -I ci_plan_hardening.py <experiment> <label> <out-dir> <credentials> <bin
 experiment:
   interrupt   INTERRUPT_MULTI (two enemies cast together every 10 s): five dps from classes that own a real interrupt spell
   healing     HEAL_RAMP, HEAL_POOL and GROUP_STRESS for two healer specs (Time 31, Flameweaving 37)
+  ramp        HEAL_RAMP only (Time 31, Flameweaving 37)
+  survival    SURVIVAL (scripted tankbuster and melee) for the Fortitude tank
   buster      TANKBUSTER_PCT for the Fortitude tank (the hit size is set by CoaBots.Training.TankbusterPercent in the module config)
   threat      THREAT_STRESS for the three tanks that lose aggro most often (Domination 57, Black Knight 97, Moon Guard 100)
 
@@ -64,6 +66,16 @@ def episodes(experiment, seeds):
                 eps.append({'scenario': scenario, 'candidate': guid, 'party': [t, d1, d2, w], 'seconds': 60, 'seeds': seeds,
                             'name': f'{scenario}-spec{spec:03d}', 'before': before(guid, spec)})
         return eps
+    if experiment == 'ramp':
+        eps = []
+        for spec in (31, 37):
+            guid = ACTOR[spec]
+            eps.append({'scenario': 'HEAL_RAMP', 'candidate': guid, 'party': [t, d1, d2, w], 'seconds': 60, 'seeds': seeds,
+                        'name': f'HEAL_RAMP-spec{spec:03d}', 'before': before(guid, spec)})
+        return eps
+    if experiment == 'survival':
+        guid = ACTOR[52]
+        return [{'scenario': 'SURVIVAL', 'candidate': guid, 'seconds': 60, 'seeds': seeds, 'name': 'SURVIVAL-spec052', 'before': before(guid, 52)}]
     if experiment == 'buster':
         guid = ACTOR[52]
         return [{'scenario': 'TANKBUSTER_PCT', 'candidate': guid, 'party': [h, d1, d2, w], 'seconds': 60, 'seeds': seeds,

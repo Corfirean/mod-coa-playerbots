@@ -52,8 +52,12 @@ namespace BotAI
         // for every role, not just Healer).
         constexpr float CLEANSE_SEARCH_RANGE = 40.0f;
 
-        bool TryCast(Player* bot, CombatContext const& ctx, uint32 spellId, Unit* target, char const* verb, uint32& nextCastAllowedMs)
+        // `appliedInterrupt` (optional) is set for an interrupt cast that the game accepted AND that left the enemy no longer casting.
+        bool TryCast(Player* bot, CombatContext const& ctx, uint32 spellId, Unit* target, char const* verb, uint32& nextCastAllowedMs,
+            bool* appliedInterrupt = nullptr)
         {
+            if (appliedInterrupt)
+                *appliedInterrupt = false;
             if (!spellId || !target)
                 return false;
 
@@ -73,10 +77,16 @@ namespace BotAI
                 return false;
             }
 
+            bool const isInterrupt = std::strstr(verb, "interrupt") != nullptr;
+            bool const wasCasting = isInterrupt && target->IsNonMeleeSpellCast(false);
             SpellCastResult result = bot->CastSpell(target, spellId, false);
+            // An instant interrupt has done its work when CastSpell returns: SPELL_CAST_OK only says the game accepted the request.
+            bool const applied = wasCasting && result == SPELL_CAST_OK && !target->IsNonMeleeSpellCast(false);
+            if (appliedInterrupt)
+                *appliedInterrupt = applied;
             CoaTraining::CastResult(bot, spellId, uint32(result), target);
-            if (std::strstr(verb, "interrupt"))
-                CoaTraining::InterruptKick(bot, spellId, target, uint32(result), verb);
+            if (isInterrupt)
+                CoaTraining::InterruptKick(bot, spellId, target, uint32(result), verb, applied);
             SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
             if (result == SPELL_CAST_OK)
             {
@@ -323,8 +333,9 @@ namespace BotAI
                 assigned = nullptr;
             if (assigned)
             {
-                bool const cast = TryCast(bot, ctx, assignedSpell, assigned, "assigned interrupt", nextCastAllowedMs);
-                GroupDirector::ReportInterruptAttempt(bot, assigned->GetGUID(), cast);
+                bool applied = false;
+                bool const cast = TryCast(bot, ctx, assignedSpell, assigned, "assigned interrupt", nextCastAllowedMs, &applied);
+                GroupDirector::ReportInterruptAttempt(bot, assigned->GetGUID(), cast, applied);
                 if (cast)
                     return true;
             }

@@ -227,13 +227,27 @@ void MechanicEvent(Session& s, Mechanic const& m)
     // paired comparison. Off by default so earlier measurements stay comparable.
     static bool const realistic = sConfigMgr->GetOption<bool>("CoaBots.Training.RealisticDamage", false);
     static uint32 const realisticSpell = sConfigMgr->GetOption<uint32>("CoaBots.Training.RealisticDamageSpellId", 686);
+    // CoaBots.Training.RealisticDamageLegacyPath=1 selects the earlier approximation (damage-taken modifiers and CalcAbsorbResist for the spell's school,
+    // then DealDamage as normal-school damage without a spell). Kept only so runs made with it stay comparable and the two paths can be measured.
+    static bool const legacyPath = sConfigMgr->GetOption<bool>("CoaBots.Training.RealisticDamageLegacyPath", false);
     auto damage = [&](Unit* target, bool avoidable)
     {
         if (!target || !target->IsAlive()) return;
         s.avoidableEvent = avoidable;
         SpellInfo const* info = realistic ? sSpellMgr->GetSpellInfo(realisticSpell) : nullptr;
-        if (info)
+        uint32 const healthBefore = target->GetHealth();
+        char const* path = "plain";
+        if (info && legacyPath)
         {
+            path = "legacy";
+            uint32 amount = target->SpellDamageBonusTaken(boss, info, m.amount, SPELL_DIRECT_DAMAGE);
+            DamageInfo mitigated(boss, target, amount, info, info->GetSchoolMask(), SPELL_DIRECT_DAMAGE);
+            Unit::CalcAbsorbResist(mitigated);
+            Unit::DealDamage(boss, target, mitigated.GetDamage(), nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        }
+        else if (info)
+        {
+            path = "native";
             if (!target->IsImmunedToDamage(boss, info))
             {
                 SpellNonMeleeDamage hit(boss, target, info, info->GetSchoolMask());
@@ -245,6 +259,11 @@ void MechanicEvent(Session& s, Mechanic const& m)
         }
         else
             Unit::DealDamage(boss, target, m.amount, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        // What the hit really took off the victim, to compare the paths with each other and with a real spell hit.
+        uint32 const healthAfter = target->GetHealth();
+        Json hit; hit["type"] = "scripted_hit"; hit["kind"] = m.kind; hit["path"] = path; hit["requested"] = m.amount;
+        hit["dealt"] = healthBefore > healthAfter ? healthBefore - healthAfter : 0; hit["victimMaxHealth"] = target->GetMaxHealth();
+        s.Event(hit);
         s.avoidableEvent = false;
     };
     if (m.kind == "melee" || m.kind == "tankbuster" || m.kind == "ramp_hit")
@@ -1125,7 +1144,7 @@ void RecordSpellLifecycle(Unit* caster, ObjectGuid target, uint32 spell, char co
     }
     row["result"] = result; row["bySelf"] = bySelf; s->Event(row);
 }
-void InterruptKick(Player* bot, uint32 spell, Unit* enemy, uint32 result, char const* source)
+void InterruptKick(Player* bot, uint32 spell, Unit* enemy, uint32 result, char const* source, bool applied)
 {
     if (!Enabled.load(std::memory_order_relaxed) || !bot || !enemy) return;
     std::lock_guard lock(mutex);
@@ -1133,8 +1152,9 @@ void InterruptKick(Player* bot, uint32 spell, Unit* enemy, uint32 result, char c
     if (!s || !s->running) return;
     ++s->kickAttempts;
     if (result == uint32(SPELL_CAST_OK)) { ++s->kicksAccepted; s->lastKickMs[enemy->GetGUID().GetCounter()] = s->timeMs; }
+    if (applied) ++s->kicksApplied;
     Json row; row["type"] = "interrupt_kick"; row["bot"] = bot->GetGUID().GetCounter(); row["spellId"] = spell;
-    row["enemy"] = enemy->GetGUID().GetCounter(); row["result"] = result; row["source"] = source; s->Event(row);
+    row["enemy"] = enemy->GetGUID().GetCounter(); row["result"] = result; row["source"] = source; row["applied"] = applied; s->Event(row);
 }
 void CastResult(Player* bot, uint32 spell, uint32 result, Unit* target)
 {

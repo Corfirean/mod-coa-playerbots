@@ -120,6 +120,8 @@ namespace BotAI
         SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
         if (result == SPELL_CAST_OK)
         {
+            if (HasTag(action.tags, AbilityTag::DefensiveCD))
+                ActionEvaluator::NoteDefensiveCast(bot->GetGUID());
             if (action.internalThrottleMs > 0 && action.rootSpellId != 0)
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
 
