@@ -28,7 +28,14 @@ def main():
                         str(module / "src/engine/SpellResolver.cpp"), "/Fe:" + str(resolver)],
                        cwd=directory, check=True)
         subprocess.run([str(resolver)], check=True)
+        decisions = Path(directory) / "combat_decisions_tests.exe"
+        subprocess.run([compiler, "/nologo", "/std:c++20", "/EHsc", "/utf-8", "/O2",
+                        "/I" + str(module / "tests/stub"), "/I" + str(module / "src"),
+                        str(module / "tests/combat_decisions_tests.cpp"), "/Fe:" + str(decisions)],
+                       cwd=directory, check=True)
+        subprocess.run([str(decisions)], check=True)
     subprocess.run([sys.executable, "-B", str(module / "tests/test_training_reports.py")], check=True)
+    subprocess.run([sys.executable, "-B", str(module / "tests/test_ci_compare.py")], check=True)
 
 
 if __name__ == "__main__":
