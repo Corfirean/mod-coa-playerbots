@@ -29,6 +29,8 @@ void BeginDecision(BotAI::CombatContext const& ctx);
 void Candidate(ObjectGuid bot, uint32 spell, char const* name, bool valid, float score, char const* reason);
 void EndDecision(ObjectGuid bot, uint32 spell, float score, uint32 phase);
 void CastResult(Player* bot, uint32 spell, uint32 result, Unit* target = nullptr);
+// An interrupt cast by any bot of a running session: `result` is the game's cast result (SPELL_CAST_OK accepted).
+void InterruptKick(Player* bot, uint32 spell, Unit* enemy, uint32 result, char const* source);
 void RecordSpellLifecycle(Unit* caster, ObjectGuid target, uint32 spell, char const* phase, uint32 result, bool bySelf);
 }
 #endif

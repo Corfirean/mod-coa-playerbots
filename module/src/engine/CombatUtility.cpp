@@ -29,6 +29,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 #include "engine/ActionEvaluator.h"
@@ -74,6 +75,8 @@ namespace BotAI
 
             SpellCastResult result = bot->CastSpell(target, spellId, false);
             CoaTraining::CastResult(bot, spellId, uint32(result), target);
+            if (std::strstr(verb, "interrupt"))
+                CoaTraining::InterruptKick(bot, spellId, target, uint32(result), verb);
             SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
             if (result == SPELL_CAST_OK)
             {
@@ -362,8 +365,8 @@ namespace BotAI
         // ever returns a type-compatible pair, so there's nothing incompatible to fail on here --
         // if TryCast still fails, that's a genuine transient issue (range/LoS changed between
         // selection and cast), and recording a failure-cooldown for it is correct.
-        // A healer (or anyone with a heal button) with a critical groupmate heals first; only a debuff that disables someone, or one on
-        // the critical ally itself, is still worth the GCD.
+        // A healer with a critical groupmate heals first; only a debuff that controls someone, silences the healer or would kill its bearer
+        // before a heal lands (IsUrgentDebuff) is still worth the GCD. Other roles cleanse as before.
         CleansePlan cleansePlan = FindCleansePlan(bot, healerHasEmergency);
         if (cleansePlan.target && cleansePlan.spellId)
         {

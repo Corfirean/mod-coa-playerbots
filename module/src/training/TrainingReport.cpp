@@ -42,6 +42,9 @@ void Session::WriteReport(char const* reason)
     summary["mechanics"]["avoidableDamage"] = avoidableDamage;
     summary["mechanics"]["interruptCasts"] = interruptCasts;
     summary["mechanics"]["interruptsStopped"] = interruptsStopped;
+    summary["mechanics"]["interruptKicksAttempted"] = kickAttempts;
+    summary["mechanics"]["interruptKicksAccepted"] = kicksAccepted;
+    summary["mechanics"]["interruptsByKick"] = interruptsByKick;
     summary["threat"]["aggroMs"] = aggroMs;
     summary["threat"]["aggroLosses"] = aggroLosses;
     summary["threat"]["recoveryTimesMs"] = recoveries;

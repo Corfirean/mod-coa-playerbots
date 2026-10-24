@@ -3,7 +3,7 @@
 python -I ci_plan_hardening.py <experiment> <label> <out-dir> <credentials> <binary> <revision> [--seeds 1001 1002 ...] [--out-plan path]
 
 experiment:
-  interrupt   INTERRUPT_MULTI (two enemies cast together every 10 s): a dps actor with a kick, party tank/healer/dps/support
+  interrupt   INTERRUPT_MULTI (two enemies cast together every 10 s): five dps from classes that own a real interrupt spell
   healing     HEAL_RAMP, HEAL_POOL and GROUP_STRESS for two healer specs (Time 31, Flameweaving 37)
   buster      TANKBUSTER_PCT for the Fortitude tank (the hit size is set by CoaBots.Training.TankbusterPercent in the module config)
   threat      THREAT_STRESS for the three tanks that lose aggro most often (Domination 57, Black Knight 97, Moon Guard 100)
@@ -26,7 +26,13 @@ def before(guid, spec):
 def episodes(experiment, seeds):
     t, h, d1, d2, w = (TEAM[k] for k in ('tank', 'healer', 'dps1', 'dps2', 'support'))
     if experiment == 'interrupt':
-        return [{'scenario': 'INTERRUPT_MULTI', 'candidate': d1, 'party': [t, h, d2, w], 'seconds': 90, 'seeds': seeds, 'name': 'INTERRUPT_MULTI'}]
+        # Five dps from classes whose spellbook has a real interrupt effect (Spell.dbc effect 68): Gust of Wind, Shield of Denial, Spellburn,
+        # Nullifying Toxin, Ley Lock. Two enemies cast together every 10 s, so the group has to share its kicks.
+        roster = [(106044, 14), (106046, 19), (106052, 38), (106057, 53), (106060, 61)]
+        candidate, party = roster[0][0], [g for g, _ in roster[1:]]
+        prep = [cmd for g, spec in roster for cmd in before(g, spec)]
+        return [{'scenario': 'INTERRUPT_MULTI', 'candidate': candidate, 'party': party, 'seconds': 90, 'seeds': seeds,
+                 'name': 'INTERRUPT_MULTI', 'before': prep}]
     if experiment == 'healing':
         eps = []
         for spec in (31, 37):

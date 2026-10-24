@@ -466,8 +466,11 @@ void Update(uint32 diff)
                 if (enemy && enemy->IsAlive() && enemy->IsNonMeleeSpellCast(false)) { ++itr; continue; }
                 bool early = s.timeMs + 100 < itr->expectedEndMs;
                 if (early) ++s.interruptsStopped;
+                auto kick = s.lastKickMs.find(itr->enemy.GetCounter());
+                bool byKick = early && kick != s.lastKickMs.end() && kick->second + 800 >= s.timeMs && kick->second + 100 >= itr->startMs;
+                if (byKick) ++s.interruptsByKick;
                 Json event; event["type"] = "multi_cast_ended"; event["enemy"] = itr->enemy.GetCounter();
-                event["latencyMs"] = s.timeMs - itr->startMs; event["endedBeforeExpectedFinish"] = early;
+                event["latencyMs"] = s.timeMs - itr->startMs; event["endedBeforeExpectedFinish"] = early; event["afterAcceptedKick"] = byKick;
                 s.Event(event);
                 itr = s.multiCasts.erase(itr);
             }
@@ -1121,6 +1124,17 @@ void RecordSpellLifecycle(Unit* caster, ObjectGuid target, uint32 spell, char co
         }
     }
     row["result"] = result; row["bySelf"] = bySelf; s->Event(row);
+}
+void InterruptKick(Player* bot, uint32 spell, Unit* enemy, uint32 result, char const* source)
+{
+    if (!Enabled.load(std::memory_order_relaxed) || !bot || !enemy) return;
+    std::lock_guard lock(mutex);
+    Session* s = Lookup(bot->GetGUID());
+    if (!s || !s->running) return;
+    ++s->kickAttempts;
+    if (result == uint32(SPELL_CAST_OK)) { ++s->kicksAccepted; s->lastKickMs[enemy->GetGUID().GetCounter()] = s->timeMs; }
+    Json row; row["type"] = "interrupt_kick"; row["bot"] = bot->GetGUID().GetCounter(); row["spellId"] = spell;
+    row["enemy"] = enemy->GetGUID().GetCounter(); row["result"] = result; row["source"] = source; s->Event(row);
 }
 void CastResult(Player* bot, uint32 spell, uint32 result, Unit* target)
 {

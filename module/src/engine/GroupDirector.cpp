@@ -111,7 +111,7 @@ namespace BotAI
                 return false;
             if (CastGuard::IsCurrentlyCasting(member))
                 return false;
-            if (member->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING) || member->HasAuraType(SPELL_AURA_MOD_SILENCE))
+            if (member->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING))
                 return false;
             if (!member->IsWithinLOSInMap(enemy))
                 return false;
@@ -120,7 +120,16 @@ namespace BotAI
             if (now - lastSign > Decisions::INTERRUPT_BOT_STALE_MS)
                 return false;
             spellId = SelectInterruptSpell(member, enemy);
-            return spellId != 0;
+            if (!spellId)
+                return false;
+            // Silence stops spells, not physical abilities: only a kick that is a spell is lost to it.
+            SpellInfo const* kick = sSpellMgr->GetSpellInfo(spellId);
+            if (kick && kick->PreventionType == SPELL_PREVENTION_TYPE_SILENCE && member->HasAuraType(SPELL_AURA_MOD_SILENCE))
+            {
+                spellId = 0;
+                return false;
+            }
+            return true;
         }
 
         Player* FindMember(Group* group, ObjectGuid guid)
@@ -142,6 +151,9 @@ namespace BotAI
             uint32 spellId = 0;
             Player* primary = FindMember(group, watch.primary);
             bool primaryOk = primary && CanInterruptNow(snap, group, primary, enemy, watch.firstSeenMs, now, spellId);
+            // A bot already primary on an earlier cast of this pass cannot be primary here as well.
+            if (primaryOk && std::find(taken.begin(), taken.end(), watch.primary.GetRawValue()) != taken.end())
+                primaryOk = false;
             Player* backup = FindMember(group, watch.backup);
             bool backupOk = backup && CanInterruptNow(snap, group, backup, enemy, watch.firstSeenMs, now, spellId);
 
