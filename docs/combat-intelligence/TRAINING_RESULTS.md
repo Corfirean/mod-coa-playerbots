@@ -6,6 +6,11 @@ Venomancer Vizier (healer, 106036), Templar Zealot (melee dps, 106037), Tinker M
 Tools: `tools/combat-intelligence/ci_plan_run.py`, `ci_compare.py` (paired differences, 95% interval from the paired spread; a difference whose interval
 spans zero is noise). Results folders live in `.agents/training-live/ci-results/` (not committed: gear, characters and traces are local).
 
+> **Correction, post-review hardening (see `POST_REVIEW_HARDENING.md`).** The intervals in this file were computed with a normal 1.96 factor on three to
+> six pairs and the pairs were matched by folder name only. With Student's t intervals, an exact sign-flip test and a pair validator, the three- and
+> five-seed rows below are **INSUFFICIENT_EVIDENCE**, not "no regression". The group interrupt director, noted below as "not exercised", was exercised in
+> the follow-up and applied about half as many interrupts as the own-target rule; it is now off by default.
+
 ## Run register
 
 | Label | Binary | What differs | Episodes |

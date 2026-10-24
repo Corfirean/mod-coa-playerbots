@@ -73,3 +73,9 @@ Earlier measurements that remain valid as history: the 70-spec sweeps in `.agent
 * **Training damage fidelity** - `tankbuster`, `party_aoe`, `targeted_damage` and `pool_refill` call `Unit::DealDamage` directly with raw numbers, so
   damage-taken auras, armor and absorbs never apply: a tank's `-21%` defensive and a healer's shield cannot show in `damageTaken` (identical 7200 in
   baseline and candidate). Only the `melee` mechanic (a real swing) is mitigated. Fixed in Package 0 with an opt-in modifier path.
+
+## Status after the post-review hardening round
+
+F-004 open (diagnosed: one taunt per loss, scripted pressure returns after the cooldown); F-005 open; F-006 fixed properly (an absorb is damage reduction, never
+restored health); F-007 open (not exercised); F-016 open (202 dead descriptors); F-017 fixed with a one-defensive-per-moderate-hit budget; F-019 fixed; F-020 fixed
+(event-driven re-check). Details and evidence: `POST_REVIEW_HARDENING.md`.
