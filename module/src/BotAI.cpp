@@ -299,6 +299,9 @@ struct BotAIState
     // gear-upgrade bag scan.
     uint32 nextProgressionCheckMs = 0;
 
+    // Size of the spellbook when the spell tools were last checked: a spec change or a level-up that teaches new spells triggers a new check.
+    size_t toolCheckSpellCount = 0;
+
     // Flight paths a character of this level would know are granted once per session: bots created
     // before flight paths existed knew none and could never fly, and the grant is idempotent, so
     // doing it again on the next login is harmless but not worth doing every check.
@@ -1360,6 +1363,11 @@ void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
     {
         BotTaxi::GrantNodesForLevel(bot);
         state.flightPathsGranted = true;
+    }
+    if (bot->GetSpellMap().size() != state.toolCheckSpellCount)
+    {
+        state.toolCheckSpellCount = bot->GetSpellMap().size();
+        BotProgression::GrantSpellTools(bot);
     }
     TryUpgradeGearOnce(bot, state.role);
     TryMaintainEquipment(bot, state.role, false);

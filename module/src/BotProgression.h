@@ -42,6 +42,10 @@ namespace BotProgression
     // The tools each profession needs in the bags, upgrading the enchanting rod with skill.
     void GrantProfessionTools(Player* bot);
 
+    // Puts in the bags the tool items the bot's learned spells require (Spell.dbc TotemCategory): Witch Doctor totems, Guardian standards. Cheap to
+    // call again; it only acts on a spell whose requirement the bag does not meet.
+    void GrantSpellTools(Player* bot);
+
     // Food and drink for the bot's level, taken from what vendors actually sell.
     void ProvisionFood(Player* bot, uint32 stackSize);
 

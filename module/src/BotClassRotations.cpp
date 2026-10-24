@@ -31,6 +31,7 @@ namespace
 // Prevents an ability that failed to cast (e.g. invalid target, LOS, etc.) from being retried every tick.
 std::unordered_map<ObjectGuid, std::unordered_map<uint32, uint32>> failureCooldowns;
 constexpr uint32 FAILURE_COOLDOWN_MS = 2000;
+constexpr uint32 AURA_STATE_FAILURE_COOLDOWN_MS = 5000;
 
 // Per-bot rotation ability throttle map: [botGuid][rootSpellId] -> expiryMSTime
 // Used for abilities without native DBC cooldowns (e.g. totems, summons, edicts).
@@ -1526,6 +1527,14 @@ void HandleSpellCastFailure(Player* bot, Unit* target, uint32 spellId, SpellCast
         uint32 wait = info ? std::max(info->RecoveryTime, info->CategoryRecoveryTime) : 0;
         wait = std::min<uint32>(std::max<uint32>(wait, FAILURE_COOLDOWN_MS), 15000);
         failureCooldowns[bot->GetGUID()][spellId] = getMSTime() + wait;
+        return;
+    }
+
+    // A scripted or aura-state requirement the engine cannot see (Rime's Glacial Impact needs a state the core's own scripts decide): retrying
+    // every two seconds only fills the log; give it a few seconds for the state to change.
+    if (result == SPELL_FAILED_TARGET_AURASTATE || result == SPELL_FAILED_CASTER_AURASTATE)
+    {
+        failureCooldowns[bot->GetGUID()][spellId] = getMSTime() + AURA_STATE_FAILURE_COOLDOWN_MS;
         return;
     }
 
