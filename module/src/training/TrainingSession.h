@@ -60,6 +60,10 @@ struct Session
     std::set<uint32> hazardSpells;
     uint32 interruptStartMs = 0, interruptExpectedEndMs = 0;
     bool watchingInterruptCast = false;
+    // INTERRUPT_MULTI: one entry per enemy cast started; an entry is closed when the enemy stops casting.
+    struct WatchedCast { ObjectGuid enemy; uint32 startMs = 0, expectedEndMs = 0; };
+    std::vector<WatchedCast> multiCasts;
+    uint32 interruptCasts = 0, interruptsStopped = 0; // casts started / casts that ended before their expected finish (interrupted, or the caster died)
     std::vector<uint32> requiredBuffs, requiredDebuffs;
     std::map<uint32, uint64> buffCoverageMs, debuffUptimeMs;
     std::vector<double> batchDps;

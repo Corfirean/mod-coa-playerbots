@@ -216,28 +216,35 @@ void MechanicEvent(Session& s, Mechanic const& m)
     Json event; event["type"] = "mechanic"; event["kind"] = m.kind; event["scheduledTimeMs"] = m.timeMs;
     event["amount"] = m.amount; event["targetSlot"] = m.targetSlot;
     s.Event(event);
-    // Scripted hits used to go straight into DealDamage, so damage-taken auras and absorbs never applied and a tank's defensive or a healer's
-    // shield could not show in a run. With CoaBots.Training.RealisticDamage on, the amount first goes through the victim's own damage-taken
-    // modifiers and absorbs for the school of CoaBots.Training.RealisticDamageSpellId (default Shadow Bolt) - the same pipeline a spell hit
-    // takes - and the remaining damage is dealt as before. Off by default so earlier measurements stay comparable.
+    // Scripted hits used to go straight into DealDamage, so damage-taken auras, armor, resistance and absorbs never applied and a tank's
+    // defensive or a healer's shield could not show in a run. With CoaBots.Training.RealisticDamage on, the hit follows the steps a spell hit
+    // takes in Spell::DoAllEffectOnTarget, in the same order and with the same core functions:
+    //   IsImmunedToDamage -> CalculateSpellDamageTaken (script hooks, armor for physical schools, block, damage-taken modifiers, resistance,
+    //   absorbs) -> DealDamageMods -> DealSpellDamage -> SendSpellNonMeleeDamageLog
+    // for the school and spell of CoaBots.Training.RealisticDamageSpellId (default 686 Shadow Bolt: a Shadow-school hit, resisted by Shadow
+    // resistance, not reduced by armor; use a physical-school spell id for a physical hit). Intentionally NOT reproduced: the hit table (a
+    // scripted hit never misses), critical strikes, spell scripts' OnHit, procs of the attacker and threat -- they would only add noise to a
+    // paired comparison. Off by default so earlier measurements stay comparable.
     static bool const realistic = sConfigMgr->GetOption<bool>("CoaBots.Training.RealisticDamage", false);
     static uint32 const realisticSpell = sConfigMgr->GetOption<uint32>("CoaBots.Training.RealisticDamageSpellId", 686);
     auto damage = [&](Unit* target, bool avoidable)
     {
         if (!target || !target->IsAlive()) return;
         s.avoidableEvent = avoidable;
-        uint32 amount = m.amount;
-        if (realistic)
+        SpellInfo const* info = realistic ? sSpellMgr->GetSpellInfo(realisticSpell) : nullptr;
+        if (info)
         {
-            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(realisticSpell))
+            if (!target->IsImmunedToDamage(boss, info))
             {
-                amount = target->SpellDamageBonusTaken(boss, info, amount, SPELL_DIRECT_DAMAGE);
-                DamageInfo mitigated(boss, target, amount, info, info->GetSchoolMask(), SPELL_DIRECT_DAMAGE);
-                Unit::CalcAbsorbResist(mitigated);
-                amount = mitigated.GetDamage();
+                SpellNonMeleeDamage hit(boss, target, info, info->GetSchoolMask());
+                boss->CalculateSpellDamageTaken(&hit, int32(m.amount), info, BASE_ATTACK, false);
+                Unit::DealDamageMods(hit.target, hit.damage, &hit.absorb);
+                boss->SendSpellNonMeleeDamageLog(&hit);
+                boss->DealSpellDamage(&hit, true);
             }
         }
-        Unit::DealDamage(boss, target, amount, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        else
+            Unit::DealDamage(boss, target, m.amount, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
         s.avoidableEvent = false;
     };
     if (m.kind == "melee" || m.kind == "tankbuster" || m.kind == "ramp_hit")
@@ -263,8 +270,12 @@ void MechanicEvent(Session& s, Mechanic const& m)
         if (Unit* victim = boss->GetThreatMgr().GetCurrentVictim())
         {
             boss->Attack(victim, true);
-            SpellCastResult result = boss->CastCustomSpell(spellId, SPELLVALUE_BASE_POINT0, int32(m.amount), victim, false);
+            uint32 amount = m.amount;
+            if (s.scenario.busterIsPercent)
+                amount = uint32(uint64(victim->GetMaxHealth()) * sConfigMgr->GetOption<uint32>("CoaBots.Training.TankbusterPercent", m.amount) / 100);
+            SpellCastResult result = boss->CastCustomSpell(spellId, SPELLVALUE_BASE_POINT0, int32(amount), victim, false);
             Json cast; cast["type"] = "tankbuster_cast"; cast["spellId"] = spellId; cast["victim"] = victim->GetGUID().GetCounter();
+            cast["amount"] = amount; cast["victimMaxHealth"] = victim->GetMaxHealth();
             cast["result"] = uint32(result); s.Event(cast);
         }
     }
@@ -339,6 +350,35 @@ void MechanicEvent(Session& s, Mechanic const& m)
     }
     else if (m.kind == "boss_move")
         boss->NearTeleportTo(X, Y + ((m.timeMs / 15000) % 2 ? 15.0f : -15.0f), Z, 0);
+    else if (m.kind == "interruptible_cast_all")
+    {
+        // Every enemy starts the same interruptible cast at once, each at a different party member (round robin): the group has to share
+        // its interrupts instead of every kicker answering the first cast it sees.
+        uint32 spellId = sConfigMgr->GetOption<uint32>("CoaBots.Training.InterruptCastSpellId", 133);
+        size_t slot = 0;
+        for (ObjectGuid enemyGuid : s.enemies)
+        {
+            Creature* enemy = ObjectAccessor::GetCreature(*bot, enemyGuid);
+            if (!enemy || !enemy->IsAlive()) continue;
+            Player* victim = bot;
+            if (!s.members.empty())
+                if (Player* member = sBotMgr->FindBotPlayer(s.members[slot++ % s.members.size()].guid.GetCounter()))
+                    if (member->IsAlive()) victim = member;
+            SpellCastResult result = enemy->CastSpell(victim, spellId, false);
+            uint32 observedSpell = 0, finish = 0;
+            bool interruptible = BotAI::IsTargetCastingInterruptibleSpell(enemy, observedSpell, finish);
+            Json cast; cast["type"] = "multi_cast"; cast["spellId"] = spellId; cast["enemy"] = enemy->GetGUID().GetCounter();
+            cast["result"] = uint32(result); cast["interruptible"] = interruptible;
+            if (interruptible)
+            {
+                uint32 duration = finish - getMSTime();
+                s.multiCasts.push_back({ enemyGuid, s.timeMs, s.timeMs + duration });
+                ++s.interruptCasts;
+                cast["durationMs"] = duration;
+            }
+            s.Event(cast);
+        }
+    }
     else if (m.kind == "interruptible_cast")
     {
         uint32 spellId = sConfigMgr->GetOption<uint32>("CoaBots.Training.InterruptCastSpellId", 133);
@@ -420,6 +460,17 @@ void Update(uint32 diff)
                         event["successfulInterruptConfirmed"] = Json();
                         s.Event(event); s.watchingInterruptCast = false;
                     }
+            for (auto itr = s.multiCasts.begin(); itr != s.multiCasts.end();)
+            {
+                Creature* enemy = ObjectAccessor::GetCreature(*bot, itr->enemy);
+                if (enemy && enemy->IsAlive() && enemy->IsNonMeleeSpellCast(false)) { ++itr; continue; }
+                bool early = s.timeMs + 100 < itr->expectedEndMs;
+                if (early) ++s.interruptsStopped;
+                Json event; event["type"] = "multi_cast_ended"; event["enemy"] = itr->enemy.GetCounter();
+                event["latencyMs"] = s.timeMs - itr->startMs; event["endedBeforeExpectedFinish"] = early;
+                s.Event(event);
+                itr = s.multiCasts.erase(itr);
+            }
             bool allDead = true;
             for (auto const& m : s.members)
             {

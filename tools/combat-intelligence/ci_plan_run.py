@@ -11,6 +11,8 @@ plan.json
   "spawn": [106035, 106036],                     # bots to log in first (a restarted world has none online)
   "binary": "C:/.../worldserver-play.exe",       # recorded (sha256) in the manifest, not launched here
   "git_revision": "966e054",                      # recorded as given
+  "module_conf": "C:/.../mod_coa_playerbots.conf", # optional; default: configs/modules/mod_coa_playerbots.conf next to the credentials file.
+                                                  # Only its CoaBots.* settings are recorded (ci_compare checks them between the two runs)
   "episodes": [
      {"scenario": "HEAL_RAMP", "candidate": 105988, "party": [105913, 105945, 105986, 105915],
       "seconds": 60, "seeds": [1001, 1002, 1003],
@@ -50,6 +52,20 @@ def session_line(status_text, candidate, scenario):
     return None
 
 
+def coabots_settings(plan):
+    """The CoaBots.* key/value pairs of the module config the world runs with (nothing else is read: the file may sit next to credentials)."""
+    path = Path(plan['module_conf']) if plan.get('module_conf') else Path(plan['credentials']).parent / 'configs/modules/mod_coa_playerbots.conf'
+    if not path.exists():
+        return None
+    settings = {}
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+        line = line.strip()
+        if line.startswith('CoaBots.') and '=' in line:
+            key, value = line.split('=', 1)
+            settings[key.strip()] = value.split('#')[0].strip()
+    return settings
+
+
 def main(plan_path):
     plan = json.load(open(plan_path, encoding='utf-8'))
     out = Path(plan['out']) / plan['label']
@@ -63,6 +79,10 @@ def main(plan_path):
         'binary_sha256': sha256(plan['binary']) if plan.get('binary') and Path(plan['binary']).exists() else None,
         'episodes': [],
     }
+    # What ci_compare needs to tell that two runs are the same experiment: the core revision of the running world and its CoaBots.* settings.
+    m = re.search(r'rev\. (\w+)', ra.run('server info'))
+    manifest['core_revision'] = m.group(1) if m else None
+    manifest['config'] = coabots_settings(plan)
     for guid in plan.get('spawn', []):
         ra.run(f'botcmd spawnbot {guid}')
     if plan.get('spawn'):

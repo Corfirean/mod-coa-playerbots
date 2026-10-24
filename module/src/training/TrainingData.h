@@ -115,6 +115,7 @@ struct Scenario
     uint32_t melee = 0;
     uint32_t tankbuster = 0;
     uint32_t telegraphedBuster = 0; // TANKBUSTER_TELEGRAPH: the boss casts a damaging spell with a cast bar at its victim; the hit lands when the cast ends
+    bool busterIsPercent = false;   // TANKBUSTER_PCT: telegraphedBuster is a percentage of the victim's maximum health, not a damage value
     uint32_t partyDamage = 0;
     uint32_t targetedDamage = 0;
     uint32_t hazardDamage = 0;
@@ -122,6 +123,7 @@ struct Scenario
     uint32_t enemyCount = 1;
     uint32_t rampStep = 0;          // HEAL_RAMP: the k-th boss hit on its victim deals k * rampStep damage (healer ceiling test)
     uint32_t rampIntervalMs = 2000;
+    bool multiInterrupt = false;    // INTERRUPT_MULTI: every enemy starts an interruptible cast at the same time (group interrupt test)
     bool poolRefill = false;        // HEAL_POOL: every second all other party members are brought back down to 50% health (healer throughput test)
     uint32_t targetHealthPct = 100; // EXECUTE: the dummy starts below the finishing-blow thresholds (e.g. 35% for Electrocute)
     uint32_t dispelDebuffSpell = 0;
