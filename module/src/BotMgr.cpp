@@ -27,6 +27,7 @@
 #include "DatabaseEnv.h"
 #include "Group.h"
 #include "GroupScript.h"
+#include "engine/GroupDirector.h"
 #include "Guild.h"
 #include "GuildMgr.h"
 #include "GuildPackets.h"
@@ -3650,7 +3651,14 @@ namespace
 class coa_bot_leaderless_group_script : public GroupScript
 {
 public:
-    coa_bot_leaderless_group_script() : GroupScript("coa_bot_leaderless_group_script", { GROUPHOOK_ON_REMOVE_MEMBER }) { }
+    coa_bot_leaderless_group_script() : GroupScript("coa_bot_leaderless_group_script", { GROUPHOOK_ON_REMOVE_MEMBER, GROUPHOOK_ON_DISBAND }) { }
+
+    // A disbanded group's shared combat snapshot (interrupt assignments) would otherwise wait for the idle sweep.
+    void OnDisband(Group* group) override
+    {
+        if (group)
+            BotAI::GroupDirector::ForgetGroup(group->GetGUID());
+    }
 
     void OnRemoveMember(Group* group, ObjectGuid guid, RemoveMethod /*method*/, ObjectGuid /*kicker*/, char const* /*reason*/) override
     {

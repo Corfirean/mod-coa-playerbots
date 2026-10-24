@@ -37,6 +37,22 @@ namespace BotAI
 
         // Number of live group snapshots (diagnostics and leak checks).
         static uint32 SnapshotCount();
+
+        // Counters since server start, for diagnostics and the training reports. "Accepted" means the game accepted the cast request, not that the
+        // enemy cast stopped: confirmedStopped counts casts that disappeared before their end after an accepted kick, unconfirmed counts accepted
+        // kicks after which the enemy was still casting.
+        struct Stats
+        {
+            uint32 castsSeen = 0;
+            uint32 attempts = 0;
+            uint32 accepted = 0;
+            uint32 refused = 0;
+            uint32 unconfirmed = 0;
+            uint32 confirmedStopped = 0;
+            uint32 endedWithoutStop = 0;
+            uint32 reassigned = 0;
+        };
+        static Stats const& GetStats();
     };
 }
 

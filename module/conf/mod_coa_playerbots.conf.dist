@@ -404,6 +404,31 @@ CoaBots.Economy.ListingMinutes = 1440
 CoaBots.Economy.PriceSpreadMinPercent = 5
 CoaBots.Economy.PriceSpreadMaxPercent = 10
 
+###################################################################################################
+# COMBAT INTELLIGENCE
+###################################################################################################
+#
+#    CoaBots.Combat.BurstPrediction
+#        Description: A damaging cast aimed at a bot (a tankbuster on its cast bar) makes the bot spend
+#                     a defensive cooldown, and its healers pre-heal, before the hit lands. The damage
+#                     counted is what reaches health after the shields that are still up when it lands.
+#        Default:     1
+#
+#    CoaBots.Combat.BurstPctThreshold
+#        Description: A predicted hit of at least this share of the bot's maximum health counts as a burst.
+#        Default:     25
+#
+#    CoaBots.Combat.GroupInterruptDirector
+#        Description: Grouped bots interrupt what the group assigns them (one primary and one backup per
+#                     enemy cast, backup takes over at once when the primary cannot act). 0 returns to the
+#                     old rule where every bot kicks the cast of its own target.
+#        Default:     1
+#
+
+CoaBots.Combat.BurstPrediction = 1
+CoaBots.Combat.BurstPctThreshold = 25
+CoaBots.Combat.GroupInterruptDirector = 1
+
 CoaBots.Training.Enable = 0
 CoaBots.Training.OutputDir = training/results
 CoaBots.Training.DefaultLevel = 60
@@ -424,6 +449,16 @@ CoaBots.Training.TargetIsBoss = 0
 
 CoaBots.Training.HazardSpellId = 5740
 CoaBots.Training.InterruptCastSpellId = 133
+
+#    CoaBots.Training.RealisticDamage
+#        Description: Training only. A scripted hit (tankbuster, ramp hit) goes through the same steps as a spell hit
+#                     (immunity, armor for physical schools, damage-taken modifiers, resistance, absorbs) for the school of
+#                     RealisticDamageSpellId. It never misses, never crits and has no procs or threat. Changes
+#                     measurements: do not compare runs across the setting.
+#        Default:     0
+#
+CoaBots.Training.RealisticDamage = 0
+CoaBots.Training.RealisticDamageSpellId = 686
 
 # Reserved training phases: bits 30..27; configure only on isolated servers.
 CoaBots.Training.MaxParallelArenas = 1
