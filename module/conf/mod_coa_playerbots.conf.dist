@@ -419,15 +419,17 @@ CoaBots.Economy.PriceSpreadMaxPercent = 10
 #        Default:     25
 #
 #    CoaBots.Combat.GroupInterruptDirector
-#        Description: Grouped bots interrupt what the group assigns them (one primary and one backup per
-#                     enemy cast, backup takes over at once when the primary cannot act). 0 returns to the
-#                     old rule where every bot kicks the cast of its own target.
-#        Default:     1
+#        Description: EXPERIMENTAL. Grouped bots interrupt what the group assigns them (one primary and one backup
+#                     per enemy cast, backup takes over at once when the primary cannot act). 0 keeps the rule where
+#                     every bot kicks the cast of its own target. Off because in the INTERRUPT_MULTI test it applied
+#                     about half as many interrupts as the own-target rule (its reaction delay is long for 1.5 s casts),
+#                     see docs/combat-intelligence/POST_REVIEW_HARDENING.md.
+#        Default:     0
 #
 
 CoaBots.Combat.BurstPrediction = 1
 CoaBots.Combat.BurstPctThreshold = 25
-CoaBots.Combat.GroupInterruptDirector = 1
+CoaBots.Combat.GroupInterruptDirector = 0
 
 CoaBots.Training.Enable = 0
 CoaBots.Training.OutputDir = training/results

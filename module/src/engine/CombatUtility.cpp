@@ -324,7 +324,7 @@ namespace BotAI
 
         // A grouped bot kicks what the group director assigned to it (any enemy fighting the group, one primary and one backup per
         // cast, casts that do not matter ignored). A bot without a group keeps the own-target logic below.
-        static bool const useDirector = sConfigMgr->GetOption<bool>("CoaBots.Combat.GroupInterruptDirector", true);
+        static bool const useDirector = sConfigMgr->GetOption<bool>("CoaBots.Combat.GroupInterruptDirector", false);
         if (useDirector && bot->GetGroup())
         {
             uint32 assignedSpell = 0;
