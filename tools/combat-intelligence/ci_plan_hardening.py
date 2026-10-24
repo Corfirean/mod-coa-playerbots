@@ -1,6 +1,8 @@
 """Plans for the post-review hardening experiments (paired runs, several seeds each).
 
-python -I ci_plan_hardening.py <experiment> <label> <out-dir> <credentials> <binary> <revision> [--seeds 1001 1002 ...] [--out-plan path]
+python -I ci_plan_hardening.py <experiment> <label> <out-dir> <credentials> <binary> <revision> [--seeds 1001 1002 ...] [--out-plan path] [--setup]
+
+--setup writes the one-time plan that gives the actors their specs and live gear; without it the plan has no setup commands (run the setup first).
 
 experiment:
   interrupt   INTERRUPT_MULTI (two enemies cast together every 10 s): five dps from classes that own a real interrupt spell
@@ -21,6 +23,27 @@ ACTOR = {31: 106050, 37: 106052, 52: 106057, 57: 106058, 97: 106043, 100: 106054
 
 def before(guid, spec):
     return [f'botcmd learnspec {guid} {spec}', f'botcmd train livegear {guid} new']
+
+
+def strip_setup(eps):
+    """The experiment itself runs with the specs and gear a setup run has put on the bots: `train livegear` rolls a new item set every time, so
+    repeating it before every seed (or in the second arm) would make the arms different experiments (ci_compare rejects such pairs)."""
+    return [{k: v for k, v in e.items() if k != 'before'} for e in eps]
+
+
+def setup_episodes(eps):
+    """One 5 s ST_STATIC episode per (actor, spec) that runs the setup commands once."""
+    done, out = set(), []
+    for e in eps:
+        for cmd in e.get('before', []):
+            if cmd not in done:
+                done.add(cmd)
+        guids = {int(c.split()[2]) for c in e.get('before', []) if c.startswith('botcmd learnspec')}
+        for g in sorted(guids):
+            cmds = [c for c in e['before'] if f' {g} ' in c + ' ']
+            if not any(o['candidate'] == g and o['before'] == cmds for o in out):
+                out.append({'scenario': 'ST_STATIC', 'candidate': g, 'seconds': 5, 'seeds': [1001], 'name': f'setup-{g}', 'before': cmds})
+    return out
 
 
 def episodes(experiment, seeds):
@@ -62,8 +85,10 @@ def main(argv):
         i = argv.index('--seeds')
         seeds = [int(x) for x in argv[i + 1:] if x.isdigit()]
     eps = episodes(experiment, seeds)
+    eps = setup_episodes(eps) if '--setup' in argv else strip_setup(eps)
     plan = {'label': label, 'out': out, 'credentials': credentials, 'ra_port': 3469, 'binary': binary, 'git_revision': revision,
-            'keep_traces': True, 'spawn': sorted(set(TEAM.values()) | {e['candidate'] for e in eps}), 'episodes': eps}
+            'keep_traces': True, 'episodes': eps,
+            'spawn': sorted(set(TEAM.values()) | {g for e in eps for g in [e['candidate']] + e.get('party', [])})}
     path = Path(argv[argv.index('--out-plan') + 1]) if '--out-plan' in argv else Path(f'ci-plan-{label}.json')
     path.write_text(json.dumps(plan, indent=1), encoding='utf-8')
     print(len(eps), 'episode groups x', len(seeds), 'seeds ->', path)
