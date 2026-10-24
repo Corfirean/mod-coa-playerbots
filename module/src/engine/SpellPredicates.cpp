@@ -260,6 +260,44 @@ namespace BotAI
         return false;
     }
 
+    bool GetDamagingCastOn(Unit* enemy, Unit* target, float& outDamage, uint32& outRemainingMs)
+    {
+        outDamage = 0.0f;
+        outRemainingMs = 0;
+        if (!enemy || !target || !enemy->IsAlive())
+            return false;
+        for (uint32 i = CURRENT_GENERIC_SPELL; i <= CURRENT_CHANNELED_SPELL; ++i)
+        {
+            Spell* spell = enemy->GetCurrentSpell(CurrentSpellTypes(i));
+            if (!spell || !spell->m_spellInfo)
+                continue;
+            if (spell->getState() != SPELL_STATE_PREPARING && spell->getState() != SPELL_STATE_CASTING)
+                continue;
+            if (spell->m_targets.GetUnitTarget() != target)
+                continue;
+            SpellInfo const* info = spell->m_spellInfo;
+            float total = 0.0f;
+            for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+            {
+                SpellEffectInfo const& effect = info->Effects[e];
+                if (effect.Effect != SPELL_EFFECT_SCHOOL_DAMAGE && effect.Effect != SPELL_EFFECT_WEAPON_DAMAGE &&
+                    effect.Effect != SPELL_EFFECT_NORMALIZED_WEAPON_DMG && effect.Effect != SPELL_EFFECT_WEAPON_PERCENT_DAMAGE)
+                    continue;
+                int32 base = spell->CalculateSpellDamage(e, target);
+                if (base <= 0)
+                    continue;
+                uint32 amount = enemy->SpellDamageBonusDone(target, info, uint32(base), SPELL_DIRECT_DAMAGE, e);
+                total += float(target->SpellDamageBonusTaken(enemy, info, amount, SPELL_DIRECT_DAMAGE));
+            }
+            if (total <= 0.0f)
+                continue;
+            outDamage = total;
+            outRemainingMs = uint32(std::max(0, spell->GetCastTimeRemaining()));
+            return true;
+        }
+        return false;
+    }
+
     bool IsTargetCastingInterruptibleSpell(Unit const* target)
     {
         uint32 unusedSpellId, unusedFinishTime;

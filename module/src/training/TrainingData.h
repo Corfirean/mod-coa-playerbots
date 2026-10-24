@@ -114,6 +114,7 @@ struct Scenario
     uint32_t durationMs = 180000;
     uint32_t melee = 0;
     uint32_t tankbuster = 0;
+    uint32_t telegraphedBuster = 0; // TANKBUSTER_TELEGRAPH: the boss casts a damaging spell with a cast bar at its victim; the hit lands when the cast ends
     uint32_t partyDamage = 0;
     uint32_t targetedDamage = 0;
     uint32_t hazardDamage = 0;

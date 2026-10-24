@@ -5,6 +5,7 @@
  */
 
 #include "engine/HealEvaluator.h"
+#include "Config.h"
 #include "engine/CombatReservations.h"
 #include "engine/DamageTracker.h"
 #include "engine/SpellPredicates.h"
@@ -49,6 +50,35 @@ namespace BotAI
         // Smallest share of a direct heal that has to land on missing health (after heals already in flight) for the
         // cast to be worth its mana, while the target is not in danger.
         constexpr float MIN_USEFUL_HEAL_FRACTION = 0.4f;
+        // Pre-heal rules: only for a cast landing within this window, and only when the ally would end under this share of its health.
+        constexpr uint32 BURST_LOOKAHEAD_MS = 4500;
+        constexpr float LETHAL_MARGIN_PCT = 20.0f;
+        constexpr float BURST_URGENCY_BONUS = 150.0f;
+    }
+
+    namespace
+    {
+        // True when a damaging cast that an enemy is aiming at `ally` would leave the ally below LETHAL_MARGIN_PCT of its health
+        // if nothing heals it first: the case for a pre-heal before a tankbuster, when the tank is not yet hurt.
+        bool BurstWouldBeDangerous(Player* ally)
+        {
+            static bool const predictBurst = sConfigMgr->GetOption<bool>("CoaBots.Combat.BurstPrediction", true);
+            if (!predictBurst)
+                return false;
+            uint32 maxHealth = ally->GetMaxHealth();
+            if (!maxHealth)
+                return false;
+            for (Unit* attacker : ally->getAttackers())
+            {
+                float damage = 0.0f;
+                uint32 remainingMs = 0;
+                if (!GetDamagingCastOn(attacker, ally, damage, remainingMs) || remainingMs > BURST_LOOKAHEAD_MS)
+                    continue;
+                if (float(ally->GetHealth()) - damage < float(maxHealth) * LETHAL_MARGIN_PCT / 100.0f)
+                    return true;
+            }
+            return false;
+        }
     }
 
     bool HealEvaluator::ShouldConsiderHealing(Player* healer, Player* candidate)
@@ -63,6 +93,10 @@ namespace BotAI
             return false;
 
         if (100.0f - candidate->GetHealthPct() >= MIN_MISSING_HP_PCT)
+            return true;
+
+        // Pre-heal: a damaging cast is about to land on this ally and would leave it dangerously low.
+        if (BurstWouldBeDangerous(candidate))
             return true;
 
         float incomingDps = DamageTracker::SampleIncomingDps(candidate);
@@ -119,6 +153,10 @@ namespace BotAI
 
         if (BotAI::GetRole(candidate->GetGUID()) == BotRole::Tank)
             score *= 1.3f;
+
+        // A cast that would nearly kill this ally is already on its way: heal it before the hit, not after.
+        if (BurstWouldBeDangerous(candidate))
+            score += BURST_URGENCY_BONUS;
 
         // An enemy is actively engaged with this ally right now (not just "took damage at some
         // point") -- getAttackers() is who's currently in melee combat with them.

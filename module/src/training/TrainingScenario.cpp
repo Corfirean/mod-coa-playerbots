@@ -13,6 +13,7 @@ bool Scenario::Find(std::string const& name, Scenario& s)
     if (name == "CLEAVE") { s.enemyCount = 2; return true; }
     if (name == "EXECUTE") { s.targetHealthPct = 30; return true; }
     if (name == "AOE") { s.enemyCount = 5; return true; }
+    if (name == "TANKBUSTER_TELEGRAPH") { s.group = true; s.melee = 200; s.telegraphedBuster = 1800; return true; }
     if (name == "SURVIVAL") { s.melee = 400; s.tankbuster = 1800; return true; }
     if (name == "GROUND_HAZARDS") { s.hazardDamage = 1800; return true; }
     if (name == "RESURRECT_AFTER_PULL")
@@ -56,6 +57,7 @@ std::vector<Mechanic> Scenario::Timeline(uint32_t seed, uint32_t members) const
     append(35000, 45000, "interruptible_cast", 0, false);
     if (melee) append(2000, 2000, "melee", melee, false);
     if (tankbuster) append(7000, 15000, "tankbuster", tankbuster, false);
+    if (telegraphedBuster) append(7000, 15000, "tankbuster_cast", telegraphedBuster, false);
     if (partyDamage) append(14000, 20000, "party_aoe", partyDamage, false);
     if (targetedDamage) append(25000, 17000, "targeted_damage", targetedDamage, true);
     if (hazardDamage)

@@ -21,6 +21,19 @@
 
 namespace BotAI
 {
+    namespace
+    {
+        // A cast that would take this share of the bot's maximum health counts as a burst worth a defensive button (default 25%,
+        // CoaBots.Combat.BurstPctThreshold)...
+        float BurstPctThreshold()
+        {
+            static float const value = sConfigMgr->GetOption<float>("CoaBots.Combat.BurstPctThreshold", 25.0f);
+            return value;
+        }
+        // ...from this long before it lands (a longer cast is not yet worth spending the cooldown on).
+        constexpr uint32 BURST_WINDOW_MS = 4500;
+    }
+
     CombatContext CombatContext::Build(Player* bot, Unit* explicitVictim)
     {
         CombatContext ctx;
@@ -97,6 +110,28 @@ namespace BotAI
         ctx.worthDefensiveCooldown = ctx.botHpPct < 25.0f
             || timeToDieSec < 6.0f
             || (ctx.botHpPct < 60.0f && dangerousBossOnBot);
+
+        // Burst prediction (see CombatContext.h): the largest damaging cast any attacker of the bot has aimed at it.
+        static bool const predictBurst = sConfigMgr->GetOption<bool>("CoaBots.Combat.BurstPrediction", true);
+        if (uint32 maxHealth = predictBurst ? bot->GetMaxHealth() : 0)
+        {
+            for (Unit* attacker : bot->getAttackers())
+            {
+                float damage = 0.0f;
+                uint32 remainingMs = 0;
+                if (!GetDamagingCastOn(attacker, bot, damage, remainingMs))
+                    continue;
+                float pct = damage * 100.0f / float(maxHealth);
+                if (pct > ctx.predictedBurstPct)
+                {
+                    ctx.predictedBurstPct = pct;
+                    ctx.burstRemainingMs = remainingMs;
+                }
+            }
+            ctx.burstIncoming = ctx.predictedBurstPct >= BurstPctThreshold() && ctx.burstRemainingMs <= BURST_WINDOW_MS;
+            if (ctx.burstIncoming)
+                ctx.worthDefensiveCooldown = true;
+        }
 
         // Ally triage snapshot
         Group const* group = bot->GetGroup();

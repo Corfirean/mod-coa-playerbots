@@ -79,6 +79,11 @@ namespace BotAI
     // enemy. A cast whose only effect is a harmless self-buff is not: the kick is a cooldown the next real cast may need.
     bool IsInterruptWorthwhile(SpellInfo const* spellInfo);
 
+    // A damaging cast of `enemy` aimed at `target` that has not finished yet: the damage it would do to `target` after the caster's
+    // damage bonuses and the target's damage-taken modifiers (not armor/resist/absorb rolls), and how long until it lands. Looks at
+    // the enemy's current generic and channeled spell only - what a player sees as a cast bar. False when there is none.
+    bool GetDamagingCastOn(Unit* enemy, Unit* target, float& outDamage, uint32& outRemainingMs);
+
     // True when `unit` is under a hard-CC mechanic that breaks on damage (fear/polymorph/sleep/
     // banish/shackle/sap/charm/horror/disorient) -- used to avoid a target-selection pass
     // attacking straight through a groupmate's crowd control (item 1/#8's "CC target -> huge

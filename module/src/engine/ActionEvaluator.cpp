@@ -478,7 +478,10 @@ namespace BotAI
         if (targetHpPct < desc.minTargetHpPct || targetHpPct > desc.maxTargetHpPct)
             return -1.0f;
 
-        if (ctx.botHpPct < desc.minSelfHpPct || ctx.botHpPct > desc.maxSelfHpPct)
+        // A defensive with a health ceiling is meant for a hurt bot; when a damaging cast is about to land on the bot it is worth using at
+        // any health (the tank is at full health when a tankbuster starts casting).
+        bool const burstOverridesCeiling = ctx.burstIncoming && HasTag(desc.tags, AbilityTag::DefensiveCD);
+        if (ctx.botHpPct < desc.minSelfHpPct || (ctx.botHpPct > desc.maxSelfHpPct && !burstOverridesCeiling))
             return -1.0f;
 
         if (desc.minInjuredAllies > 0 && ctx.injuredAllyCount < desc.minInjuredAllies)

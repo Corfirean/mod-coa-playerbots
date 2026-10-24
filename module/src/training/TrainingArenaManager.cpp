@@ -253,6 +253,21 @@ void MechanicEvent(Session& s, Mechanic const& m)
         }
         else damage(boss->GetVictim(), false);
     }
+    else if (m.kind == "tankbuster_cast")
+    {
+        // A tankbuster a player can see coming: the boss starts a real cast (cast bar, cast time) at its victim, and the damage is the
+        // spell's own, so armor, damage-taken auras and absorbs apply with no scripted shortcut. The spell is Shadow Bolt unless
+        // CoaBots.Training.TankbusterSpellId says otherwise; its first effect is overridden to the scenario's amount.
+        static uint32 const spellId = sConfigMgr->GetOption<uint32>("CoaBots.Training.TankbusterSpellId", 686);
+        boss->GetThreatMgr().UpdateVictimForTesting();
+        if (Unit* victim = boss->GetThreatMgr().GetCurrentVictim())
+        {
+            boss->Attack(victim, true);
+            SpellCastResult result = boss->CastCustomSpell(spellId, SPELLVALUE_BASE_POINT0, int32(m.amount), victim, false);
+            Json cast; cast["type"] = "tankbuster_cast"; cast["spellId"] = spellId; cast["victim"] = victim->GetGUID().GetCounter();
+            cast["result"] = uint32(result); s.Event(cast);
+        }
+    }
     else if (m.kind == "dispel_debuff")
     {
         ObjectGuid allyGuid = s.members[s.members.size() > 1 ? 1 : 0].guid;
