@@ -218,9 +218,9 @@ void MechanicEvent(Session& s, Mechanic const& m)
     s.Event(event);
     // Scripted hits used to go straight into DealDamage, so damage-taken auras, armor, resistance and absorbs never applied and a tank's
     // defensive or a healer's shield could not show in a run. With CoaBots.Training.RealisticDamage on, the hit follows the steps a spell hit
-    // takes in Spell::DoAllEffectOnTarget, in the same order and with the same core functions:
-    //   IsImmunedToDamage -> CalculateSpellDamageTaken (script hooks, armor for physical schools, block, damage-taken modifiers, resistance,
-    //   absorbs) -> DealDamageMods -> DealSpellDamage -> SendSpellNonMeleeDamageLog
+    // takes in Spell::EffectSchoolDMG and Spell::DoAllEffectOnTarget, in the same order and with the same core functions:
+    //   SpellDamageBonusTaken (the victim's damage-taken modifiers) -> IsImmunedToDamage -> CalculateSpellDamageTaken (script hooks, armor for
+    //   physical schools, block, resistance, absorbs) -> DealDamageMods -> SendSpellNonMeleeDamageLog -> DealSpellDamage
     // for the school and spell of CoaBots.Training.RealisticDamageSpellId (default 686 Shadow Bolt: a Shadow-school hit, resisted by Shadow
     // resistance, not reduced by armor; use a physical-school spell id for a physical hit). Intentionally NOT reproduced: the hit table (a
     // scripted hit never misses), critical strikes, spell scripts' OnHit, procs of the attacker and threat -- they would only add noise to a
@@ -250,8 +250,11 @@ void MechanicEvent(Session& s, Mechanic const& m)
             path = "native";
             if (!target->IsImmunedToDamage(boss, info))
             {
+                // Spell::EffectSchoolDMG applies the victim's damage-taken modifiers before the hit is resolved; the attacker's own bonuses are
+                // left out on purpose (the scenario's amount is what the boss deals).
+                uint32 const amount = target->SpellDamageBonusTaken(boss, info, m.amount, SPELL_DIRECT_DAMAGE);
                 SpellNonMeleeDamage hit(boss, target, info, info->GetSchoolMask());
-                boss->CalculateSpellDamageTaken(&hit, int32(m.amount), info, BASE_ATTACK, false);
+                boss->CalculateSpellDamageTaken(&hit, int32(amount), info, BASE_ATTACK, false);
                 Unit::DealDamageMods(hit.target, hit.damage, &hit.absorb);
                 boss->SendSpellNonMeleeDamageLog(&hit);
                 boss->DealSpellDamage(&hit, true);
