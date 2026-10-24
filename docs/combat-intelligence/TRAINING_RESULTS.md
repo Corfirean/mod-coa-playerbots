@@ -42,3 +42,21 @@ their damage back on a solo dummy; in group scenarios the Vizier does 35-40.
 ## Not measured yet
 Mana sustainability beyond 30 s (needs `RESOURCE_ENDURANCE` or 180 s runs), threat margin and aggro recovery (THREAT_STRESS recovery 1-5 s, no change made), interrupts with two casters,
 anything in a real dungeon with these changes.
+
+## Role-wide first look (roles-cand4: one seed, 60 s, level 60, every tank / healer / support spec)
+
+Not a paired test: one run per spec to find outliers.
+
+**Tanks, THREAT_STRESS** (a damage dealer gets +1000 threat per second; losses of the boss in 60 s): Vanguard 0, Fortitude 1, Eternal 1, Defiance 4, Oathkeeper 4,
+Mountain King 4, Seraphim 5, Tyrant 5, Dreadnought 5, Domination 6, Black Knight 6, Moon Guard 6. The first recovery takes about 1 s for everyone; every later one takes 4-6 s,
+which is the taunts' 8 s cooldown, so recovery time is set by the spell, not by the AI. Specs with the lowest threat output (Moon Guard 188 dps, Black Knight 214, Domination 208) lose
+the boss most. No AI idle time explains the gap (every tank fills its global cooldowns).
+
+**Tanks, TANKBUSTER_TELEGRAPH** (default 25% threshold, the hits are ~19% of the tank): damage taken 4400-6446 for ten of twelve specs, Black Knight 1875 (its own shield/avoidance
+handles the cast), no deaths.
+
+**Healers, HEAL_RAMP** (ceiling = first party death): Heretic, Invention and Blessings survive the full 60 s; Vizier and Moon Priest die at hit ~2600, Brewing, Time and Flameweaving at ~2800.
+All within 10%: no outlier. **HEAL_POOL throughput (HPS):** Blessings 1564, Vizier 1065, Moon Priest 965, Brewing 664, Heretic 623, Invention 609, Flameweaving 412, Time 384. Time and Flameweaving
+reject their main heals as "can't afford" in 35% of decisions: they run out of mana first (in-combat regeneration in this core only comes from MP5 on gear).
+
+**Supports, SUPPORT_GROUP:** every support spec places 2-4 distinct auras on all four party members (Wind: 707652 and 572399 on all four) - the earlier "zero Wind coverage" is gone.

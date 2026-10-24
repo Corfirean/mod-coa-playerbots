@@ -10,11 +10,13 @@
 #include "ScriptMgr.h"
 #include "ScriptedGossip.h"
 #include "SharedDefines.h"
+#include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "TemporarySummon.h"
 #include "Trainer.h"
 #include <algorithm>
 #include <array>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -291,8 +293,52 @@ namespace BotProgression
                 bot->learnSpell(spellId, false);
     }
 
+    // The item that satisfies a spell's required TotemCategory, picked once per category: a plain tool (not a wearable) first, then the
+    // lowest item level, then the lowest entry. 0 when the realm has no such item.
+    uint32 ToolForTotemCategory(uint32 category)
+    {
+        static std::unordered_map<uint32, uint32> cache;
+        auto found = cache.find(category);
+        if (found != cache.end())
+            return found->second;
+
+        ItemTemplate const* best = nullptr;
+        for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
+        {
+            if (proto.TotemCategory != category)
+                continue;
+            auto rank = [](ItemTemplate const& item) { return std::tuple<int, uint32, uint32>(item.InventoryType == INVTYPE_NON_EQUIP ? 0 : 1, item.ItemLevel, item.ItemId); };
+            if (!best || rank(proto) < rank(*best))
+                best = &proto;
+        }
+        return cache[category] = best ? best->ItemId : 0;
+    }
+
+    // Spells such as the Witch Doctor's totems and wards or the Guardian's standards need a tool in the bags (Spell.dbc TotemCategory); a bot
+    // that was never given one answered every such cast with "missing totem category item", so those specs never used half their kit.
+    void GrantSpellTools(Player* bot)
+    {
+        for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+        {
+            if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive())
+                continue;
+            for (uint32 category : info->TotemCategory)
+            {
+                if (!category || bot->HasItemTotemCategory(category))
+                    continue;
+                if (uint32 tool = ToolForTotemCategory(category))
+                    GiveOnce(bot, tool);
+            }
+        }
+    }
+
     void GrantProfessionTools(Player* bot)
     {
+        GrantSpellTools(bot);
+
         for (auto const& [skill, itemId] : PROFESSION_TOOLS)
             if (bot->HasSkill(skill))
                 GiveOnce(bot, itemId);

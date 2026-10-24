@@ -1518,6 +1518,17 @@ void HandleSpellCastFailure(Player* bot, Unit* target, uint32 spellId, SpellCast
     if (!bot || !spellId)
         return;
 
+    // NOT_READY: the core still holds a cooldown the engine's own check did not see (a category or shared cooldown). Retrying every two
+    // seconds wasted a decision each time (13 refused Zenith casts in 30 s); wait out the spell's own recovery time instead.
+    if (result == SPELL_FAILED_NOT_READY)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        uint32 wait = info ? std::max(info->RecoveryTime, info->CategoryRecoveryTime) : 0;
+        wait = std::min<uint32>(std::max<uint32>(wait, FAILURE_COOLDOWN_MS), 15000);
+        failureCooldowns[bot->GetGUID()][spellId] = getMSTime() + wait;
+        return;
+    }
+
     if (!target || !IsRangeOrFacingFailure(result))
     {
         RecordSpellCastFailure(bot->GetGUID(), spellId);

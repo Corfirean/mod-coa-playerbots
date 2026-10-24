@@ -12,6 +12,8 @@
 #include "BotAI.h"
 #include "Group.h"
 #include "Player.h"
+#include "SpellAuraEffects.h"
+#include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Unit.h"
@@ -58,6 +60,17 @@ namespace BotAI
 
     namespace
     {
+        // What the ally's absorb shields still soak (damage that will not reach its health): a shield already on a target is healing that
+        // has been done, so it must not be healed again as if the health were missing.
+        uint32 RemainingAbsorb(Unit const* unit)
+        {
+            int64 total = 0;
+            for (AuraEffect const* effect : unit->GetAuraEffectsByType(SPELL_AURA_SCHOOL_ABSORB))
+                if (effect->GetAmount() > 0)
+                    total += effect->GetAmount();
+            return uint32(std::min<int64>(total, 0xFFFFFFFF));
+        }
+
         // True when a damaging cast that an enemy is aiming at `ally` would leave the ally below LETHAL_MARGIN_PCT of its health
         // if nothing heals it first: the case for a pre-heal before a tankbuster, when the tank is not yet hurt.
         bool BurstWouldBeDangerous(Player* ally)
@@ -93,7 +106,12 @@ namespace BotAI
             return false;
 
         if (100.0f - candidate->GetHealthPct() >= MIN_MISSING_HP_PCT)
-            return true;
+        {
+            // ...unless a shield on the ally already covers what is missing.
+            float missing = maxHealth - float(candidate->GetHealth());
+            if (float(RemainingAbsorb(candidate)) < missing)
+                return true;
+        }
 
         // Pre-heal: a damaging cast is about to land on this ally and would leave it dangerously low.
         if (BurstWouldBeDangerous(candidate))
@@ -130,7 +148,7 @@ namespace BotAI
         // topped off by someone else's heal already in flight.
         float missingHealth = maxHealth - float(candidate->GetHealth());
         uint32 reserved = CombatReservations::GetReservedIncomingHeal(candidate->GetGUID(), healer->GetGUID());
-        missingHealth = std::max(0.0f, missingHealth - float(reserved));
+        missingHealth = std::max(0.0f, missingHealth - float(reserved) - float(RemainingAbsorb(candidate)));
         float missingPct = missingHealth / maxHealth * 100.0f;
 
         float score = missingPct * 2.0f;

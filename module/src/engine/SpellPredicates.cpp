@@ -434,7 +434,7 @@ namespace BotAI
         // (Spell::CheckCast, PLAYER_ALLOW_ONLY_ABILITY), which cost Crusader24 about 20 failed casts per 30 s.
         if (bot->HasPlayerFlag(PLAYER_ALLOW_ONLY_ABILITY) && !spellInfo->HasAttribute(SPELL_ATTR0_ON_NEXT_SWING_NO_DAMAGE))
             return "only abilities allowed while a Tempest-like state is active";
-        if (spellInfo->CasterAuraStateNot && bot->HasAuraState(AuraStateType(spellInfo->CasterAuraStateNot)))
+        if (spellInfo->CasterAuraStateNot && bot->HasAuraState(AuraStateType(spellInfo->CasterAuraStateNot), spellInfo, bot))
             return "blocked by spell-defined caster aura state";
         if (spellInfo->ExcludeCasterAuraSpell && bot->HasAura(spellInfo->ExcludeCasterAuraSpell))
             return "blocked by spell-defined caster aura";
@@ -507,9 +507,11 @@ namespace BotAI
             return false;
         if (NativeCastPrerequisiteFailure(bot, spellInfo))
             return false;
-        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
+        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState), spellInfo, bot))
             return false;
-        if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
+        if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState), spellInfo, bot))
+            return false;
+        if (target && spellInfo->TargetAuraStateNot && target->HasAuraState(AuraStateType(spellInfo->TargetAuraStateNot), spellInfo, bot))
             return false;
         if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
             return false;

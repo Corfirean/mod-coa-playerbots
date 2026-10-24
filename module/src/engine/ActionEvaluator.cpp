@@ -428,7 +428,9 @@ namespace BotAI
                 return reject("caster aura already up, not due for refresh");
         }
 
-        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
+        // The core asks HasAuraState with the spell and the caster, which honours "ignore aura state" auras and per-caster states (a
+        // debuff only counts when this caster applied it); the one-argument form answered differently and sent casts the core then refused.
+        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState), spellInfo, bot))
             return reject("missing spell-defined caster aura state");
         if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
             return reject("missing spell-defined caster aura");
@@ -441,8 +443,10 @@ namespace BotAI
         if (!IsTargetAuraDue(bot, target, desc, resolvedSpellId))
             return reject("target aura not due for refresh yet");
 
-        if (spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
+        if (spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState), spellInfo, bot))
             return reject("missing spell-defined target aura state");
+        if (spellInfo->TargetAuraStateNot && target->HasAuraState(AuraStateType(spellInfo->TargetAuraStateNot), spellInfo, bot))
+            return reject("blocked by spell-defined target aura state");
         if (spellInfo->TargetAuraSpell && !target->HasAura(spellInfo->TargetAuraSpell))
             return reject("missing spell-defined target aura");
 
