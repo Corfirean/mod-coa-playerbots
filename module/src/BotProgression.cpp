@@ -7,6 +7,7 @@
 #include "Log.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "PlayerScript.h"
 #include "ScriptMgr.h"
 #include "ScriptedGossip.h"
 #include "SharedDefines.h"
@@ -16,6 +17,7 @@
 #include "Trainer.h"
 #include <algorithm>
 #include <array>
+#include <mutex>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -293,6 +295,18 @@ namespace BotProgression
                 bot->learnSpell(spellId, false);
     }
 
+    // Learn/forget hooks fire on whichever thread changed the spellbook (a level-up happens on a map thread), so the counters are guarded.
+    std::mutex s_spellbookMutex;
+    std::unordered_map<ObjectGuid, uint32> s_spellbookRevision;
+
+    void BumpSpellbookRevision(Player* player)
+    {
+        if (!player || !player->IsBot())
+            return;
+        std::lock_guard<std::mutex> lock(s_spellbookMutex);
+        ++s_spellbookRevision[player->GetGUID()];
+    }
+
     // The item that satisfies a spell's required TotemCategory, picked once per category: a plain tool (not a wearable) first, then the
     // lowest item level, then the lowest entry. 0 when the realm has no such item.
     uint32 ToolForTotemCategory(uint32 category)
@@ -333,6 +347,19 @@ namespace BotProgression
                     GiveOnce(bot, tool);
             }
         }
+    }
+
+    uint32 SpellbookRevision(ObjectGuid botGuid)
+    {
+        std::lock_guard<std::mutex> lock(s_spellbookMutex);
+        auto found = s_spellbookRevision.find(botGuid);
+        return found != s_spellbookRevision.end() ? found->second : 0;
+    }
+
+    void ForgetSpellbook(ObjectGuid botGuid)
+    {
+        std::lock_guard<std::mutex> lock(s_spellbookMutex);
+        s_spellbookRevision.erase(botGuid);
     }
 
     void GrantProfessionTools(Player* bot)
@@ -399,4 +426,21 @@ namespace BotProgression
         GrantProfessionTools(bot);
         ProvisionFood(bot, 20);
     }
+}
+
+namespace
+{
+class coa_bot_spellbook_script : public PlayerScript
+{
+public:
+    coa_bot_spellbook_script() : PlayerScript("coa_bot_spellbook_script", { PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_FORGOT_SPELL }) { }
+
+    void OnPlayerLearnSpell(Player* player, uint32 /*spellId*/) override { BotProgression::BumpSpellbookRevision(player); }
+    void OnPlayerForgotSpell(Player* player, uint32 /*spellId*/) override { BotProgression::BumpSpellbookRevision(player); }
+};
+}
+
+void AddSC_coa_bot_spellbook_script()
+{
+    new coa_bot_spellbook_script();
 }

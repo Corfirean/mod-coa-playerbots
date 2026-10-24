@@ -46,6 +46,12 @@ namespace BotProgression
     // call again; it only acts on a spell whose requirement the bag does not meet.
     void GrantSpellTools(Player* bot);
 
+    // Counts the spells a bot has learned or forgotten (the core's learn/forget hooks, so a spec swap, a talent reset, a level-up that teaches
+    // spells or a spell replaced by another of the same number all count, which the size of the spellbook does not show). 0 until the first
+    // change. Safe to call from the world thread while a map thread learns a spell. `ForgetSpellbook` drops the bot's entry on despawn.
+    uint32 SpellbookRevision(ObjectGuid botGuid);
+    void ForgetSpellbook(ObjectGuid botGuid);
+
     // Food and drink for the bot's level, taken from what vendors actually sell.
     void ProvisionFood(Player* bot, uint32 stackSize);
 

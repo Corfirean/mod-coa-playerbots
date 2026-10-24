@@ -299,8 +299,10 @@ struct BotAIState
     // gear-upgrade bag scan.
     uint32 nextProgressionCheckMs = 0;
 
-    // Size of the spellbook when the spell tools were last checked: a spec change or a level-up that teaches new spells triggers a new check.
-    size_t toolCheckSpellCount = 0;
+    // The spell tools (totems, standards) are checked once, then again whenever the bot learns or forgets a spell
+    // (BotProgression::SpellbookRevision counts those events; the size of the spellbook would miss a replaced spell).
+    bool toolsChecked = false;
+    uint32 toolCheckRevision = 0;
 
     // Flight paths a character of this level would know are granted once per session: bots created
     // before flight paths existed knew none and could never fly, and the grant is idempotent, so
@@ -1364,9 +1366,11 @@ void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
         BotTaxi::GrantNodesForLevel(bot);
         state.flightPathsGranted = true;
     }
-    if (bot->GetSpellMap().size() != state.toolCheckSpellCount)
+    uint32 const spellbookRevision = BotProgression::SpellbookRevision(bot->GetGUID());
+    if (!state.toolsChecked || spellbookRevision != state.toolCheckRevision)
     {
-        state.toolCheckSpellCount = bot->GetSpellMap().size();
+        state.toolsChecked = true;
+        state.toolCheckRevision = spellbookRevision;
         BotProgression::GrantSpellTools(bot);
     }
     TryUpgradeGearOnce(bot, state.role);
@@ -5137,6 +5141,7 @@ void Forget(ObjectGuid botGuid)
     ActionEvaluator::ClearThrottles(botGuid);
     CombatReservations::ForgetBot(botGuid);
     GroupDirector::ForgetBot(botGuid);
+    BotProgression::ForgetSpellbook(botGuid);
     DamageTracker::Forget(botGuid);
     HealEvaluator::ForgetBot(botGuid);
     TargetEvaluator::ForgetBot(botGuid);
