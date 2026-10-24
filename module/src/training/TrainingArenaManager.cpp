@@ -216,11 +216,28 @@ void MechanicEvent(Session& s, Mechanic const& m)
     Json event; event["type"] = "mechanic"; event["kind"] = m.kind; event["scheduledTimeMs"] = m.timeMs;
     event["amount"] = m.amount; event["targetSlot"] = m.targetSlot;
     s.Event(event);
+    // Scripted hits used to go straight into DealDamage, so damage-taken auras and absorbs never applied and a tank's defensive or a healer's
+    // shield could not show in a run. With CoaBots.Training.RealisticDamage on, the amount first goes through the victim's own damage-taken
+    // modifiers and absorbs for the school of CoaBots.Training.RealisticDamageSpellId (default Shadow Bolt) - the same pipeline a spell hit
+    // takes - and the remaining damage is dealt as before. Off by default so earlier measurements stay comparable.
+    static bool const realistic = sConfigMgr->GetOption<bool>("CoaBots.Training.RealisticDamage", false);
+    static uint32 const realisticSpell = sConfigMgr->GetOption<uint32>("CoaBots.Training.RealisticDamageSpellId", 686);
     auto damage = [&](Unit* target, bool avoidable)
     {
         if (!target || !target->IsAlive()) return;
         s.avoidableEvent = avoidable;
-        Unit::DealDamage(boss, target, m.amount, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        uint32 amount = m.amount;
+        if (realistic)
+        {
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(realisticSpell))
+            {
+                amount = target->SpellDamageBonusTaken(boss, info, amount, SPELL_DIRECT_DAMAGE);
+                DamageInfo mitigated(boss, target, amount, info, info->GetSchoolMask(), SPELL_DIRECT_DAMAGE);
+                Unit::CalcAbsorbResist(mitigated);
+                amount = mitigated.GetDamage();
+            }
+        }
+        Unit::DealDamage(boss, target, amount, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
         s.avoidableEvent = false;
     };
     if (m.kind == "melee" || m.kind == "tankbuster" || m.kind == "ramp_hit")
