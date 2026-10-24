@@ -1064,6 +1064,14 @@ void CastResult(Player* bot, uint32 spell, uint32 result, Unit* target)
         item["event"] = uint32(g.event); item["chancePercent"] = g.chancePercent; gains.Push(item);
     }
     row["requirementsAfterAttempt"] = requirements; row["potentialGainsMetadata"] = gains;
+    // Where the cast went and what it cost: lets a run show heals landing on full-health allies and the mana left after each cast.
+    if (target)
+    {
+        row["targetHpPct"] = int(target->GetHealthPct());
+        row["targetFriendly"] = bot->IsFriendlyTo(target);
+    }
+    if (bot->getPowerType() == POWER_MANA && bot->GetMaxPower(POWER_MANA))
+        row["botManaPct"] = int(bot->GetPower(POWER_MANA) * 100 / bot->GetMaxPower(POWER_MANA));
     if (result != SPELL_CAST_OK)
     {
         // A failed cast with no visible cause (e.g. CASTER_AURASTATE for a health-cost spell) cannot be diagnosed from the result code alone.
