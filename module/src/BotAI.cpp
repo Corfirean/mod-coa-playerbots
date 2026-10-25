@@ -1884,6 +1884,19 @@ bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& sta
         endManaPct = 60.0f;
     }
 
+    // In an auto-dungeon the tank holds the pull until everybody is above AutoDungeonWaitReason's limits (health 70% to start waiting and 90% to go on,
+    // mana 60% and 80%). A bot that only sat down below its own, lower thresholds (25-50% mana) never recovered in between and held the group for the
+    // whole 150 s wait after every pull; here it rests as soon as it would make the tank wait, and until the tank is satisfied.
+    if (Group const* restGroup = bot->GetGroup())
+        if (Map const* restMap = bot->GetMap(); restMap && (restMap->IsDungeon() || restMap->IsRaid()) &&
+            sBotMgr->IsAutoDungeonModeEnabled(restGroup->GetLeaderGUID()))
+        {
+            startHpPct = std::max(startHpPct, 72.0f);
+            startManaPct = std::max(startManaPct, 62.0f);
+            endHpPct = std::max(endHpPct, 92.0f);
+            endManaPct = std::max(endManaPct, 82.0f);
+        }
+
     if (!state.isResting)
     {
         bool needsHp = (hpPct < startHpPct);
@@ -4969,6 +4982,28 @@ void AddSC_coa_bot_petition_script()
 
 namespace BotAI
 {
+// Training dungeon probe: how many bosses the map has and how many are down, by the rule the auto-dungeon checklist uses.
+void DungeonProgress(Map* map, Player* leader, uint32& total, uint32& done)
+{
+    total = done = 0;
+    if (!map || !leader)
+        return;
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+    {
+        if (data.mapid != map->GetId())
+            continue;
+        CreatureTemplate const* cinfo = sObjectMgr->GetCreatureTemplate(data.id);
+        if (!cinfo || !(cinfo->HasFlagsExtra(CREATURE_FLAG_EXTRA_DUNGEON_BOSS) || cinfo->rank == CREATURE_ELITE_WORLDBOSS))
+            continue;
+        ++total;
+        bool const cleared = BotDungeonEncounters::HasEncounterData(map, data.id)
+            ? BotDungeonEncounters::IsEncounterCompleted(map, data.id)
+            : sBotMgr->IsBossCleared(leader->GetGUID(), data.id);
+        if (cleared)
+            ++done;
+    }
+}
+
 // Training dungeon probe: one line of what the bot AI is currently holding on to, for stuck-bot diagnosis.
 std::string DebugState(Player* bot)
 {
