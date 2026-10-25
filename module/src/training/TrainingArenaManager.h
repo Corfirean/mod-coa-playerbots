@@ -6,6 +6,7 @@
 #include <atomic>
 
 class ChatHandler;
+class Creature;
 class Player;
 class Unit;
 namespace BotAI { struct CombatContext; }
@@ -30,6 +31,8 @@ void Candidate(ObjectGuid bot, uint32 spell, char const* name, bool valid, float
 void EndDecision(ObjectGuid bot, uint32 spell, float score, uint32 phase);
 void CastResult(Player* bot, uint32 spell, uint32 result, Unit* target = nullptr);
 // An interrupt cast by any bot of a running session: `result` is the game's cast result (SPELL_CAST_OK accepted).
+// A creature killed by a player of a dungeon probe group (counted per killer).
+void RecordKill(Player* killer, Creature* killed);
 void InterruptKick(Player* bot, uint32 spell, Unit* enemy, uint32 result, char const* source, bool applied = false);
 void RecordSpellLifecycle(Unit* caster, ObjectGuid target, uint32 spell, char const* phase, uint32 result, bool bySelf);
 }

@@ -39,6 +39,7 @@
 namespace BotAI
 {
 std::string DebugState(Player* bot);
+void DungeonProgress(Map* map, Player* leader, uint32& total, uint32& done);
 }
 
 namespace CoaTraining
@@ -531,6 +532,10 @@ void Shutdown()
 // ---- Dungeon probe: a group of bots led by an inert leader (a suspended bot that stands still like a player who has not touched
 // the keyboard) walks into a dungeon, so the group behaviour a real player sees -- follow, tank, heal, assist -- can be measured on the
 // isolated training server. Verbs: dgroup, dgo, dmove, dpull, dstat, dfree. Dedicated bot accounts only, never account 1.
+// Totals of what each bot of a dungeon probe group did since dgroup (damage to creatures, effective healing, damage taken), for the probe report.
+struct ProbeStats { uint64 damage = 0, healing = 0, taken = 0; uint32 kills = 0, eliteKills = 0; };
+std::unordered_map<ObjectGuid, ProbeStats> probeStats;
+
 Player* DungeonBot(uint32 guid)
 {
     Player* p = sBotMgr->FindBotPlayer(guid);
@@ -566,7 +571,10 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
         for (Player* m : members)
             if (!group->AddMember(m)) throw std::runtime_error("cannot add " + m->GetName());
         for (Player* p : all)
+        {
             BotGear::SetProbeUnlock(p, true);
+            probeStats[p->GetGUID()] = ProbeStats{};
+        }
         h->PSendSysMessage("dgroup: leader {} + {} members", leader->GetName(), members.size());
         return;
     }
@@ -582,6 +590,53 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
                     if (Player* m = ObjectAccessor::FindPlayer(slot.guid))
                         if (m != leader) m->TeleportTo(map, x, y, z, o);
         h->PSendSysMessage("dgo: leader to map {} ({:.1f} {:.1f} {:.1f})", map, x, y, z);
+        return;
+    }
+    if (verb == "dauto")
+    {
+        std::string state; input >> state;
+        bool const enable = state == "on" || state == "1";
+        sBotMgr->SetAutoDungeonMode(leader->GetGUID(), enable);
+        h->PSendSysMessage("dauto: auto-dungeon {} for leader {}", enable ? "on" : "off", leader->GetName());
+        return;
+    }
+    if (verb == "dheal")
+    {
+        // Set-up only, before a run: everybody of the group is alive next to the leader with full health and power and no cooldowns.
+        Group* group = leader->GetGroup();
+        uint32 revived = 0;
+        auto restore = [&](Player* m)
+        {
+            if (!m->IsAlive())
+            {
+                if (m->GetMapId() != leader->GetMapId() || m->GetDistance(leader) > 5.0f)
+                    m->TeleportTo(leader->GetMapId(), leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), leader->GetOrientation());
+                m->ResurrectPlayer(1.0f);
+                m->SpawnCorpseBones();
+                ++revived;
+            }
+            m->RemoveAllSpellCooldown();
+            m->SetHealth(m->GetMaxHealth());
+            for (uint8 power = 0; power < MAX_POWERS; ++power)
+                if (m->GetMaxPower(Powers(power)) && Powers(power) != POWER_RAGE && Powers(power) != POWER_RUNIC_POWER)
+                    m->SetPower(Powers(power), m->GetMaxPower(Powers(power)));
+        };
+        restore(leader);
+        if (group)
+            for (auto const& slot : group->GetMemberSlots())
+                if (Player* m = ObjectAccessor::FindPlayer(slot.guid); m && m != leader) restore(m);
+        h->PSendSysMessage("dheal: group restored ({} revived)", revived);
+        return;
+    }
+    if (verb == "ddiff")
+    {
+        uint32 difficulty = 0; input >> difficulty;
+        if (difficulty > 2) throw std::runtime_error("ddiff <leader> <0 normal|1 heroic|2 mythic>");
+        if (Group* group = leader->GetGroup())
+            for (auto const& slot : group->GetMemberSlots())
+                if (Player* m = ObjectAccessor::FindPlayer(slot.guid)) m->SetDungeonDifficulty(Difficulty(difficulty));
+        leader->SetDungeonDifficulty(Difficulty(difficulty));
+        h->PSendSysMessage("ddiff: dungeon difficulty {}", difficulty);
         return;
     }
     if (verb == "dmove")
@@ -610,6 +665,14 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
         Json out;
         out["map"] = leader->GetMapId();
         out["inCombat"] = leader->IsInCombat();
+        out["auto"] = sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID());
+        if (Map* map = leader->GetMap(); map && map->IsDungeon())
+        {
+            uint32 total = 0, done = 0;
+            BotAI::DungeonProgress(map, leader, total, done);
+            out["bossTotal"] = total; out["bossDone"] = done;
+            out["diff"] = uint32(leader->GetDungeonDifficulty());
+        }
         std::set<Unit*> attackers;
         std::vector<Player*> members;
         if (group)
@@ -632,6 +695,12 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
             j["moving"] = m->isMoving();
             if (Unit* v = m->GetVictim()) j["tgt"] = v->GetName();
             if (m != leader) j["dbg"] = BotAI::DebugState(m);
+            if (auto stats = probeStats.find(m->GetGUID()); stats != probeStats.end())
+            {
+                j["dmg"] = stats->second.damage; j["heal"] = stats->second.healing; j["taken"] = stats->second.taken;
+                j["kills"] = stats->second.kills; j["elite"] = stats->second.eliteKills;
+            }
+            j["lvl"] = m->GetLevel();
             Spell* cur = m->GetCurrentSpell(CURRENT_GENERIC_SPELL);
             if (!cur) cur = m->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
             if (cur && cur->GetSpellInfo()) j["cast"] = cur->GetSpellInfo()->Id;
@@ -644,6 +713,7 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
             Json j;
             j["name"] = a->GetName();
             j["hp"] = a->GetMaxHealth() ? int(a->GetHealth() * 100 / a->GetMaxHealth()) : 0;
+            j["lvl"] = a->GetLevel(); j["maxhp"] = a->GetMaxHealth();
             if (Unit* v = a->GetVictim()) j["on"] = v->GetName();
             out["mobs"].Push(j);
         }
@@ -655,7 +725,8 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
         if (Group* group = leader->GetGroup())
         {
             for (auto const& slot : group->GetMemberSlots())
-                if (Player* m = ObjectAccessor::FindPlayer(slot.guid)) BotGear::SetProbeUnlock(m, false);
+                if (Player* m = ObjectAccessor::FindPlayer(slot.guid)) { BotGear::SetProbeUnlock(m, false); probeStats.erase(m->GetGUID()); }
+            sBotMgr->SetAutoDungeonMode(leader->GetGUID(), false);
             group->Disband();
         }
         h->SendSysMessage("dfree: group disbanded");
@@ -673,7 +744,7 @@ void Command(ChatHandler* h, std::string const& args)
     std::string verb; input >> verb;
     try
     {
-        if (verb == "dgroup" || verb == "dgo" || verb == "dmove" || verb == "dpull" || verb == "dstat" || verb == "dfree")
+        if (verb == "dgroup" || verb == "dgo" || verb == "dmove" || verb == "dpull" || verb == "dstat" || verb == "dfree" || verb == "dauto" || verb == "ddiff" || verb == "dheal")
         {
             DungeonProbe(h, verb, input);
             return;
@@ -989,6 +1060,12 @@ void RecordDamage(Unit* attacker, Unit* victim, uint32 amount)
     std::lock_guard lock(mutex);
     Session* s = Lookup(victim->GetGUID());
     ObjectGuid principal = Principal(attacker);
+    if (!probeStats.empty())
+    {
+        uint32 const hit = std::min(amount, victim->GetHealth());
+        if (auto dealer = probeStats.find(principal); dealer != probeStats.end() && victim->GetTypeId() == TYPEID_UNIT) dealer->second.damage += hit;
+        if (auto taker = probeStats.find(victim->GetGUID()); taker != probeStats.end()) taker->second.taken += hit;
+    }
     if (!s || !s->running || Lookup(principal) != s) return;
     uint32 effective = std::min(amount, victim->GetHealth());
     if (principal == s->candidate && std::find(s->enemies.begin(), s->enemies.end(), victim->GetGUID()) != s->enemies.end())
@@ -1002,11 +1079,23 @@ void RecordDamage(Unit* attacker, Unit* victim, uint32 amount)
     row["target"] = uint64(victim->GetGUID().GetCounter()); row["amount"] = effective;
     row["avoidable"] = s->avoidableEvent; if (attacker && attacker->GetGUID() != principal) row["viaOwned"] = 1; s->Event(row);
 }
+void RecordKill(Player* killer, Creature* killed)
+{
+    if (!Enabled.load(std::memory_order_relaxed) || !killer || !killed) return;
+    std::lock_guard lock(mutex);
+    if (auto it = probeStats.find(killer->GetGUID()); it != probeStats.end())
+    {
+        ++it->second.kills;
+        if (killed->isElite() || killed->isWorldBoss()) ++it->second.eliteKills;
+    }
+}
 void RecordHeal(Unit* healer, Unit* target, uint32 amount)
 {
     if (!Enabled.load(std::memory_order_relaxed) || !target) return;
     std::lock_guard lock(mutex);
     Session* s = Lookup(target->GetGUID()); ObjectGuid principal = Principal(healer);
+    if (!probeStats.empty())
+        if (auto given = probeStats.find(principal); given != probeStats.end()) given->second.healing += amount;
     if (!s || !s->running || Lookup(principal) != s) return;
     if (principal == s->candidate) s->healing += amount;
     Json row; row["type"] = "effective_heal"; row["source"] = uint64(principal.GetCounter());
