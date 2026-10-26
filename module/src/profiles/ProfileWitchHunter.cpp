@@ -143,10 +143,12 @@ namespace BotAI
             // Blade Stance (spell 802002, aura 802002) is mandatory tank stance
             s.requiredState = RequiredCombatState{ 802002, 802002, {} };
 
-            // Readiness requires Blade Stance active
+            // Readiness requires Blade Stance active -- when the bot has it. The Black Knight does not learn spell 802002 at all (it is listed as
+            // "Blazing Blade" in ascension_custom_class_spell and the Book of Ascension does not teach it), and EvaluateCombatState already lets a bot
+            // that does not know its form spell through; a check that insisted on the aura kept the tank from ever pulling in an auto-dungeon.
             s.isReadyToPull = [](Player* bot, CombatContext const& ctx) -> bool
             {
-                if (!bot->HasAura(802002))
+                if (bot->HasSpell(802002) && !bot->HasAura(802002))
                     return false;
                 return ctx.botHpPct >= 70.0f;
             };
