@@ -552,9 +552,14 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
     if (verb == "dgroup")
     {
         std::vector<Player*> members;
-        uint32 guid;
-        while (input >> guid) members.push_back(DungeonBot(guid));
-        if (members.empty() || members.size() > 4) throw std::runtime_error("dgroup <leader> <1..4 members>");
+        std::string token;
+        bool keepGear = false; // "locked": the group keeps the equipment it has (no gear maintenance or loot upgrades while it plays)
+        while (input >> token)
+        {
+            if (token == "locked") { keepGear = true; continue; }
+            members.push_back(DungeonBot(uint32(std::stoul(token))));
+        }
+        if (members.empty() || members.size() > 4) throw std::runtime_error("dgroup <leader> <1..4 members> [locked]");
         std::vector<Player*> all{leader};
         all.insert(all.end(), members.begin(), members.end());
         for (Player* p : all)
@@ -572,7 +577,7 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
             if (!group->AddMember(m)) throw std::runtime_error("cannot add " + m->GetName());
         for (Player* p : all)
         {
-            BotGear::SetProbeUnlock(p, true);
+            BotGear::SetProbeUnlock(p, !keepGear);
             probeStats[p->GetGUID()] = ProbeStats{};
         }
         h->PSendSysMessage("dgroup: leader {} + {} members", leader->GetName(), members.size());

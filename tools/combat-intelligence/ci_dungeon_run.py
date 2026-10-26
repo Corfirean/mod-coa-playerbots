@@ -53,6 +53,7 @@ class Lane:
     def __init__(self, config, index, team):
         self.config, self.index, self.team = config, index, team
         self.ra = Ra(config['credentials'], port=config.get('ra_port', 3469))
+        self.run_max = None
 
     def reconnect(self):
         self.ra.close()
@@ -75,6 +76,7 @@ class Lane:
     def run(self, spec):
         """spec: {'label', 'members': [guid...] (first is the leader), 'dungeon': {...}, 'prep': [console commands], 'meta': {...}}"""
         ra, cfg = self.ra, self.config
+        self.run_max = spec.get('max_seconds')
         leader, members = spec['members'][0], spec['members'][1:]
         dungeon = spec['dungeon']
         record = {'label': spec['label'], 'dungeon': dungeon['key'], 'map': dungeon['map'], 'meta': spec.get('meta', {}), 'members': spec['members'],
@@ -89,11 +91,17 @@ class Lane:
                 ra.run(cmd)
             for g in spec['members']:
                 ra.run(f'botcmd train ungroup {g}')
-            reply = ra.run(f'botcmd train dgroup {leader} ' + ' '.join(str(g) for g in members))
+            reply = ra.run(f'botcmd train dgroup {leader} ' + ' '.join(str(g) for g in members) + (' locked' if cfg.get('lock_gear', False) else ''))
             if 'dgroup' not in reply:
                 raise RuntimeError('dgroup failed: ' + reply[:200])
             ra.run(f'botcmd train ddiff {leader} {cfg.get("difficulty", 0)}')
             ra.run(f'botcmd train dheal {leader}')
+            if cfg.get('settle_seconds', 0):
+                # A bot that was just re-equipped lost its buffs and its AI state (train livegear resets both): the group stands in a quiet place first,
+                # not at the dungeon entrance where packs would attack an idle group.
+                ra.run(f'botcmd train dgo {leader} {OUTSIDE[0]} {OUTSIDE[1]} {OUTSIDE[2]} {OUTSIDE[3]} {OUTSIDE[4]} all')
+                time.sleep(cfg['settle_seconds'])
+                ra.run(f'botcmd train dheal {leader}')
             x, y, z, o = dungeon['pos']
             for attempt in range(3):
                 ra.run(f'botcmd train dgo {leader} {dungeon["map"]} {x} {y} {z} {o} all')
@@ -131,7 +139,7 @@ class Lane:
 
     def watch(self, leader, record, dungeon):
         ra, cfg = self.ra, self.config
-        poll, max_seconds = cfg.get('poll_seconds', 5), cfg.get('max_seconds', 600)
+        poll, max_seconds = cfg.get('poll_seconds', 5), self.run_max or cfg.get('max_seconds', 600)
         stuck_seconds, max_wipes = cfg.get('stuck_seconds', 300), cfg.get('max_wipes', 3)
         began = time.time()
         members = {}
@@ -251,56 +259,66 @@ def scout(config):
 
 
 def campaign(config):
+    """One task per specialization: the actor is re-specced and re-equipped once, plays a warm-up run that is not counted (a bot that was just re-equipped lost its
+    buffs and its AI state and died in its first fight in 29 of 33 runs, against 14 of 196 for the fixed team), then plays its counted runs in different dungeons."""
     specs = [s for s in spec_table() if s[0] >= 12]
     dungeons = load_dungeons(config['dungeons'], config['campaign_dungeons'])
     actors = {int(k): v for k, v in config['actors'].items()}
     attempts = config.get('attempts', 2)
     out_dir = Path(config['out'])
     done = {p.stem for p in out_dir.glob('*.json')} if out_dir.exists() else set()
-    jobs = []
-    for attempt in range(attempts):
-        for i, (cls, spec, role, name) in enumerate(specs):
+    tasks = []
+    for i, (cls, spec, role, name) in enumerate(specs):
+        runs = []
+        for attempt in range(attempts):
             dungeon = dungeons[(i + attempt * 2) % len(dungeons)]
             label = f'spec{spec:03d}-{name.replace(" ", "")}-a{attempt + 1}-{dungeon["key"]}'
             if label not in done:
-                jobs.append({'cls': cls, 'spec': spec, 'role': role, 'name': name, 'attempt': attempt + 1, 'dungeon': dungeon, 'label': label})
+                runs.append({'attempt': attempt + 1, 'dungeon': dungeon, 'label': label})
+        if runs:
+            tasks.append({'cls': cls, 'spec': spec, 'role': role, 'name': name, 'runs': runs, 'index': i})
     lock = threading.Lock()
     in_flight = set()
 
-    def next_job():
+    def next_task():
         with lock:
-            for j in jobs:
-                if actors[j['cls']] not in in_flight:
-                    jobs.remove(j)
-                    in_flight.add(actors[j['cls']])
-                    return j
+            for t in tasks:
+                if actors[t['cls']] not in in_flight:
+                    tasks.remove(t)
+                    in_flight.add(actors[t['cls']])
+                    return t
         return None
 
     def worker(lane):
         t = lane.team
         while True:
-            job = next_job()
-            if job is None:
+            task = next_task()
+            if task is None:
                 with lock:
-                    if not jobs:
+                    if not tasks:
                         return
                 time.sleep(5)
                 continue
-            guid = actors[job['cls']]
-            if job['role'] == 'Tank':
+            guid = actors[task['cls']]
+            if task['role'] == 'Tank':
                 members = [guid, t['healer'], *t['dps'], t['support']]
-            elif job['role'] == 'Healer':
+            elif task['role'] == 'Healer':
                 members = [t['tank'], guid, *t['dps'], t['support']]
             else:
                 others = [t['dps'][0], t['dps'][1], t['support']]
                 members = [t['tank'], t['healer'], guid, *others[:2]]
-            prep = [f'botcmd learnspec {guid} {job["spec"]}', f'botcmd train livegear {guid} new']
-            meta = {k: job[k] for k in ('cls', 'spec', 'role', 'name', 'attempt')}
-            rec = lane.run({'label': job['label'], 'members': members, 'dungeon': job['dungeon'], 'prep': prep, 'meta': meta})
-            save(out_dir, rec)
+            prep = [f'botcmd learnspec {guid} {task["spec"]}', f'botcmd train livegear {guid} new']
+            first = task['runs'][0]
+            warm = lane.run({'label': 'warmup-' + first['label'], 'members': members, 'dungeon': first['dungeon'], 'prep': prep,
+                             'meta': {'warmup': True}, 'max_seconds': config.get('warmup_seconds', 240)})
+            print(f'{warm["label"]:48} {warm["outcome"]:8} {warm["seconds"]:6.0f}s (warm-up, not counted)', flush=True)
+            for run in task['runs']:
+                meta = {'cls': task['cls'], 'spec': task['spec'], 'role': task['role'], 'name': task['name'], 'attempt': run['attempt']}
+                rec = lane.run({'label': run['label'], 'members': members, 'dungeon': run['dungeon'], 'prep': [], 'meta': meta})
+                save(out_dir, rec)
+                print(f'{run["label"]:48} {rec["outcome"]:8} {rec["seconds"]:6.0f}s boss {rec.get("bossDone")}/{rec.get("bossTotal")} wipes {rec.get("wipes")}', flush=True)
             with lock:
                 in_flight.discard(guid)
-            print(f'{job["label"]:48} {rec["outcome"]:8} {rec["seconds"]:6.0f}s boss {rec.get("bossDone")}/{rec.get("bossTotal")} wipes {rec.get("wipes")}', flush=True)
 
     lanes = [Lane(config, i, team) for i, team in enumerate(config['lanes'])]
     threads = [threading.Thread(target=worker, args=(lane,)) for lane in lanes]
