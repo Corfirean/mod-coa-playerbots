@@ -53,56 +53,107 @@ public:
         return t;
     }
 
-    // Assassin Contract capability priority tier:
-    //   3 = Stealth / Invisibility + Usable Opener + DPS role (e.g. Stalker/Ambush spec)
-    //   2 = Stealth / Invisibility capable (has active stealth/invisibility spell)
-    //   1 = DPS fallback without stealth (melee stalker / direct DPS)
-    //   0 = Non-DPS fallback (Tank / Healer / Support without stealth)
+    // Assassin Contract capability priority tiers (§5):
+    //   4 = Ideal Assassin: Persistent stealth + usable stealth opener + DPS role (e.g. Stalker/Ambush spec)
+    //   3 = Strong Assassin: Persistent stealth + DPS role (opener may be missing)
+    //   2 = Situational Assassin: Temporary stealth or invisibility + DPS role
+    //   1 = Fallback Assassin: DPS role with offensive kit, no stealth
+    //   0 = Reject: Tank, Healer, defensive support, or invalid capability (§6)
     // Completely independent of vanilla class identity (designed for Ascension custom classes 12-32).
     static uint8 GetAssassinCapabilityTier(AssassinCapability const& cap)
     {
-        if (cap.hasStealthOrInvis && cap.hasStealthOpener && cap.combatRole == EncounterCombatRole::Dps)
+        // Tank & Healer are strictly disqualified (§6)
+        if (cap.combatRole == EncounterCombatRole::Tank || cap.combatRole == EncounterCombatRole::Healer)
+            return 0;
+
+        // Support only permitted if offensive stealth-capable
+        if (cap.combatRole == EncounterCombatRole::Support && !cap.hasStealthOrInvis)
+            return 0;
+
+        // Tier 4: Persistent stealth + usable opener + DPS/offensive role
+        if (cap.concealment == AssassinConcealment::PersistentStealth &&
+            cap.hasStealthOpener &&
+            (cap.combatRole == EncounterCombatRole::Dps || cap.combatRole == EncounterCombatRole::Support))
+        {
+            return 4;
+        }
+
+        // Tier 3: Persistent stealth + DPS role
+        if (cap.concealment == AssassinConcealment::PersistentStealth &&
+            cap.combatRole == EncounterCombatRole::Dps)
+        {
             return 3;
-        if (cap.hasStealthOrInvis)
+        }
+
+        // Tier 2: Temporary stealth or invisibility + DPS role
+        if ((cap.concealment == AssassinConcealment::TemporaryStealth ||
+             cap.concealment == AssassinConcealment::TemporaryInvisibility) &&
+            cap.combatRole == EncounterCombatRole::Dps)
+        {
             return 2;
-        if (cap.combatRole == EncounterCombatRole::Dps)
+        }
+
+        // Tier 1: DPS role without stealth
+        if (cap.combatRole == EncounterCombatRole::Dps &&
+            cap.concealment == AssassinConcealment::NoConcealment)
+        {
             return 1;
+        }
+
         return 0;
     }
 
     static char const* GetAssassinCapabilityPreferenceLabel(AssassinCapability const& cap)
     {
         uint8 tier = GetAssassinCapabilityTier(cap);
-        if (tier == 3)
-            return cap.isMeleeStalker ? "stealth_opener_melee" : "stealth_opener_stalker";
-        if (tier == 2)
-            return cap.combatRole == EncounterCombatRole::Dps ? "stealth_dps" : "stealth_support";
-        if (tier == 1)
-            return cap.isMeleeStalker ? "fallback_melee_dps" : "fallback_dps";
-        return "fallback_non_dps";
+        switch (tier)
+        {
+            case 4:
+                return cap.isMeleeStalker ? "ideal_melee_assassin" : "ideal_stalker";
+            case 3:
+                return cap.isMeleeStalker ? "persistent_stealth_melee" : "persistent_stealth_dps";
+            case 2:
+                return cap.concealment == AssassinConcealment::TemporaryStealth ? "temp_stealth_dps" : "temp_invis_dps";
+            case 1:
+                return cap.isMeleeStalker ? "fallback_melee_dps" : "fallback_dps";
+            case 0:
+            default:
+                if (cap.combatRole == EncounterCombatRole::Tank)
+                    return "reject_tank";
+                if (cap.combatRole == EncounterCombatRole::Healer)
+                    return "reject_healer";
+                return "reject_non_offensive";
+        }
     }
 
-    // Scores an Assassin Contract candidate combining capability tier
-    // (stealth+opener > stealth > dps fallback > non-dps fallback) with
-    // combat role, melee affinity, and personality traits (aggressive/loner/patient).
+    // Scores an Assassin Contract candidate strictly prioritizing capability tier over personality (§5 & §11):
+    // Tier 4 (10.05..11.80) >> Tier 3 (7.05..8.35) >> Tier 2 (4.05..5.90) >> Tier 1 (1.05..2.30) >> Tier 0 (0.0).
     static float ScoreAssassinCandidate(
         WorldPersona const& persona,
         AssassinCapability const& cap)
     {
+        uint8 tier = GetAssassinCapabilityTier(cap);
+        if (tier == 0)
+            return 0.0f; // Reject non-offensive or non-assassin profiles (§6)
+
         DerivedEncounterTraits const t = Derive(persona);
-        float personalityScore = std::clamp(
+        float personalityModifier = std::clamp(
             t.aggressive * 0.40f + t.loner * 0.35f + t.patient * 0.25f,
             0.05f, 1.0f);
 
-        uint8 tier = GetAssassinCapabilityTier(cap);
         float capabilityScore = 0.0f;
         switch (tier)
         {
+            case 4:
+                capabilityScore = 10.0f + (cap.isMeleeStalker ? 0.50f : 0.0f)
+                                       + (cap.combatRole == EncounterCombatRole::Dps ? 0.30f : 0.0f);
+                break;
             case 3:
-                capabilityScore = 4.0f + (cap.isMeleeStalker ? 0.40f : 0.0f);
+                capabilityScore = 7.0f + (cap.isMeleeStalker ? 0.35f : 0.0f);
                 break;
             case 2:
-                capabilityScore = 2.5f + (cap.combatRole == EncounterCombatRole::Dps ? 0.35f : 0.0f)
+                capabilityScore = 4.0f + (cap.concealment == AssassinConcealment::TemporaryStealth ? 0.40f : 0.0f)
+                                       + (cap.hasStealthOpener ? 0.30f : 0.0f)
                                        + (cap.isMeleeStalker ? 0.20f : 0.0f);
                 break;
             case 1:
@@ -110,11 +161,10 @@ public:
                 break;
             case 0:
             default:
-                capabilityScore = 0.20f;
-                break;
+                return 0.0f;
         }
 
-        return capabilityScore + personalityScore;
+        return capabilityScore + personalityModifier;
     }
 
     // Returns an affinity score in [0.0, 2.0] for selecting a bot for a given encounter & role.

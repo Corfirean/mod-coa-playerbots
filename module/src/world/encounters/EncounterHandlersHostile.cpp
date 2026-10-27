@@ -301,9 +301,28 @@ namespace EncounterHandlers
                         }
                     }
                 }
-                if (part.openerSpellId != 0 && bot->HasSpell(part.openerSpellId) && !bot->IsInCombat())
+                // Safe opener engagement (§10): only cast if spell is known, ready, stealthed if required,
+                // and within range. Never stall; fallback immediately to normal BotAI combat.
+                if (part.openerSpellId != 0 && bot->HasSpell(part.openerSpellId) && !bot->IsInCombat() && !bot->HasSpellCooldown(part.openerSpellId))
                 {
-                    bot->CastSpell(target, part.openerSpellId, false);
+                    SpellInfo const* opInfo = sSpellMgr->GetSpellInfo(part.openerSpellId);
+                    if (opInfo && !opInfo->IsPassive())
+                    {
+                        bool stealthRequirementMet = true;
+                        if (opInfo->HasAttribute(SPELL_ATTR0_ONLY_STEALTHED) || (opInfo->Stances & (1u << (FORM_STEALTH - 1))) != 0)
+                            stealthRequirementMet = bot->HasStealthAura() || (bot->GetShapeshiftForm() == FORM_STEALTH);
+
+                        float maxRange = opInfo->GetMaxRange(false, bot);
+                        if (maxRange <= 0.0f)
+                            maxRange = 5.0f; // Default melee range
+
+                        bool rangeMet = (bot->GetDistance(target) <= maxRange + 1.5f);
+
+                        if (stealthRequirementMet && rangeMet)
+                        {
+                            bot->CastSpell(target, part.openerSpellId, false);
+                        }
+                    }
                 }
                 EngagePvPOrCreature(bot, target);
             }

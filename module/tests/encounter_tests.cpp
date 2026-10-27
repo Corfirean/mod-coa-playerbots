@@ -1305,73 +1305,188 @@ static void TestLiveValidationRound2Regressions()
         calmExplorer.sociability = 90;
         calmExplorer.lean = 5;
 
-        // §1 Assassin Contract: capability tier & score test (Ascension custom classes 12-32, zero vanilla class dependencies)
-        AssassinCapability stalkerCap;
-        stalkerCap.classId = 29; // Custom Ascension class
-        stalkerCap.specId = 53;  // Custom spec
-        stalkerCap.combatRole = EncounterCombatRole::Dps;
-        stalkerCap.hasStealthOrInvis = true;
-        stalkerCap.hasStealthOpener = true;
-        stalkerCap.isMeleeStalker = true;
-        stalkerCap.stealthSpellId = 800843;
-        stalkerCap.openerSpellId = 800878;
+        // §1 & §4-§7 Assassin Contract: 5-tier capability model, concealment quality & role tests
+        AssassinCapability tier4Cap; // Ideal Assassin: Persistent stealth + opener + DPS
+        tier4Cap.classId = 29;
+        tier4Cap.specId = 53;
+        tier4Cap.level = 40;
+        tier4Cap.spellCount = 35;
+        tier4Cap.combatRole = EncounterCombatRole::Dps;
+        tier4Cap.concealment = AssassinConcealment::PersistentStealth;
+        tier4Cap.hasStealthOrInvis = true;
+        tier4Cap.hasStealthOpener = true;
+        tier4Cap.isMeleeStalker = true;
+        tier4Cap.stealthSpellId = 800843;
+        tier4Cap.openerSpellId = 800878;
 
-        AssassinCapability stealthCasterCap;
-        stealthCasterCap.classId = 18;
-        stealthCasterCap.specId = 20;
-        stealthCasterCap.combatRole = EncounterCombatRole::Dps;
-        stealthCasterCap.hasStealthOrInvis = true;
-        stealthCasterCap.hasStealthOpener = false;
-        stealthCasterCap.isMeleeStalker = false;
-        stealthCasterCap.stealthSpellId = 700100;
+        AssassinCapability tier3Cap; // Strong Assassin: Persistent stealth + DPS, no opener
+        tier3Cap.classId = 29;
+        tier3Cap.specId = 53;
+        tier3Cap.level = 30;
+        tier3Cap.spellCount = 25;
+        tier3Cap.combatRole = EncounterCombatRole::Dps;
+        tier3Cap.concealment = AssassinConcealment::PersistentStealth;
+        tier3Cap.hasStealthOrInvis = true;
+        tier3Cap.hasStealthOpener = false;
+        tier3Cap.isMeleeStalker = true;
+        tier3Cap.stealthSpellId = 800843;
 
-        AssassinCapability fallbackDpsCap;
-        fallbackDpsCap.classId = 14;
-        fallbackDpsCap.specId = 10;
-        fallbackDpsCap.combatRole = EncounterCombatRole::Dps;
-        fallbackDpsCap.hasStealthOrInvis = false;
-        fallbackDpsCap.hasStealthOpener = false;
-        fallbackDpsCap.isMeleeStalker = true;
+        AssassinCapability tier2InvisCap; // Situational Assassin: Temporary Invisibility + DPS
+        tier2InvisCap.classId = 18;
+        tier2InvisCap.specId = 20;
+        tier2InvisCap.level = 40;
+        tier2InvisCap.spellCount = 30;
+        tier2InvisCap.combatRole = EncounterCombatRole::Dps;
+        tier2InvisCap.concealment = AssassinConcealment::TemporaryInvisibility;
+        tier2InvisCap.hasStealthOrInvis = true;
+        tier2InvisCap.hasStealthOpener = false;
+        tier2InvisCap.isMeleeStalker = false;
+        tier2InvisCap.stealthSpellId = 700100;
 
-        AssassinCapability healerCap;
+        AssassinCapability tier2StealthCap; // Situational Assassin: Temporary Stealth + DPS
+        tier2StealthCap.classId = 24;
+        tier2StealthCap.specId = 15;
+        tier2StealthCap.level = 40;
+        tier2StealthCap.spellCount = 28;
+        tier2StealthCap.combatRole = EncounterCombatRole::Dps;
+        tier2StealthCap.concealment = AssassinConcealment::TemporaryStealth;
+        tier2StealthCap.hasStealthOrInvis = true;
+        tier2StealthCap.hasStealthOpener = true;
+        tier2StealthCap.isMeleeStalker = true;
+        tier2StealthCap.stealthSpellId = 600200;
+        tier2StealthCap.openerSpellId = 600210;
+
+        AssassinCapability tier1FallbackCap; // Fallback Assassin: DPS, no stealth
+        tier1FallbackCap.classId = 14;
+        tier1FallbackCap.specId = 10;
+        tier1FallbackCap.level = 40;
+        tier1FallbackCap.spellCount = 32;
+        tier1FallbackCap.combatRole = EncounterCombatRole::Dps;
+        tier1FallbackCap.concealment = AssassinConcealment::NoConcealment;
+        tier1FallbackCap.hasStealthOrInvis = false;
+        tier1FallbackCap.hasStealthOpener = false;
+        tier1FallbackCap.isMeleeStalker = true;
+
+        AssassinCapability tankCap; // Reject: Tank
+        tankCap.classId = 12;
+        tankCap.specId = 1;
+        tankCap.level = 40;
+        tankCap.spellCount = 30;
+        tankCap.combatRole = EncounterCombatRole::Tank;
+        tankCap.concealment = AssassinConcealment::PersistentStealth; // Even with stealth!
+        tankCap.hasStealthOrInvis = true;
+        tankCap.hasStealthOpener = true;
+
+        AssassinCapability healerCap; // Reject: Healer
         healerCap.classId = 22;
         healerCap.specId = 5;
+        healerCap.level = 40;
+        healerCap.spellCount = 30;
         healerCap.combatRole = EncounterCombatRole::Healer;
-        healerCap.hasStealthOrInvis = false;
-        healerCap.hasStealthOpener = false;
-        healerCap.isMeleeStalker = false;
+        healerCap.concealment = AssassinConcealment::PersistentStealth; // Even with stealth!
+        healerCap.hasStealthOrInvis = true;
 
-        // Tier 3 (Stealth + Opener DPS) > Tier 2 (Stealth only) > Tier 1 (Fallback DPS) > Tier 0 (Healer/Tank fallback)
-        CHECK(EncounterPersonality::GetAssassinCapabilityTier(stalkerCap) == 3u);
-        CHECK(EncounterPersonality::GetAssassinCapabilityTier(stealthCasterCap) == 2u);
-        CHECK(EncounterPersonality::GetAssassinCapabilityTier(fallbackDpsCap) == 1u);
+        AssassinCapability supportNoStealth; // Reject: Support without stealth
+        supportNoStealth.classId = 16;
+        supportNoStealth.specId = 8;
+        supportNoStealth.level = 40;
+        supportNoStealth.spellCount = 28;
+        supportNoStealth.combatRole = EncounterCombatRole::Support;
+        supportNoStealth.concealment = AssassinConcealment::NoConcealment;
+
+        // Tier verification (§5 & §6)
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(tier4Cap) == 4u);
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(tier3Cap) == 3u);
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(tier2InvisCap) == 2u);
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(tier2StealthCap) == 2u);
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(tier1FallbackCap) == 1u);
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(tankCap) == 0u);
         CHECK(EncounterPersonality::GetAssassinCapabilityTier(healerCap) == 0u);
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(supportNoStealth) == 0u);
 
         // Preference labels
-        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(stalkerCap)) == "stealth_opener_melee");
-        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(stealthCasterCap)) == "stealth_dps");
-        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(fallbackDpsCap)) == "fallback_melee_dps");
-        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(healerCap)) == "fallback_non_dps");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(tier4Cap)) == "ideal_melee_assassin");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(tier3Cap)) == "persistent_stealth_melee");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(tier2InvisCap)) == "temp_invis_dps");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(tier2StealthCap)) == "temp_stealth_dps");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(tier1FallbackCap)) == "fallback_melee_dps");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(tankCap)) == "reject_tank");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(healerCap)) == "reject_healer");
 
-        // Scoring: Tier 3 > Tier 2 > Tier 1 > Tier 0 even across different personas
-        float stalkerScore = EncounterPersonality::ScoreAssassinCandidate(calmExplorer, stalkerCap);
-        float stealthCasterScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, stealthCasterCap);
-        float fallbackDpsScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, fallbackDpsCap);
+        // Scoring hierarchy (§11): Tier 4 >> Tier 3 >> Tier 2 >> Tier 1 >> Tier 0
+        float t4Score = EncounterPersonality::ScoreAssassinCandidate(calmExplorer, tier4Cap);
+        float t3Score = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, tier3Cap);
+        float t2Score = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, tier2InvisCap);
+        float t1Score = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, tier1FallbackCap);
+        float tankScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, tankCap);
         float healerScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, healerCap);
-        CHECK(stalkerScore > stealthCasterScore);
-        CHECK(stealthCasterScore > fallbackDpsScore);
-        CHECK(fallbackDpsScore > healerScore);
 
-        // Cache lookup test
+        CHECK(t4Score > t3Score);
+        CHECK(t3Score > t2Score);
+        CHECK(t2Score > t1Score);
+        CHECK(t1Score > tankScore);
+        CHECK(tankScore == 0.0f);
+        CHECK(healerScore == 0.0f);
+
+        // Role eligibility gate (§6)
+        TargetPlayerSnapshot targetP;
+        targetP.guid = ObjectGuid(101);
+        targetP.level = 40;
+        targetP.mapId = 0;
+        targetP.teamId = 1; // Horde
+
+        CandidateBotSnapshot botTank;
+        botTank.activity.botGuid = ObjectGuid(501);
+        botTank.level = 40;
+        botTank.mapId = 0;
+        botTank.teamId = 0; // Alliance (opposing)
+        botTank.assassinCap = tankCap;
+        botTank.isContestedOrPvPArea = true;
+        botTank.canLegallyAttackTarget = true;
+        botTank.x = 100.0f; botTank.y = 100.0f;
+        TargetPlayerSnapshot playerAtDist = targetP;
+        playerAtDist.x = 120.0f; playerAtDist.y = 100.0f; // 20yd dist
+
+        CandidateBotSnapshot botHealer = botTank;
+        botHealer.assassinCap = healerCap;
+
+        CandidateBotSnapshot botDps = botTank;
+        botDps.assassinCap = tier4Cap;
+
+        CHECK(!EncounterEligibility::IsBotEligibleForPlayerEncounter(EncounterType::AssassinContract, botTank, playerAtDist, cfg));
+        CHECK(!EncounterEligibility::IsBotEligibleForPlayerEncounter(EncounterType::AssassinContract, botHealer, playerAtDist, cfg));
+        CHECK(EncounterEligibility::IsBotEligibleForPlayerEncounter(EncounterType::AssassinContract, botDps, playerAtDist, cfg));
+
+        // §17 Level compatibility checks (playerLevel <= botLevel <= playerLevel + 3)
+        CHECK(!EncounterEligibility::IsAssassinLevelCompatible(19, 20)); // player - 1 -> reject
+        CHECK(EncounterEligibility::IsAssassinLevelCompatible(20, 20));  // player == bot -> accept
+        CHECK(EncounterEligibility::IsAssassinLevelCompatible(21, 20));  // player + 1 -> accept
+        CHECK(EncounterEligibility::IsAssassinLevelCompatible(23, 20));  // player + 3 -> accept
+        CHECK(!EncounterEligibility::IsAssassinLevelCompatible(24, 20)); // player + 4 -> reject
+
+        // §14 Cache mismatch & runtime validation tests
         AssassinCapabilityCache cache;
         CHECK(cache.Size() == 0);
-        cache.Store(stalkerCap);
+        cache.Store(tier4Cap); // Stored for class 29, spec 53, level 40
         CHECK(cache.Size() == 1);
-        AssassinCapability cachedOut;
-        CHECK(cache.TryGet(29, 53, cachedOut));
-        CHECK(cachedOut.stealthSpellId == 800843);
-        CHECK(cachedOut.openerSpellId == 800878);
-        CHECK(!cache.TryGet(29, 99, cachedOut));
+
+        // Cache Test 1: Query with same class & spec but different level (e.g. lvl 10) -> no collision
+        AssassinCapability outCap;
+        CHECK(!cache.TryGet(29, 53, 10, outCap));
+        CHECK(cache.TryGet(29, 53, 40, outCap));
+
+        // Cache Test 2: Cached stealth spell missing on concrete bot -> IsValidForBot returns false
+        CHECK(!AssassinCapabilityCache::IsValidForBot(outCap, 40, 35, false /*hasStealth*/, true /*hasOpener*/));
+
+        // Cache Test 3: Cached opener missing on concrete bot -> IsValidForBot returns false
+        CHECK(!AssassinCapabilityCache::IsValidForBot(outCap, 40, 35, true /*hasStealth*/, false /*hasOpener*/));
+
+        // When all match concrete bot -> IsValidForBot returns true
+        CHECK(AssassinCapabilityCache::IsValidForBot(outCap, 40, 35, true, true));
+
+        // Spell count mismatch (bot learned a new rank/talent) -> IsValidForBot returns false
+        CHECK(!AssassinCapabilityCache::IsValidForBot(outCap, 40, 36, true, true));
+
         cache.Clear();
         CHECK(cache.Size() == 0);
     }
@@ -1561,6 +1676,224 @@ static void TestLiveValidationRound2Regressions()
     }
 }
 
+// ============================================================================
+// 18. Targeted 20-Run Assassin Contract Validation Matrix (§18 & §21)
+// ============================================================================
+static void TestAssassinContract20RunsTargetedValidation()
+{
+    struct AssassinSpecProfile
+    {
+        uint8 classId;
+        uint32 specId;
+        char const* specName;
+        EncounterCombatRole role;
+        AssassinConcealment concealment;
+        uint32 stealthSpellId;
+        uint32 openerSpellId;
+        bool isMelee;
+        uint32 selectedCount = 0;
+    };
+
+    std::vector<AssassinSpecProfile> knownSpecs = {
+        {29, 53, "Venomancer (Stalker)",     EncounterCombatRole::Dps,     AssassinConcealment::PersistentStealth,     800843, 800878, true,  0}, // Tier 4
+        {27, 45, "Shadowblade (Infiltrator)",EncounterCombatRole::Dps,     AssassinConcealment::PersistentStealth,     750100, 0,      true,  0}, // Tier 3
+        {18, 20, "Voidstalker (Phantasm)",   EncounterCombatRole::Dps,     AssassinConcealment::TemporaryInvisibility, 700100, 0,      false, 0}, // Tier 2
+        {24, 15, "Primalist (Prowler)",      EncounterCombatRole::Dps,     AssassinConcealment::TemporaryStealth,      600200, 600210, true,  0}, // Tier 2
+        {14, 10, "Barbarian (Reaver)",       EncounterCombatRole::Dps,     AssassinConcealment::NoConcealment,         0,      0,      true,  0}, // Tier 1
+        {12, 1,  "Templar (Guardian)",       EncounterCombatRole::Tank,    AssassinConcealment::PersistentStealth,     800843, 800878, true,  0}, // Tier 0 (Tank)
+        {22, 5,  "Spiritmend (Restorer)",    EncounterCombatRole::Healer,  AssassinConcealment::PersistentStealth,     800843, 0,      false, 0}  // Tier 0 (Healer)
+    };
+
+    EncounterConfig cfg;
+    uint32 noValidCandidateCount = 0;
+
+    std::printf("\n--- 20-Run Targeted Assassin Selection Matrix ---\n");
+
+    for (uint32 run = 1; run <= 20; ++run)
+    {
+        uint8 playerLvl = (run <= 5) ? 20 : ((run <= 10) ? 35 : ((run <= 15) ? 50 : 60));
+        TargetPlayerSnapshot targetP;
+        targetP.guid = ObjectGuid(1000 + run);
+        targetP.level = playerLvl;
+        targetP.mapId = 0;
+        targetP.teamId = 1; // Horde player
+        targetP.isContestedOrPvPArea = true;
+        targetP.x = 200.0f; targetP.y = 200.0f;
+
+        // Build candidate pool based on run scenario
+        std::vector<CandidateBotSnapshot> candidates;
+
+        auto addCandidate = [&](size_t specIdx, uint8 botLevel, uint32 teamId) {
+            CandidateBotSnapshot b;
+            b.activity.botGuid = ObjectGuid(2000 + run * 10 + specIdx);
+            b.mapId = 0;
+            b.teamId = teamId;
+            b.level = botLevel;
+            b.classId = knownSpecs[specIdx].classId;
+            b.specId = knownSpecs[specIdx].specId;
+            b.isContestedOrPvPArea = true;
+            b.canLegallyAttackTarget = true;
+            b.x = 220.0f; b.y = 200.0f; // 20yd dist
+
+            b.assassinCap.classId = b.classId;
+            b.assassinCap.specId = b.specId;
+            b.assassinCap.level = b.level;
+            b.assassinCap.spellCount = 30;
+            b.assassinCap.combatRole = knownSpecs[specIdx].role;
+            b.assassinCap.concealment = knownSpecs[specIdx].concealment;
+            b.assassinCap.stealthSpellId = knownSpecs[specIdx].stealthSpellId;
+            b.assassinCap.openerSpellId = knownSpecs[specIdx].openerSpellId;
+            b.assassinCap.hasStealthOrInvis = (b.assassinCap.stealthSpellId != 0);
+            b.assassinCap.hasStealthOpener = (b.assassinCap.openerSpellId != 0);
+            b.assassinCap.isMeleeStalker = knownSpecs[specIdx].isMelee;
+            b.hasStealthSpell = b.assassinCap.hasStealthOrInvis;
+            candidates.push_back(b);
+        };
+
+        if (run <= 6)
+        {
+            // Scenario 1: Full pool available (Tier 4, 3, 2, 1, 0)
+            addCandidate(0, playerLvl + 2, 0); // Tier 4
+            addCandidate(1, playerLvl + 1, 0); // Tier 3
+            addCandidate(2, playerLvl + 2, 0); // Tier 2
+            addCandidate(4, playerLvl,     0); // Tier 1
+            addCandidate(5, playerLvl + 1, 0); // Tank (reject)
+            addCandidate(6, playerLvl + 2, 0); // Healer (reject)
+        }
+        else if (run <= 10)
+        {
+            // Scenario 2: Tier 3 persistent stealth + Tier 1 fallback + Tank/Healer
+            addCandidate(1, playerLvl + 2, 0); // Tier 3
+            addCandidate(4, playerLvl + 1, 0); // Tier 1
+            addCandidate(5, playerLvl + 2, 0); // Tank (reject)
+            addCandidate(6, playerLvl + 1, 0); // Healer (reject)
+        }
+        else if (run <= 14)
+        {
+            // Scenario 3: Tier 2 temporary invis/stealth + Tier 1 fallback
+            addCandidate(2, playerLvl + 1, 0); // Tier 2 (Voidstalker)
+            addCandidate(3, playerLvl + 2, 0); // Tier 2 (Primalist)
+            addCandidate(4, playerLvl + 1, 0); // Tier 1
+            addCandidate(5, playerLvl,     0); // Tank (reject)
+        }
+        else if (run <= 17)
+        {
+            // Scenario 4: No stealth available in zone; Tier 1 fallback DPS only
+            addCandidate(4, playerLvl + 2, 0); // Tier 1 (Barbarian)
+            addCandidate(5, playerLvl + 1, 0); // Tank (reject)
+            addCandidate(6, playerLvl + 2, 0); // Healer (reject)
+        }
+        else
+        {
+            // Scenario 5: No valid candidates (only Tanks, Healers, same faction, or out of level range)
+            addCandidate(5, playerLvl + 1, 0); // Tank
+            addCandidate(6, playerLvl + 2, 0); // Healer
+            addCandidate(0, playerLvl - 2, 0); // Out of level range (lower than player)
+            addCandidate(0, playerLvl + 5, 0); // Out of level range (player + 5)
+            addCandidate(0, playerLvl + 1, 1); // Same faction (Horde vs Horde)
+        }
+
+        // Selection algorithm
+        CandidateBotSnapshot const* bestCandidate = nullptr;
+        float bestScore = -1.0f;
+        uint8 highestTierSeen = 0;
+
+        for (auto const& c : candidates)
+        {
+            if (!EncounterEligibility::IsBotEligibleForPlayerEncounter(EncounterType::AssassinContract, c, targetP, cfg))
+                continue;
+
+            uint8 tier = EncounterPersonality::GetAssassinCapabilityTier(c.assassinCap);
+            if (tier == 0)
+                continue;
+
+            // Tier 1 fallback skipped if Tier 3/4 present (§12)
+            if (highestTierSeen >= 3 && tier == 1)
+                continue;
+            if (tier > highestTierSeen)
+                highestTierSeen = tier;
+
+            WorldPersona persona;
+            persona.seed = c.activity.botGuid.GetCounter();
+            float score = EncounterPersonality::ScoreAssassinCandidate(persona, c.assassinCap);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestCandidate = &c;
+            }
+        }
+
+        if (bestCandidate)
+        {
+            uint8 chosenTier = EncounterPersonality::GetAssassinCapabilityTier(bestCandidate->assassinCap);
+            char const* concealmentName = AssassinConcealmentName(bestCandidate->assassinCap.concealment);
+            char const* roleName = EncounterCombatRoleName(bestCandidate->assassinCap.combatRole);
+
+            // Record stats
+            for (auto& s : knownSpecs)
+            {
+                if (s.classId == bestCandidate->classId && s.specId == bestCandidate->specId)
+                {
+                    ++s.selectedCount;
+                    break;
+                }
+            }
+
+            // Invariants validation
+            CHECK(bestCandidate->level >= targetP.level);
+            CHECK(bestCandidate->level <= targetP.level + 3);
+            CHECK(bestCandidate->teamId != targetP.teamId);
+            CHECK(bestCandidate->assassinCap.combatRole != EncounterCombatRole::Tank);
+            CHECK(bestCandidate->assassinCap.combatRole != EncounterCombatRole::Healer);
+            CHECK(chosenTier >= 1 && chosenTier <= 4);
+
+            if (run <= 6)
+            {
+                CHECK(chosenTier == 4); // Tier 4 always chosen in full pool
+            }
+            else if (run <= 10)
+            {
+                CHECK(chosenTier == 3); // Tier 3 chosen over Tier 1
+            }
+            else if (run <= 14)
+            {
+                CHECK(chosenTier == 2); // Tier 2 chosen over Tier 1
+            }
+            else if (run <= 17)
+            {
+                CHECK(chosenTier == 1); // Tier 1 chosen as legitimate fallback
+            }
+
+            std::printf("Run %2d: Player L%2d -> Bot L%2d Class %2d Spec %2d Role %-4s Concealment %-21s Opener %6d Tier %d Score %5.2f [PASS]\n",
+                run, targetP.level, bestCandidate->level, bestCandidate->classId, bestCandidate->specId,
+                roleName, concealmentName, bestCandidate->assassinCap.openerSpellId, chosenTier, bestScore);
+        }
+        else
+        {
+            ++noValidCandidateCount;
+            CHECK(run >= 18); // Only scenario 5 should fail to find a candidate
+            std::printf("Run %2d: Player L%2d -> NO CANDIDATE (Tanks/Healers/Faction/Level filtered) [PASS - REJECTED SAFELY]\n",
+                run, targetP.level);
+        }
+    }
+
+    CHECK(noValidCandidateCount == 3); // Runs 18, 19, 20 rejected cleanly
+
+    std::printf("\n=========================================================================================\n");
+    std::printf("| ClassId | SpecId | Role   | Stealth Type          | Opener | Tier | Selected Count    |\n");
+    std::printf("=========================================================================================\n");
+    for (auto const& s : knownSpecs)
+    {
+        std::printf("|   %5d |  %5d | %-6s | %-21s | %6d |    %d | %17d |\n",
+            s.classId, s.specId, EncounterCombatRoleName(s.role),
+            AssassinConcealmentName(s.concealment), s.openerSpellId,
+            EncounterPersonality::GetAssassinCapabilityTier(
+                AssassinCapability{s.classId, s.specId, 40, 30, s.role, s.concealment, s.stealthSpellId, s.openerSpellId, (s.stealthSpellId != 0), (s.openerSpellId != 0), s.isMelee}),
+            s.selectedCount);
+    }
+    std::printf("=========================================================================================\n\n");
+}
+
 int main()
 {
     TestEncounterEligibility();
@@ -1580,6 +1913,7 @@ int main()
     TestMovementOwnershipTorture();
     TestMultiHourEquivalentStress();
     TestLiveValidationRound2Regressions();
+    TestAssassinContract20RunsTargetedValidation();
 
     std::printf("encounter_tests: %d checks, %d failures.\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;

@@ -69,14 +69,37 @@ inline char const* EncounterCombatRoleName(EncounterCombatRole role)
     }
 }
 
-// Capability profile derived from a bot's actual active spec and spellbook (SpellInfo),
+// Concealment quality categories for Assassin Contract (§4)
+enum class AssassinConcealment : uint8
+{
+    NoConcealment         = 0,
+    TemporaryInvisibility = 1,
+    TemporaryStealth      = 2,
+    PersistentStealth     = 3
+};
+
+inline char const* AssassinConcealmentName(AssassinConcealment concealment)
+{
+    switch (concealment)
+    {
+        case AssassinConcealment::PersistentStealth:     return "PersistentStealth";
+        case AssassinConcealment::TemporaryStealth:      return "TemporaryStealth";
+        case AssassinConcealment::TemporaryInvisibility: return "TemporaryInvisibility";
+        case AssassinConcealment::NoConcealment:
+        default:                                         return "NoConcealment";
+    }
+}
+
+// Capability profile derived from a bot's actual active spec, level, and spellbook (SpellInfo),
 // completely independent of vanilla class identity (supports CoA custom classes 12-32).
 struct AssassinCapability
 {
     uint8 classId = 0;
     uint32 specId = 0;
+    uint8 level = 0;
     uint32 spellCount = 0;
     EncounterCombatRole combatRole = EncounterCombatRole::Dps;
+    AssassinConcealment concealment = AssassinConcealment::NoConcealment;
     uint32 stealthSpellId = 0;       // Usable spell granting stealth / invisibility / stealth form
     uint32 openerSpellId = 0;        // Usable stealth opener / ambush / gap-closer strike
     bool hasStealthOrInvis = false;  // True when stealthSpellId != 0
@@ -84,18 +107,18 @@ struct AssassinCapability
     bool isMeleeStalker = false;     // True when spec/spellbook is melee-oriented DPS
 };
 
-// Caches resolved AssassinCapability by (classId, specId).
+// Caches resolved AssassinCapability by (classId, specId, level) with per-bot runtime validation (§1-§3).
 class AssassinCapabilityCache
 {
 public:
-    static constexpr uint64 MakeKey(uint8 classId, uint32 specId)
+    static constexpr uint64 MakeKey(uint8 classId, uint32 specId, uint8 level)
     {
-        return (static_cast<uint64>(classId) << 32) | static_cast<uint64>(specId);
+        return (static_cast<uint64>(classId) << 40) | (static_cast<uint64>(specId) << 8) | static_cast<uint64>(level);
     }
 
-    bool TryGet(uint8 classId, uint32 specId, AssassinCapability& outCap) const
+    bool TryGet(uint8 classId, uint32 specId, uint8 level, AssassinCapability& outCap) const
     {
-        auto it = _entries.find(MakeKey(classId, specId));
+        auto it = _entries.find(MakeKey(classId, specId, level));
         if (it == _entries.end())
             return false;
         outCap = it->second;
@@ -104,7 +127,27 @@ public:
 
     void Store(AssassinCapability const& cap)
     {
-        _entries[MakeKey(cap.classId, cap.specId)] = cap;
+        _entries[MakeKey(cap.classId, cap.specId, cap.level)] = cap;
+    }
+
+    // Runtime validation of cached capability against concrete bot properties (§2).
+    // Never blindly trusts cached entries: if level, spell count, stealth spell or opener mismatch, returns false.
+    static bool IsValidForBot(
+        AssassinCapability const& cap,
+        uint8 botLevel,
+        uint32 botSpellCount,
+        bool botHasStealthSpell,
+        bool botHasOpenerSpell)
+    {
+        if (cap.level != botLevel)
+            return false;
+        if (cap.spellCount != botSpellCount)
+            return false;
+        if (cap.stealthSpellId != 0 && !botHasStealthSpell)
+            return false;
+        if (cap.openerSpellId != 0 && !botHasOpenerSpell)
+            return false;
+        return true;
     }
 
     void Clear()
@@ -260,6 +303,13 @@ public:
         if (type == EncounterType::AssassinContract)
         {
             if (!IsAssassinLevelCompatible(bot.level, player.level))
+                return false;
+            // Reject non-offensive roles (§6): Tank & Healer strictly disqualified
+            if (bot.assassinCap.combatRole == EncounterCombatRole::Tank ||
+                bot.assassinCap.combatRole == EncounterCombatRole::Healer)
+                return false;
+            // Support allowed only if offensive/stealth-capable
+            if (bot.assassinCap.combatRole == EncounterCombatRole::Support && !bot.assassinCap.hasStealthOrInvis)
                 return false;
         }
         else if (LevelDifference(bot.level, player.level) > cfg.maxLevelDiff)

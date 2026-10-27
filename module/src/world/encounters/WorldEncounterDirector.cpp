@@ -294,16 +294,23 @@ namespace
 
         uint8 classId = bot->getClass();
         uint32 specId = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        uint8 level = bot->GetLevel();
         uint32 spellCount = static_cast<uint32>(bot->GetSpellMap().size());
 
-        if (_assassinCapabilityCache.TryGet(classId, specId, cap))
+        // 1. Check cache with strict per-bot runtime validation (§1-§3).
+        // Never blindly trust cached entry: verify exact level, spell count, and actual HasSpell ownership.
+        if (_assassinCapabilityCache.TryGet(classId, specId, level, cap))
         {
-            if (cap.spellCount == spellCount || (cap.stealthSpellId != 0 && bot->HasSpell(cap.stealthSpellId)))
+            bool hasStealth = (cap.stealthSpellId == 0) || bot->HasSpell(cap.stealthSpellId);
+            bool hasOpener = (cap.openerSpellId == 0) || bot->HasSpell(cap.openerSpellId);
+            if (AssassinCapabilityCache::IsValidForBot(cap, level, spellCount, hasStealth, hasOpener))
                 return cap;
         }
 
+        cap = AssassinCapability{};
         cap.classId = classId;
         cap.specId = specId;
+        cap.level = level;
         cap.spellCount = spellCount;
 
         // Combat role from active BotAI role
@@ -321,6 +328,7 @@ namespace
         uint32 rangedAttacks = 0;
         uint32 bestStealthSpell = 0;
         int32 bestStealthDuration = -2;
+        AssassinConcealment bestConcealment = AssassinConcealment::NoConcealment;
         uint32 bestOpenerSpell = 0;
         int32 bestOpenerPriority = -1;
 
@@ -333,17 +341,27 @@ namespace
             if (!sInfo || sInfo->IsPassive())
                 continue;
 
-            // 1. Stealth / Invisibility detection via SpellInfo
+            // Filter out unusable/dead spells or absurd cooldowns (>10m) for stalking (§8)
+            if (sInfo->RecoveryTime > 600000 || sInfo->CategoryRecoveryTime > 600000)
+                continue;
+
+            // 1. Stealth / Invisibility detection via SpellInfo (§4 & §8)
             if (sInfo->IsPositive() && !sInfo->NeedsExplicitUnitTarget())
             {
                 bool grantsStealth = false;
+                bool grantsInvis = false;
                 for (auto const& eff : sInfo->GetEffects())
                 {
                     if (!eff.IsEffect())
                         continue;
-                    if (eff.IsAura(SPELL_AURA_MOD_STEALTH) || eff.IsAura(SPELL_AURA_MOD_INVISIBILITY))
+                    if (eff.IsAura(SPELL_AURA_MOD_STEALTH))
                     {
                         grantsStealth = true;
+                        break;
+                    }
+                    if (eff.IsAura(SPELL_AURA_MOD_INVISIBILITY))
+                    {
+                        grantsInvis = true;
                         break;
                     }
                     if (eff.IsAura(SPELL_AURA_MOD_SHAPESHIFT) && eff.MiscValue == FORM_STEALTH)
@@ -353,23 +371,43 @@ namespace
                     }
                 }
 
-                if (grantsStealth)
+                if (grantsStealth || grantsInvis)
                 {
                     int32 dur = sInfo->GetMaxDuration();
-                    if (dur == -1) // Permanent stealth gets top priority
+                    // Reject transient concealment too short to stalk (< 5 seconds)
+                    if (dur > 0 && dur < 5000)
+                        continue;
+
+                    AssassinConcealment conc = AssassinConcealment::NoConcealment;
+                    if (grantsStealth)
+                        conc = (dur <= 0) ? AssassinConcealment::PersistentStealth : AssassinConcealment::TemporaryStealth;
+                    else if (grantsInvis)
+                        conc = AssassinConcealment::TemporaryInvisibility;
+
+                    // Rank: PersistentStealth > TemporaryStealth > TemporaryInvisibility
+                    bool isBetter = false;
+                    if (static_cast<uint8>(conc) > static_cast<uint8>(bestConcealment))
                     {
-                        bestStealthSpell = spellId;
-                        bestStealthDuration = -1;
+                        isBetter = true;
                     }
-                    else if (bestStealthDuration != -1 && dur > bestStealthDuration)
+                    else if (conc == bestConcealment)
                     {
-                        bestStealthDuration = dur;
+                        if (dur <= 0 && bestStealthDuration > 0)
+                            isBetter = true;
+                        else if (dur > bestStealthDuration && bestStealthDuration > 0)
+                            isBetter = true;
+                    }
+
+                    if (isBetter)
+                    {
+                        bestConcealment = conc;
                         bestStealthSpell = spellId;
+                        bestStealthDuration = dur;
                     }
                 }
             }
 
-            // 2. Melee vs ranged ratio & stealth opener detection
+            // 2. Melee vs ranged ratio & stealth opener detection (§9)
             if (!sInfo->IsPositive() && sInfo->NeedsExplicitUnitTarget())
             {
                 if (sInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE || sInfo->GetMaxRange(false, bot) <= 8.0f)
@@ -404,6 +442,7 @@ namespace
             }
         }
 
+        cap.concealment = bestConcealment;
         cap.stealthSpellId = bestStealthSpell;
         cap.hasStealthOrInvis = (bestStealthSpell != 0);
         cap.openerSpellId = bestOpenerSpell;
@@ -860,6 +899,7 @@ namespace
         float bestScore = -1.0f;
         Player* secondBestBot = nullptr;
         float secondBestScore = -1.0f;
+        uint8 highestTierSeen = 0;
 
         auto scoreCandidateForPlayer = [&](Player* bot, CandidateBotSnapshot const& botSnap) -> float
         {
@@ -887,7 +927,24 @@ namespace
             if (!bypassBudgetAndCooldown)
             {
                 if (!EncounterEligibility::IsBotEligibleForPlayerEncounter(type, botSnap, playerSnap, cfg))
+                {
+                    if (type == EncounterType::AssassinContract && (_debugLogging || bypassBudgetAndCooldown))
+                    {
+                        char const* reason = "ineligible";
+                        if (!EncounterEligibility::IsAssassinLevelCompatible(botSnap.level, playerSnap.level))
+                            reason = "wrong level";
+                        else if (botSnap.assassinCap.combatRole == EncounterCombatRole::Tank)
+                            reason = "tank";
+                        else if (botSnap.assassinCap.combatRole == EncounterCombatRole::Healer)
+                            reason = "healer";
+                        else if (!EncounterEligibility::AreOpposingFactions(botSnap.teamId, playerSnap.teamId, botSnap.canLegallyAttackTarget))
+                            reason = "no hostile faction";
+                        LOG_DEBUG("module.coa-playerbots.world",
+                            "Assassin reject bot={}({}) reason={}",
+                            bot->GetName(), bot->GetGUID().GetCounter(), reason);
+                    }
                     continue;
+                }
                 if (type == EncounterType::Nemesis &&
                     !_memory.IsNemesisRival(playerSnap.guid, bot->GetGUID(), cfg, nowMs))
                 {
@@ -897,14 +954,78 @@ namespace
             else
             {
                 if (!EncounterEligibility::IsAvailableForEncounter(botSnap.activity))
+                {
+                    if (type == EncounterType::AssassinContract && (_debugLogging || bypassBudgetAndCooldown))
+                    {
+                        LOG_DEBUG("module.coa-playerbots.world",
+                            "Assassin reject bot={}({}) reason=unavailable",
+                            bot->GetName(), bot->GetGUID().GetCounter());
+                    }
                     continue;
+                }
                 if (type == EncounterType::AssassinContract)
                 {
-                    // Strict Assassin Contract rules (§1): never relax level [playerLevel..playerLevel+3] or opposing faction
+                    // Strict Assassin Contract rules (§1 & §6): never relax level, opposing faction, or reject roles
                     if (!EncounterEligibility::AreOpposingFactions(botSnap.teamId, playerSnap.teamId, true))
+                    {
+                        if (_debugLogging || bypassBudgetAndCooldown)
+                        {
+                            LOG_DEBUG("module.coa-playerbots.world",
+                                "Assassin reject bot={}({}) reason=no hostile faction",
+                                bot->GetName(), bot->GetGUID().GetCounter());
+                        }
                         continue;
+                    }
                     if (!EncounterEligibility::IsAssassinLevelCompatible(botSnap.level, playerSnap.level))
+                    {
+                        if (_debugLogging || bypassBudgetAndCooldown)
+                        {
+                            LOG_DEBUG("module.coa-playerbots.world",
+                                "Assassin reject bot={}({}) reason=wrong level",
+                                bot->GetName(), bot->GetGUID().GetCounter());
+                        }
                         continue;
+                    }
+                    if (botSnap.assassinCap.combatRole == EncounterCombatRole::Tank)
+                    {
+                        if (_debugLogging || bypassBudgetAndCooldown)
+                        {
+                            LOG_DEBUG("module.coa-playerbots.world",
+                                "Assassin reject bot={}({}) reason=tank",
+                                bot->GetName(), bot->GetGUID().GetCounter());
+                        }
+                        continue;
+                    }
+                    if (botSnap.assassinCap.combatRole == EncounterCombatRole::Healer)
+                    {
+                        if (_debugLogging || bypassBudgetAndCooldown)
+                        {
+                            LOG_DEBUG("module.coa-playerbots.world",
+                                "Assassin reject bot={}({}) reason=healer",
+                                bot->GetName(), bot->GetGUID().GetCounter());
+                        }
+                        continue;
+                    }
+                    if (botSnap.assassinCap.combatRole == EncounterCombatRole::Support && !botSnap.assassinCap.hasStealthOrInvis)
+                    {
+                        if (_debugLogging || bypassBudgetAndCooldown)
+                        {
+                            LOG_DEBUG("module.coa-playerbots.world",
+                                "Assassin reject bot={}({}) reason=support without stealth",
+                                bot->GetName(), bot->GetGUID().GetCounter());
+                        }
+                        continue;
+                    }
+                    if (EncounterPersonality::GetAssassinCapabilityTier(botSnap.assassinCap) == 0)
+                    {
+                        if (_debugLogging || bypassBudgetAndCooldown)
+                        {
+                            LOG_DEBUG("module.coa-playerbots.world",
+                                "Assassin reject bot={}({}) reason=no usable capability",
+                                bot->GetName(), bot->GetGUID().GetCounter());
+                        }
+                        continue;
+                    }
                 }
                 else if (IsHostilePlayerEncounter(type))
                 {
@@ -915,7 +1036,42 @@ namespace
                 }
             }
 
+            if (type == EncounterType::AssassinContract)
+            {
+                uint8 botTier = EncounterPersonality::GetAssassinCapabilityTier(botSnap.assassinCap);
+                if (botTier == 0)
+                    continue;
+                // If we already found a Tier 3 or 4 candidate, do not use Tier 1 fallback (§12)
+                if (highestTierSeen >= 3 && botTier == 1)
+                    continue;
+                if (botTier > highestTierSeen)
+                    highestTierSeen = botTier;
+            }
+
             float score = scoreCandidateForPlayer(bot, botSnap);
+            if (type == EncounterType::AssassinContract && score <= 0.0f)
+                continue;
+
+            if (type == EncounterType::AssassinContract && (_debugLogging || bypassBudgetAndCooldown))
+            {
+                WorldPersona p = GetPersonaForBot(bot->GetGUID());
+                DerivedEncounterTraits t = EncounterPersonality::Derive(p);
+                float pScore = std::clamp(t.aggressive * 0.40f + t.loner * 0.35f + t.patient * 0.25f, 0.05f, 1.0f);
+                LOG_INFO("module.coa-playerbots.world",
+                    "Assassin candidate bot={}({}) class={} spec={} level={} role={} stealthSpell={} concealment={} openerSpell={} tier={} personalityScore={:.2f} score={:.2f}",
+                    bot->GetName(),
+                    bot->GetGUID().GetCounter(),
+                    uint32(botSnap.classId),
+                    botSnap.specId,
+                    uint32(botSnap.level),
+                    EncounterCombatRoleName(botSnap.assassinCap.combatRole),
+                    botSnap.assassinCap.stealthSpellId,
+                    AssassinConcealmentName(botSnap.assassinCap.concealment),
+                    botSnap.assassinCap.openerSpellId,
+                    uint32(EncounterPersonality::GetAssassinCapabilityTier(botSnap.assassinCap)),
+                    pScore,
+                    score);
+            }
             if (score > bestScore)
             {
                 secondBestScore = bestScore;
@@ -942,10 +1098,20 @@ namespace
 
                 if (type == EncounterType::AssassinContract)
                 {
-                    // Never relax Assassin level [playerLevel..playerLevel+3] or opposing faction filter (§1)
+                    // Strict Assassin Contract rules (§1 & §6): never relax level, opposing faction, or reject roles
                     if (!EncounterEligibility::AreOpposingFactions(obSnap.teamId, playerSnap.teamId, true))
                         continue;
                     if (!EncounterEligibility::IsAssassinLevelCompatible(obSnap.level, playerSnap.level))
+                        continue;
+                    if (obSnap.assassinCap.combatRole == EncounterCombatRole::Tank ||
+                        obSnap.assassinCap.combatRole == EncounterCombatRole::Healer)
+                        continue;
+                    if (obSnap.assassinCap.combatRole == EncounterCombatRole::Support && !obSnap.assassinCap.hasStealthOrInvis)
+                        continue;
+                    uint8 obTier = EncounterPersonality::GetAssassinCapabilityTier(obSnap.assassinCap);
+                    if (obTier == 0)
+                        continue;
+                    if (highestTierSeen >= 3 && obTier == 1)
                         continue;
                 }
                 else if (IsHostilePlayerEncounter(type))
@@ -957,6 +1123,9 @@ namespace
                 }
 
                 float score = scoreCandidateForPlayer(ob, obSnap);
+                if (type == EncounterType::AssassinContract && score <= 0.0f)
+                    continue;
+
                 if (score > bestScore)
                 {
                     bestScore = score;
@@ -985,7 +1154,7 @@ namespace
             if (type == EncounterType::AssassinContract)
             {
                 outReason = Acore::StringFormat(
-                    "AssassinContract build failed: no available opposing-faction bot in level range [{}-{}]",
+                    "AssassinContract build failed: no eligible assassin (requires DPS/offensive role, level [{}-{}], opposing faction)",
                     uint32(playerSnap.level), uint32(playerSnap.level) + 3u);
             }
             else
@@ -1050,7 +1219,7 @@ namespace
         if (_debugLogging || bypassBudgetAndCooldown)
         {
             LOG_INFO("module.coa-playerbots.world",
-                "Encounter #{} START type={} targetPlayer={}({}) level={} leadBot={}({}) class={} spec={} level={} levelDelta={:+} faction={} score={:.2f} capability={} stealthSpell={} openerSpell={}",
+                "Encounter #{} START type={} targetPlayer={}({}) level={} leadBot={}({}) class={} spec={} level={} levelDelta={:+} faction={} score={:.2f} tier={} capability={} concealment={} stealthSpell={} openerSpell={}",
                 id,
                 EncounterTypeName(type),
                 targetPlayer->GetName(),
@@ -1064,14 +1233,16 @@ namespace
                 levelDelta,
                 leadTeam == TEAM_ALLIANCE ? "Alliance" : "Horde",
                 bestScore,
+                uint32(EncounterPersonality::GetAssassinCapabilityTier(leadCap)),
                 capPref,
+                AssassinConcealmentName(leadCap.concealment),
                 leadCap.stealthSpellId,
                 leadCap.openerSpellId);
         }
 
         outReason = Acore::StringFormat(
-            "Started {} (#{}) with {} bot(s) (lead: {} lvl={} delta={:+} class={} spec={} cap={})",
-            EncounterTypeName(type), id, botCount, leadName, uint32(leadLevel), levelDelta, uint32(leadClass), leadSpec, capPref);
+            "Started {} (#{}) with {} bot(s) (lead: {} lvl={} delta={:+} class={} spec={} tier={} cap={})",
+            EncounterTypeName(type), id, botCount, leadName, uint32(leadLevel), levelDelta, uint32(leadClass), leadSpec, uint32(EncounterPersonality::GetAssassinCapabilityTier(leadCap)), capPref);
         return true;
     }
 
