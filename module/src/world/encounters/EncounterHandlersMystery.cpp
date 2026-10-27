@@ -21,6 +21,11 @@ namespace
     {
         return std::hypot(a->GetPositionX() - b->GetPositionX(), a->GetPositionY() - b->GetPositionY());
     }
+
+    float Dist2DPoint(WorldObject const* a, float x, float y)
+    {
+        return std::hypot(a->GetPositionX() - x, a->GetPositionY() - y);
+    }
 }
 
 namespace EncounterHandlers
@@ -49,7 +54,8 @@ namespace EncounterHandlers
         // Apply optional configured mysterious visual override once
         if (!part.morphApplied && cfg.mysteryMorphDisplayId != 0)
         {
-            part.originalDisplayId = bot->GetDisplayId();
+            if (part.originalDisplayId == 0)
+                part.originalDisplayId = bot->GetDisplayId();
             bot->SetDisplayId(cfg.mysteryMorphDisplayId);
             part.morphApplied = true;
         }
@@ -64,23 +70,30 @@ namespace EncounterHandlers
                     BotMovement::RequestDismount(bot, MoveOwner::Encounter, DismountReason::Manual);
                 BotMovement::Stop(bot, part.moveToken);
                 bot->SetFacingToObject(target);
+                part.navGoalId = 0;
                 inst.state.TransitionTo(EncounterPhase::Active, nowMs);
                 return;
             }
 
-            float angle = target->GetOrientation() + 0.6f;
-            float vx = target->GetPositionX() + std::cos(angle) * 28.0f;
-            float vy = target->GetPositionY() + std::sin(angle) * 28.0f;
-            float vz = target->GetPositionZ();
-            if (target->GetMap())
+            if (part.navGoalId == 0 || Dist2DPoint(target, part.lastNavTargetX, part.lastNavTargetY) > 15.0f)
             {
-                float gz = target->GetMap()->GetHeight(target->GetPhaseMask(), vx, vy, vz + 10.0f);
-                if (gz > INVALID_HEIGHT)
-                    vz = gz;
+                float dx = bot->GetPositionX() - target->GetPositionX();
+                float dy = bot->GetPositionY() - target->GetPositionY();
+                float baseAngle = (std::fabs(dx) < 0.01f && std::fabs(dy) < 0.01f) ? 0.6f : std::atan2(dy, dx);
+                part.lastNavTargetX = target->GetPositionX() + std::cos(baseAngle) * 28.0f;
+                part.lastNavTargetY = target->GetPositionY() + std::sin(baseAngle) * 28.0f;
+                part.lastNavTargetZ = target->GetPositionZ();
+                if (target->GetMap())
+                {
+                    float gz = target->GetMap()->GetHeight(target->GetPhaseMask(), part.lastNavTargetX, part.lastNavTargetY, part.lastNavTargetZ + 10.0f);
+                    if (gz > INVALID_HEIGHT)
+                        part.lastNavTargetZ = gz;
+                }
+                part.navGoalId = (inst.id << 8) + 1u + (++part.subState);
             }
 
-            uint64 goalId = (inst.id << 8) | 1u;
-            NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, goalId, vx, vy, vz, 5.0f, &part.moveToken, false);
+            NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
+                part.lastNavTargetX, part.lastNavTargetY, part.lastNavTargetZ, 5.0f, &part.moveToken, false);
             if (nav == NavStatus::Stuck)
                 inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
             return;
@@ -104,7 +117,7 @@ namespace EncounterHandlers
 
                 if (cfg.mysteryRuneGameObjectEntry != 0 && sObjectMgr->GetGameObjectTemplate(cfg.mysteryRuneGameObjectEntry))
                 {
-                    if (bot->GetMap())
+                    if (bot->GetMap() && part.temporaryGobGuid.IsEmpty())
                     {
                         if (GameObject* gob = bot->SummonGameObject(
                                 cfg.mysteryRuneGameObjectEntry,
@@ -116,9 +129,10 @@ namespace EncounterHandlers
                                 0.0f,
                                 0.0f,
                                 0.0f,
-                                12))
+                                10))
                         {
                             part.temporaryGobGuid = gob->GetGUID();
+                            part.temporaryGobMapId = bot->GetMapId();
                         }
                     }
                 }

@@ -14,12 +14,14 @@
 #include "EncounterMemory.h"
 #include "EncounterNarrator.h"
 #include "EncounterPersonality.h"
+#include "GameObject.h"
 #include "GameTime.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "Log.h"
 #include "Map.h"
+#include "MapMgr.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SharedDefines.h"
@@ -51,6 +53,7 @@ namespace
     uint64 _nextEncounterId = 1;
 
     uint32 _evalAccumMs = 0;
+    uint32 _combatTickAccumMs = 0;
     uint32 _rareScanAccumMs = 0;
     size_t _playerSampleCursor = 0;
     size_t _botSampleCursor = 0;
@@ -391,7 +394,7 @@ namespace
 
         if (std::optional<MovementRequest> req = BotMovement::GetRequestSnapshot(botGuid))
         {
-            if (req->active && req->owner == MoveOwner::Encounter)
+            if (req->goalId != 0 && req->owner == MoveOwner::Encounter)
                 snap.hasEncounterNavRequest = true;
         }
 
@@ -435,6 +438,39 @@ namespace
                 EncounterHandlers::RestoreParticipantState(bot, part);
                 if (inst.type == EncounterType::RoadDuel)
                     bot->AttackStop();
+            }
+            else
+            {
+                // Bot logged out or despawned before finalization: clear offline state and any temporary GO
+                BotMovement::ResetRequest(part.botGuid);
+                part.moveToken = {};
+                part.navGoalId = 0;
+                part.assignedTargetGuid = ObjectGuid::Empty;
+                part.engagedInCombat = false;
+                part.stealthApplied = false;
+                part.morphApplied = false;
+                part.sitApplied = false;
+                if (!part.temporaryGobGuid.IsEmpty())
+                {
+                    GameObject* gob = nullptr;
+                    if (!inst.targetPlayerGuid.IsEmpty())
+                    {
+                        if (Player* tp = ObjectAccessor::FindConnectedPlayer(inst.targetPlayerGuid))
+                            gob = ObjectAccessor::GetGameObject(*tp, part.temporaryGobGuid);
+                    }
+                    if (!gob && part.temporaryGobMapId != 0)
+                    {
+                        if (Map* gobMap = sMapMgr->FindMap(part.temporaryGobMapId, 0))
+                            gob = gobMap->GetGameObject(part.temporaryGobGuid);
+                    }
+                    if (gob)
+                    {
+                        gob->SetRespawnTime(0);
+                        gob->Delete();
+                    }
+                    part.temporaryGobGuid = ObjectGuid::Empty;
+                    part.temporaryGobMapId = 0;
+                }
             }
             _ownership.Release(part.botGuid, inst.id);
             ResumeBrainStateForBot(bot, part.botGuid);
@@ -655,8 +691,7 @@ namespace
         inst.targetPlayerGuid = targetPlayer->GetGUID();
         if (type == EncounterType::Nemesis)
         {
-            if (PlayerBotMemoryRecord const* rec = _memory.FindRecord(playerSnap.guid, bestBot->GetGUID()))
-                inst.subStage = rec->timesPlayerKilledBot + rec->timesBotKilledPlayer;
+            inst.subStage = _memory.GetGrudgeScore(playerSnap.guid, bestBot->GetGUID(), cfg, nowMs);
         }
         inst.participants.push_back(MakeParticipant(bestBot, role, nowMs));
 
@@ -1194,6 +1229,85 @@ namespace
         EncounterType chosenType = WORLD_POOL[NextRand() % (sizeof(WORLD_POOL) / sizeof(WORLD_POOL[0]))];
         TryBuildWorldEncounter(chosenType, anchor, nearbyBots, false, nowMs, dummyMsg);
     }
+
+    void DispatchEncounterHandler(EncounterInstance& inst, Player* bot, EncounterParticipant& part, uint32 nowMs)
+    {
+        switch (inst.type)
+        {
+            case EncounterType::AssassinContract:
+                EncounterHandlers::UpdateAssassinContract(inst, bot, part, nowMs);
+                break;
+            case EncounterType::TheWatcher:
+                EncounterHandlers::UpdateTheWatcher(inst, bot, part, nowMs);
+                break;
+            case EncounterType::FactionSkirmish:
+                EncounterHandlers::UpdateFactionSkirmish(inst, bot, part, nowMs);
+                break;
+            case EncounterType::PatrolAmbush:
+                EncounterHandlers::UpdatePatrolAmbush(inst, bot, part, nowMs);
+                break;
+            case EncounterType::BountyHunter:
+                EncounterHandlers::UpdateBountyHunter(inst, bot, part, nowMs);
+                break;
+            case EncounterType::Nemesis:
+                EncounterHandlers::UpdateNemesis(inst, bot, part, nowMs);
+                break;
+            case EncounterType::RoadDuel:
+                EncounterHandlers::UpdateRoadDuel(inst, bot, part, nowMs);
+                break;
+            case EncounterType::Caravan:
+                EncounterHandlers::UpdateCaravan(inst, bot, part, nowMs);
+                break;
+            case EncounterType::Deserter:
+                EncounterHandlers::UpdateDeserter(inst, bot, part, nowMs);
+                break;
+            case EncounterType::HunterAndPrey:
+                EncounterHandlers::UpdateHunterAndPrey(inst, bot, part, nowMs);
+                break;
+            case EncounterType::RivalAdventuringParty:
+                EncounterHandlers::UpdateRivalParty(inst, bot, part, nowMs);
+                break;
+            case EncounterType::RareHunter:
+                EncounterHandlers::UpdateRareHunter(inst, bot, part, nowMs);
+                break;
+            case EncounterType::MysteryEncounter:
+                EncounterHandlers::UpdateMysteryEncounter(inst, bot, part, nowMs);
+                break;
+            default:
+                inst.state.Terminate(EncounterStopReason::Completed, nowMs);
+                break;
+        }
+    }
+
+    void TickInCombatEncounterParticipants(uint32 nowMs)
+    {
+        uint32 activeTempGos = 0;
+        for (auto it = _encounters.begin(); it != _encounters.end();)
+        {
+            EncounterInstance& inst = it->second;
+            for (auto& part : inst.participants)
+            {
+                if (!part.temporaryGobGuid.IsEmpty())
+                    ++activeTempGos;
+                if (!inst.state.IsRunning() || part.retreated)
+                    continue;
+                Player* bot = ObjectAccessor::FindConnectedPlayer(part.botGuid);
+                if (bot && bot->IsInWorld() && bot->IsAlive() && bot->IsInCombat())
+                    DispatchEncounterHandler(inst, bot, part, nowMs);
+            }
+
+            if (!inst.state.IsRunning())
+            {
+                FinalizeEncounter(inst, nowMs);
+                it = _encounters.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        _metrics.activeTemporaryGameObjects = activeTempGos;
+    }
 }
 
 namespace WorldEncounterDirector
@@ -1207,7 +1321,19 @@ namespace WorldEncounterDirector
     {
         EncounterConfig const& cfg = EncounterSettings::Get();
         _evalAccumMs += diff;
+        _combatTickAccumMs += diff;
         _rareScanAccumMs += diff;
+
+        // Tick in-combat encounter participants every 500ms because UpdateSoloWorld (and thus
+        // WorldBrain::Update -> UpdateBot) is bypassed while bot->IsInCombat() is true.
+        if (_combatTickAccumMs >= 500u)
+        {
+            _combatTickAccumMs = 0;
+            if (!_encounters.empty())
+                TickInCombatEncounterParticipants(NowMs());
+            else
+                _metrics.activeTemporaryGameObjects = 0;
+        }
 
         if (_evalAccumMs < cfg.thinkIntervalMs)
             return;
@@ -1304,51 +1430,7 @@ namespace WorldEncounterDirector
         }
 
         uint32 nowMs = NowMs();
-        switch (inst.type)
-        {
-            case EncounterType::AssassinContract:
-                EncounterHandlers::UpdateAssassinContract(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::TheWatcher:
-                EncounterHandlers::UpdateTheWatcher(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::FactionSkirmish:
-                EncounterHandlers::UpdateFactionSkirmish(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::PatrolAmbush:
-                EncounterHandlers::UpdatePatrolAmbush(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::BountyHunter:
-                EncounterHandlers::UpdateBountyHunter(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::Nemesis:
-                EncounterHandlers::UpdateNemesis(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::RoadDuel:
-                EncounterHandlers::UpdateRoadDuel(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::Caravan:
-                EncounterHandlers::UpdateCaravan(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::Deserter:
-                EncounterHandlers::UpdateDeserter(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::HunterAndPrey:
-                EncounterHandlers::UpdateHunterAndPrey(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::RivalAdventuringParty:
-                EncounterHandlers::UpdateRivalParty(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::RareHunter:
-                EncounterHandlers::UpdateRareHunter(inst, bot, *part, nowMs);
-                break;
-            case EncounterType::MysteryEncounter:
-                EncounterHandlers::UpdateMysteryEncounter(inst, bot, *part, nowMs);
-                break;
-            default:
-                inst.state.Terminate(EncounterStopReason::Completed, nowMs);
-                break;
-        }
+        DispatchEncounterHandler(inst, bot, *part, nowMs);
 
         if (!inst.state.IsRunning())
         {

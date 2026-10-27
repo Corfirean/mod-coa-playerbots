@@ -8,6 +8,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Map.h"
+#include "MapMgr.h"
 #include "ObjectAccessor.h"
 #include "Pet.h"
 #include "Player.h"
@@ -177,7 +178,13 @@ namespace EncounterHandlers
 
         if (!part.temporaryGobGuid.IsEmpty())
         {
-            if (GameObject* gob = ObjectAccessor::GetGameObject(*bot, part.temporaryGobGuid))
+            GameObject* gob = ObjectAccessor::GetGameObject(*bot, part.temporaryGobGuid);
+            if (!gob && part.temporaryGobMapId != 0)
+            {
+                if (Map* gobMap = sMapMgr->FindMap(part.temporaryGobMapId, 0))
+                    gob = gobMap->GetGameObject(part.temporaryGobGuid);
+            }
+            if (gob)
             {
                 gob->SetRespawnTime(0);
                 gob->Delete();
@@ -378,6 +385,18 @@ namespace EncounterHandlers
             return;
         }
 
+        // Compute deterministic formation slot for followers
+        uint32 followerIdx = 0;
+        for (auto const& p : inst.participants)
+        {
+            if (p.botGuid == bot->GetGUID())
+                break;
+            if (p.role != EncounterRole::CaravanLeader)
+                ++followerIdx;
+        }
+        float slotDist = 4.5f + float(followerIdx / 2u) * 3.5f;
+        float slotAngle = (followerIdx % 2u == 0) ? 2.45f : -2.45f;
+
         if (inst.state.phase == EncounterPhase::Prepare)
         {
             if (part.role == EncounterRole::CaravanLeader)
@@ -386,22 +405,31 @@ namespace EncounterHandlers
                 bool allReady = true;
                 for (auto const& p : inst.participants)
                 {
-                    if (!p.arrivedAtStaging)
+                    if (!p.retreated && !p.arrivedAtStaging)
                         allReady = false;
                 }
-                if (allReady || inst.state.PhaseElapsedMs(nowMs) >= 15000)
+                if (allReady || inst.state.PhaseElapsedMs(nowMs) >= 12000)
+                {
+                    part.subStateEnteredAtMs = nowMs;
                     inst.state.TransitionTo(EncounterPhase::Active, nowMs);
+                }
             }
             else
             {
                 float d = Dist2D(bot, leader);
-                if (d <= 18.0f)
+                if (d <= 16.0f)
+                {
                     part.arrivedAtStaging = true;
+                    part.moveToken = BotMovement::Follow(bot, MoveOwner::Encounter, leader, slotDist, slotAngle);
+                }
                 else
                 {
-                    uint64 goalId = (inst.id << 8) | 1u;
-                    BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
-                        leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), 12.0f, &part.moveToken, true);
+                    if (part.navGoalId == 0)
+                        part.navGoalId = (inst.id << 8) | 1u;
+                    NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
+                        leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), 10.0f, &part.moveToken, true);
+                    if (nav == NavStatus::Stuck)
+                        part.retreated = true;
                 }
             }
             return;
@@ -412,12 +440,45 @@ namespace EncounterHandlers
             // Assist leader if leader is fighting
             if (leader->IsInCombat() && leader->GetVictim() && bot != leader)
             {
+                part.assignedTargetGuid = leader->GetVictim()->GetGUID();
+                part.engagedInCombat = true;
                 EngagePvPOrCreature(bot, leader->GetVictim());
                 return;
             }
 
             if (part.role == EncounterRole::CaravanLeader)
             {
+                // Pace control: check follower distances so caravan does not accordion-stretch across the zone
+                float maxFollowerDist = 0.0f;
+                for (auto& m : inst.participants)
+                {
+                    if (m.botGuid == bot->GetGUID() || m.retreated)
+                        continue;
+                    if (Player* member = ObjectAccessor::FindConnectedPlayer(m.botGuid))
+                    {
+                        if (member->GetMapId() == bot->GetMapId() && member->IsAlive())
+                        {
+                            float fd = Dist2D(bot, member);
+                            if (fd > 130.0f)
+                            {
+                                // Cleanly drop extreme straggler
+                                m.retreated = true;
+                                continue;
+                            }
+                            if (fd > maxFollowerDist)
+                                maxFollowerDist = fd;
+                        }
+                    }
+                }
+
+                if (maxFollowerDist > 35.0f && (nowMs - part.subStateEnteredAtMs) < 6000)
+                {
+                    BotMovement::Stop(bot, part.moveToken);
+                    return;
+                }
+                if (maxFollowerDist <= 22.0f)
+                    part.subStateEnteredAtMs = nowMs;
+
                 float wx = inst.destX;
                 float wy = inst.destY;
                 float wz = inst.destZ;
@@ -445,11 +506,28 @@ namespace EncounterHandlers
             else
             {
                 float d = Dist2D(bot, leader);
-                if (d > 10.0f)
+                if (d > 130.0f)
                 {
-                    uint64 goalId = (inst.id << 8) + 50u + (nowMs / 2500u);
-                    BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
-                        leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), 7.0f, &part.moveToken, true);
+                    part.retreated = true;
+                    return;
+                }
+                if (d <= 45.0f)
+                {
+                    part.moveToken = BotMovement::Follow(bot, MoveOwner::Encounter, leader, slotDist, slotAngle);
+                }
+                else
+                {
+                    if (part.navGoalId == 0 || Dist2DPoint(leader, part.lastNavTargetX, part.lastNavTargetY) > 15.0f)
+                    {
+                        part.lastNavTargetX = leader->GetPositionX();
+                        part.lastNavTargetY = leader->GetPositionY();
+                        part.lastNavTargetZ = leader->GetPositionZ();
+                        part.navGoalId = (inst.id << 8) + 50u + (++part.subState);
+                    }
+                    NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
+                        part.lastNavTargetX, part.lastNavTargetY, part.lastNavTargetZ, 8.0f, &part.moveToken, true);
+                    if (nav == NavStatus::Stuck)
+                        part.retreated = true;
                 }
             }
             return;
@@ -534,8 +612,20 @@ namespace EncounterHandlers
             return;
         }
 
+        uint32 followerIdx = 0;
+        for (auto const& p : inst.participants)
+        {
+            if (p.botGuid == bot->GetGUID())
+                break;
+            if (p.role != EncounterRole::RivalLeader)
+                ++followerIdx;
+        }
+        float slotDist = 4.5f + float(followerIdx / 2u) * 3.5f;
+        float slotAngle = (followerIdx % 2u == 0) ? 2.40f : -2.40f;
+
         if (inst.state.phase == EncounterPhase::Prepare)
         {
+            part.subStateEnteredAtMs = nowMs;
             inst.state.TransitionTo(EncounterPhase::Active, nowMs);
             return;
         }
@@ -548,6 +638,8 @@ namespace EncounterHandlers
             // If leader is fighting a mob, members assist
             if (leader->IsInCombat() && leader->GetVictim() && bot != leader)
             {
+                part.assignedTargetGuid = leader->GetVictim()->GetGUID();
+                part.engagedInCombat = true;
                 EngagePvPOrCreature(bot, leader->GetVictim());
                 return;
             }
@@ -573,10 +665,42 @@ namespace EncounterHandlers
                     part.lastActionMs = nowMs;
                     if (Creature* mob = FindNearbyHostileMobForParty(bot, 24.0f))
                     {
+                        part.assignedTargetGuid = mob->GetGUID();
+                        part.engagedInCombat = true;
                         EngagePvPOrCreature(bot, mob);
                         return;
                     }
                 }
+
+                // Pace control: keep party together
+                float maxFollowerDist = 0.0f;
+                for (auto& m : inst.participants)
+                {
+                    if (m.botGuid == bot->GetGUID() || m.retreated)
+                        continue;
+                    if (Player* member = ObjectAccessor::FindConnectedPlayer(m.botGuid))
+                    {
+                        if (member->GetMapId() == bot->GetMapId() && member->IsAlive())
+                        {
+                            float fd = Dist2D(bot, member);
+                            if (fd > 130.0f)
+                            {
+                                m.retreated = true;
+                                continue;
+                            }
+                            if (fd > maxFollowerDist)
+                                maxFollowerDist = fd;
+                        }
+                    }
+                }
+
+                if (maxFollowerDist > 35.0f && (nowMs - part.subStateEnteredAtMs) < 6000)
+                {
+                    BotMovement::Stop(bot, part.moveToken);
+                    return;
+                }
+                if (maxFollowerDist <= 22.0f)
+                    part.subStateEnteredAtMs = nowMs;
 
                 uint64 goalId = (inst.id << 8) | 10u;
                 NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, goalId, inst.destX, inst.destY, inst.destZ, 15.0f, &part.moveToken, true);
@@ -588,11 +712,28 @@ namespace EncounterHandlers
             else
             {
                 float d = Dist2D(bot, leader);
-                if (d > 9.0f)
+                if (d > 130.0f)
                 {
-                    uint64 goalId = (inst.id << 8) + 30u + (nowMs / 2500u);
-                    BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
-                        leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), 6.5f, &part.moveToken, true);
+                    part.retreated = true;
+                    return;
+                }
+                if (d <= 45.0f)
+                {
+                    part.moveToken = BotMovement::Follow(bot, MoveOwner::Encounter, leader, slotDist, slotAngle);
+                }
+                else
+                {
+                    if (part.navGoalId == 0 || Dist2DPoint(leader, part.lastNavTargetX, part.lastNavTargetY) > 15.0f)
+                    {
+                        part.lastNavTargetX = leader->GetPositionX();
+                        part.lastNavTargetY = leader->GetPositionY();
+                        part.lastNavTargetZ = leader->GetPositionZ();
+                        part.navGoalId = (inst.id << 8) + 30u + (++part.subState);
+                    }
+                    NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
+                        part.lastNavTargetX, part.lastNavTargetY, part.lastNavTargetZ, 7.5f, &part.moveToken, true);
+                    if (nav == NavStatus::Stuck)
+                        part.retreated = true;
                 }
             }
             return;

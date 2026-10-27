@@ -93,6 +93,7 @@
 #include "BotZoneProgression.h"
 #include "WorldBrain.h"
 #include "WorldParties.h"
+#include "encounters/WorldEncounterDirector.h"
 #include "GameTime.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -3757,22 +3758,28 @@ void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
     // Persistent half-hour lean (personality + session variety); the brain uses it as a bias.
     UpdateSoloIntent(bot, diff, state);
 
-    // A trip to town to sell (BotEconomy.h) owns the tick while the bot is walking there.
-    if (BotEconomy::UpdateTrip(bot, diff))
-    {
-        WorldBrain::NotifyAmbientBusy(bot);
-        return;
-    }
-
     AmbientProfile ambientProfile = MakeAmbientProfile(bot, state);
-    AmbientTick ambient = BotWorldBehavior::UpdateBeforeSolo(bot, ambientProfile);
-    if (ambient == AmbientTick::Busy)
+
+    // While a bot is actively owned by a Dynamic Bot Encounter, do not let economy errands or
+    // ambient solo idles preempt the encounter before WorldBrain::Update dispatches UpdateBot.
+    if (!WorldEncounterDirector::IsBotInEncounter(bot->GetGUID()))
     {
-        WorldBrain::NotifyAmbientBusy(bot);
-        return;
+        // A trip to town to sell (BotEconomy.h) owns the tick while the bot is walking there.
+        if (BotEconomy::UpdateTrip(bot, diff))
+        {
+            WorldBrain::NotifyAmbientBusy(bot);
+            return;
+        }
+
+        AmbientTick ambient = BotWorldBehavior::UpdateBeforeSolo(bot, ambientProfile);
+        if (ambient == AmbientTick::Busy)
+        {
+            WorldBrain::NotifyAmbientBusy(bot);
+            return;
+        }
+        if (ambient == AmbientTick::Relocated)
+            state.hasGrindAnchor = false;
     }
-    if (ambient == AmbientTick::Relocated)
-        state.hasGrindAnchor = false;
 
     WorldDirective directive = WorldBrain::Update(bot, diff, MakeWorldPersona(bot, state));
     if (directive != WorldDirective::Fish)

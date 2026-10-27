@@ -627,6 +627,14 @@ namespace WorldBrain
             WorldExecutor::ResumeTask(bot, state);
         }
 
+        // Safety invariant: never leave a valid task paused when no pause owner is active
+        if (state.task.IsValid() && state.task.paused &&
+            !state.suspended && !state.pausedByEncounter && !state.pausedBySocial &&
+            !state.opportunityActive && !extra.pausedByAmbient)
+        {
+            WorldExecutor::ResumeTask(bot, state);
+        }
+
         if (state.task.IsValid())
         {
             if (now >= state.task.deadlineMs)
@@ -814,7 +822,14 @@ namespace WorldBrain
         extra.deathHandled = true;
 
         BrainState& state = itr->second;
-        state.pausedByEncounter = false;
+        if (state.pausedByEncounter || state.pausedBySocial || extra.pausedByAmbient)
+        {
+            state.pausedByEncounter = false;
+            state.pausedBySocial = false;
+            extra.pausedByAmbient = false;
+            if (state.task.IsValid())
+                WorldExecutor::ResumeTask(bot, state);
+        }
         // Dying on a detour ends the detour; the task is resumed (not left paused) and recovers
         // like any other death. The corpse run itself is the task's own business (the brain-gap
         // rule takes it off the phase clock).

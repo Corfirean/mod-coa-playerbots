@@ -103,6 +103,7 @@ struct EncounterParticipant
     float originalHealthPct = 100.0f;
     float lastNavTargetX = 0.0f;
     float lastNavTargetY = 0.0f;
+    float lastNavTargetZ = 0.0f;
     uint32 subState = 0;
     uint32 subStateEnteredAtMs = 0;
 
