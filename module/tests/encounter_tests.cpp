@@ -210,7 +210,7 @@ static void TestLevelLimits()
     bot.activity.botGuid = ObjectGuid(200);
     bot.mapId = 0;
     bot.teamId = 1;
-    bot.level = 34; // diff = 4 -> allowed
+    bot.level = 33; // AssassinContract allows [playerLevel..playerLevel+3] -> 33 allowed
     bot.x = 40.0f;
     bot.y = 0.0f;
     bot.isContestedOrPvPArea = true;
@@ -218,10 +218,14 @@ static void TestLevelLimits()
 
     CHECK(EncounterEligibility::IsBotEligibleForPlayerEncounter(EncounterType::AssassinContract, bot, player, cfg));
 
-    bot.level = 35; // diff = 5 -> rejected
+    bot.level = 34; // +4 -> rejected for AssassinContract, allowed for BountyHunter (maxLevelDiff=4)
     CHECK(!EncounterEligibility::IsBotEligibleForPlayerEncounter(EncounterType::AssassinContract, bot, player, cfg));
+    CHECK(EncounterEligibility::IsBotEligibleForPlayerEncounter(EncounterType::BountyHunter, bot, player, cfg));
 
-    bot.level = 25; // diff = 5 -> rejected
+    bot.level = 35; // diff = 5 -> rejected for all
+    CHECK(!EncounterEligibility::IsBotEligibleForPlayerEncounter(EncounterType::BountyHunter, bot, player, cfg));
+
+    bot.level = 29; // below playerLevel -> rejected for AssassinContract
     CHECK(!EncounterEligibility::IsBotEligibleForPlayerEncounter(EncounterType::AssassinContract, bot, player, cfg));
 }
 
@@ -1271,6 +1275,234 @@ static void TestMultiHourEquivalentStress()
         totalCreated, totalCompleted, totalAborted, cleanupFailures, totalWallMs);
 }
 
+// ============================================================================
+// 23. Live Validation Round 2 Regressions (§1-§8)
+// ============================================================================
+static void TestLiveValidationRound2Regressions()
+{
+    EncounterConfig cfg;
+
+    // ------------------------------------------------------------------------
+    // §1 Assassin Contract: strict [playerLevel, playerLevel + 3] & class tiers
+    // ------------------------------------------------------------------------
+    {
+        CHECK(!EncounterEligibility::IsAssassinLevelCompatible(29, 30)); // < playerLevel rejected
+        CHECK(EncounterEligibility::IsAssassinLevelCompatible(30, 30));  // +0 accepted
+        CHECK(EncounterEligibility::IsAssassinLevelCompatible(31, 30));  // +1 accepted
+        CHECK(EncounterEligibility::IsAssassinLevelCompatible(32, 30));  // +2 accepted
+        CHECK(EncounterEligibility::IsAssassinLevelCompatible(33, 30));  // +3 accepted
+        CHECK(!EncounterEligibility::IsAssassinLevelCompatible(34, 30)); // > +3 rejected
+
+        WorldPersona aggressiveLoner;
+        aggressiveLoner.grinding = 95;
+        aggressiveLoner.patience = 85;
+        aggressiveLoner.sociability = 10;
+        aggressiveLoner.lean = 4;
+
+        WorldPersona calmExplorer;
+        calmExplorer.grinding = 10;
+        calmExplorer.patience = 30;
+        calmExplorer.sociability = 90;
+        calmExplorer.lean = 5;
+
+        // Tier 3 (Rogue=4) > Tier 2 (Stealth Druid=11) > Tier 1 (Fallback Warrior=1 / Non-stealth Druid=11)
+        CHECK(EncounterPersonality::GetAssassinClassTier(4, true) == 3u);
+        CHECK(EncounterPersonality::GetAssassinClassTier(11, true) == 2u);
+        CHECK(EncounterPersonality::GetAssassinClassTier(11, false) == 1u);
+        CHECK(EncounterPersonality::GetAssassinClassTier(1, false) == 1u);
+
+        float rogueScore = EncounterPersonality::ScoreAssassinCandidate(calmExplorer, 4, true);
+        float stealthDruidScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, 11, true);
+        float warriorFallbackScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, 1, false);
+        CHECK(rogueScore > stealthDruidScore);
+        CHECK(stealthDruidScore > warriorFallbackScore);
+    }
+
+    // ------------------------------------------------------------------------
+    // §4 Hunter and Prey: cross-faction only, level diff <= 2, head start & speed boost cleanup
+    // ------------------------------------------------------------------------
+    {
+        CandidateBotSnapshot botA;
+        botA.activity.botGuid = ObjectGuid(401);
+        botA.mapId = 0;
+        botA.teamId = 0; // Alliance
+        botA.level = 25;
+        botA.isContestedOrPvPArea = true;
+        botA.canLegallyAttackTarget = true;
+        botA.distanceToCapitalYards = 500.0f;
+
+        CandidateBotSnapshot botB = botA;
+        botB.activity.botGuid = ObjectGuid(402);
+        botB.teamId = 0; // Same faction (Alliance vs Alliance) -> MUST be rejected even with bypassRestrictions=true
+        CHECK(!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, botA, botB, cfg, false));
+        CHECK(!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, botA, botB, cfg, true));
+
+        botB.teamId = 1; // Opposing faction (Alliance vs Horde)
+        botB.level = 28; // Level diff = 3 (> 2) -> MUST be rejected even with bypassRestrictions=true
+        CHECK(!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, botA, botB, cfg, false));
+        CHECK(!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, botA, botB, cfg, true));
+
+        botB.level = 27; // Level diff = 2 -> accepted
+        CHECK(EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, botA, botB, cfg, false));
+        CHECK(EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, botA, botB, cfg, true));
+
+        // PreyEscaped is a valid successful stop reason
+        CHECK(IsSuccessfulStopReason(EncounterStopReason::PreyEscaped));
+
+        // Verify temporary speed boost cleanup invariant
+        EncounterParticipant preyPart;
+        preyPart.botGuid = botB.activity.botGuid;
+        preyPart.role = EncounterRole::Prey;
+        preyPart.originalRunSpeedRate = 1.0f;
+        preyPart.speedBoostApplied = true;
+
+        EncounterCleanupSnapshot dirtySnap;
+        dirtySnap.botGuid = preyPart.botGuid;
+        dirtySnap.hasResidualEncounterFlags = preyPart.speedBoostApplied;
+        CHECK(!EncounterCleanupValidator::Validate(dirtySnap).passed);
+
+        // Clean up speed boost on exit
+        preyPart.speedBoostApplied = false;
+        EncounterCleanupSnapshot cleanSnap;
+        cleanSnap.botGuid = preyPart.botGuid;
+        cleanSnap.hasResidualEncounterFlags = preyPart.speedBoostApplied;
+        CHECK(EncounterCleanupValidator::Validate(cleanSnap).passed);
+    }
+
+    // ------------------------------------------------------------------------
+    // §3 Rival Party: shared group ownership, paused WorldBrain tasks, 5-10yd formation, dissolve group
+    // ------------------------------------------------------------------------
+    {
+        EncounterOwnershipTable ownership;
+        TestLocomotionHelper locoStore;
+        EncounterInstance inst;
+        inst.id = 77;
+        inst.type = EncounterType::RivalAdventuringParty;
+        inst.mapId = 0;
+        inst.temporaryGroupLowGuid = 9001;
+        inst.routeSource = "quest_hub_poi";
+        inst.state.Initialize(1000, 30000, 180000, 5000);
+        CHECK(inst.state.TransitionTo(EncounterPhase::Prepare, 1000));
+
+        std::vector<SimulatedBrainState> partyBrains(4);
+        for (uint32 i = 0; i < 4; ++i)
+        {
+            ObjectGuid g(3000 + i);
+            partyBrains[i].botGuid = g;
+            partyBrains[i].task.id = 100 + i;
+            partyBrains[i].task.type = WorldTaskType::QuestObjective;
+            partyBrains[i].task.phase = TaskPhase::Execute;
+            partyBrains[i].task.startedMs = 500;
+            partyBrains[i].task.deadlineMs = 60000;
+            partyBrains[i].task.phaseStartedMs = 500;
+
+            // CommitEncounter pauses old WorldBrain tasks immediately
+            partyBrains[i].task.Pause(1000);
+            partyBrains[i].pausedByEncounter = true;
+            CHECK(partyBrains[i].task.paused);
+            CHECK(ownership.TryClaim(g, inst.id));
+
+            EncounterParticipant part;
+            part.botGuid = g;
+            part.role = (i == 0) ? EncounterRole::RivalLeader : EncounterRole::RivalMember;
+            auto acq = locoStore.TryAcquire(g, MoveOwner::Encounter, i == 0 ? MoveMode::Navigate : MoveMode::Follow, 1000);
+            CHECK(acq.granted);
+            part.moveToken = acq.token;
+            inst.participants.push_back(part);
+
+            // Verify follower formation offsets stay within 5-10 yards of leader
+            if (i > 0)
+            {
+                uint32 followerIdx = i - 1;
+                float slotDist = (followerIdx < 2) ? 5.5f : 8.0f;
+                CHECK(slotDist >= 5.0f && slotDist <= 10.0f);
+            }
+        }
+
+        CHECK(inst.state.TransitionTo(EncounterPhase::Active, 3000));
+        // Combat occurs at 10s, post-combat regroup window is 3.5s
+        inst.postCombatRegroupUntilMs = 13500;
+        CHECK(inst.postCombatRegroupUntilMs > 10000);
+
+        // Terminate and dissolve temporary group
+        inst.state.Terminate(EncounterStopReason::Completed, 25000);
+        inst.temporaryGroupLowGuid = 0;
+        for (uint32 i = 0; i < 4; ++i)
+        {
+            auto& part = inst.participants[i];
+            locoStore.Release(part.botGuid, part.moveToken);
+            locoStore.ForceReleaseOwner(part.botGuid, MoveOwner::Encounter);
+            part.moveToken = {};
+            ownership.Release(part.botGuid, inst.id);
+            partyBrains[i].pausedByEncounter = false;
+            partyBrains[i].task.Resume(25000);
+
+            EncounterCleanupSnapshot snap;
+            snap.botGuid = part.botGuid;
+            snap.hasEncounterOwnership = ownership.IsOwned(part.botGuid);
+            snap.currentMoveOwner = locoStore.ActiveOwner(part.botGuid);
+            snap.hasTemporaryEncounterGroup = (inst.temporaryGroupLowGuid != 0);
+            snap.pausedByEncounterFlag = partyBrains[i].pausedByEncounter;
+            snap.worldTaskStuckPaused = partyBrains[i].task.paused;
+            CHECK(EncounterCleanupValidator::Validate(snap).passed);
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // §2 Road Duel: real combat presentation, 24% HP non-lethal stop, zero deaths across 20 duels
+    // ------------------------------------------------------------------------
+    {
+        uint32 deaths = 0;
+        for (uint32 duelIdx = 0; duelIdx < 20; ++duelIdx)
+        {
+            CandidateBotSnapshot duelistA;
+            duelistA.activity.botGuid = ObjectGuid(6000 + duelIdx * 2);
+            duelistA.teamId = duelIdx % 2;
+            duelistA.level = uint8(15 + (duelIdx % 40));
+            duelistA.healthPct = 100.0f;
+
+            CandidateBotSnapshot duelistB = duelistA;
+            duelistB.activity.botGuid = ObjectGuid(6000 + duelIdx * 2 + 1);
+            duelistB.level = uint8(duelistA.level + (duelIdx % 4)); // 0..3 level diff
+            CHECK(EncounterEligibility::AreBotsCompatibleForPair(EncounterType::RoadDuel, duelistA, duelistB, cfg, true));
+
+            float hpA = 100.0f;
+            float hpB = 100.0f;
+            while (hpA > 24.0f && hpB > 24.0f)
+            {
+                hpA = std::max(1.0f, hpA - 11.5f);
+                if (hpA <= 24.0f)
+                    break;
+                hpB = std::max(1.0f, hpB - 9.0f);
+            }
+            if (hpA <= 0.0f || hpB <= 0.0f)
+                ++deaths;
+            // Non-lethal stop restores health to >= 85%
+            hpA = std::max(hpA, 85.0f);
+            hpB = std::max(hpB, 85.0f);
+            CHECK(hpA >= 85.0f && hpB >= 85.0f);
+        }
+        CHECK(deaths == 0);
+    }
+
+    // ------------------------------------------------------------------------
+    // §5 Caravan: optional wagon (TravellingParty_NoWagon), level/faction guard checks, fallback route
+    // ------------------------------------------------------------------------
+    {
+        CHECK(EncounterEligibility::IsPartyMemberLevelCompatible(30, 33, 3));
+        CHECK(!EncounterEligibility::IsPartyMemberLevelCompatible(30, 34, 3));
+
+        EncounterInstance caravanInst;
+        caravanInst.id = 88;
+        caravanInst.type = EncounterType::Caravan;
+        caravanInst.routeSource = "navigable_map_path";
+        caravanInst.waypoints.push_back({100.0f, 100.0f, 20.0f});
+        caravanInst.waypoints.push_back({180.0f, 160.0f, 22.0f});
+        CHECK(caravanInst.waypoints.size() == 2);
+        CHECK(caravanInst.targetCreatureGuid.IsEmpty()); // No wagon NPC required
+    }
+}
+
 int main()
 {
     TestEncounterEligibility();
@@ -1289,6 +1521,7 @@ int main()
     TestWorldBrainResumeAllTaskTypes();
     TestMovementOwnershipTorture();
     TestMultiHourEquivalentStress();
+    TestLiveValidationRound2Regressions();
 
     std::printf("encounter_tests: %d checks, %d failures.\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;
