@@ -1241,6 +1241,39 @@ namespace
             uint32 maxCount = (type == EncounterType::Caravan) ? cfg.caravanMaxMembers : cfg.rivalPartyMaxMembers;
             minCount = std::max<uint32>(minCount, 3u);
 
+            char const* buildLabel = (type == EncounterType::Caravan) ? "Caravan" : "RivalAdventuringParty";
+            if (freeBots.size() < minCount)
+            {
+                outReason = Acore::StringFormat(
+                    "{} build failed: not enough guards (need {} available bots, found {})",
+                    buildLabel, minCount, uint32(freeBots.size()));
+                if (_debugLogging || bypassBudgetAndCooldown)
+                    LOG_INFO("module.coa-playerbots.world", "{}", outReason);
+                return false;
+            }
+
+            uint32 maxSameFaction = 0;
+            for (Player* candidateLeader : freeBots)
+            {
+                uint32 sameFac = 0;
+                for (Player* m : freeBots)
+                {
+                    if (m->GetTeamId() == candidateLeader->GetTeamId())
+                        ++sameFac;
+                }
+                if (sameFac > maxSameFaction)
+                    maxSameFaction = sameFac;
+            }
+            if (maxSameFaction < minCount)
+            {
+                outReason = Acore::StringFormat(
+                    "{} build failed: no faction-compatible guards (need {} same-faction bots, found {})",
+                    buildLabel, minCount, maxSameFaction);
+                if (_debugLogging || bypassBudgetAndCooldown)
+                    LOG_INFO("module.coa-playerbots.world", "{}", outReason);
+                return false;
+            }
+
             std::vector<Player*> selectedParty;
             for (Player* candidateLeader : freeBots)
             {
@@ -1267,8 +1300,10 @@ namespace
             if (selectedParty.size() < minCount)
             {
                 outReason = Acore::StringFormat(
-                    "{} build failed: need at least {} same-faction bots within +/-3 levels (found {})",
-                    EncounterTypeName(type), minCount, uint32(selectedParty.size()));
+                    "{} build failed: not enough guards within +/-3 levels (need {}, found {})",
+                    buildLabel, minCount, uint32(selectedParty.size()));
+                if (_debugLogging || bypassBudgetAndCooldown)
+                    LOG_INFO("module.coa-playerbots.world", "{}", outReason);
                 return false;
             }
 
@@ -1280,7 +1315,11 @@ namespace
             inst.zoneId = anchorUnit->GetZoneId();
             inst.areaId = anchorUnit->GetAreaId();
             inst.targetPlayerGuid = optionalPlayerGuid;
-            inst.routeSource = "forward_navigable_path";
+
+            float startX = leader->GetPositionX();
+            float startY = leader->GetPositionY();
+            float startZ = leader->GetPositionZ();
+            float preferredHeading = leader->GetOrientation();
 
             if (bypassBudgetAndCooldown)
             {
@@ -1288,57 +1327,118 @@ namespace
                 float fwdX = std::cos(aOri);
                 float fwdY = std::sin(aOri);
 
-                inst.centerX = anchorUnit->GetPositionX() + fwdX * 8.0f;
-                inst.centerY = anchorUnit->GetPositionY() + fwdY * 8.0f;
-                inst.centerZ = anchorUnit->GetPositionZ();
-
-                inst.destX = inst.centerX + fwdX * 65.0f;
-                inst.destY = inst.centerY + fwdY * 65.0f;
-                inst.destZ = inst.centerZ;
-                if (anchorUnit->GetMap())
-                {
-                    float gz = anchorUnit->GetMap()->GetHeight(anchorUnit->GetPhaseMask(), inst.destX, inst.destY, inst.destZ + 12.0f);
-                    if (gz > INVALID_HEIGHT)
-                        inst.destZ = gz;
-                }
+                startX = anchorUnit->GetPositionX() + fwdX * 8.0f;
+                startY = anchorUnit->GetPositionY() + fwdY * 8.0f;
+                startZ = anchorUnit->GetPositionZ();
+                preferredHeading = aOri;
 
                 for (size_t pIdx = 0; pIdx < selectedParty.size(); ++pIdx)
                 {
                     float stageDist = 8.0f + float(pIdx) * 3.5f;
                     float px = anchorUnit->GetPositionX() + fwdX * stageDist;
                     float py = anchorUnit->GetPositionY() + fwdY * stageDist;
-                    selectedParty[pIdx]->TeleportTo(mapId, px, py, inst.centerZ, aOri);
+                    float pz = startZ;
+                    if (anchorUnit->GetMap())
+                    {
+                        float gz = anchorUnit->GetMap()->GetHeight(anchorUnit->GetPhaseMask(), px, py, pz + 12.0f);
+                        if (gz > INVALID_HEIGHT)
+                            pz = gz;
+                    }
+                    selectedParty[pIdx]->TeleportTo(mapId, px, py, pz, aOri);
                     sBotMgr->QueueTeleportAck(selectedParty[pIdx]->GetSession());
                 }
             }
-            else
-            {
-                inst.centerX = leader->GetPositionX();
-                inst.centerY = leader->GetPositionY();
-                inst.centerZ = leader->GetPositionZ();
 
-                // Choose a destination hub or POI ~90..220 yards away
-                float angle = float(NextRand() % 628) / 100.0f;
-                inst.destX = leader->GetPositionX() + std::cos(angle) * 110.0f;
-                inst.destY = leader->GetPositionY() + std::sin(angle) * 110.0f;
-                inst.destZ = leader->GetPositionZ();
-                std::vector<Poi const*> vendorPois;
-                BotWorldPoi::Query(mapId, leader->GetPositionX(), leader->GetPositionY(), 450.0f, PoiKind::Vendor, vendorPois);
-                for (Poi const* poi : vendorPois)
+            inst.centerX = startX;
+            inst.centerY = startY;
+            inst.centerZ = startZ;
+
+            // 5-tier route selection fallback hierarchy (§5):
+            // 1. Road/Hub POI (FlightMaster / Innkeeper)
+            // 2. Vendor / Repair POI
+            // 3. Quest/Service Hub POI (Mailbox / ProfessionTrainer)
+            // 4. Settlement POI (Banker / Auctioneer)
+            // 5. Navigable multi-waypoint path on current map (80-120yd ahead)
+            bool routeFound = false;
+            auto tryQueryPoiRoute = [&](PoiKind k1, PoiKind k2, char const* sourceLabel) -> bool
+            {
+                PoiKind kinds[2] = {k1, k2};
+                for (PoiKind k : kinds)
                 {
-                    if (!poi)
-                        continue;
-                    float d = Dist2D(leader->GetPositionX(), leader->GetPositionY(), poi->x, poi->y);
-                    if (d >= 70.0f && d <= 450.0f)
+                    std::vector<Poi const*> pois;
+                    BotWorldPoi::Query(mapId, startX, startY, 450.0f, k, pois);
+                    for (Poi const* poi : pois)
                     {
-                        inst.destX = poi->x;
-                        inst.destY = poi->y;
-                        inst.destZ = poi->z;
-                        inst.routeSource = "vendor_poi";
-                        break;
+                        if (!poi)
+                            continue;
+                        float d = Dist2D(startX, startY, poi->x, poi->y);
+                        if (d >= 60.0f && d <= 450.0f)
+                        {
+                            inst.destX = poi->x;
+                            inst.destY = poi->y;
+                            inst.destZ = poi->z;
+                            inst.routeSource = sourceLabel;
+                            return true;
+                        }
                     }
                 }
+                return false;
+            };
+
+            if (!bypassBudgetAndCooldown)
+            {
+                routeFound = tryQueryPoiRoute(PoiKind::FlightMaster, PoiKind::Innkeeper, "road_hub_poi") ||
+                             tryQueryPoiRoute(PoiKind::Vendor, PoiKind::Repair, "vendor_poi") ||
+                             tryQueryPoiRoute(PoiKind::Mailbox, PoiKind::ProfessionTrainer, "quest_hub_poi") ||
+                             tryQueryPoiRoute(PoiKind::Banker, PoiKind::Auctioneer, "settlement_poi");
             }
+
+            if (!routeFound)
+            {
+                Map* routeMap = anchorUnit->GetMap();
+                uint32 phaseMask = anchorUnit->GetPhaseMask();
+                float chosenDist = bypassBudgetAndCooldown ? 75.0f : 105.0f;
+                for (uint32 step = 0; step < 8u; ++step)
+                {
+                    float candidateAngle = preferredHeading + float(step) * (3.14159265f * 0.25f);
+                    float cx = startX + std::cos(candidateAngle) * chosenDist;
+                    float cy = startY + std::sin(candidateAngle) * chosenDist;
+                    float cz = startZ;
+                    if (routeMap)
+                    {
+                        float gz = routeMap->GetHeight(phaseMask, cx, cy, startZ + 18.0f);
+                        if (gz <= INVALID_HEIGHT || std::abs(gz - startZ) > 32.0f)
+                            continue;
+                        cz = gz;
+                    }
+                    inst.destX = cx;
+                    inst.destY = cy;
+                    inst.destZ = cz;
+                    inst.routeSource = "navigable_map_path";
+                    routeFound = true;
+                    break;
+                }
+            }
+
+            if (!routeFound)
+            {
+                outReason = Acore::StringFormat("{} build failed: no route or destination invalid", buildLabel);
+                if (_debugLogging || bypassBudgetAndCooldown)
+                    LOG_INFO("module.coa-playerbots.world", "{}", outReason);
+                return false;
+            }
+
+            // Build a 2-waypoint route (midpoint + final destination) so caravan/party marches smoothly
+            float midX = (startX + inst.destX) * 0.5f;
+            float midY = (startY + inst.destY) * 0.5f;
+            float midZ = (startZ + inst.destZ) * 0.5f;
+            if (anchorUnit->GetMap())
+            {
+                float mgz = anchorUnit->GetMap()->GetHeight(anchorUnit->GetPhaseMask(), midX, midY, midZ + 15.0f);
+                if (mgz > INVALID_HEIGHT)
+                    midZ = mgz;
+            }
+            inst.waypoints.push_back({midX, midY, midZ});
             inst.waypoints.push_back({inst.destX, inst.destY, inst.destZ});
 
             EncounterRole leadRole = (type == EncounterType::Caravan) ? EncounterRole::CaravanLeader : EncounterRole::RivalLeader;
@@ -1360,17 +1460,22 @@ namespace
             std::string routeSrc = inst.routeSource;
             float routeX = inst.destX;
             float routeY = inst.destY;
+            uint32 wpCount = uint32(inst.waypoints.size());
 
             uint64 id = CommitEncounter(std::move(inst), nowMs);
             if (_debugLogging || bypassBudgetAndCooldown)
             {
                 LOG_INFO("module.coa-playerbots.world",
-                    "Encounter #{} START type={} leader={}({}) lvl={} members={} tempGroup={} routeSource={} dest=({:.1f},{:.1f})",
-                    id, EncounterTypeName(type), leadName, leader->GetGUID().GetCounter(), uint32(leadLvl),
-                    count, tempGrp, routeSrc, routeX, routeY);
+                    "Encounter #{} START type={} mode={} leader={}({}) lvl={} members={} tempGroup={} routeSource={} waypoints={} dest=({:.1f},{:.1f})",
+                    id,
+                    EncounterTypeName(type),
+                    type == EncounterType::Caravan ? "TravellingParty_NoWagon" : "AdventuringParty",
+                    leadName, leader->GetGUID().GetCounter(), uint32(leadLvl),
+                    count, tempGrp, routeSrc, wpCount, routeX, routeY);
             }
-            outReason = Acore::StringFormat("Started {} (#{}) with {} bots (leader={} lvl={} tempGroup={})",
-                EncounterTypeName(type), id, count, leadName, uint32(leadLvl), tempGrp);
+            outReason = Acore::StringFormat(
+                "Started {} (#{}) with {} bots (leader={} lvl={} tempGroup={} route={})",
+                EncounterTypeName(type), id, count, leadName, uint32(leadLvl), tempGrp, routeSrc);
             return true;
         }
 
