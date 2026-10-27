@@ -92,12 +92,16 @@ public:
         return it != _playerBountyCooldownUntilMs.end() && it->second > nowMs;
     }
 
-    void OnEncounterStarted(EncounterType type, uint32 mapId, ObjectGuid targetPlayerGuid)
+    void OnEncounterStarted(EncounterType type, uint32 mapId, ObjectGuid targetPlayerGuid, EncounterConfig const* cfg = nullptr, uint32 nowMs = 0)
     {
         ++_globalActive;
         ++_mapActive[mapId];
         if (!targetPlayerGuid.IsEmpty())
+        {
             ++_playerActive[targetPlayerGuid];
+            if (type == EncounterType::BountyHunter && cfg != nullptr && nowMs != 0)
+                _playerBountyCooldownUntilMs[targetPlayerGuid] = nowMs + cfg->bountyCooldownMs;
+        }
         (void)type;
     }
 

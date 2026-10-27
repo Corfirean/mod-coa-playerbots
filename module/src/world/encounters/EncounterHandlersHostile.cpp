@@ -150,6 +150,8 @@ namespace EncounterHandlers
                                    (dist <= 22.0f && inst.stalkAccumulatedMs >= 2500 && (target->IsInCombat() || !target->IsStandState()));
             if (opportuneMoment)
             {
+                part.assignedTargetGuid = target->GetGUID();
+                part.engagedInCombat = true;
                 inst.state.TransitionTo(EncounterPhase::Active, nowMs);
                 EngagePvPOrCreature(bot, target);
                 return;
@@ -414,6 +416,8 @@ namespace EncounterHandlers
                 {
                     if (Dist2D(bot, enemy) <= 32.0f)
                     {
+                        part.assignedTargetGuid = enemy->GetGUID();
+                        part.engagedInCombat = true;
                         inst.state.TransitionTo(EncounterPhase::Active, nowMs);
                         EngagePvPOrCreature(bot, enemy);
                         return;
@@ -453,12 +457,20 @@ namespace EncounterHandlers
                 inst.introNarrated = true;
             }
 
+            // Do not compete with BotAI combat movement once in combat; only close gap when out of combat
             if (!bot->IsInCombat())
             {
+                part.assignedTargetGuid = enemy->GetGUID();
+                part.engagedInCombat = true;
                 if (Dist2D(bot, enemy) > 18.0f)
                 {
-                    uint64 goalId = (inst.id << 8) + 10u + (nowMs / 2500u);
-                    BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
+                    if (part.navGoalId == 0 || Dist2DPoint(enemy, part.lastNavTargetX, part.lastNavTargetY) > 12.0f)
+                    {
+                        part.lastNavTargetX = enemy->GetPositionX();
+                        part.lastNavTargetY = enemy->GetPositionY();
+                        part.navGoalId = (inst.id << 8) + 10u + (++inst.subStage);
+                    }
+                    BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
                         enemy->GetPositionX(), enemy->GetPositionY(), enemy->GetPositionZ(), 4.5f, &part.moveToken, false);
                 }
                 EngagePvPOrCreature(bot, enemy);
@@ -473,7 +485,7 @@ namespace EncounterHandlers
     }
 
     // =========================================================================
-    // 7.4 Patrol Ambush
+    // 7.4 Patrol Ambush (Terrain-Validated Chokepoint & Lateral Ambusher Spread)
     // =========================================================================
     void UpdatePatrolAmbush(EncounterInstance& inst, Player* bot, EncounterParticipant& part, uint32 nowMs)
     {
@@ -484,28 +496,64 @@ namespace EncounterHandlers
         {
             if (part.role == EncounterRole::Ambusher)
             {
-                float d = Dist2DPoint(bot, inst.destX, inst.destY);
-                if (d <= 14.0f)
+                // Compute a stable lateral ambush slot off the road center so ambushers don't stack in a pile
+                if (part.lastNavTargetX == 0.0f && part.lastNavTargetY == 0.0f)
                 {
-                    part.arrivedAtStaging = true;
-                    BotMovement::Stop(bot, part.moveToken);
-                    if (part.stealthCapable)
-                        TryApplyStealth(bot, part);
+                    size_t ambusherIdx = 0;
+                    for (size_t i = 0; i < inst.participants.size(); ++i)
+                    {
+                        if (inst.participants[i].botGuid == bot->GetGUID())
+                        {
+                            ambusherIdx = i;
+                            break;
+                        }
+                    }
+                    float sideSign = (ambusherIdx % 2 == 0) ? 1.0f : -1.0f;
+                    float lateralDist = 7.0f + 3.0f * float(ambusherIdx / 2);
+                    float angle = float(ambusherIdx) * 1.1f + (sideSign * 1.57f);
+                    part.lastNavTargetX = inst.destX + std::cos(angle) * lateralDist;
+                    part.lastNavTargetY = inst.destY + std::sin(angle) * lateralDist;
+                    part.navGoalId = (inst.id << 8) | 1u;
+                }
 
-                    // Trigger ambush when any opposing patrol member enters 26 yards
+                float ambushZ = inst.destZ;
+                if (bot->GetMap())
+                {
+                    float gz = bot->GetMap()->GetHeight(bot->GetPhaseMask(), part.lastNavTargetX, part.lastNavTargetY, ambushZ + 10.0f);
+                    if (gz > INVALID_HEIGHT)
+                        ambushZ = gz;
+                }
+
+                float d = Dist2DPoint(bot, part.lastNavTargetX, part.lastNavTargetY);
+                if (d <= 6.0f || part.arrivedAtStaging)
+                {
+                    if (!part.arrivedAtStaging)
+                    {
+                        part.arrivedAtStaging = true;
+                        BotMovement::Stop(bot, part.moveToken);
+                        if (part.stealthCapable)
+                            TryApplyStealth(bot, part);
+                    }
+
+                    // Trigger ambush when any opposing patrol member enters ambush range
                     if (Player* enemy = FindNearestLivingEnemyParticipant(inst, bot))
                     {
-                        if (Dist2D(bot, enemy) <= 26.0f)
+                        if (Dist2D(bot, enemy) <= 24.0f)
                         {
+                            part.assignedTargetGuid = enemy->GetGUID();
+                            part.engagedInCombat = true;
                             inst.state.TransitionTo(EncounterPhase::Active, nowMs);
                             EngagePvPOrCreature(bot, enemy);
+                            return;
                         }
                     }
                 }
                 else
                 {
-                    uint64 goalId = (inst.id << 8) | 1u;
-                    BotMovement::Navigate(bot, MoveOwner::Encounter, goalId, inst.destX, inst.destY, inst.destZ, 9.0f, &part.moveToken, d > 65.0f);
+                    NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
+                        part.lastNavTargetX, part.lastNavTargetY, ambushZ, 4.5f, &part.moveToken, d > 65.0f);
+                    if (nav == NavStatus::Stuck)
+                        part.retreated = true;
                 }
             }
             else
@@ -515,7 +563,12 @@ namespace EncounterHandlers
                 NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, goalId, inst.destX, inst.destY, inst.destZ, 10.0f, &part.moveToken, false);
                 if (nav == NavStatus::Arrived || Dist2DPoint(bot, inst.destX, inst.destY) <= 18.0f)
                     inst.state.TransitionTo(EncounterPhase::Active, nowMs);
+                else if (nav == NavStatus::Stuck)
+                    part.retreated = true;
             }
+
+            if (inst.state.PhaseElapsedMs(nowMs) >= 25000)
+                inst.state.TransitionTo(EncounterPhase::Active, nowMs);
             return;
         }
 
@@ -539,10 +592,17 @@ namespace EncounterHandlers
 
             if (!bot->IsInCombat())
             {
+                part.assignedTargetGuid = enemy->GetGUID();
+                part.engagedInCombat = true;
                 if (Dist2D(bot, enemy) > 16.0f)
                 {
-                    uint64 goalId = (inst.id << 8) + 20u + (nowMs / 2500u);
-                    BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
+                    if (part.navGoalId == 0 || Dist2DPoint(enemy, part.lastNavTargetX, part.lastNavTargetY) > 12.0f)
+                    {
+                        part.lastNavTargetX = enemy->GetPositionX();
+                        part.lastNavTargetY = enemy->GetPositionY();
+                        part.navGoalId = (inst.id << 8) + 20u + (++inst.subStage);
+                    }
+                    BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
                         enemy->GetPositionX(), enemy->GetPositionY(), enemy->GetPositionZ(), 4.5f, &part.moveToken, false);
                 }
                 EngagePvPOrCreature(bot, enemy);
@@ -567,7 +627,12 @@ namespace EncounterHandlers
         uint32 nowMs)
     {
         Player* target = ObjectAccessor::FindConnectedPlayer(inst.targetPlayerGuid);
-        if (!target || !target->IsInWorld() || !target->IsAlive())
+        if (!target || !target->IsInWorld())
+        {
+            inst.state.Terminate(EncounterStopReason::PlayerLogout, nowMs);
+            return;
+        }
+        if (!target->IsAlive())
         {
             inst.state.Terminate(EncounterStopReason::ParticipantDeath, nowMs);
             return;
@@ -590,17 +655,25 @@ namespace EncounterHandlers
 
                 if (!inst.introNarrated)
                 {
-                    EncounterNarrator::TryBotSpeak(bot, target, speakType, NarratorChannel::BotSay, uint32(inst.id));
+                    uint32 variantSeed = uint32(inst.id) + inst.subStage;
+                    EncounterNarrator::TryBotSpeak(bot, target, speakType, NarratorChannel::BotSay, variantSeed);
                     inst.introNarrated = true;
                 }
 
+                part.assignedTargetGuid = target->GetGUID();
+                part.engagedInCombat = true;
                 inst.state.TransitionTo(EncounterPhase::Active, nowMs);
                 EngagePvPOrCreature(bot, target);
                 return;
             }
 
-            uint64 goalId = (inst.id << 8) + 1u + (nowMs / 2500u);
-            NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
+            if (part.navGoalId == 0 || Dist2DPoint(target, part.lastNavTargetX, part.lastNavTargetY) > 14.0f)
+            {
+                part.lastNavTargetX = target->GetPositionX();
+                part.lastNavTargetY = target->GetPositionY();
+                part.navGoalId = (inst.id << 8) + 1u + (++inst.subStage);
+            }
+            NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
                 target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), 16.0f, &part.moveToken, dist > 60.0f);
             if (nav == NavStatus::Stuck)
                 inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
@@ -623,10 +696,17 @@ namespace EncounterHandlers
 
             if (!bot->IsInCombat() || bot->GetVictim() != target)
             {
+                part.assignedTargetGuid = target->GetGUID();
+                part.engagedInCombat = true;
                 if (dist > 16.0f)
                 {
-                    uint64 goalId = (inst.id << 8) + 10u + (nowMs / 2000u);
-                    BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
+                    if (part.navGoalId == 0 || Dist2DPoint(target, part.lastNavTargetX, part.lastNavTargetY) > 12.0f)
+                    {
+                        part.lastNavTargetX = target->GetPositionX();
+                        part.lastNavTargetY = target->GetPositionY();
+                        part.navGoalId = (inst.id << 8) + 10u + (++inst.subStage);
+                    }
+                    BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
                         target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), 4.0f, &part.moveToken, false);
                 }
                 EngagePvPOrCreature(bot, target);
@@ -651,7 +731,7 @@ namespace EncounterHandlers
     }
 
     // =========================================================================
-    // 7.10 Hunter and Prey
+    // 7.10 Hunter and Prey (Hardened Forward Escape, Progress Guard & Stuck Limits)
     // =========================================================================
     void UpdateHunterAndPrey(EncounterInstance& inst, Player* bot, EncounterParticipant& part, uint32 nowMs)
     {
@@ -674,6 +754,9 @@ namespace EncounterHandlers
 
         if (inst.state.phase == EncounterPhase::Prepare)
         {
+            part.subStateEnteredAtMs = nowMs;
+            part.originX = bot->GetPositionX();
+            part.originY = bot->GetPositionY();
             inst.state.TransitionTo(EncounterPhase::Active, nowMs);
             return;
         }
@@ -683,22 +766,24 @@ namespace EncounterHandlers
             float dist = Dist2D(hunter, prey);
 
             // Once Hunter closes the gap, normal PvP combat begins
-            if (dist <= 15.0f || inst.subStage == 1)
+            if (dist <= 15.0f || inst.subStage == 100)
             {
-                inst.subStage = 1;
+                inst.subStage = 100;
                 Player* opponent = (bot == hunter) ? prey : hunter;
                 if (!bot->IsValidAttackTarget(opponent))
                 {
                     inst.state.Terminate(EncounterStopReason::PvPEligibilityLost, nowMs);
                     return;
                 }
+                part.assignedTargetGuid = opponent->GetGUID();
+                part.engagedInCombat = true;
                 if (!bot->IsInCombat())
                     EngagePvPOrCreature(bot, opponent);
                 return;
             }
 
-            // If Prey survives the chase for 45 seconds without being caught, Prey escapes!
-            if (inst.state.PhaseElapsedMs(nowMs) >= 45000 || dist >= 160.0f)
+            // Hard duration (40s) or escape distance (110yd): Prey successfully escapes!
+            if (inst.state.PhaseElapsedMs(nowMs) >= 40000 || dist >= 110.0f)
             {
                 inst.state.TransitionTo(EncounterPhase::Resolve, nowMs);
                 return;
@@ -706,29 +791,62 @@ namespace EncounterHandlers
 
             if (part.role == EncounterRole::Hunter)
             {
-                uint64 goalId = (inst.id << 8) + 10u + (nowMs / 2000u);
-                BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
+                if (part.navGoalId == 0 || Dist2DPoint(prey, part.lastNavTargetX, part.lastNavTargetY) > 12.0f)
+                {
+                    part.lastNavTargetX = prey->GetPositionX();
+                    part.lastNavTargetY = prey->GetPositionY();
+                    part.navGoalId = (inst.id << 8) + 10u + (++part.subState);
+                }
+                NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
                     prey->GetPositionX(), prey->GetPositionY(), prey->GetPositionZ(), 5.0f, &part.moveToken, false);
+                if (nav == NavStatus::Stuck)
+                    inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
             }
             else
             {
-                // Prey flees away from Hunter, shifting angle periodically
-                float dx = prey->GetPositionX() - hunter->GetPositionX();
-                float dy = prey->GetPositionY() - hunter->GetPositionY();
-                float baseAngle = std::atan2(dy, dx);
-                float weave = ((nowMs / 5000u) % 2 == 0) ? 0.35f : -0.35f;
-                float fleeX = prey->GetPositionX() + std::cos(baseAngle + weave) * 42.0f;
-                float fleeY = prey->GetPositionY() + std::sin(baseAngle + weave) * 42.0f;
-                float fleeZ = prey->GetPositionZ();
-                if (prey->GetMap())
+                // Minimum meaningful movement check every 8 seconds: prevent running in circles around one point
+                if (part.subStateEnteredAtMs == 0)
+                    part.subStateEnteredAtMs = nowMs;
+                if (nowMs - part.subStateEnteredAtMs >= 8000u)
                 {
-                    float gz = prey->GetMap()->GetHeight(prey->GetPhaseMask(), fleeX, fleeY, fleeZ + 10.0f);
-                    if (gz > INVALID_HEIGHT)
-                        fleeZ = gz;
+                    float netMoved = Dist2DPoint(prey, part.originX, part.originY);
+                    if (netMoved < 6.0f)
+                    {
+                        inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
+                        return;
+                    }
+                    part.originX = prey->GetPositionX();
+                    part.originY = prey->GetPositionY();
+                    part.subStateEnteredAtMs = nowMs;
                 }
 
-                uint64 goalId = (inst.id << 8) + 50u + (nowMs / 2500u);
-                BotMovement::Navigate(bot, MoveOwner::Encounter, goalId, fleeX, fleeY, fleeZ, 6.0f, &part.moveToken, false);
+                // Compute a forward escape leg away from Hunter only when starting a leg or reaching current flee waypoint
+                bool needNewLeg = (part.navGoalId == 0) ||
+                                  (Dist2DPoint(prey, part.lastNavTargetX, part.lastNavTargetY) <= 8.0f) ||
+                                  (nowMs - part.lastActionMs >= 6500u);
+                if (needNewLeg)
+                {
+                    part.lastActionMs = nowMs;
+                    float dx = prey->GetPositionX() - hunter->GetPositionX();
+                    float dy = prey->GetPositionY() - hunter->GetPositionY();
+                    float baseAngle = (std::abs(dx) > 0.1f || std::abs(dy) > 0.1f) ? std::atan2(dy, dx) : prey->GetOrientation();
+                    float weave = ((++part.subState % 2) == 0) ? 0.28f : -0.28f;
+                    part.lastNavTargetX = prey->GetPositionX() + std::cos(baseAngle + weave) * 38.0f;
+                    part.lastNavTargetY = prey->GetPositionY() + std::sin(baseAngle + weave) * 38.0f;
+                    inst.destZ = prey->GetPositionZ();
+                    if (prey->GetMap())
+                    {
+                        float gz = prey->GetMap()->GetHeight(prey->GetPhaseMask(), part.lastNavTargetX, part.lastNavTargetY, inst.destZ + 10.0f);
+                        if (gz > INVALID_HEIGHT)
+                            inst.destZ = gz;
+                    }
+                    part.navGoalId = (inst.id << 8) + 50u + part.subState;
+                }
+
+                NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
+                    part.lastNavTargetX, part.lastNavTargetY, inst.destZ, 6.0f, &part.moveToken, false);
+                if (nav == NavStatus::Stuck)
+                    inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
             }
             return;
         }

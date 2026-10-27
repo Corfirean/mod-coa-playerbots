@@ -47,6 +47,7 @@ namespace
     std::unordered_map<uint64, EncounterInstance> _encounters;
     std::unordered_map<ObjectGuid, WorldPersona> _knownPersonas;
     std::unordered_set<ObjectGuid> _knownSocialActive;
+    std::unordered_map<ObjectGuid, uint32> _rareCreatureCooldownUntilMs;
     uint64 _nextEncounterId = 1;
 
     uint32 _evalAccumMs = 0;
@@ -267,11 +268,27 @@ namespace
         }
     }
 
+    bool IsRareAlreadyTargeted(ObjectGuid rareGuid, uint32 nowMs)
+    {
+        if (rareGuid.IsEmpty())
+            return true;
+        for (auto const& [id, inst] : _encounters)
+        {
+            if (inst.state.IsRunning() && inst.type == EncounterType::RareHunter && inst.targetCreatureGuid == rareGuid)
+                return true;
+        }
+        auto it = _rareCreatureCooldownUntilMs.find(rareGuid);
+        if (it != _rareCreatureCooldownUntilMs.end() && nowMs < it->second)
+            return true;
+        return false;
+    }
+
     Creature* FindNearbyLiveRareCreature(WorldObject* centerObj, float radius)
     {
         if (!centerObj || !centerObj->IsInWorld())
             return nullptr;
 
+        uint32 nowMs = NowMs();
         std::vector<Creature*> creatures;
         Acore::AnyUnitInObjectRangeCheck uCheck(centerObj, radius);
         Acore::CreatureListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(centerObj, creatures, uCheck);
@@ -285,6 +302,8 @@ namespace
                 continue;
             CreatureTemplate const* tpl = c->GetCreatureTemplate();
             if (!tpl || (tpl->rank != CREATURE_ELITE_RARE && tpl->rank != CREATURE_ELITE_RAREELITE))
+                continue;
+            if (IsRareAlreadyTargeted(c->GetGUID(), nowMs))
                 continue;
 
             float d = Dist2D(centerObj->GetPositionX(), centerObj->GetPositionY(), c->GetPositionX(), c->GetPositionY());
@@ -423,6 +442,8 @@ namespace
 
         _ownership.ReleaseAllForEncounter(inst.id);
         _budget.OnEncounterFinished(inst.type, inst.mapId, inst.targetPlayerGuid, botGuids, cfg, nowMs);
+        if (inst.type == EncounterType::RareHunter && !inst.targetCreatureGuid.IsEmpty())
+            _rareCreatureCooldownUntilMs[inst.targetCreatureGuid] = nowMs + cfg.rareScanIntervalMs * 2u;
 
         bool allCleanupPassed = true;
         std::string failureReasons;
@@ -505,7 +526,7 @@ namespace
         for (auto const& p : inst.participants)
             _ownership.TryClaim(p.botGuid, id);
 
-        _budget.OnEncounterStarted(inst.type, inst.mapId, inst.targetPlayerGuid);
+        _budget.OnEncounterStarted(inst.type, inst.mapId, inst.targetPlayerGuid, &cfg, nowMs);
 
         ++_metrics.totalCreated;
         size_t typeIdx = static_cast<size_t>(inst.type);
@@ -567,6 +588,8 @@ namespace
 
         Player* bestBot = nullptr;
         float bestScore = -1.0f;
+        Player* secondBestBot = nullptr;
+        float secondBestScore = -1.0f;
 
         for (Player* bot : nearbyBots)
         {
@@ -598,8 +621,15 @@ namespace
 
             if (score > bestScore)
             {
+                secondBestScore = bestScore;
+                secondBestBot = bestBot;
                 bestScore = score;
                 bestBot = bot;
+            }
+            else if (score > secondBestScore)
+            {
+                secondBestScore = score;
+                secondBestBot = bot;
             }
         }
 
@@ -623,10 +653,25 @@ namespace
         inst.centerY = targetPlayer->GetPositionY();
         inst.centerZ = targetPlayer->GetPositionZ();
         inst.targetPlayerGuid = targetPlayer->GetGUID();
+        if (type == EncounterType::Nemesis)
+        {
+            if (PlayerBotMemoryRecord const* rec = _memory.FindRecord(playerSnap.guid, bestBot->GetGUID()))
+                inst.subStage = rec->timesPlayerKilledBot + rec->timesBotKilledPlayer;
+        }
         inst.participants.push_back(MakeParticipant(bestBot, role, nowMs));
 
+        // Bounty Hunter supports 1-2 coordinated hunters when a second eligible opposing bot is nearby
+        if (type == EncounterType::BountyHunter && secondBestBot && secondBestBot != bestBot &&
+            secondBestBot->GetTeamId() == bestBot->GetTeamId() &&
+            Dist2D(bestBot->GetPositionX(), bestBot->GetPositionY(), secondBestBot->GetPositionX(), secondBestBot->GetPositionY()) <= 95.0f)
+        {
+            _memory.RecordEncounterConflict(secondBestBot->GetGUID(), playerSnap.guid, cfg, nowMs);
+            inst.participants.push_back(MakeParticipant(secondBestBot, role, nowMs));
+        }
+
         uint64 id = CommitEncounter(std::move(inst), nowMs);
-        outReason = Acore::StringFormat("Started {} (#{}) with bot {}", EncounterTypeName(type), id, bestBot->GetName());
+        outReason = Acore::StringFormat("Started {} (#{}) with {} bot(s) (lead: {})",
+            EncounterTypeName(type), id, inst.participants.size(), bestBot->GetName());
         return true;
     }
 
@@ -878,6 +923,15 @@ namespace
             inst.destX = inst.centerX + 18.0f;
             inst.destY = inst.centerY + 18.0f;
             inst.destZ = inst.centerZ;
+            if (Map* map = allianceBots[0]->GetMap())
+            {
+                float cz = map->GetHeight(allianceBots[0]->GetPhaseMask(), inst.centerX, inst.centerY, inst.centerZ + 12.0f);
+                if (cz > INVALID_HEIGHT)
+                    inst.centerZ = cz;
+                float dz = map->GetHeight(allianceBots[0]->GetPhaseMask(), inst.destX, inst.destY, inst.destZ + 12.0f);
+                if (dz > INVALID_HEIGHT)
+                    inst.destZ = dz;
+            }
 
             uint32 aCount = std::min<uint32>(uint32(allianceBots.size()), maxSide);
             uint32 hCount = std::min<uint32>(uint32(hordeBots.size()), maxSide);
@@ -1080,8 +1134,8 @@ namespace
                         return;
                 }
 
-                // Priority 3: Nemesis encounter if a nearby bot holds a grudge
-                if (cfg.IsTypeEnabled(EncounterType::Nemesis))
+                // Priority 3: Nemesis encounter if a nearby bot holds a grudge (probabilistic 35% trigger)
+                if (cfg.IsTypeEnabled(EncounterType::Nemesis) && ((NextRand() % 100u) < 35u))
                 {
                     if (TryBuildPlayerEncounter(EncounterType::Nemesis, targetPlayer, nearbyBots, false, nowMs, dummyMsg))
                         return;
@@ -1477,6 +1531,7 @@ namespace WorldEncounterDirector
         _ownership.Clear();
         _budget.Clear();
         _memory.Clear();
+        _rareCreatureCooldownUntilMs.clear();
         EncounterNarrator::Gate().Clear();
         _knownSocialActive.clear();
     }
@@ -1655,6 +1710,7 @@ namespace WorldEncounterDirector
         if (optionalPlayerGuid.IsEmpty())
         {
             _budget.Clear();
+            _rareCreatureCooldownUntilMs.clear();
             EncounterNarrator::Gate().Clear();
         }
         else

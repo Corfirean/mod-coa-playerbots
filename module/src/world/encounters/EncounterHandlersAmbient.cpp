@@ -9,6 +9,7 @@
 #include "GridNotifiersImpl.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
+#include "Pet.h"
 #include "Player.h"
 #include "SharedDefines.h"
 #include "SpellAuras.h"
@@ -117,10 +118,34 @@ namespace EncounterHandlers
         BotMovement::ForceReleaseOwner(bot, MoveOwner::Encounter);
         BotMovement::ResetRequest(bot->GetGUID());
         part.moveToken = {};
+        part.navGoalId = 0;
+
+        // Clear any encounter combat/target/pet state so no stale PvP or target GUID remains
+        if (!part.assignedTargetGuid.IsEmpty())
+        {
+            if (bot->GetTarget() == part.assignedTargetGuid)
+                bot->SetSelection(ObjectGuid::Empty);
+            if (bot->GetVictim() && bot->GetVictim()->GetGUID() == part.assignedTargetGuid)
+                bot->AttackStop();
+            part.assignedTargetGuid = ObjectGuid::Empty;
+        }
+
+        if (Pet* pet = bot->GetPet())
+        {
+            if (pet->IsAlive() && pet->GetVictim() && pet->GetVictim()->GetTypeId() == TYPEID_PLAYER)
+                pet->AttackStop();
+        }
+
+        if (part.engagedInCombat)
+        {
+            bot->AttackStop();
+            bot->GetCombatManager().EndAllPvPCombat();
+            part.engagedInCombat = false;
+        }
 
         ClearStealthIfApplied(bot, part);
 
-        if (part.sitApplied)
+        if (part.sitApplied || bot->getStandState() == UNIT_STAND_STATE_SIT || bot->getStandState() == UNIT_STAND_STATE_KNEEL)
         {
             bot->SetStandState(UNIT_STAND_STATE_STAND);
             part.sitApplied = false;
@@ -140,6 +165,7 @@ namespace EncounterHandlers
                 gob->Delete();
             }
             part.temporaryGobGuid = ObjectGuid::Empty;
+            part.temporaryGobMapId = 0;
         }
     }
 
@@ -541,12 +567,15 @@ namespace EncounterHandlers
             if (dist <= 22.0f && bot->IsWithinLOSInMap(rare))
             {
                 inst.state.TransitionTo(EncounterPhase::Active, nowMs);
+                part.assignedTargetGuid = rare->GetGUID();
+                part.engagedInCombat = true;
                 EngagePvPOrCreature(bot, rare);
                 return;
             }
 
-            uint64 goalId = (inst.id << 8) | 1u;
-            NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
+            if (part.navGoalId == 0)
+                part.navGoalId = (inst.id << 8) | 1u;
+            NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
                 rare->GetPositionX(), rare->GetPositionY(), rare->GetPositionZ(), 18.0f, &part.moveToken, true);
             if (nav == NavStatus::Stuck)
                 inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
@@ -561,11 +590,15 @@ namespace EncounterHandlers
                 if (dist > 22.0f)
                 {
                     uint64 goalId = (inst.id << 8) | 2u;
-                    BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
+                    NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
                         rare->GetPositionX(), rare->GetPositionY(), rare->GetPositionZ(), 15.0f, &part.moveToken, false);
+                    if (nav == NavStatus::Stuck)
+                        inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
                 }
                 else
                 {
+                    part.assignedTargetGuid = rare->GetGUID();
+                    part.engagedInCombat = true;
                     EngagePvPOrCreature(bot, rare);
                 }
             }
