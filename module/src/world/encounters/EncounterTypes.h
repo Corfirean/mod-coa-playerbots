@@ -363,6 +363,18 @@ struct EncounterMetrics
     uint32 lastEvaluationMs = 0;
     uint32 avgEvalIntervalMs = 0;
 
+    // Performance & candidate telemetry (§24)
+    uint32 lastUpdateDurationUs = 0;
+    uint32 avgUpdateDurationUs = 0;
+    uint32 peakUpdateDurationUs = 0;
+    uint64 totalCandidatesVisited = 0;
+    uint32 activeTemporaryGameObjects = 0;
+
+    // Cleanup verification telemetry (§2, §3, §28)
+    uint64 cleanupChecks = 0;
+    uint64 cleanupPasses = 0;
+    uint64 cleanupFailures = 0;
+
     uint64 totalCreated = 0;
     uint64 totalCompleted = 0;
     uint64 totalCancelled = 0;

@@ -7,6 +7,7 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "EncounterBudget.h"
+#include "EncounterCleanupDiagnostics.h"
 #include "EncounterConfig.h"
 #include "EncounterEligibility.h"
 #include "EncounterHandlers.h"
@@ -29,6 +30,7 @@
 #include "WorldSession.h"
 #include "WorldSocial.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
@@ -40,6 +42,7 @@ namespace
     EncounterBudgetTracker _budget;
     EncounterMemoryStore _memory;
     EncounterMetrics _metrics;
+    bool _debugLogging = false;
 
     std::unordered_map<uint64, EncounterInstance> _encounters;
     std::unordered_map<ObjectGuid, WorldPersona> _knownPersonas;
@@ -253,6 +256,7 @@ namespace
         Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(centerObj, players, check);
         Cell::VisitObjects(centerObj, searcher, radius);
 
+        _metrics.totalCandidatesVisited += players.size();
         for (Player* p : players)
         {
             if (!IsBotPlayer(p))
@@ -305,10 +309,96 @@ namespace
         p.originZ = bot->GetPositionZ();
         p.joinedAtMs = nowMs;
         p.lastActionMs = nowMs;
+        p.subStateEnteredAtMs = nowMs;
         p.originalDisplayId = bot->GetDisplayId();
+        p.originalHealthPct = bot->GetHealthPct();
         p.stealthCapable = EncounterHandlers::IsStealthCapableClass(bot->getClass());
         p.cautiousness = EncounterPersonality::Derive(GetPersonaForBot(bot->GetGUID())).cautious;
         return p;
+    }
+
+    void ResumeBrainStateForBot(Player* bot, ObjectGuid botGuid)
+    {
+        if (BrainState* bState = WorldBrainInternal::FindState(botGuid))
+        {
+            if (bState->pausedByEncounter)
+            {
+                bState->pausedByEncounter = false;
+                if (bState->task.IsValid() && !bState->suspended)
+                {
+                    if (bot)
+                    {
+                        WorldExecutor::ResumeTask(bot, *bState);
+                        if (bState->task.mapId == bot->GetMapId() &&
+                            Dist2D(bot->GetPositionX(), bot->GetPositionY(), bState->task.x, bState->task.y) > 30.0f)
+                        {
+                            WorldBrainInternal::SetPhase(bot, *bState, TaskPhase::Recover, "resumed after encounter");
+                        }
+                    }
+                    else
+                    {
+                        bState->task.Resume(NowMs());
+                    }
+                }
+            }
+        }
+    }
+
+    EncounterCleanupSnapshot BuildCleanupSnapshot(ObjectGuid botGuid, EncounterParticipant const* releasedPart = nullptr, uint64 closingEncounterId = 0)
+    {
+        EncounterCleanupSnapshot snap;
+        snap.botGuid = botGuid;
+        snap.hasEncounterOwnership = _ownership.IsOwned(botGuid);
+
+        for (auto const& [id, inst] : _encounters)
+        {
+            if (id == closingEncounterId)
+                continue;
+            if (inst.FindParticipant(botGuid) != nullptr)
+            {
+                snap.inAnyEncounterParticipantList = true;
+                break;
+            }
+        }
+
+        if (releasedPart)
+        {
+            snap.moveTokenStillValid = releasedPart->moveToken.IsValid();
+            snap.hasResidualEncounterStealth = releasedPart->stealthApplied;
+            snap.hasResidualEncounterMorph = releasedPart->morphApplied;
+            snap.hasResidualSitOrKneelState = releasedPart->sitApplied;
+            snap.hasResidualTemporaryGameObject = !releasedPart->temporaryGobGuid.IsEmpty();
+        }
+
+        if (std::optional<MovementRequest> req = BotMovement::GetRequestSnapshot(botGuid))
+        {
+            if (req->active && req->owner == MoveOwner::Encounter)
+                snap.hasEncounterNavRequest = true;
+        }
+
+        if (Player* bot = ObjectAccessor::FindConnectedPlayer(botGuid))
+        {
+            snap.currentMoveOwner = BotMovement::CurrentOwner(bot);
+            if (releasedPart && releasedPart->originalDisplayId != 0 && bot->GetDisplayId() != releasedPart->originalDisplayId)
+                snap.hasResidualEncounterMorph = true;
+            if (bot->getStandState() == UNIT_STAND_STATE_SIT || bot->getStandState() == UNIT_STAND_STATE_KNEEL)
+            {
+                if (releasedPart && releasedPart->sitApplied)
+                    snap.hasResidualSitOrKneelState = true;
+            }
+        }
+
+        if (BrainState const* bState = WorldBrainInternal::FindState(botGuid))
+        {
+            snap.pausedByEncounterFlag = bState->pausedByEncounter;
+            if (bState->task.IsValid() && bState->task.paused &&
+                !bState->suspended && !bState->pausedByEncounter && !bState->pausedBySocial && !bState->opportunityActive)
+            {
+                snap.worldTaskStuckPaused = true;
+            }
+        }
+
+        return snap;
     }
 
     void FinalizeEncounter(EncounterInstance& inst, uint32 nowMs)
@@ -320,17 +410,40 @@ namespace
         for (auto& part : inst.participants)
         {
             botGuids.push_back(part.botGuid);
-            if (Player* bot = ObjectAccessor::FindConnectedPlayer(part.botGuid))
+            Player* bot = ObjectAccessor::FindConnectedPlayer(part.botGuid);
+            if (bot)
             {
                 EncounterHandlers::RestoreParticipantState(bot, part);
                 if (inst.type == EncounterType::RoadDuel)
                     bot->AttackStop();
             }
             _ownership.Release(part.botGuid, inst.id);
+            ResumeBrainStateForBot(bot, part.botGuid);
         }
 
         _ownership.ReleaseAllForEncounter(inst.id);
         _budget.OnEncounterFinished(inst.type, inst.mapId, inst.targetPlayerGuid, botGuids, cfg, nowMs);
+
+        bool allCleanupPassed = true;
+        std::string failureReasons;
+        for (auto const& part : inst.participants)
+        {
+            EncounterCleanupSnapshot cSnap = BuildCleanupSnapshot(part.botGuid, &part, inst.id);
+            EncounterCleanupVerdict verdict = EncounterCleanupValidator::Validate(cSnap);
+            ++_metrics.cleanupChecks;
+            if (verdict.passed)
+            {
+                ++_metrics.cleanupPasses;
+            }
+            else
+            {
+                ++_metrics.cleanupFailures;
+                allCleanupPassed = false;
+                if (!failureReasons.empty())
+                    failureReasons += "; ";
+                failureReasons += Acore::StringFormat("bot {} {}", part.botGuid.GetCounter(), verdict.summary);
+            }
+        }
 
         size_t typeIdx = static_cast<size_t>(inst.type);
         if (IsSuccessfulStopReason(inst.state.stopReason))
@@ -351,6 +464,27 @@ namespace
             ++_metrics.totalCancelled;
             if (typeIdx < ENCOUNTER_TYPE_COUNT)
                 ++_metrics.cancelledByType[typeIdx];
+        }
+
+        uint32 durationSec = (nowMs >= inst.state.createdAtMs) ? ((nowMs - inst.state.createdAtMs) / 1000u) : 0u;
+        if (!allCleanupPassed)
+        {
+            LOG_ERROR("module.coa-playerbots.world",
+                "Encounter #{} {} END reason={} duration={}s cleanup=FAIL details={}",
+                inst.id,
+                EncounterTypeName(inst.type),
+                EncounterStopReasonName(inst.state.stopReason),
+                durationSec,
+                failureReasons);
+        }
+        else if (_debugLogging)
+        {
+            LOG_INFO("module.coa-playerbots.world",
+                "Encounter #{} {} END reason={} duration={}s cleanup=PASS",
+                inst.id,
+                EncounterTypeName(inst.type),
+                EncounterStopReasonName(inst.state.stopReason),
+                durationSec);
         }
 
         inst.state.MarkFullyRetired(nowMs);
@@ -867,6 +1001,7 @@ namespace
                             if (bot)
                                 EncounterHandlers::RestoreParticipantState(bot, part);
                             _ownership.Release(part.botGuid, inst.id);
+                            ResumeBrainStateForBot(bot, part.botGuid);
                             continue;
                         }
                     }
@@ -1023,6 +1158,7 @@ namespace WorldEncounterDirector
         if (_evalAccumMs < cfg.thinkIntervalMs)
             return;
 
+        auto t0 = std::chrono::steady_clock::now();
         uint32 nowMs = NowMs();
         if (_metrics.lastEvaluationMs != 0 && nowMs > _metrics.lastEvaluationMs)
         {
@@ -1044,6 +1180,15 @@ namespace WorldEncounterDirector
 
         EvaluateActiveEncounters(nowMs);
         EvaluateCandidateGeneration(nowMs, checkRareScan);
+
+        auto t1 = std::chrono::steady_clock::now();
+        uint32 elapsedUs = static_cast<uint32>(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+        _metrics.lastUpdateDurationUs = elapsedUs;
+        _metrics.avgUpdateDurationUs = (_metrics.avgUpdateDurationUs == 0)
+            ? elapsedUs
+            : (_metrics.avgUpdateDurationUs * 7u + elapsedUs) / 8u;
+        if (elapsedUs > _metrics.peakUpdateDurationUs)
+            _metrics.peakUpdateDurationUs = elapsedUs;
     }
 
     bool UpdateBot(Player* bot, BrainState& brainState, WorldPersona const& persona, uint32 diff)
@@ -1339,8 +1484,23 @@ namespace WorldEncounterDirector
     std::string DescribeBot(ObjectGuid botGuid)
     {
         uint64 encId = _ownership.GetEncounterId(botGuid);
+        Player* bot = ObjectAccessor::FindConnectedPlayer(botGuid);
+        BrainState const* bState = WorldBrainInternal::FindState(botGuid);
+
+        std::string prevTask = "none";
+        bool brainPaused = false;
+        if (bState)
+        {
+            brainPaused = bState->pausedByEncounter || bState->task.paused;
+            if (bState->task.IsValid())
+                prevTask = Acore::StringFormat("{}#{}(q={})", WorldTaskTypeName(bState->task.type), bState->task.id, bState->task.quest.questId);
+        }
+
         if (encId == 0)
-            return "encounter: none";
+        {
+            return Acore::StringFormat("encounter: none (brainPaused={} prevTask={})",
+                brainPaused ? "yes" : "no", prevTask);
+        }
 
         auto it = _encounters.find(encId);
         if (it == _encounters.end())
@@ -1352,36 +1512,79 @@ namespace WorldEncounterDirector
         uint32 remSec = inst.state.RemainingPhaseTimeoutMs(nowMs) / 1000u;
 
         std::string targetStr = "none";
+        float distToTarget = 0.0f;
         if (!inst.targetPlayerGuid.IsEmpty())
+        {
             targetStr = Acore::StringFormat("player:{}", inst.targetPlayerGuid.GetCounter());
+            if (bot)
+            {
+                if (Player const* tp = ObjectAccessor::FindConnectedPlayer(inst.targetPlayerGuid))
+                    distToTarget = Dist2D(bot->GetPositionX(), bot->GetPositionY(), tp->GetPositionX(), tp->GetPositionY());
+            }
+        }
         else if (!inst.targetCreatureGuid.IsEmpty())
+        {
             targetStr = Acore::StringFormat("rare:{}(entry={})", inst.targetCreatureGuid.GetCounter(), inst.targetCreatureEntry);
+            if (bot)
+                distToTarget = Dist2D(bot->GetPositionX(), bot->GetPositionY(), inst.centerX, inst.centerY);
+        }
         else
-            targetStr = Acore::StringFormat("area({:.0f},{:.0f})", inst.centerX, inst.centerY);
+        {
+            targetStr = Acore::StringFormat("dest({:.0f},{:.0f})", inst.destX != 0.0f ? inst.destX : inst.centerX, inst.destY != 0.0f ? inst.destY : inst.centerY);
+            if (bot)
+                distToTarget = Dist2D(bot->GetPositionX(), bot->GetPositionY(), inst.destX != 0.0f ? inst.destX : inst.centerX, inst.destY != 0.0f ? inst.destY : inst.centerY);
+        }
 
-        return Acore::StringFormat("encounter: #{} type={} role={} phase={} target={} timeoutLeft={}s",
+        char const* moveOwnerStr = bot ? MoveOwnerName(BotMovement::CurrentOwner(bot)) : "offline";
+        std::string combatTargetStr = (bot && bot->GetVictim()) ? bot->GetVictim()->GetName() : "none";
+        uint32 tempGoCount = (part && !part->temporaryGobGuid.IsEmpty()) ? 1u : 0u;
+
+        return Acore::StringFormat(
+            "encounter: #{} type={} phase={} bot={}({}) role={} target={} map={}/zone={} dist={:.1f}yd moveOwner={} combatTarget={} timeoutLeft={}s prevTask={} brainPaused={} narrator={} tempGroup=none tempGO={} stopReason={}",
             inst.id,
             EncounterTypeName(inst.type),
-            part ? EncounterRoleName(part->role) : "unknown",
             EncounterPhaseName(inst.state.phase),
+            bot ? bot->GetName() : "offline",
+            botGuid.GetCounter(),
+            part ? EncounterRoleName(part->role) : "unknown",
             targetStr,
-            remSec);
+            bot ? bot->GetMapId() : inst.mapId,
+            bot ? bot->GetZoneId() : inst.zoneId,
+            distToTarget,
+            moveOwnerStr,
+            combatTargetStr,
+            remSec,
+            prevTask,
+            brainPaused ? "yes" : "no",
+            (inst.introNarrated || (part && part->narratorSpoken)) ? "spoken" : "silent",
+            tempGoCount,
+            EncounterStopReasonName(inst.state.stopReason));
     }
 
     std::string DescribeStats()
     {
         EncounterConfig const& cfg = EncounterSettings::Get();
         std::string out = Acore::StringFormat(
-            "DynamicEncounters: enabled={} active={}/{} evals={} avgEvalInterval={}ms created={} completed={} cancelled={} failed={}\n",
+            "DynamicEncounters: enabled={} debug={} active={}/{} evals={} avgEvalInterval={}ms updateUs(last/avg/peak)={}/{}/{}us candidatesVisited={} tempGOs={}\n"
+            "Lifecycle: created={} completed={} cancelled={} failed={} cleanup(checks/pass/fail)={}/{}/{}\n",
             cfg.enabled ? "yes" : "no",
+            _debugLogging ? "on" : "off",
             uint32(_encounters.size()),
             cfg.maxGlobalActive,
             _metrics.directorEvaluations,
             _metrics.avgEvalIntervalMs,
+            _metrics.lastUpdateDurationUs,
+            _metrics.avgUpdateDurationUs,
+            _metrics.peakUpdateDurationUs,
+            _metrics.totalCandidatesVisited,
+            _metrics.activeTemporaryGameObjects,
             _metrics.totalCreated,
             _metrics.totalCompleted,
             _metrics.totalCancelled,
-            _metrics.totalFailed);
+            _metrics.totalFailed,
+            _metrics.cleanupChecks,
+            _metrics.cleanupPasses,
+            _metrics.cleanupFailures);
 
         out += "By type (created/completed/cancelled/failed):";
         for (size_t i = 1; i < ENCOUNTER_TYPE_COUNT; ++i)
@@ -1396,21 +1599,69 @@ namespace WorldEncounterDirector
         }
 
         if (!_encounters.empty())
+            out += "\n" + DescribeActiveList();
+        return out;
+    }
+
+    std::string DescribeActiveList()
+    {
+        if (_encounters.empty())
+            return "Active encounters: 0";
+
+        uint32 nowMs = NowMs();
+        std::string out = Acore::StringFormat("Active encounters ({}):", uint32(_encounters.size()));
+        for (auto const& [id, inst] : _encounters)
         {
-            uint32 nowMs = NowMs();
-            out += "\nActive instances:";
-            for (auto const& [id, inst] : _encounters)
+            out += Acore::StringFormat(
+                "\n  #{} type={} phase={} map={}/zone={} targetPlayer={} bots={} left={}s narrator={} stopReason={}",
+                id,
+                EncounterTypeName(inst.type),
+                EncounterPhaseName(inst.state.phase),
+                inst.mapId,
+                inst.zoneId,
+                inst.targetPlayerGuid.GetCounter(),
+                uint32(inst.participants.size()),
+                inst.state.RemainingPhaseTimeoutMs(nowMs) / 1000u,
+                inst.introNarrated ? "spoken" : "silent",
+                EncounterStopReasonName(inst.state.stopReason));
+            for (auto const& part : inst.participants)
             {
-                out += Acore::StringFormat("\n  #{} type={} phase={} map={} bots={} left={}s",
-                    id,
-                    EncounterTypeName(inst.type),
-                    EncounterPhaseName(inst.state.phase),
-                    inst.mapId,
-                    uint32(inst.participants.size()),
-                    inst.state.RemainingPhaseTimeoutMs(nowMs) / 1000u);
+                out += Acore::StringFormat("\n    -> {}", DescribeBot(part.botGuid));
             }
         }
         return out;
+    }
+
+    bool ValidateEncounterCleanup(ObjectGuid botGuid, std::string& outSummary)
+    {
+        EncounterCleanupSnapshot snap = BuildCleanupSnapshot(botGuid);
+        EncounterCleanupVerdict verdict = EncounterCleanupValidator::Validate(snap);
+        outSummary = verdict.summary;
+        return verdict.passed;
+    }
+
+    void SetDebugLogging(bool enabled)
+    {
+        _debugLogging = enabled;
+    }
+
+    bool IsDebugLogging()
+    {
+        return _debugLogging;
+    }
+
+    void ResetCooldowns(ObjectGuid optionalPlayerGuid)
+    {
+        if (optionalPlayerGuid.IsEmpty())
+        {
+            _budget.Clear();
+            EncounterNarrator::Gate().Clear();
+        }
+        else
+        {
+            _budget.ForgetPlayer(optionalPlayerGuid);
+            EncounterNarrator::Gate().ForgetPlayer(optionalPlayerGuid);
+        }
     }
 
     std::string DescribeBountyAndNemesis(ObjectGuid playerGuid)

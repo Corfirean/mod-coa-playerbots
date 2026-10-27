@@ -50,7 +50,12 @@ namespace WorldEncounterDirector
     // Debug & administrative commands (.botcmd encounter ...)
     std::string DescribeBot(ObjectGuid botGuid);
     std::string DescribeStats();
+    std::string DescribeActiveList();
     std::string DescribeBountyAndNemesis(ObjectGuid playerGuid);
+    bool ValidateEncounterCleanup(ObjectGuid botGuid, std::string& outSummary);
+    void SetDebugLogging(bool enabled);
+    bool IsDebugLogging();
+    void ResetCooldowns(ObjectGuid optionalPlayerGuid = ObjectGuid::Empty);
     bool ForceStartEncounter(EncounterType type, Player* targetOrNearPlayer, std::string& outMessage);
     bool StopEncounter(uint64 encounterId, std::string& outMessage);
     uint32 StopAllEncounters();

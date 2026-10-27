@@ -838,10 +838,72 @@ public:
         std::string subcmd;
         iss >> subcmd;
 
-        if (subcmd.empty() || subcmd == "stats")
+        if (subcmd.empty() || subcmd == "stats" || subcmd == "status")
         {
             if (handler)
                 handler->PSendSysMessage("{}", WorldEncounterDirector::DescribeStats());
+            return true;
+        }
+
+        if (subcmd == "list")
+        {
+            if (handler)
+                handler->PSendSysMessage("{}", WorldEncounterDirector::DescribeActiveList());
+            return true;
+        }
+
+        if (subcmd == "debug")
+        {
+            std::string toggle;
+            iss >> toggle;
+            bool enable = (toggle == "1" || toggle == "on" || toggle == "true" ||
+                          (toggle.empty() && !WorldEncounterDirector::IsDebugLogging()));
+            WorldEncounterDirector::SetDebugLogging(enable);
+            if (handler)
+                handler->PSendSysMessage("DynamicEncounters: debug logging {}.", enable ? "ON" : "OFF");
+            return true;
+        }
+
+        if (subcmd == "cooldown")
+        {
+            std::string action;
+            std::string playerToken;
+            iss >> action >> playerToken;
+            ObjectGuid playerGuid;
+            if (!playerToken.empty())
+            {
+                uint32 guidLow = static_cast<uint32>(std::strtoul(playerToken.c_str(), nullptr, 10));
+                if (guidLow != 0)
+                    playerGuid = ObjectGuid::Create<HighGuid::Player>(guidLow);
+                else if (Player* p = ObjectAccessor::FindPlayerByName(playerToken))
+                    playerGuid = p->GetGUID();
+            }
+            WorldEncounterDirector::ResetCooldowns(playerGuid);
+            if (handler)
+                handler->SendSysMessage("DynamicEncounters: cooldowns reset.");
+            return true;
+        }
+
+        if (subcmd == "validate")
+        {
+            uint32 guidLow = 0;
+            iss >> guidLow;
+            ObjectGuid botGuid;
+            if (guidLow != 0)
+                botGuid = ObjectGuid::Create<HighGuid::Player>(guidLow);
+            else if (handler && handler->getSelectedPlayer())
+                botGuid = handler->getSelectedPlayer()->GetGUID();
+
+            if (botGuid.IsEmpty())
+            {
+                if (handler)
+                    handler->SendSysMessage("Usage: .botcmd encounter validate <botGuidLow>");
+                return true;
+            }
+            std::string summary;
+            bool ok = WorldEncounterDirector::ValidateEncounterCleanup(botGuid, summary);
+            if (handler)
+                handler->PSendSysMessage("Bot {} cleanup validation: {} ({})", botGuid.GetCounter(), ok ? "PASS" : "FAIL", summary);
             return true;
         }
 
@@ -961,7 +1023,7 @@ public:
         }
 
         if (handler)
-            handler->SendSysMessage("Usage: .botcmd encounter <stats|bot|memory|start|stop|reload>");
+            handler->SendSysMessage("Usage: .botcmd encounter <status|list|bot|validate|memory|start|stop|debug|cooldown|reload>");
         return true;
     }
 };

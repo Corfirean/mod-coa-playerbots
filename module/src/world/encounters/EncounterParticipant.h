@@ -97,7 +97,14 @@ struct EncounterParticipant
     uint32 lastActionMs = 0;
     uint32 originalDisplayId = 0;
     uint32 temporaryGobGuidLow = 0;
+    uint32 temporaryGobMapId = 0;
     ObjectGuid temporaryGobGuid;
+
+    float originalHealthPct = 100.0f;
+    float lastNavTargetX = 0.0f;
+    float lastNavTargetY = 0.0f;
+    uint32 subState = 0;
+    uint32 subStateEnteredAtMs = 0;
 
     float cautiousness = 0.5f; // Used for cowardly/cautious early PvP retreat check
     bool stealthCapable = false;
