@@ -73,8 +73,8 @@ Runs of 505 bots (levels 8-60, 40 of them saved in Outland proper), scaling off,
 
 | | first runs (before the last fixes) | last run |
 |---|---|---|
-| quests handed in per 100 bots and minute | about 1.5 | 1.5-2 |
-| deaths per 100 bots and minute | 9 | 3 (first 17 minutes, ramp-up included) |
+| quests handed in per 100 bots and minute | about 2.1 (35 min) | 1.3 (17 min, ramp-up included) |
+| deaths per 100 bots and minute | 9.3 | 3.2 |
 | bodies given up because a camp stood over them | 54% of deaths | 53% |
 | bots on closed expansion maps | 0 | 0 |
 
@@ -82,4 +82,4 @@ What the logs showed: bots spend about 44% of their time walking to objective ar
 a fifth are on a deliberate session break. Quest task failures: "no targets" (competition for the same mobs) 30%, died 20%,
 timeouts walking 19%. Town guards of neutral hubs (Light's Hope, Everlook, Gadgetzan) killed level 59-60 bots on arrival in
 the sandbox with scaling off; hubs with deaths are now skipped. Other builds on the machine (a 22 GB linker) forced the
-world down three times; `supervisor.py` restarts it when memory is back.
+world down three times, which is why the last run is only 17 minutes; `supervisor.py` restarts it when memory is back. The last run is too short to say whether quests per hour improved; the death rate fell to a third, with the caveat that the first minutes after login are quieter.
