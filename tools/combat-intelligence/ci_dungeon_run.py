@@ -147,6 +147,11 @@ class Lane:
         wipes = 0
         was_wiped = False
         combat_s = 0.0
+        active_s = 0.0        # polls in which the group's damage to creatures grew: a real fight
+        stalemate_s = 0.0     # time in combat with no damage dealt for 30 s or longer (a mob nobody reaches or can hurt)
+        quiet_since = None
+        last_damage = 0
+        stalemate_noted = False
         last_move_at, last_pos = began, None
         last_boss, boss_times = 0, []
         trail = []
@@ -178,6 +183,21 @@ class Lane:
                 was_wiped = alive == 0
             if s['inCombat']:
                 combat_s += poll
+            damage_now = sum(m.get('dmg', 0) for m in s['members'])
+            if damage_now > last_damage:
+                active_s += poll
+                quiet_since = None
+                stalemate_noted = False
+            elif s['inCombat']:
+                quiet_since = quiet_since or now
+                if now - quiet_since >= 30:
+                    stalemate_s += poll
+                    if now - quiet_since >= 120 and not stalemate_noted:
+                        stalemate_noted = True
+                        record['events'].append({'t': round(t), 'event': 'stalemate', 'mobs': [(m['name'][:20], m['hp'], m.get('on')) for m in s.get('mobs', [])][:3]})
+            else:
+                quiet_since = None
+            last_damage = damage_now
             for mob in s.get('mobs', []):
                 e = mobs.setdefault(mob['name'], {'lvl': mob.get('lvl'), 'maxhp': mob.get('maxhp', 0)})
                 e['maxhp'] = max(e['maxhp'], mob.get('maxhp', 0))
@@ -217,6 +237,8 @@ class Lane:
         record['bossDone'], record['bossTotal'] = final.get('bossDone'), final.get('bossTotal')
         record['bossTimes'] = boss_times
         record['combatSeconds'] = round(combat_s)
+        record['activeSeconds'] = round(active_s)
+        record['stalemateSeconds'] = round(stalemate_s)
         record['mobs'] = mobs
         record['trail'] = trail
         record['tankPos'] = [round(final['members'][0]['x']), round(final['members'][0]['y'])]
@@ -262,6 +284,8 @@ def campaign(config):
     """One task per specialization: the actor is re-specced and re-equipped once, plays a warm-up run that is not counted (a bot that was just re-equipped lost its
     buffs and its AI state and died in its first fight in 29 of 33 runs, against 14 of 196 for the fixed team), then plays its counted runs in different dungeons."""
     specs = [s for s in spec_table() if s[0] >= 12]
+    if config.get('only_specs'):
+        specs = [s for s in specs if s[1] in config['only_specs']]
     dungeons = load_dungeons(config['dungeons'], config['campaign_dungeons'])
     actors = {int(k): v for k, v in config['actors'].items()}
     attempts = config.get('attempts', 2)
@@ -271,7 +295,7 @@ def campaign(config):
     for i, (cls, spec, role, name) in enumerate(specs):
         runs = []
         for attempt in range(attempts):
-            dungeon = dungeons[(i + attempt * 2) % len(dungeons)]
+            dungeon = dungeons[(i + attempt) % len(dungeons)]  # consecutive dungeons: every spec sees both halves of the list
             label = f'spec{spec:03d}-{name.replace(" ", "")}-a{attempt + 1}-{dungeon["key"]}'
             if label not in done:
                 runs.append({'attempt': attempt + 1, 'dungeon': dungeon, 'label': label})

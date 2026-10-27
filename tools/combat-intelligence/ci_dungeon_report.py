@@ -34,7 +34,7 @@ def subject(run):
 
 
 def per_run(run):
-    secs = max(run.get('combatSeconds', 0), 1)
+    secs = max(run.get('activeSeconds') if run.get('activeSeconds') is not None else run.get('combatSeconds', 0), 1)
     members = run['members_result'].values()
     name, me = subject(run)
     out = {
@@ -42,7 +42,7 @@ def per_run(run):
         'kills': sum(m['kills'] for m in members), 'elite': sum(m['eliteKills'] for m in members),
         'deaths': sum(m['deaths'] for m in members), 'wipes': run.get('wipes', 0),
         'boss': run.get('bossDone'), 'bossTotal': run.get('bossTotal'), 'combat': secs,
-        'kills_per_10min': sum(m['kills'] for m in members) * 600.0 / max(run['seconds'], 1),
+        'kills_per_10min': sum(m['kills'] for m in members) * 600.0 / max(run['seconds'], 1), 'stalemate': run.get('stalemateSeconds', 0),
     }
     if me:
         out.update({'dps': me['damage'] / secs, 'hps': me['healing'] / secs, 'taken': me['taken'] / secs, 'myDeaths': me['deaths'],
@@ -69,25 +69,27 @@ def main(argv):
     by_spec = defaultdict(list)
     for r, p in rows:
         by_spec[(r['meta']['cls'], r['meta']['spec'], r['meta']['role'], r['meta']['name'])].append(p)
-    role_dps = defaultdict(list)
-    role_hps = defaultdict(list)
-    for (cls, spec, role, name), ps in by_spec.items():
-        role_dps[role] += [p.get('dps') for p in ps]
-        role_hps[role] += [p.get('hps') for p in ps]
+    # reference = median of the same role in the same dungeon, so a spec is never judged on the dungeon set it happened to draw
+    ref = defaultdict(list)
+    for r, p in rows:
+        role = r['meta']['role']
+        ref[(role, r['dungeon'])].append(p.get('hps') if role == 'Healer' else p.get('dps'))
+    for r, p in rows:
+        role = r['meta']['role']
+        base = med(ref[(role, r['dungeon'])])
+        own = p.get('hps') if role == 'Healer' else p.get('dps')
+        p['rel'] = own / base if own is not None and base else None
     lines = ['# Dungeon runs', '',
              f'{len(rows)} runs of {len(by_spec)} specializations from `{results.name}` (ten-minute auto-dungeon runs of a group of five in mid-level dungeons, level-60 bots in live gear; '
              'the spec under test fills its role slot, the other four are the fixed team). Group figures are for the whole group; "own" figures are the bot of the specialization. '
-             '"vs role" = own damage (or healing) per combat second divided by the median of all specs of the same role in these runs.', '',
+             '"vs role" = own damage (or healing) per combat second divided by the median of the same role in the same dungeon (median over the runs of the spec). Damage and healing are per active combat second (seconds in which the group dealt damage).', '',
              '| Class | Spec | Name | Role | Runs | Outcomes | Group kills /10 min | Elite kills | Deaths (group) | Wipes | Own dps | vs role | Own hps | Own deaths | Lowest power % | Dungeons |',
              '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for (cls, spec, role, name), ps in sorted(by_spec.items(), key=lambda kv: (kv[0][2], kv[0][1])):
         outcomes = defaultdict(int)
         for p in ps:
             outcomes[p['outcome']] += 1
-        key = 'dps' if role != 'Healer' else 'hps'
-        base = med(role_dps[role] if role != 'Healer' else role_hps[role])
-        own = med([p.get(key) for p in ps])
-        rel = (own / base) if own is not None and base else None
+        rel = med([p.get('rel') for p in ps])
         lines.append(f'| {cls} | {spec} | {name} | {role} | {len(ps)} | {", ".join(f"{k} {v}" for k, v in sorted(outcomes.items()))} | '
                      f'{fmt(med([p["kills_per_10min"] for p in ps]), 1)} | {fmt(med([p["elite"] for p in ps]), 0)} | {fmt(med([p["deaths"] for p in ps]), 0)} | '
                      f'{sum(p["wipes"] for p in ps)} | {fmt(med([p.get("dps") for p in ps]), 0)} | {fmt(rel * 100 if rel is not None else None, 0)}% | '
