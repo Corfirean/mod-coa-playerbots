@@ -387,6 +387,10 @@ void RetryLfgTeleport(Player* bot, Group* grp)
         bot->IsFlying(), bot->IsMounted());
     if (bot->IsMounted())
         bot->Dismount();
+    // A bot has no client to report that it landed, so a "falling" flag left over from a flight or a knock-back stays up for good, and LFGMgr
+    // refuses to teleport a falling player (LFG_TELEPORTERROR_FALLING). The bot is about to leave this spot anyway.
+    if (bot->IsFalling())
+        bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR);
     sLFGMgr->TeleportPlayer(bot, false);
 }
 
