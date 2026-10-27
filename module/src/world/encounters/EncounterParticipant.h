@@ -102,6 +102,7 @@ struct EncounterParticipant
     ObjectGuid temporaryGobGuid;
 
     float originalHealthPct = 100.0f;
+    float originalRunSpeedRate = 1.0f;
     float lastNavTargetX = 0.0f;
     float lastNavTargetY = 0.0f;
     float lastNavTargetZ = 0.0f;
@@ -113,6 +114,7 @@ struct EncounterParticipant
     bool stealthApplied = false;
     bool sitApplied = false;
     bool morphApplied = false;
+    bool speedBoostApplied = false;
     bool engagedInCombat = false;
     bool arrivedAtStaging = false;
     bool emoteDone = false;

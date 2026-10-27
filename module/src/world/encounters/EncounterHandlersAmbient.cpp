@@ -460,6 +460,13 @@ namespace EncounterHandlers
             part.originalFaction = 0;
         }
 
+        if (part.speedBoostApplied)
+        {
+            float restoreRate = part.originalRunSpeedRate > 0.1f ? part.originalRunSpeedRate : 1.0f;
+            bot->SetSpeedRate(MOVE_RUN, restoreRate);
+            part.speedBoostApplied = false;
+        }
+
         if (!part.temporaryGobGuid.IsEmpty())
         {
             GameObject* gob = ObjectAccessor::GetGameObject(*bot, part.temporaryGobGuid);

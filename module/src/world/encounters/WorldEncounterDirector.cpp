@@ -407,6 +407,7 @@ namespace
         p.subStateEnteredAtMs = nowMs;
         p.originalDisplayId = bot->GetDisplayId();
         p.originalHealthPct = bot->GetHealthPct();
+        p.originalRunSpeedRate = bot->GetSpeedRate(MOVE_RUN);
         p.stealthCapable = (bot->getClass() == CLASS_ROGUE && bot->HasSpell(1784)) ||
                            (bot->getClass() == CLASS_DRUID && bot->HasSpell(5215));
         p.cautiousness = EncounterPersonality::Derive(GetPersonaForBot(bot->GetGUID())).cautious;
@@ -464,6 +465,8 @@ namespace
             snap.hasResidualEncounterMorph = releasedPart->morphApplied;
             snap.hasResidualSitOrKneelState = releasedPart->sitApplied;
             snap.hasResidualTemporaryGameObject = !releasedPart->temporaryGobGuid.IsEmpty();
+            if (releasedPart->speedBoostApplied)
+                snap.hasResidualEncounterFlags = true;
         }
 
         if (std::optional<MovementRequest> req = BotMovement::GetRequestSnapshot(botGuid))
@@ -535,6 +538,7 @@ namespace
                 part.stealthApplied = false;
                 part.morphApplied = false;
                 part.sitApplied = false;
+                part.speedBoostApplied = false;
                 if (!part.temporaryGobGuid.IsEmpty())
                 {
                     GameObject* gob = nullptr;
@@ -1106,9 +1110,13 @@ namespace
             return false;
         }
 
-        // 7.10 Hunter and Prey (2 opposing bots)
+        // 7.10 Hunter and Prey (2 opposing-faction bots within <=2 levels, preferring <=1 level)
         if (type == EncounterType::HunterAndPrey)
         {
+            Player* bestHunter = nullptr;
+            Player* bestPrey = nullptr;
+            float bestPairScore = -1.0f;
+
             for (size_t i = 0; i < freeBots.size(); ++i)
             {
                 for (size_t j = i + 1; j < freeBots.size(); ++j)
@@ -1118,59 +1126,112 @@ namespace
                     if (!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, snapA, snapB, cfg, bypassBudgetAndCooldown))
                         continue;
 
-                    Player* hunter = freeBots[i];
-                    Player* prey = freeBots[j];
+                    uint32 lvlDiff = EncounterEligibility::LevelDifference(snapA.level, snapB.level);
+                    float levelBonus = (lvlDiff == 0) ? 3.0f : ((lvlDiff == 1) ? 2.0f : 0.8f);
 
-                    EncounterInstance inst;
-                    inst.type = EncounterType::HunterAndPrey;
-                    inst.isForcedTest = bypassBudgetAndCooldown;
-                    inst.mapId = mapId;
-                    inst.zoneId = anchorUnit->GetZoneId();
-                    inst.areaId = anchorUnit->GetAreaId();
+                    float scoreAsHunterA = EncounterPersonality::ScoreAffinity(
+                        EncounterType::HunterAndPrey, EncounterRole::Hunter, GetPersonaForBot(snapA.activity.botGuid), snapA.hasStealthSpell);
+                    float scoreAsHunterB = EncounterPersonality::ScoreAffinity(
+                        EncounterType::HunterAndPrey, EncounterRole::Hunter, GetPersonaForBot(snapB.activity.botGuid), snapB.hasStealthSpell);
 
-                    if (bypassBudgetAndCooldown)
+                    Player* candHunter = (scoreAsHunterA >= scoreAsHunterB) ? freeBots[i] : freeBots[j];
+                    Player* candPrey = (scoreAsHunterA >= scoreAsHunterB) ? freeBots[j] : freeBots[i];
+                    float pairScore = levelBonus + std::max(scoreAsHunterA, scoreAsHunterB);
+
+                    if (pairScore > bestPairScore)
                     {
-                        float aOri = anchorUnit->GetOrientation();
-                        float fwdX = std::cos(aOri);
-                        float fwdY = std::sin(aOri);
-
-                        inst.centerX = anchorUnit->GetPositionX() + fwdX * 8.0f;
-                        inst.centerY = anchorUnit->GetPositionY() + fwdY * 8.0f;
-                        inst.centerZ = anchorUnit->GetPositionZ();
-
-                        // Stage prey 18yd ahead of GM, hunter 5yd ahead of GM (13yd gap)
-                        float preyX = anchorUnit->GetPositionX() + fwdX * 18.0f;
-                        float preyY = anchorUnit->GetPositionY() + fwdY * 18.0f;
-                        float hunterX = anchorUnit->GetPositionX() + fwdX * 5.0f;
-                        float hunterY = anchorUnit->GetPositionY() + fwdY * 5.0f;
-
-                        prey->TeleportTo(mapId, preyX, preyY, inst.centerZ, aOri);
-                        sBotMgr->QueueTeleportAck(prey->GetSession());
-                        hunter->TeleportTo(mapId, hunterX, hunterY, inst.centerZ, aOri);
-                        sBotMgr->QueueTeleportAck(hunter->GetSession());
-
-                        if (hunter->GetTeamId() == prey->GetTeamId())
-                            hunter->SetFaction(14);
-                        hunter->SetPvP(true);
-                        prey->SetPvP(true);
+                        bestPairScore = pairScore;
+                        bestHunter = candHunter;
+                        bestPrey = candPrey;
                     }
-                    else
-                    {
-                        inst.centerX = hunter->GetPositionX();
-                        inst.centerY = hunter->GetPositionY();
-                        inst.centerZ = hunter->GetPositionZ();
-                    }
-
-                    inst.participants.push_back(MakeParticipant(hunter, EncounterRole::Hunter, nowMs));
-                    inst.participants.push_back(MakeParticipant(prey, EncounterRole::Prey, nowMs));
-                    uint64 id = CommitEncounter(std::move(inst), nowMs);
-                    outReason = Acore::StringFormat("Started hunter_prey (#{}) between {} and {}",
-                        id, hunter->GetName(), prey->GetName());
-                    return true;
                 }
             }
-            outReason = "Need 2 compatible opposing bots for Hunter and Prey";
-            return false;
+
+            if (!bestHunter || !bestPrey)
+            {
+                outReason = "HunterAndPrey build failed: need 2 available opposing-faction bots within 2 levels (Alliance vs Horde)";
+                return false;
+            }
+
+            Player* hunter = bestHunter;
+            Player* prey = bestPrey;
+
+            EncounterInstance inst;
+            inst.type = EncounterType::HunterAndPrey;
+            inst.isForcedTest = bypassBudgetAndCooldown;
+            inst.mapId = mapId;
+            inst.zoneId = anchorUnit->GetZoneId();
+            inst.areaId = anchorUnit->GetAreaId();
+
+            float initialDistance = 27.0f;
+            if (bypassBudgetAndCooldown)
+            {
+                float aOri = anchorUnit->GetOrientation();
+                float fwdX = std::cos(aOri);
+                float fwdY = std::sin(aOri);
+
+                inst.centerX = anchorUnit->GetPositionX() + fwdX * 8.0f;
+                inst.centerY = anchorUnit->GetPositionY() + fwdY * 8.0f;
+                inst.centerZ = anchorUnit->GetPositionZ();
+
+                // Stage hunter 5yd ahead of anchor, prey 32yd ahead of anchor (27yd initial spacing in [25..30]yd)
+                float hunterX = anchorUnit->GetPositionX() + fwdX * 5.0f;
+                float hunterY = anchorUnit->GetPositionY() + fwdY * 5.0f;
+                float preyX = anchorUnit->GetPositionX() + fwdX * 32.0f;
+                float preyY = anchorUnit->GetPositionY() + fwdY * 32.0f;
+                float hunterZ = inst.centerZ;
+                float preyZ = inst.centerZ;
+                if (anchorUnit->GetMap())
+                {
+                    float hgz = anchorUnit->GetMap()->GetHeight(anchorUnit->GetPhaseMask(), hunterX, hunterY, hunterZ + 12.0f);
+                    if (hgz > INVALID_HEIGHT)
+                        hunterZ = hgz;
+                    float pgz = anchorUnit->GetMap()->GetHeight(anchorUnit->GetPhaseMask(), preyX, preyY, preyZ + 12.0f);
+                    if (pgz > INVALID_HEIGHT)
+                        preyZ = pgz;
+                }
+
+                prey->TeleportTo(mapId, preyX, preyY, preyZ, aOri);
+                sBotMgr->QueueTeleportAck(prey->GetSession());
+                hunter->TeleportTo(mapId, hunterX, hunterY, hunterZ, aOri);
+                sBotMgr->QueueTeleportAck(hunter->GetSession());
+
+                hunter->SetPvP(true);
+                prey->SetPvP(true);
+                initialDistance = Dist2D(hunterX, hunterY, preyX, preyY);
+            }
+            else
+            {
+                inst.centerX = hunter->GetPositionX();
+                inst.centerY = hunter->GetPositionY();
+                inst.centerZ = hunter->GetPositionZ();
+                initialDistance = Dist2D(hunter, prey);
+            }
+
+            inst.participants.push_back(MakeParticipant(hunter, EncounterRole::Hunter, nowMs));
+            inst.participants.push_back(MakeParticipant(prey, EncounterRole::Prey, nowMs));
+            std::string hName = hunter->GetName();
+            std::string pName = prey->GetName();
+            uint8 hLvl = hunter->GetLevel();
+            uint8 pLvl = prey->GetLevel();
+            uint32 hTeam = uint32(hunter->GetTeamId());
+            uint32 pTeam = uint32(prey->GetTeamId());
+
+            uint64 id = CommitEncounter(std::move(inst), nowMs);
+            if (_debugLogging || bypassBudgetAndCooldown)
+            {
+                LOG_INFO("module.coa-playerbots.world",
+                    "Encounter #{} START type=hunter_prey hunter={}({}) lvl={} faction={} prey={}({}) lvl={} faction={} initialDistance={:.1f}yd",
+                    id,
+                    hName, hunter->GetGUID().GetCounter(), uint32(hLvl), hTeam == TEAM_ALLIANCE ? "Alliance" : "Horde",
+                    pName, prey->GetGUID().GetCounter(), uint32(pLvl), pTeam == TEAM_ALLIANCE ? "Alliance" : "Horde",
+                    initialDistance);
+            }
+            outReason = Acore::StringFormat(
+                "Started hunter_prey (#{}) between {} (lvl {}, {}) and {} (lvl {}, {}) dist={:.1f}yd",
+                id, hName, uint32(hLvl), hTeam == TEAM_ALLIANCE ? "Alliance" : "Horde",
+                pName, uint32(pLvl), pTeam == TEAM_ALLIANCE ? "Alliance" : "Horde", initialDistance);
+            return true;
         }
 
         // 7.8 Caravan or 7.11 Rival Adventuring Party (3-6 / 3-5 same-faction bots)

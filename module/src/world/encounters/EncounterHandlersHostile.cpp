@@ -776,8 +776,66 @@ namespace EncounterHandlers
     }
 
     // =========================================================================
-    // 7.10 Hunter and Prey (Hardened Forward Escape, Progress Guard & Stuck Limits)
+    // 7.10 Hunter and Prey (Cross-Faction Only, Prey Head-Start, Chase & Escape)
     // =========================================================================
+    void GivePreyHeadStart(EncounterInstance& inst, Player* hunter, Player* prey, EncounterParticipant& preyPart, uint32 nowMs)
+    {
+        if (!hunter || !prey)
+            return;
+
+        hunter->AttackStop();
+        prey->AttackStop();
+
+        if (prey->IsMounted())
+            BotMovement::RequestDismount(prey, MoveOwner::Encounter, DismountReason::Manual);
+        if (hunter->IsMounted())
+            BotMovement::RequestDismount(hunter, MoveOwner::Encounter, DismountReason::Manual);
+
+        // Use class mobility spell if known; otherwise apply temporary +15% run speed modifier for the chase
+        uint32 mobilitySpell = 0;
+        if (prey->getClass() == CLASS_ROGUE && prey->HasSpell(2983))
+            mobilitySpell = 2983; // Sprint
+        else if (prey->getClass() == CLASS_DRUID && prey->HasSpell(1850))
+            mobilitySpell = 1850; // Dash
+        else if (prey->getClass() == CLASS_SHAMAN && prey->HasSpell(2645))
+            mobilitySpell = 2645; // Ghost Wolf
+
+        if (mobilitySpell != 0)
+        {
+            prey->CastSpell(prey, mobilitySpell, true);
+        }
+        else if (!preyPart.speedBoostApplied)
+        {
+            preyPart.originalRunSpeedRate = prey->GetSpeedRate(MOVE_RUN);
+            if (preyPart.originalRunSpeedRate < 0.1f)
+                preyPart.originalRunSpeedRate = 1.0f;
+            prey->SetSpeedRate(MOVE_RUN, preyPart.originalRunSpeedRate * 1.15f);
+            preyPart.speedBoostApplied = true;
+        }
+
+        // Immediately start Prey's first escape leg away from Hunter
+        float dx = prey->GetPositionX() - hunter->GetPositionX();
+        float dy = prey->GetPositionY() - hunter->GetPositionY();
+        float baseAngle = (std::abs(dx) > 0.1f || std::abs(dy) > 0.1f)
+            ? std::atan2(dy, dx)
+            : prey->GetOrientation();
+
+        preyPart.lastActionMs = nowMs;
+        preyPart.subState = 1;
+        preyPart.lastNavTargetX = prey->GetPositionX() + std::cos(baseAngle) * 40.0f;
+        preyPart.lastNavTargetY = prey->GetPositionY() + std::sin(baseAngle) * 40.0f;
+        inst.destZ = prey->GetPositionZ();
+        if (prey->GetMap())
+        {
+            float gz = prey->GetMap()->GetHeight(prey->GetPhaseMask(), preyPart.lastNavTargetX, preyPart.lastNavTargetY, inst.destZ + 10.0f);
+            if (gz > INVALID_HEIGHT)
+                inst.destZ = gz;
+        }
+        preyPart.navGoalId = (inst.id << 8) + 50u + preyPart.subState;
+        BotMovement::Navigate(prey, MoveOwner::Encounter, preyPart.navGoalId,
+            preyPart.lastNavTargetX, preyPart.lastNavTargetY, inst.destZ, 5.0f, &preyPart.moveToken, false);
+    }
+
     void UpdateHunterAndPrey(EncounterInstance& inst, Player* bot, EncounterParticipant& part, uint32 nowMs)
     {
         EncounterParticipant* hunterPart = inst.FindByRole(EncounterRole::Hunter);
@@ -797,23 +855,55 @@ namespace EncounterHandlers
             return;
         }
 
+        // Strict cross-faction enforcement (§4): never allow same-faction Hunter & Prey
+        if (hunter->GetTeamId() == prey->GetTeamId())
+        {
+            inst.state.Terminate(EncounterStopReason::PvPEligibilityLost, nowMs);
+            return;
+        }
+
         if (inst.state.phase == EncounterPhase::Prepare)
         {
-            part.subStateEnteredAtMs = nowMs;
-            part.originX = bot->GetPositionX();
-            part.originY = bot->GetPositionY();
+            hunterPart->subStateEnteredAtMs = nowMs;
+            hunterPart->originX = hunter->GetPositionX();
+            hunterPart->originY = hunter->GetPositionY();
+            preyPart->subStateEnteredAtMs = nowMs;
+            preyPart->originX = prey->GetPositionX();
+            preyPart->originY = prey->GetPositionY();
+
+            inst.subStage = 1; // 1 = GivePreyHeadStart (0..2.2s), 2 = Chase, 100 = Combat
+            GivePreyHeadStart(inst, hunter, prey, *preyPart, nowMs);
             inst.state.TransitionTo(EncounterPhase::Active, nowMs);
             return;
         }
 
         if (inst.state.phase == EncounterPhase::Active)
         {
+            uint32 activeElapsedMs = inst.state.PhaseElapsedMs(nowMs);
             float dist = Dist2D(hunter, prey);
 
-            // Once Hunter closes the gap, normal PvP combat begins
-            if (dist <= 15.0f || inst.subStage == 100)
+            if (inst.subStage == 1 && activeElapsedMs >= 2200u)
+                inst.subStage = 2;
+
+            // Minimum visible chase requirement (§4): only allow combat lock after head-start + chase (>= 6.5s) and dist <= 10yd
+            bool canLockCombat = (inst.subStage == 2 && activeElapsedMs >= 6500u && dist <= 10.0f);
+            if (canLockCombat || inst.subStage == 100)
             {
-                inst.subStage = 100;
+                if (inst.subStage != 100)
+                {
+                    inst.subStage = 100;
+                    if (preyPart->speedBoostApplied)
+                    {
+                        float restoreRate = preyPart->originalRunSpeedRate > 0.1f ? preyPart->originalRunSpeedRate : 1.0f;
+                        prey->SetSpeedRate(MOVE_RUN, restoreRate);
+                        preyPart->speedBoostApplied = false;
+                    }
+                    if (hunterPart->moveToken.IsValid())
+                        BotMovement::Release(hunter, hunterPart->moveToken);
+                    if (preyPart->moveToken.IsValid())
+                        BotMovement::Release(prey, preyPart->moveToken);
+                }
+
                 Player* opponent = (bot == hunter) ? prey : hunter;
                 if (!EnsureCanAttackBots(inst, bot, opponent))
                 {
@@ -827,25 +917,41 @@ namespace EncounterHandlers
                 return;
             }
 
-            // Hard duration (40s) or escape distance (110yd): Prey successfully escapes!
-            if (inst.state.PhaseElapsedMs(nowMs) >= 40000 || dist >= 110.0f)
+            // Prevent early ranged/melee attacks before the chase lock threshold is reached
+            if (bot->GetVictim() == prey || bot->GetVictim() == hunter)
+                bot->AttackStop();
+
+            // Prey escapes if chase lasts >= 28s or Prey opens distance >= 65 yards
+            if (activeElapsedMs >= 28000u || dist >= 65.0f)
             {
-                inst.state.TransitionTo(EncounterPhase::Resolve, nowMs);
+                inst.state.Terminate(EncounterStopReason::PreyEscaped, nowMs);
                 return;
             }
 
             if (part.role == EncounterRole::Hunter)
             {
-                if (part.navGoalId == 0 || Dist2DPoint(prey, part.lastNavTargetX, part.lastNavTargetY) > 12.0f)
+                // During the 2.2s head-start window, Hunter spots Prey and prepares before pursuing
+                if (inst.subStage == 1)
+                {
+                    bot->SetFacingToObject(prey);
+                    if (!inst.introNarrated)
+                    {
+                        EncounterNarrator::TryBotSpeak(bot, nullptr, EncounterType::HunterAndPrey, NarratorChannel::BotYell, uint32(inst.id));
+                        inst.introNarrated = true;
+                    }
+                    return;
+                }
+
+                if (part.navGoalId == 0 || Dist2DPoint(prey, part.lastNavTargetX, part.lastNavTargetY) > 10.0f)
                 {
                     part.lastNavTargetX = prey->GetPositionX();
                     part.lastNavTargetY = prey->GetPositionY();
                     part.navGoalId = (inst.id << 8) + 10u + (++part.subState);
                 }
                 NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
-                    prey->GetPositionX(), prey->GetPositionY(), prey->GetPositionZ(), 5.0f, &part.moveToken, false);
+                    prey->GetPositionX(), prey->GetPositionY(), prey->GetPositionZ(), 4.5f, &part.moveToken, false);
                 if (nav == NavStatus::Stuck)
-                    inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
+                    inst.state.Terminate(EncounterStopReason::PreyEscaped, nowMs);
             }
             else
             {
@@ -868,16 +974,16 @@ namespace EncounterHandlers
                 // Compute a forward escape leg away from Hunter only when starting a leg or reaching current flee waypoint
                 bool needNewLeg = (part.navGoalId == 0) ||
                                   (Dist2DPoint(prey, part.lastNavTargetX, part.lastNavTargetY) <= 8.0f) ||
-                                  (nowMs - part.lastActionMs >= 6500u);
+                                  (nowMs - part.lastActionMs >= 6000u);
                 if (needNewLeg)
                 {
                     part.lastActionMs = nowMs;
                     float dx = prey->GetPositionX() - hunter->GetPositionX();
                     float dy = prey->GetPositionY() - hunter->GetPositionY();
                     float baseAngle = (std::abs(dx) > 0.1f || std::abs(dy) > 0.1f) ? std::atan2(dy, dx) : prey->GetOrientation();
-                    float weave = ((++part.subState % 2) == 0) ? 0.28f : -0.28f;
-                    part.lastNavTargetX = prey->GetPositionX() + std::cos(baseAngle + weave) * 38.0f;
-                    part.lastNavTargetY = prey->GetPositionY() + std::sin(baseAngle + weave) * 38.0f;
+                    float weave = ((++part.subState % 2) == 0) ? 0.25f : -0.25f;
+                    part.lastNavTargetX = prey->GetPositionX() + std::cos(baseAngle + weave) * 40.0f;
+                    part.lastNavTargetY = prey->GetPositionY() + std::sin(baseAngle + weave) * 40.0f;
                     inst.destZ = prey->GetPositionZ();
                     if (prey->GetMap())
                     {
@@ -889,7 +995,7 @@ namespace EncounterHandlers
                 }
 
                 NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
-                    part.lastNavTargetX, part.lastNavTargetY, inst.destZ, 6.0f, &part.moveToken, false);
+                    part.lastNavTargetX, part.lastNavTargetY, inst.destZ, 5.0f, &part.moveToken, false);
                 if (nav == NavStatus::Stuck)
                     inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
             }

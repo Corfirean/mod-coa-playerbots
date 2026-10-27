@@ -235,7 +235,8 @@ enum class EncounterStopReason : uint8
     PlayerGroupTooLarge = 15,
     CowardlyRetreat = 16,
     TargetRareDead = 17,
-    AdminStopped = 18
+    AdminStopped = 18,
+    PreyEscaped = 19
 };
 
 inline char const* EncounterStopReasonName(EncounterStopReason reason)
@@ -261,6 +262,7 @@ inline char const* EncounterStopReasonName(EncounterStopReason reason)
         case EncounterStopReason::CowardlyRetreat:     return "cowardly_retreat";
         case EncounterStopReason::TargetRareDead:      return "target_rare_dead";
         case EncounterStopReason::AdminStopped:        return "admin_stopped";
+        case EncounterStopReason::PreyEscaped:         return "prey_escaped";
         default:                                       return "unknown";
     }
 }
@@ -269,7 +271,8 @@ inline bool IsSuccessfulStopReason(EncounterStopReason reason)
 {
     return reason == EncounterStopReason::Completed ||
            reason == EncounterStopReason::CowardlyRetreat ||
-           reason == EncounterStopReason::TargetRareDead;
+           reason == EncounterStopReason::TargetRareDead ||
+           reason == EncounterStopReason::PreyEscaped;
 }
 
 struct EncounterConfig

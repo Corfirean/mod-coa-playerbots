@@ -283,13 +283,27 @@ public:
                 return true;
             return botA.healthPct >= 80.0f && botB.healthPct >= 80.0f;
         }
-        if (type == EncounterType::HunterAndPrey || type == EncounterType::FactionSkirmish || type == EncounterType::PatrolAmbush)
+        if (type == EncounterType::HunterAndPrey)
         {
+            if (!IsAvailableForEncounter(botA.activity) || !IsAvailableForEncounter(botB.activity))
+                return false;
+            if (!AreOpposingFactions(botA.teamId, botB.teamId, bypassRestrictions, botA.isContestedOrPvPArea, botB.isContestedOrPvPArea))
+                return false;
+            if (!IsHunterPreyLevelCompatible(botA.level, botB.level))
+                return false;
             if (bypassRestrictions)
                 return true;
-            return botA.teamId != botB.teamId &&
-                   botA.isContestedOrPvPArea && botB.isContestedOrPvPArea &&
-                   botA.canLegallyAttackTarget &&
+            return botA.canLegallyAttackTarget &&
+                   botA.distanceToCapitalYards >= cfg.minCityDistanceYards &&
+                   botB.distanceToCapitalYards >= cfg.minCityDistanceYards;
+        }
+        if (type == EncounterType::FactionSkirmish || type == EncounterType::PatrolAmbush)
+        {
+            if (!AreOpposingFactions(botA.teamId, botB.teamId, bypassRestrictions, botA.isContestedOrPvPArea, botB.isContestedOrPvPArea))
+                return false;
+            if (bypassRestrictions)
+                return true;
+            return botA.canLegallyAttackTarget &&
                    botA.distanceToCapitalYards >= cfg.minCityDistanceYards &&
                    botB.distanceToCapitalYards >= cfg.minCityDistanceYards;
         }
