@@ -37,19 +37,19 @@ public:
     static DerivedEncounterTraits Derive(WorldPersona const& p)
     {
         DerivedEncounterTraits t;
-        // Normalise existing WorldPersona weights (typically 0.4..1.5, sociability 0.0..1.0)
-        float normGrind = std::clamp((p.grinding - 0.3f) / 1.2f, 0.0f, 1.0f);
-        float normPatience = std::clamp((p.patience - 0.3f) / 1.2f, 0.0f, 1.0f);
-        float normQuest = std::clamp((p.questing - 0.3f) / 1.2f, 0.0f, 1.0f);
-        float normGather = std::clamp((p.gathering - 0.3f) / 1.2f, 0.0f, 1.0f);
-        float soc = std::clamp(p.sociability, 0.0f, 1.0f);
+        // Normalise existing WorldPersona weights (0..100)
+        float normGrind = std::clamp(float(p.grinding) / 100.0f, 0.0f, 1.0f);
+        float normPatience = std::clamp(float(p.patience) / 100.0f, 0.0f, 1.0f);
+        float normQuest = std::clamp(float(p.questing) / 100.0f, 0.0f, 1.0f);
+        float normGather = std::clamp(float(p.gathering) / 100.0f, 0.0f, 1.0f);
+        float soc = std::clamp(float(p.sociability) / 100.0f, 0.0f, 1.0f);
 
         t.aggressive = std::clamp(normGrind * 0.75f + (1.0f - normPatience) * 0.25f, 0.0f, 1.0f);
         t.cautious = std::clamp(normPatience * 0.65f + (1.0f - normGrind) * 0.35f, 0.0f, 1.0f);
         t.sociable = soc;
         t.loner = 1.0f - soc;
         t.patient = normPatience;
-        t.adventurous = std::clamp((normQuest + normGather) * 0.5f + (p.lean == WorldActivityLean::Explorer ? 0.25f : 0.0f), 0.0f, 1.0f);
+        t.adventurous = std::clamp((normQuest + normGather) * 0.5f + (p.lean == 5 ? 0.25f : 0.0f), 0.0f, 1.0f);
         return t;
     }
 
