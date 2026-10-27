@@ -382,8 +382,6 @@ namespace
                     isDedicatedOpener = true;
                 else if ((sInfo->Stances & (1u << (FORM_STEALTH - 1))) != 0)
                     isDedicatedOpener = true;
-                else if (sInfo->CasterAuraState == AURA_STATE_STEALTH)
-                    isDedicatedOpener = true;
 
                 if (isDedicatedOpener)
                 {
@@ -394,7 +392,7 @@ namespace
                 {
                     // High-damage gap closer or strike usable while stealthed
                     if ((sInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE || sInfo->GetMaxRange(false, bot) <= 8.0f) &&
-                        !sInfo->HasAttribute(SPELL_ATTR0_NOT_SHAPESHIFT))
+                        !sInfo->HasAttribute(SPELL_ATTR0_NOT_SHAPESHIFTED))
                     {
                         if (sInfo->HasEffect(SPELL_EFFECT_TELEPORT_UNITS) || sInfo->HasEffect(SPELL_EFFECT_CHARGE) || sInfo->FacingCasterFlags != 0)
                         {
