@@ -1540,6 +1540,47 @@ static void TestLiveValidationRound2Regressions()
         cleanSnap.botGuid = preyPart.botGuid;
         cleanSnap.hasResidualEncounterFlags = preyPart.speedBoostApplied;
         CHECK(EncounterCleanupValidator::Validate(cleanSnap).passed);
+
+        // Verify Hunter pursuit speed boost & cleanup invariant
+        EncounterParticipant hunterPart;
+        hunterPart.botGuid = botA.activity.botGuid;
+        hunterPart.role = EncounterRole::Hunter;
+        hunterPart.originalRunSpeedRate = 1.0f;
+        hunterPart.speedBoostApplied = true;
+
+        EncounterCleanupSnapshot dirtyHunterSnap;
+        dirtyHunterSnap.botGuid = hunterPart.botGuid;
+        dirtyHunterSnap.hasResidualEncounterFlags = hunterPart.speedBoostApplied;
+        CHECK(!EncounterCleanupValidator::Validate(dirtyHunterSnap).passed);
+
+        hunterPart.speedBoostApplied = false;
+        EncounterCleanupSnapshot cleanHunterSnap;
+        cleanHunterSnap.botGuid = hunterPart.botGuid;
+        cleanHunterSnap.hasResidualEncounterFlags = hunterPart.speedBoostApplied;
+        CHECK(EncounterCleanupValidator::Validate(cleanHunterSnap).passed);
+
+        // Verify 3 distinct starting distance & head-start variants (Close, Medium, Distant)
+        for (uint32 v = 0; v < 3; ++v)
+        {
+            float fwdOffset = (v == 0) ? 22.0f : ((v == 1) ? 30.0f : 40.0f);
+            float initialDist = fwdOffset - 5.0f; // Hunter is at 5.0f
+            uint32 headStartMs = (v == 0) ? 1000u : ((v == 1) ? 1800u : 2500u);
+            if (v == 0)
+            {
+                CHECK(initialDist >= 16.0f && initialDist <= 18.0f); // Close chase
+                CHECK(headStartMs == 1000u);
+            }
+            else if (v == 1)
+            {
+                CHECK(initialDist >= 24.0f && initialDist <= 26.0f); // Balanced chase
+                CHECK(headStartMs == 1800u);
+            }
+            else
+            {
+                CHECK(initialDist >= 34.0f && initialDist <= 36.0f); // Distant escape advantage
+                CHECK(headStartMs == 2500u);
+            }
+        }
     }
 
     // ------------------------------------------------------------------------

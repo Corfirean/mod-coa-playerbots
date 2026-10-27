@@ -872,6 +872,150 @@ namespace EncounterHandlers
             preyPart.lastNavTargetX, preyPart.lastNavTargetY, inst.destZ, 5.0f, &preyPart.moveToken, false);
     }
 
+    bool TryHunterUseMobilityOrGapCloser(EncounterInstance& inst, Player* hunter, Player* prey, EncounterParticipant& hunterPart, float dist, uint32 nowMs)
+    {
+        if (!hunter || !prey || !hunter->IsAlive() || !prey->IsAlive())
+            return false;
+
+        // Throttle ability attempts to once every 1200ms
+        if (hunterPart.lastActionMs > 0 && (nowMs - hunterPart.lastActionMs < 1200u))
+            return false;
+
+        hunterPart.lastActionMs = nowMs;
+
+        // 1. Check for targeted gap closer spells on prey (Charge, Intercept, Shadowstep, Death Grip, Felhoof Charge, etc.)
+        if (dist >= 8.0f && dist <= 32.0f)
+        {
+            uint32 bestGapCloser = 0;
+            for (auto const& [spellId, playerSpell] : hunter->GetSpellMap())
+            {
+                if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                    continue;
+                if (hunter->HasSpellCooldown(spellId))
+                    continue;
+
+                SpellInfo const* sInfo = sSpellMgr->GetSpellInfo(spellId);
+                if (!sInfo || sInfo->IsPassive() || sInfo->IsPositive())
+                    continue;
+
+                bool isGapCloser = sInfo->HasEffect(SPELL_EFFECT_CHARGE) ||
+                                   sInfo->HasEffect(SPELL_EFFECT_CHARGE_DEST) ||
+                                   sInfo->HasEffect(SPELL_EFFECT_JUMP_DEST) ||
+                                   sInfo->HasEffect(SPELL_EFFECT_TELEPORT_UNITS);
+
+                if (!isGapCloser)
+                {
+                    switch (spellId)
+                    {
+                        case 100:    // Charge rank 1
+                        case 6178:   // Charge rank 2
+                        case 11578:  // Charge rank 3
+                        case 20252:  // Intercept
+                        case 16979:  // Feral Charge - Bear
+                        case 49376:  // Feral Charge - Cat
+                        case 36554:  // Shadowstep
+                        case 49576:  // Death Grip
+                        case 800204: // Felhoof Charge
+                        case 527023: // Divine Charge
+                        case 802284: // Ram
+                            isGapCloser = true;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+                if (isGapCloser)
+                {
+                    float minR = sInfo->GetMinRange(false);
+                    float maxR = sInfo->GetMaxRange(false, hunter);
+                    if (maxR <= 0.0f)
+                        maxR = 25.0f;
+                    if (dist >= minR && dist <= maxR)
+                    {
+                        bestGapCloser = spellId;
+                        break;
+                    }
+                }
+            }
+
+            if (bestGapCloser != 0)
+            {
+                hunter->SetFacingToObject(prey);
+                hunter->CastSpell(prey, bestGapCloser, true);
+                hunter->AddSpellCooldown(bestGapCloser, 0, 15000);
+                return true;
+            }
+        }
+
+        // 2. Check for self speed boost spells (Sprint, Dash, Aspect of the Cheetah, etc.)
+        if (dist > 12.0f)
+        {
+            uint32 bestSpeedSpell = 0;
+            for (auto const& [spellId, playerSpell] : hunter->GetSpellMap())
+            {
+                if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                    continue;
+                if (hunter->HasSpellCooldown(spellId))
+                    continue;
+
+                SpellInfo const* sInfo = sSpellMgr->GetSpellInfo(spellId);
+                if (!sInfo || sInfo->IsPassive() || !sInfo->IsPositive() || sInfo->NeedsExplicitUnitTarget())
+                    continue;
+
+                bool isSpeedSpell = false;
+                for (auto const& eff : sInfo->GetEffects())
+                {
+                    if (eff.IsAura(SPELL_AURA_MOD_INCREASE_SPEED) || eff.IsAura(SPELL_AURA_MOD_SPEED_ALWAYS))
+                    {
+                        isSpeedSpell = true;
+                        break;
+                    }
+                }
+
+                if (!isSpeedSpell)
+                {
+                    switch (spellId)
+                    {
+                        case 2983: // Sprint
+                        case 1850: // Dash
+                        case 5118: // Aspect of the Cheetah
+                            isSpeedSpell = true;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+                if (isSpeedSpell)
+                {
+                    bestSpeedSpell = spellId;
+                    break;
+                }
+            }
+
+            if (bestSpeedSpell != 0)
+            {
+                hunter->CastSpell(hunter, bestSpeedSpell, true);
+                hunter->AddSpellCooldown(bestSpeedSpell, 0, 15000);
+                return true;
+            }
+
+            // 3. Fallback: Pursuit Sprint / Adrenaline Rush burst (+25% run speed)
+            if (!hunterPart.speedBoostApplied)
+            {
+                hunterPart.originalRunSpeedRate = hunter->GetSpeedRate(MOVE_RUN);
+                if (hunterPart.originalRunSpeedRate < 0.1f)
+                    hunterPart.originalRunSpeedRate = 1.0f;
+                hunter->SetSpeedRate(MOVE_RUN, hunterPart.originalRunSpeedRate * 1.25f);
+                hunterPart.speedBoostApplied = true;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     void UpdateHunterAndPrey(EncounterInstance& inst, Player* bot, EncounterParticipant& part, uint32 nowMs)
     {
         EncounterParticipant* hunterPart = inst.FindByRole(EncounterRole::Hunter);
@@ -907,7 +1051,7 @@ namespace EncounterHandlers
             preyPart->originX = prey->GetPositionX();
             preyPart->originY = prey->GetPositionY();
 
-            inst.subStage = 1; // 1 = GivePreyHeadStart (0..2.2s), 2 = Chase, 100 = Combat
+            inst.subStage = 1; // 1 = GivePreyHeadStart, 2 = Chase, 100 = Combat
             GivePreyHeadStart(inst, hunter, prey, *preyPart, nowMs);
             inst.state.TransitionTo(EncounterPhase::Active, nowMs);
             return;
@@ -918,11 +1062,16 @@ namespace EncounterHandlers
             uint32 activeElapsedMs = inst.state.PhaseElapsedMs(nowMs);
             float dist = Dist2D(hunter, prey);
 
-            if (inst.subStage == 1 && activeElapsedMs >= 2200u)
+            uint32 headStartDelayMs = inst.stalkAccumulatedMs > 0 ? inst.stalkAccumulatedMs : 1800u;
+            if (inst.subStage == 1 && activeElapsedMs >= headStartDelayMs)
                 inst.subStage = 2;
 
-            // Minimum visible chase requirement (§4): only allow combat lock after head-start + chase (>= 6.5s) and dist <= 10yd
-            bool canLockCombat = (inst.subStage == 2 && activeElapsedMs >= 6500u && dist <= 10.0f);
+            // Combat lock condition:
+            // Hunter catches Prey if:
+            // 1) Hunter reaches close melee range (dist <= 5.0f) during chase (subStage == 2)
+            // 2) Or dist <= 10.0f after at least (headStartDelayMs + 1500ms) of active pursuit
+            uint32 minChaseElapsedMs = headStartDelayMs + 1500u;
+            bool canLockCombat = (inst.subStage == 2 && (dist <= 5.0f || (dist <= 10.0f && activeElapsedMs >= minChaseElapsedMs)));
             if (canLockCombat || inst.subStage == 100)
             {
                 if (inst.subStage != 100)
@@ -933,6 +1082,12 @@ namespace EncounterHandlers
                         float restoreRate = preyPart->originalRunSpeedRate > 0.1f ? preyPart->originalRunSpeedRate : 1.0f;
                         prey->SetSpeedRate(MOVE_RUN, restoreRate);
                         preyPart->speedBoostApplied = false;
+                    }
+                    if (hunterPart->speedBoostApplied)
+                    {
+                        float restoreRate = hunterPart->originalRunSpeedRate > 0.1f ? hunterPart->originalRunSpeedRate : 1.0f;
+                        hunter->SetSpeedRate(MOVE_RUN, restoreRate);
+                        hunterPart->speedBoostApplied = false;
                     }
                     if (hunterPart->moveToken.IsValid())
                         BotMovement::Release(hunter, hunterPart->moveToken);
@@ -966,7 +1121,7 @@ namespace EncounterHandlers
 
             if (part.role == EncounterRole::Hunter)
             {
-                // During the 2.2s head-start window, Hunter spots Prey and prepares before pursuing
+                // During the head-start window, Hunter spots Prey and prepares before pursuing
                 if (inst.subStage == 1)
                 {
                     bot->SetFacingToObject(prey);
@@ -977,6 +1132,9 @@ namespace EncounterHandlers
                     }
                     return;
                 }
+
+                // Attempt to close gap with movement spell, gap-closer, or pursuit burst
+                TryHunterUseMobilityOrGapCloser(inst, hunter, prey, *hunterPart, dist, nowMs);
 
                 if (part.navGoalId == 0 || Dist2DPoint(prey, part.lastNavTargetX, part.lastNavTargetY) > 10.0f)
                 {
@@ -991,6 +1149,14 @@ namespace EncounterHandlers
             }
             else
             {
+                // Prey's initial panic sprint wears off after 8s of pursuit
+                if (preyPart->speedBoostApplied && activeElapsedMs >= 8000u)
+                {
+                    float restoreRate = preyPart->originalRunSpeedRate > 0.1f ? preyPart->originalRunSpeedRate : 1.0f;
+                    prey->SetSpeedRate(MOVE_RUN, restoreRate);
+                    preyPart->speedBoostApplied = false;
+                }
+
                 // Minimum meaningful movement check every 8 seconds: prevent running in circles around one point
                 if (part.subStateEnteredAtMs == 0)
                     part.subStateEnteredAtMs = nowMs;
@@ -1028,6 +1194,11 @@ namespace EncounterHandlers
                             inst.destZ = gz;
                     }
                     part.navGoalId = (inst.id << 8) + 50u + part.subState;
+                    BotMovement::Navigate(prey, MoveOwner::Encounter, part.navGoalId,
+                        part.lastNavTargetX, part.lastNavTargetY, inst.destZ, 5.0f, &part.moveToken, false);
+                }
+            }
+        }
                 }
 
                 NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,

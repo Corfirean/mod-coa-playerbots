@@ -1475,11 +1475,20 @@ namespace
                 inst.centerY = anchorUnit->GetPositionY() + fwdY * 8.0f;
                 inst.centerZ = anchorUnit->GetPositionZ();
 
-                // Stage hunter 5yd ahead of anchor, prey 32yd ahead of anchor (27yd initial spacing in [25..30]yd)
+                // Varying starting distances (3 distinct variants):
+                // Variant 0 (Close / Hunter Advantage): prey 22 yd ahead, spacing ~17 yd, head-start 1000ms
+                // Variant 1 (Medium / Balanced): prey 30 yd ahead, spacing ~25 yd, head-start 1800ms
+                // Variant 2 (Distant / Prey Advantage): prey 40 yd ahead, spacing ~35 yd, head-start 2500ms
+                static uint32 chaseVariantSeed = 0;
+                uint32 variant = (inst.id + (++chaseVariantSeed)) % 3;
+                float preyFwdOffset = (variant == 0) ? 22.0f : ((variant == 1) ? 30.0f : 40.0f);
+                uint32 headStartDelayMs = (variant == 0) ? 1000u : ((variant == 1) ? 1800u : 2500u);
+                inst.stalkAccumulatedMs = headStartDelayMs;
+
                 float hunterX = anchorUnit->GetPositionX() + fwdX * 5.0f;
                 float hunterY = anchorUnit->GetPositionY() + fwdY * 5.0f;
-                float preyX = anchorUnit->GetPositionX() + fwdX * 32.0f;
-                float preyY = anchorUnit->GetPositionY() + fwdY * 32.0f;
+                float preyX = anchorUnit->GetPositionX() + fwdX * preyFwdOffset;
+                float preyY = anchorUnit->GetPositionY() + fwdY * preyFwdOffset;
                 float hunterZ = inst.centerZ;
                 float preyZ = inst.centerZ;
                 if (anchorUnit->GetMap())
@@ -1507,6 +1516,7 @@ namespace
                 inst.centerY = hunter->GetPositionY();
                 inst.centerZ = hunter->GetPositionZ();
                 initialDistance = Dist2D(hunter, prey);
+                inst.stalkAccumulatedMs = (initialDistance <= 20.0f) ? 1000u : ((initialDistance <= 28.0f) ? 1800u : 2500u);
             }
 
             inst.participants.push_back(MakeParticipant(hunter, EncounterRole::Hunter, nowMs));
