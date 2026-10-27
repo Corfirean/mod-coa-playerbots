@@ -347,35 +347,36 @@ uint8 RoleBitFor(Player* bot)
 // player waited at the dungeon door for a group that never came. Try again every few seconds until the bot is on the dungeon's map.
 struct LfgTeleportRetry
 {
+    uint32 firstSeenMs{0};
     uint32 nextAtMs{0};
     uint8 tries{0};
+    bool arrived{false};
 };
 std::unordered_map<ObjectGuid::LowType, LfgTeleportRetry> lfgTeleportRetry;
 
 void RetryLfgTeleport(Player* bot, Group* grp)
 {
-    constexpr uint8 MAX_TRIES = 20;
+    constexpr uint8 MAX_TRIES = 12;
     constexpr uint32 RETRY_MS = 4000;
+    constexpr uint32 WINDOW_MS = 60000; // after this the group is no longer "just formed": a bot that left on its own is left alone
     ObjectGuid::LowType const low = bot->GetGUID().GetCounter();
     lfg::LFGDungeonData const* dungeon = sLFGMgr->GetLFGDungeon(sLFGMgr->GetDungeon(grp->GetGUID()));
     if (!dungeon)
         return;
-    if (bot->GetMapId() == uint32(dungeon->map))
-    {
-        lfgTeleportRetry.erase(low);
-        return;
-    }
-    if (bot->IsBeingTeleported())
-        return;
 
     uint32 const now = uint32(GameTime::GetGameTimeMS().count());
     LfgTeleportRetry& retry = lfgTeleportRetry[low];
-    if (retry.nextAtMs == 0)
+    if (retry.firstSeenMs == 0)
     {
+        retry.firstSeenMs = now;
         retry.nextAtMs = now + RETRY_MS; // the group's own teleport is still on its way
+    }
+    if (bot->GetMapId() == uint32(dungeon->map))
+    {
+        retry.arrived = true; // whatever takes it out later (following a leader, a hub trip) is not this code's business
         return;
     }
-    if (now < retry.nextAtMs || retry.tries >= MAX_TRIES)
+    if (retry.arrived || now - retry.firstSeenMs > WINDOW_MS || retry.tries >= MAX_TRIES || bot->IsBeingTeleported() || now < retry.nextAtMs)
         return;
     retry.nextAtMs = now + RETRY_MS;
     ++retry.tries;
@@ -401,6 +402,8 @@ void ProcessGroupRoleChecks()
 
         if (Group* lfgGroup = bot->GetGroup(); lfgGroup && lfgGroup->isLFGGroup() && sLFGMgr->GetState(lfgGroup->GetGUID()) == lfg::LFG_STATE_DUNGEON)
             RetryLfgTeleport(bot, lfgGroup);
+        else if (!lfgTeleportRetry.empty())
+            lfgTeleportRetry.erase(bot->GetGUID().GetCounter());
 
         ObjectGuid::LowType lowGuid = bot->GetGUID().GetCounter();
         lfg::LfgState state = sLFGMgr->GetState(bot->GetGUID());
