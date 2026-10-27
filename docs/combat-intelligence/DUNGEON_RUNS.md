@@ -54,7 +54,7 @@ characters). An earlier campaign (`campaign5`) had two confounds found afterward
    drink below 25-50% mana. A damage dealer at 55% mana was never asked to rest, so the group stood still for the whole wait after each pack. Rest thresholds in an auto-dungeon are now at least the tank's.
 2. **The Black Knight tank (class 15, spec 97) got stuck** in 2 of 3 runs with "pull not ready: SpecStrategyReadinessFailed": the spec's readiness check required Blade Stance (aura 802002) and the bot does
    not put the stance back on after it died or was re-equipped. The check now fails only when the bot has the stance spell but is not in the stance, and the spec also requires 70% health
-   (`c944614`); that change was built but is **not yet verified in the world**.
+   (`c944614`); verified afterwards on build `cand19`: three 10-minute runs (Stratholme, Underbog, Slave Pens) ended TIMEOUT, none STUCK, with 18.6 group kills per ten minutes against 13.7 before.
 3. **Three other STUCK runs:** Sanguine in Blood Furnace (nothing in reach of a Shadowmoon Adept, "made no progress"), Archery in Underbog ("pull not ready: MemberOutOfRange", the leader waits for a
    member that does not come), Piety in Slave Pens (navigation mesh has no path). 
 4. **Navigation mesh refusals** in the scouting runs and in some campaign runs: Zul'Farrak, Slave Pens, Hellfire Ramparts, The Nexus, Mana-Tombs, Shattered Halls, Botanica, Uldaman, Razorfen Downs and
