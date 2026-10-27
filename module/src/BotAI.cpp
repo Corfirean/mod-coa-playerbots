@@ -4058,6 +4058,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     // handled unconditionally at the top of this function, before target acquisition, so
     // state.flee.fleeing is always false by this point -- this only evaluates fresh triggers
     // against this tick's live target and starts a new flee on one firing.
+    // Skip panic-fleeing when the bot is in a duel so duelists fight to the duel threshold.
+    if (!bot->duel)
     {
         CombatContext fleeCtx = CombatContext::Build(bot, target);
         FleeReason reason = BotFlee::Evaluate(bot, target, fleeCtx, state.flee, getMSTime());

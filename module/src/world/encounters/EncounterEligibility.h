@@ -273,9 +273,15 @@ public:
 
         if (type == EncounterType::RoadDuel)
         {
+            if (!IsAvailableForEncounter(botA.activity) || !IsAvailableForEncounter(botB.activity))
+                return false;
+            if (botA.teamId != botB.teamId)
+                return false;
+            if (!IsPartyMemberLevelCompatible(botA.level, botB.level, 3))
+                return false;
             if (bypassRestrictions)
                 return true;
-            return botA.teamId == botB.teamId && botA.healthPct >= 80.0f && botB.healthPct >= 80.0f;
+            return botA.healthPct >= 80.0f && botB.healthPct >= 80.0f;
         }
         if (type == EncounterType::HunterAndPrey || type == EncounterType::FactionSkirmish || type == EncounterType::PatrolAmbush)
         {

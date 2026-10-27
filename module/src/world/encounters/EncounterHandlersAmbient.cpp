@@ -5,11 +5,13 @@
 #include "EncounterConfig.h"
 #include "EncounterNarrator.h"
 #include "GameObject.h"
+#include "GameTime.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Map.h"
 #include "MapMgr.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Pet.h"
 #include "Player.h"
 #include "SharedDefines.h"
@@ -20,6 +22,8 @@ namespace
 {
     constexpr uint32 SPELL_ROGUE_STEALTH = 1784;
     constexpr uint32 SPELL_DRUID_PROWL   = 5215;
+    constexpr uint32 DUEL_ARBITER_GOB_ENTRY = 21680;
+    constexpr uint32 ROAD_DUEL_SAFE_HP_PCT  = 24;
 
     float Dist2D(WorldObject const* a, WorldObject const* b)
     {
@@ -29,6 +33,223 @@ namespace
     float Dist2DPoint(WorldObject const* a, float x, float y)
     {
         return std::hypot(a->GetPositionX() - x, a->GetPositionY() - y);
+    }
+
+    void DeleteTemporaryGobForPart(Player* optionalContextPlayer, EncounterParticipant& part)
+    {
+        if (part.temporaryGobGuid.IsEmpty())
+            return;
+
+        GameObject* gob = optionalContextPlayer ? ObjectAccessor::GetGameObject(*optionalContextPlayer, part.temporaryGobGuid) : nullptr;
+        if (!gob && part.temporaryGobMapId != 0)
+        {
+            if (Map* gobMap = sMapMgr->FindMap(part.temporaryGobMapId, 0))
+                gob = gobMap->GetGameObject(part.temporaryGobGuid);
+        }
+        if (gob)
+        {
+            gob->SetRespawnTime(0);
+            gob->Delete();
+        }
+        part.temporaryGobGuid = ObjectGuid::Empty;
+        part.temporaryGobMapId = 0;
+    }
+
+    void RemoveNegativeAurasFromDuelOpponent(Player* victim, Player* opponent)
+    {
+        if (!victim || !opponent)
+            return;
+
+        ObjectGuid oppGuid = opponent->GetGUID();
+        ObjectGuid oppPetGuid = opponent->GetPetGUID();
+        Player::AuraApplicationMap& auras = victim->GetAppliedAuras();
+        for (auto it = auras.begin(); it != auras.end();)
+        {
+            Aura const* aura = it->second ? it->second->GetBase() : nullptr;
+            ObjectGuid casterGuid = aura ? aura->GetCasterGUID() : ObjectGuid::Empty;
+            if (it->second && !it->second->IsPositive() &&
+                (casterGuid == oppGuid || (!oppPetGuid.IsEmpty() && casterGuid == oppPetGuid)))
+            {
+                victim->RemoveAura(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+    }
+
+    bool HasExternalAttackerOutsideDuel(Player const* bot, Player const* duelOpponent)
+    {
+        if (!bot || !duelOpponent)
+            return false;
+
+        ObjectGuid oppGuid = duelOpponent->GetGUID();
+        for (Unit const* att : bot->getAttackers())
+        {
+            if (!att || !att->IsAlive())
+                continue;
+            if (att->GetGUID() == oppGuid || att->GetCharmerOrOwnerGUID() == oppGuid)
+                continue;
+            return true;
+        }
+        return false;
+    }
+
+    void StopRoadDuelSafely(Player* botA, EncounterParticipant& partA, Player* botB, EncounterParticipant* partB)
+    {
+        if (botA)
+        {
+            uint32 safeHpA = std::max<uint32>(1u, (botA->GetMaxHealth() * ROAD_DUEL_SAFE_HP_PCT) / 100u);
+            if (botA->IsAlive() && botA->GetHealth() < safeHpA)
+                botA->SetHealth(safeHpA);
+            botA->CombatStopWithPets(true);
+            botA->InterruptNonMeleeSpells(false);
+        }
+        if (botB)
+        {
+            uint32 safeHpB = std::max<uint32>(1u, (botB->GetMaxHealth() * ROAD_DUEL_SAFE_HP_PCT) / 100u);
+            if (botB->IsAlive() && botB->GetHealth() < safeHpB)
+                botB->SetHealth(safeHpB);
+            botB->CombatStopWithPets(true);
+            botB->InterruptNonMeleeSpells(false);
+        }
+
+        if (botA && botA->duel && botA->duel->State != DUEL_STATE_COMPLETED)
+            botA->DuelComplete(DUEL_INTERRUPTED);
+        else if (botB && botB->duel && botB->duel->State != DUEL_STATE_COMPLETED)
+            botB->DuelComplete(DUEL_INTERRUPTED);
+
+        if (botA && botB)
+        {
+            RemoveNegativeAurasFromDuelOpponent(botA, botB);
+            RemoveNegativeAurasFromDuelOpponent(botB, botA);
+        }
+
+        if (botA)
+        {
+            botA->SetGuidValue(PLAYER_DUEL_ARBITER, ObjectGuid::Empty);
+            botA->SetUInt32Value(PLAYER_DUEL_TEAM, 0);
+            botA->duel.reset(nullptr);
+            botA->GetCombatManager().EndAllPvPCombat();
+            if (botA->GetTarget() == partA.assignedTargetGuid)
+                botA->SetSelection(ObjectGuid::Empty);
+            if (botA->IsAlive())
+            {
+                float restorePct = std::max(partA.originalHealthPct, 85.0f);
+                if (botA->GetHealthPct() < restorePct)
+                {
+                    uint32 targetHp = std::max<uint32>(1u, uint32(botA->GetMaxHealth() * (restorePct / 100.0f)));
+                    botA->SetHealth(std::min<uint32>(botA->GetMaxHealth(), targetHp));
+                }
+            }
+        }
+        if (botB)
+        {
+            botB->SetGuidValue(PLAYER_DUEL_ARBITER, ObjectGuid::Empty);
+            botB->SetUInt32Value(PLAYER_DUEL_TEAM, 0);
+            botB->duel.reset(nullptr);
+            botB->GetCombatManager().EndAllPvPCombat();
+            if (partB && botB->GetTarget() == partB->assignedTargetGuid)
+                botB->SetSelection(ObjectGuid::Empty);
+            if (botB->IsAlive())
+            {
+                float origPct = partB ? partB->originalHealthPct : 85.0f;
+                float restorePct = std::max(origPct, 85.0f);
+                if (botB->GetHealthPct() < restorePct)
+                {
+                    uint32 targetHp = std::max<uint32>(1u, uint32(botB->GetMaxHealth() * (restorePct / 100.0f)));
+                    botB->SetHealth(std::min<uint32>(botB->GetMaxHealth(), targetHp));
+                }
+            }
+        }
+
+        partA.assignedTargetGuid = ObjectGuid::Empty;
+        partA.engagedInCombat = false;
+        DeleteTemporaryGobForPart(botA, partA);
+
+        if (partB)
+        {
+            partB->assignedTargetGuid = ObjectGuid::Empty;
+            partB->engagedInCombat = false;
+            DeleteTemporaryGobForPart(botB, *partB);
+        }
+    }
+
+    void StartRoadDuelCombat(
+        EncounterInstance& /*inst*/,
+        Player* botA,
+        EncounterParticipant& partA,
+        Player* botB,
+        EncounterParticipant& partB)
+    {
+        if (!botA || !botB)
+            return;
+
+        if (botA->IsMounted())
+            BotMovement::RequestDismount(botA, MoveOwner::Encounter, DismountReason::Combat);
+        if (botB->IsMounted())
+            BotMovement::RequestDismount(botB, MoveOwner::Encounter, DismountReason::Combat);
+
+        if (botA->GetHealthPct() < 85.0f)
+            botA->SetFullHealth();
+        if (botB->GetHealthPct() < 85.0f)
+            botB->SetFullHealth();
+
+        // Spawn Duel Arbiter Flag GameObject at midpoint if available and set up native core DuelInfo
+        if (!botA->duel && !botB->duel)
+        {
+            ObjectGuid arbiterGuid = ObjectGuid::Empty;
+            if (Map* map = botA->GetMap())
+            {
+                if (sObjectMgr->GetGameObjectTemplate(DUEL_ARBITER_GOB_ENTRY))
+                {
+                    GameObject* flagGob = new GameObject();
+                    float midX = (botA->GetPositionX() + botB->GetPositionX()) * 0.5f;
+                    float midY = (botA->GetPositionY() + botB->GetPositionY()) * 0.5f;
+                    float midZ = (botA->GetPositionZ() + botB->GetPositionZ()) * 0.5f;
+                    G3D::Quat rot = G3D::Quat::fromAxisAngleRotation(G3D::Vector3::unitZ(), botA->GetOrientation());
+                    if (flagGob->Create(map->GenerateLowGuid<HighGuid::GameObject>(), DUEL_ARBITER_GOB_ENTRY,
+                            map, botA->GetPhaseMask(), midX, midY, midZ, botA->GetOrientation(), rot, 0, GO_STATE_READY))
+                    {
+                        flagGob->SetUInt32Value(GAMEOBJECT_FACTION, botA->GetFaction());
+                        flagGob->SetUInt32Value(GAMEOBJECT_LEVEL, botA->GetLevel() + 1);
+                        flagGob->SetRespawnTime(60);
+                        map->AddToMap(flagGob, true);
+                        arbiterGuid = flagGob->GetGUID();
+                        partA.temporaryGobGuid = arbiterGuid;
+                        partA.temporaryGobMapId = botA->GetMapId();
+                    }
+                    else
+                    {
+                        delete flagGob;
+                    }
+                }
+            }
+
+            time_t nowSec = GameTime::GetGameTime().count();
+            botA->duel = std::make_unique<DuelInfo>(botB, botA, false);
+            botB->duel = std::make_unique<DuelInfo>(botA, botA, false);
+            botA->duel->StartTime = nowSec;
+            botB->duel->StartTime = nowSec;
+            botA->duel->State = DUEL_STATE_IN_PROGRESS;
+            botB->duel->State = DUEL_STATE_IN_PROGRESS;
+
+            botA->SetGuidValue(PLAYER_DUEL_ARBITER, arbiterGuid);
+            botB->SetGuidValue(PLAYER_DUEL_ARBITER, arbiterGuid);
+            botA->SetUInt32Value(PLAYER_DUEL_TEAM, 1);
+            botB->SetUInt32Value(PLAYER_DUEL_TEAM, 2);
+        }
+
+        partA.assignedTargetGuid = botB->GetGUID();
+        partA.engagedInCombat = true;
+        partB.assignedTargetGuid = botA->GetGUID();
+        partB.engagedInCombat = true;
+
+        botA->SetSelection(botB->GetGUID());
+        botB->SetSelection(botA->GetGUID());
+        botA->Attack(botB, true);
+        botB->Attack(botA, true);
     }
 
     Creature* FindNearbyHostileMobForParty(Player* leader, float radius)
@@ -139,18 +360,10 @@ namespace EncounterHandlers
             }
         }
 
-        if (part.role == EncounterRole::DuelistA || part.role == EncounterRole::DuelistB)
+        if (part.role == EncounterRole::DuelistA || part.role == EncounterRole::DuelistB || bot->duel)
         {
-            bot->AttackStop();
-            if (bot->IsAlive() && !bot->IsInCombat())
-            {
-                float restorePct = std::max(part.originalHealthPct, 80.0f);
-                if (bot->GetHealthPct() < restorePct)
-                {
-                    uint32 targetHp = std::max<uint32>(1u, uint32(bot->GetMaxHealth() * (restorePct / 100.0f)));
-                    bot->SetHealth(std::min<uint32>(bot->GetMaxHealth(), targetHp));
-                }
-            }
+            Player* duelOpp = bot->duel ? bot->duel->Opponent : nullptr;
+            StopRoadDuelSafely(bot, part, duelOpp, nullptr);
         }
 
         if (part.engagedInCombat)
@@ -220,7 +433,7 @@ namespace EncounterHandlers
     }
 
     // =========================================================================
-    // 7.7 Road Duel
+    // 7.7 Road Duel (Real Combat Presentation with Native DuelInfo & 24% HP Safety Wrapper)
     // =========================================================================
     void UpdateRoadDuel(EncounterInstance& inst, Player* bot, EncounterParticipant& part, uint32 nowMs)
     {
@@ -242,34 +455,28 @@ namespace EncounterHandlers
         Player* opponent = ObjectAccessor::FindConnectedPlayer(otherPart->botGuid);
         if (!opponent || !opponent->IsInWorld() || !opponent->IsAlive() || opponent->GetMapId() != bot->GetMapId())
         {
+            StopRoadDuelSafely(bot, part, opponent, otherPart);
             inst.state.Terminate(EncounterStopReason::BotLogoutOrDespawn, nowMs);
             return;
         }
 
-        // If either bot gets pulled into real external combat or attacked by a player/mob, abort friendly duel cleanly
-        if (bot->IsInCombat() || opponent->IsInCombat() ||
-            !bot->getAttackers().empty() || !opponent->getAttackers().empty())
+        // If a third-party mob or external player attacks either duelist, abort the friendly duel cleanly
+        if (HasExternalAttackerOutsideDuel(bot, opponent) || HasExternalAttackerOutsideDuel(opponent, bot))
         {
+            StopRoadDuelSafely(bot, part, opponent, otherPart);
             inst.state.Terminate(EncounterStopReason::Completed, nowMs);
             return;
-        }
-
-        // Prevent pets from attacking during a friendly road duel
-        if (Pet* pet = bot->GetPet())
-        {
-            if (pet->IsAlive() && pet->GetVictim())
-                pet->AttackStop();
         }
 
         if (inst.state.phase == EncounterPhase::Prepare)
         {
             float dist = Dist2D(bot, opponent);
-            if (dist > 5.0f)
+            if (dist > 7.5f)
             {
                 if (part.navGoalId == 0)
                     part.navGoalId = (inst.id << 8) | 1u;
                 NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
-                    inst.centerX, inst.centerY, inst.centerZ, 3.5f, &part.moveToken, false);
+                    opponent->GetPositionX(), opponent->GetPositionY(), opponent->GetPositionZ(), 4.5f, &part.moveToken, false);
                 if (nav == NavStatus::Stuck)
                     inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
                 return;
@@ -286,70 +493,51 @@ namespace EncounterHandlers
                 bot->HandleEmoteCommand(EMOTE_ONESHOT_BOW);
             }
 
-            if (part.arrivedAtStaging && otherPart->arrivedAtStaging)
+            if ((part.arrivedAtStaging && otherPart->arrivedAtStaging && inst.state.PhaseElapsedMs(nowMs) >= 1200) ||
+                inst.state.PhaseElapsedMs(nowMs) >= 2400)
             {
                 part.navGoalId = 0;
+                otherPart->navGoalId = 0;
+                BotMovement::Release(bot, part.moveToken);
+                BotMovement::Release(opponent, otherPart->moveToken);
+                part.moveToken = {};
+                otherPart->moveToken = {};
                 inst.state.TransitionTo(EncounterPhase::Active, nowMs);
+                StartRoadDuelCombat(inst, bot, part, opponent, *otherPart);
             }
             return;
         }
 
         if (inst.state.phase == EncounterPhase::Active)
         {
-            // Non-lethal safety floor: if either bot is already at or below 22% HP, finish immediately
-            uint32 selfSafeHp = std::max<uint32>(1u, (bot->GetMaxHealth() * 22u) / 100u);
-            uint32 oppSafeHp = std::max<uint32>(1u, (opponent->GetMaxHealth() * 22u) / 100u);
-            if (bot->GetHealth() <= selfSafeHp || opponent->GetHealth() <= oppSafeHp)
+            uint32 selfSafeHp = std::max<uint32>(1u, (bot->GetMaxHealth() * ROAD_DUEL_SAFE_HP_PCT) / 100u);
+            uint32 oppSafeHp = std::max<uint32>(1u, (opponent->GetMaxHealth() * ROAD_DUEL_SAFE_HP_PCT) / 100u);
+            bool coreDuelEnded = (!bot->duel || !opponent->duel ||
+                                  bot->duel->State == DUEL_STATE_COMPLETED ||
+                                  opponent->duel->State == DUEL_STATE_COMPLETED);
+
+            // Non-lethal safety threshold (24% HP) or native core duel finish -> immediately stop all combat/pets/DoTs!
+            if (coreDuelEnded || bot->GetHealth() <= selfSafeHp || opponent->GetHealth() <= oppSafeHp ||
+                inst.state.PhaseElapsedMs(nowMs) >= 35000)
             {
-                if (bot->GetHealth() < selfSafeHp)
-                    bot->SetHealth(selfSafeHp);
-                if (opponent->GetHealth() < oppSafeHp)
-                    opponent->SetHealth(oppSafeHp);
                 inst.duelCompleted = true;
                 bool oppLost = (opponent->GetHealthPct() <= bot->GetHealthPct());
                 inst.duelWinnerGuid = oppLost ? bot->GetGUID() : opponent->GetGUID();
                 inst.duelLoserGuid = oppLost ? opponent->GetGUID() : bot->GetGUID();
+
+                StopRoadDuelSafely(bot, part, opponent, otherPart);
                 inst.state.TransitionTo(EncounterPhase::Resolve, nowMs);
                 return;
             }
 
-            // Keep duelists within melee/duel range and exchanging non-lethal blows
-            float dist = Dist2D(bot, opponent);
-            if (dist > 5.5f)
+            // Ensure both duelists stay actively attacking each other with real melee & spells via BotAI
+            if (!bot->IsInCombat() || bot->GetVictim() != opponent)
             {
-                uint64 goalId = (inst.id << 8) | 2u;
-                NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, goalId,
-                    opponent->GetPositionX(), opponent->GetPositionY(), opponent->GetPositionZ(), 3.5f, &part.moveToken, false);
-                if (nav == NavStatus::Stuck)
-                    inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
-                return;
+                EngagePvPOrCreature(bot, opponent);
             }
-
-            BotMovement::Stop(bot, part.moveToken);
-            bot->SetFacingToObject(opponent);
-
-            if (nowMs - part.lastActionMs >= 1400)
+            if (!opponent->IsInCombat() || opponent->GetVictim() != bot)
             {
-                part.lastActionMs = nowMs;
-                bot->HandleEmoteCommand(((nowMs / 1400) % 2 == 0) ? EMOTE_ONESHOT_ATTACK1H : EMOTE_ONESHOT_PARRY_UNARMED);
-
-                // Controlled non-lethal duel exchange: never reduce below 22% health
-                uint32 oppMaxHp = opponent->GetMaxHealth();
-                uint32 oppCurHp = opponent->GetHealth();
-                uint32 stepDmg = std::max<uint32>(1u, oppMaxHp / 13u);
-
-                if (oppCurHp > oppSafeHp + stepDmg)
-                {
-                    opponent->SetHealth(oppCurHp - stepDmg);
-                }
-                else
-                {
-                    opponent->SetHealth(oppSafeHp);
-                    inst.duelCompleted = true;
-                    inst.duelWinnerGuid = bot->GetGUID();
-                    inst.duelLoserGuid = opponent->GetGUID();
-                    inst.state.TransitionTo(EncounterPhase::Resolve, nowMs);
-                }
+                EngagePvPOrCreature(opponent, bot);
             }
             return;
         }
@@ -365,14 +553,6 @@ namespace EncounterHandlers
                     bot->HandleEmoteCommand(EMOTE_ONESHOT_CHEER);
                 else
                     bot->HandleEmoteCommand(EMOTE_ONESHOT_SALUTE);
-
-                // Restore health after friendly duel so neither bot walks away at 22% HP
-                float restorePct = std::max(part.originalHealthPct, 80.0f);
-                if (bot->GetHealthPct() < restorePct)
-                {
-                    uint32 targetHp = std::max<uint32>(1u, uint32(bot->GetMaxHealth() * (restorePct / 100.0f)));
-                    bot->SetHealth(std::min<uint32>(bot->GetMaxHealth(), targetHp));
-                }
             }
 
             if (inst.state.PhaseElapsedMs(nowMs) >= 3500)

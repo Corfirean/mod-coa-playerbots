@@ -421,6 +421,8 @@ namespace
                 if (releasedPart && releasedPart->sitApplied)
                     snap.hasResidualSitOrKneelState = true;
             }
+            if (bot->duel != nullptr || bot->GetUInt32Value(PLAYER_DUEL_TEAM) != 0 || !bot->GetGuidValue(PLAYER_DUEL_ARBITER).IsEmpty())
+                snap.hasResidualEncounterFlags = true;
         }
 
         if (BrainState const* bState = WorldBrainInternal::FindState(botGuid))
@@ -859,7 +861,7 @@ namespace
         std::string& outReason)
     {
         EncounterConfig const& cfg = EncounterSettings::Get();
-        if (!anchorUnit || nearbyBots.empty())
+        if (!anchorUnit || (!bypassBudgetAndCooldown && nearbyBots.empty()))
         {
             outReason = "No anchor or nearby bots";
             return false;
@@ -878,6 +880,8 @@ namespace
         std::vector<Player*> freeBots;
         for (Player* b : nearbyBots)
         {
+            if (b == anchorUnit && IsRealPlayer(anchorUnit))
+                continue;
             CandidateBotSnapshot snap = BuildCandidateBotSnapshot(b);
             if (!bypassBudgetAndCooldown)
             {
@@ -887,32 +891,24 @@ namespace
             }
             else
             {
-                if (!b->IsInWorld() || !b->IsAlive() || (b->GetMap() && b->GetMap()->Instanceable()))
+                if (!EncounterEligibility::IsAvailableForEncounter(snap.activity))
                     continue;
             }
             freeBots.push_back(b);
         }
 
-        if (bypassBudgetAndCooldown && freeBots.size() < 2)
+        if (bypassBudgetAndCooldown)
         {
             for (Player* ob : sBotMgr->GetOnlineBots())
             {
-                if (!ob || !ob->IsInWorld() || !ob->IsAlive() || (ob->GetMap() && ob->GetMap()->Instanceable()))
+                if (!ob || ob == anchorUnit || !ob->IsInWorld() || !ob->IsAlive() || (ob->GetMap() && ob->GetMap()->Instanceable()))
                     continue;
-                if (_ownership.IsOwned(ob->GetGUID()))
+                CandidateBotSnapshot obSnap = BuildCandidateBotSnapshot(ob);
+                if (!EncounterEligibility::IsAvailableForEncounter(obSnap.activity))
                     continue;
-                if (std::find(freeBots.begin(), freeBots.end(), ob) == freeBots.end())
-                    freeBots.push_back(ob);
-                if (freeBots.size() >= 2)
-                    break;
-            }
-            for (Player* fb : freeBots)
-            {
-                if (fb->GetMapId() != mapId || Dist2D(fb, anchorUnit) > 35.0f)
-                {
-                    fb->TeleportTo(mapId, anchorUnit->GetPositionX() + 6.0f, anchorUnit->GetPositionY() + 6.0f, anchorUnit->GetPositionZ(), 0.0f);
-                    sBotMgr->QueueTeleportAck(fb->GetSession());
-                }
+                if (std::find(freeBots.begin(), freeBots.end(), ob) != freeBots.end())
+                    continue;
+                freeBots.push_back(ob);
             }
         }
 
@@ -964,24 +960,68 @@ namespace
                     if (!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::RoadDuel, snapA, snapB, cfg, bypassBudgetAndCooldown))
                         continue;
 
+                    Player* botA = freeBots[i];
+                    Player* botB = freeBots[j];
+
                     EncounterInstance inst;
                     inst.type = EncounterType::RoadDuel;
                     inst.isForcedTest = bypassBudgetAndCooldown;
                     inst.mapId = mapId;
-                    inst.zoneId = freeBots[i]->GetZoneId();
-                    inst.areaId = freeBots[i]->GetAreaId();
-                    inst.centerX = (freeBots[i]->GetPositionX() + freeBots[j]->GetPositionX()) * 0.5f;
-                    inst.centerY = (freeBots[i]->GetPositionY() + freeBots[j]->GetPositionY()) * 0.5f;
-                    inst.centerZ = freeBots[i]->GetPositionZ();
-                    inst.participants.push_back(MakeParticipant(freeBots[i], EncounterRole::DuelistA, nowMs));
-                    inst.participants.push_back(MakeParticipant(freeBots[j], EncounterRole::DuelistB, nowMs));
+                    inst.zoneId = anchorUnit->GetZoneId();
+                    inst.areaId = anchorUnit->GetAreaId();
+
+                    if (bypassBudgetAndCooldown)
+                    {
+                        float aOri = anchorUnit->GetOrientation();
+                        float fwdX = std::cos(aOri);
+                        float fwdY = std::sin(aOri);
+                        float rightX = std::sin(aOri);
+                        float rightY = -std::cos(aOri);
+
+                        inst.centerX = anchorUnit->GetPositionX() + fwdX * 7.0f;
+                        inst.centerY = anchorUnit->GetPositionY() + fwdY * 7.0f;
+                        inst.centerZ = anchorUnit->GetPositionZ();
+
+                        float posAx = inst.centerX + rightX * 3.0f;
+                        float posAy = inst.centerY + rightY * 3.0f;
+                        float posBx = inst.centerX - rightX * 3.0f;
+                        float posBy = inst.centerY - rightY * 3.0f;
+
+                        botA->TeleportTo(mapId, posAx, posAy, inst.centerZ, aOri - 1.57f);
+                        sBotMgr->QueueTeleportAck(botA->GetSession());
+                        botB->TeleportTo(mapId, posBx, posBy, inst.centerZ, aOri + 1.57f);
+                        sBotMgr->QueueTeleportAck(botB->GetSession());
+                    }
+                    else
+                    {
+                        inst.centerX = (botA->GetPositionX() + botB->GetPositionX()) * 0.5f;
+                        inst.centerY = (botA->GetPositionY() + botB->GetPositionY()) * 0.5f;
+                        inst.centerZ = botA->GetPositionZ();
+                    }
+
+                    inst.participants.push_back(MakeParticipant(botA, EncounterRole::DuelistA, nowMs));
+                    inst.participants.push_back(MakeParticipant(botB, EncounterRole::DuelistB, nowMs));
+                    std::string nameA = botA->GetName();
+                    std::string nameB = botB->GetName();
+                    uint8 lvlA = botA->GetLevel();
+                    uint8 lvlB = botB->GetLevel();
+                    uint8 clsA = botA->getClass();
+                    uint8 clsB = botB->getClass();
                     uint64 id = CommitEncounter(std::move(inst), nowMs);
-                    outReason = Acore::StringFormat("Started road duel (#{}) between {} and {}",
-                        id, freeBots[i]->GetName(), freeBots[j]->GetName());
+                    if (_debugLogging || bypassBudgetAndCooldown)
+                    {
+                        LOG_INFO("module.coa-playerbots.world",
+                            "Encounter #{} START type=duel duelistA={}({}) lvl={} class={} duelistB={}({}) lvl={} class={} faction={}",
+                            id, nameA, botA->GetGUID().GetCounter(), uint32(lvlA), uint32(clsA),
+                            nameB, botB->GetGUID().GetCounter(), uint32(lvlB), uint32(clsB),
+                            snapA.teamId == TEAM_ALLIANCE ? "Alliance" : "Horde");
+                    }
+                    outReason = Acore::StringFormat("Started road duel (#{}) between {} (lvl {}) and {} (lvl {})",
+                        id, nameA, uint32(lvlA), nameB, uint32(lvlB));
                     return true;
                 }
             }
-            outReason = "Need 2 compatible friendly bots for Road Duel";
+            outReason = "Need 2 compatible friendly bots within 3 levels for Road Duel";
             return false;
         }
 
@@ -1491,9 +1531,10 @@ namespace WorldEncounterDirector
         _combatTickAccumMs += diff;
         _rareScanAccumMs += diff;
 
-        // Tick in-combat encounter participants every 500ms because UpdateSoloWorld (and thus
-        // WorldBrain::Update -> UpdateBot) is bypassed while bot->IsInCombat() is true.
-        if (_combatTickAccumMs >= 500u)
+        // Tick in-combat encounter participants every 200ms because UpdateSoloWorld (and thus
+        // WorldBrain::Update -> UpdateBot) is bypassed while bot->IsInCombat() is true, and
+        // RoadDuel requires high-frequency non-lethal HP threshold checks.
+        if (_combatTickAccumMs >= 200u)
         {
             _combatTickAccumMs = 0;
             if (!_encounters.empty())
