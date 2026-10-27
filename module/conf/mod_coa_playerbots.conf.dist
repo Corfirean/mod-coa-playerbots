@@ -427,3 +427,100 @@ CoaBots.Training.InterruptCastSpellId = 133
 
 # Reserved training phases: bits 30..27; configure only on isolated servers.
 CoaBots.Training.MaxParallelArenas = 1
+
+###################################################################################################
+# DYNAMIC BOT ENCOUNTERS (WorldEncounterDirector)
+#
+#    BotAI.DynamicEncounters.Enable
+#        Description: Master toggle for open-world dynamic bot encounters (WorldEncounterDirector).
+#                     Encounters temporarily borrow existing open-world playerbots to stage rare
+#                     ambient, PvP, or atmospheric events, returning bots to WorldBrain afterward.
+#        Default:     1
+#
+#    BotAI.DynamicEncounters.<Type>.Enable
+#        Description: Per-encounter enable flags for all 13 encounter types.
+#        Default:     1
+#
+#    BotAI.DynamicEncounters.MaxGlobalActive / MaxActivePerMap / MaxActiveNearPlayer
+#        Description: Global, per-map, and per-real-player active encounter caps.
+#        Default:     12 / 4 / 1
+#
+#    BotAI.DynamicEncounters.ThinkIntervalMs / RareScanIntervalMs
+#        Description: Staggered evaluation cadence for the director and rare creature scans.
+#        Default:     5000 / 20000
+#
+#    BotAI.DynamicEncounters.PlayerCooldownSec / PlayerHostileCooldownSec / BotCooldownSec
+#        Description: Cooldowns (seconds) preventing a real player or bot from being repeatedly
+#                     selected for encounters.
+#        Default:     900 / 1500 / 600
+#
+#    BotAI.DynamicEncounters.Narrator.Enable / PlayerCooldownSec / BotCooldownSec
+#        Description: Optional atmospheric messages and contextual bot lines (/say, /yell, /emote).
+#        Default:     1 / 120 / 45
+#
+###################################################################################################
+
+BotAI.DynamicEncounters.Enable = 1
+BotAI.DynamicEncounters.ThinkIntervalMs = 5000
+BotAI.DynamicEncounters.RareScanIntervalMs = 20000
+
+BotAI.DynamicEncounters.AssassinContract.Enable = 1
+BotAI.DynamicEncounters.TheWatcher.Enable = 1
+BotAI.DynamicEncounters.FactionSkirmish.Enable = 1
+BotAI.DynamicEncounters.PatrolAmbush.Enable = 1
+BotAI.DynamicEncounters.BountyHunter.Enable = 1
+BotAI.DynamicEncounters.Nemesis.Enable = 1
+BotAI.DynamicEncounters.RoadDuel.Enable = 1
+BotAI.DynamicEncounters.Caravan.Enable = 1
+BotAI.DynamicEncounters.Deserter.Enable = 1
+BotAI.DynamicEncounters.HunterAndPrey.Enable = 1
+BotAI.DynamicEncounters.RivalAdventuringParty.Enable = 1
+BotAI.DynamicEncounters.RareHunter.Enable = 1
+BotAI.DynamicEncounters.MysteryEncounter.Enable = 1
+
+BotAI.DynamicEncounters.MaxGlobalActive = 12
+BotAI.DynamicEncounters.MaxActivePerMap = 4
+BotAI.DynamicEncounters.MaxActiveNearPlayer = 1
+
+BotAI.DynamicEncounters.PlayerCooldownSec = 900
+BotAI.DynamicEncounters.PlayerHostileCooldownSec = 1500
+BotAI.DynamicEncounters.BotCooldownSec = 600
+BotAI.DynamicEncounters.TypeCooldownSec = 300
+
+BotAI.DynamicEncounters.MaxLevelDiffHostile = 4
+BotAI.DynamicEncounters.MaxLevelDiffAmbient = 8
+BotAI.DynamicEncounters.MaxPlayerPartySizeForSoloHostile = 2
+BotAI.DynamicEncounters.SearchRadiusYards = 220
+BotAI.DynamicEncounters.MaxChaseDistanceYards = 280
+BotAI.DynamicEncounters.MinDistanceFromCapitalYards = 180
+
+BotAI.DynamicEncounters.PrepareTimeoutSec = 90
+BotAI.DynamicEncounters.ActiveTimeoutSec = 180
+BotAI.DynamicEncounters.ResolveTimeoutSec = 20
+
+BotAI.DynamicEncounters.Narrator.Enable = 1
+BotAI.DynamicEncounters.Narrator.PlayerCooldownSec = 120
+BotAI.DynamicEncounters.Narrator.BotCooldownSec = 45
+BotAI.DynamicEncounters.Narrator.MaxRangeYards = 45
+
+BotAI.DynamicEncounters.Bounty.KillThreshold = 3
+BotAI.DynamicEncounters.Bounty.WindowSec = 1200
+BotAI.DynamicEncounters.Bounty.CooldownSec = 1800
+
+BotAI.DynamicEncounters.Nemesis.MemoryTtlSec = 3600
+BotAI.DynamicEncounters.Nemesis.MaxTrackedPairs = 256
+BotAI.DynamicEncounters.Nemesis.MinKillsForTrigger = 1
+
+BotAI.DynamicEncounters.Caravan.MinMembers = 2
+BotAI.DynamicEncounters.Caravan.MaxMembers = 5
+BotAI.DynamicEncounters.Skirmish.MinPerSide = 2
+BotAI.DynamicEncounters.Skirmish.MaxPerSide = 4
+BotAI.DynamicEncounters.RivalParty.MinMembers = 3
+BotAI.DynamicEncounters.RivalParty.MaxMembers = 5
+BotAI.DynamicEncounters.RareHunter.MaxBots = 3
+
+BotAI.DynamicEncounters.Mystery.ChancePermil = 15
+BotAI.DynamicEncounters.Mystery.MorphDisplayId = 0
+BotAI.DynamicEncounters.Mystery.RuneGameObjectEntry = 0
+BotAI.DynamicEncounters.Mystery.SpellVisualId = 0
+
