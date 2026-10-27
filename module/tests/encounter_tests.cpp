@@ -1305,17 +1305,75 @@ static void TestLiveValidationRound2Regressions()
         calmExplorer.sociability = 90;
         calmExplorer.lean = 5;
 
-        // Tier 3 (Rogue=4) > Tier 2 (Stealth Druid=11) > Tier 1 (Fallback Warrior=1 / Non-stealth Druid=11)
-        CHECK(EncounterPersonality::GetAssassinClassTier(4, true) == 3u);
-        CHECK(EncounterPersonality::GetAssassinClassTier(11, true) == 2u);
-        CHECK(EncounterPersonality::GetAssassinClassTier(11, false) == 1u);
-        CHECK(EncounterPersonality::GetAssassinClassTier(1, false) == 1u);
+        // §1 Assassin Contract: capability tier & score test (Ascension custom classes 12-32, zero vanilla class dependencies)
+        AssassinCapability stalkerCap;
+        stalkerCap.classId = 29; // Custom Ascension class
+        stalkerCap.specId = 53;  // Custom spec
+        stalkerCap.combatRole = EncounterCombatRole::Dps;
+        stalkerCap.hasStealthOrInvis = true;
+        stalkerCap.hasStealthOpener = true;
+        stalkerCap.isMeleeStalker = true;
+        stalkerCap.stealthSpellId = 800843;
+        stalkerCap.openerSpellId = 800878;
 
-        float rogueScore = EncounterPersonality::ScoreAssassinCandidate(calmExplorer, 4, true);
-        float stealthDruidScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, 11, true);
-        float warriorFallbackScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, 1, false);
-        CHECK(rogueScore > stealthDruidScore);
-        CHECK(stealthDruidScore > warriorFallbackScore);
+        AssassinCapability stealthCasterCap;
+        stealthCasterCap.classId = 18;
+        stealthCasterCap.specId = 20;
+        stealthCasterCap.combatRole = EncounterCombatRole::Dps;
+        stealthCasterCap.hasStealthOrInvis = true;
+        stealthCasterCap.hasStealthOpener = false;
+        stealthCasterCap.isMeleeStalker = false;
+        stealthCasterCap.stealthSpellId = 700100;
+
+        AssassinCapability fallbackDpsCap;
+        fallbackDpsCap.classId = 14;
+        fallbackDpsCap.specId = 10;
+        fallbackDpsCap.combatRole = EncounterCombatRole::Dps;
+        fallbackDpsCap.hasStealthOrInvis = false;
+        fallbackDpsCap.hasStealthOpener = false;
+        fallbackDpsCap.isMeleeStalker = true;
+
+        AssassinCapability healerCap;
+        healerCap.classId = 22;
+        healerCap.specId = 5;
+        healerCap.combatRole = EncounterCombatRole::Healer;
+        healerCap.hasStealthOrInvis = false;
+        healerCap.hasStealthOpener = false;
+        healerCap.isMeleeStalker = false;
+
+        // Tier 3 (Stealth + Opener DPS) > Tier 2 (Stealth only) > Tier 1 (Fallback DPS) > Tier 0 (Healer/Tank fallback)
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(stalkerCap) == 3u);
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(stealthCasterCap) == 2u);
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(fallbackDpsCap) == 1u);
+        CHECK(EncounterPersonality::GetAssassinCapabilityTier(healerCap) == 0u);
+
+        // Preference labels
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(stalkerCap)) == "stealth_opener_melee");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(stealthCasterCap)) == "stealth_dps");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(fallbackDpsCap)) == "fallback_melee_dps");
+        CHECK(std::string(EncounterPersonality::GetAssassinCapabilityPreferenceLabel(healerCap)) == "fallback_non_dps");
+
+        // Scoring: Tier 3 > Tier 2 > Tier 1 > Tier 0 even across different personas
+        float stalkerScore = EncounterPersonality::ScoreAssassinCandidate(calmExplorer, stalkerCap);
+        float stealthCasterScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, stealthCasterCap);
+        float fallbackDpsScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, fallbackDpsCap);
+        float healerScore = EncounterPersonality::ScoreAssassinCandidate(aggressiveLoner, healerCap);
+        CHECK(stalkerScore > stealthCasterScore);
+        CHECK(stealthCasterScore > fallbackDpsScore);
+        CHECK(fallbackDpsScore > healerScore);
+
+        // Cache lookup test
+        AssassinCapabilityCache cache;
+        CHECK(cache.Size() == 0);
+        cache.Store(stalkerCap);
+        CHECK(cache.Size() == 1);
+        AssassinCapability cachedOut;
+        CHECK(cache.TryGet(29, 53, cachedOut));
+        CHECK(cachedOut.stealthSpellId == 800843);
+        CHECK(cachedOut.openerSpellId == 800878);
+        CHECK(!cache.TryGet(29, 99, cachedOut));
+        cache.Clear();
+        CHECK(cache.Size() == 0);
     }
 
     // ------------------------------------------------------------------------

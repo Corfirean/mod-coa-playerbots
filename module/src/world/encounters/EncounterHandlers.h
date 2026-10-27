@@ -15,7 +15,7 @@ class Player;
 namespace EncounterHandlers
 {
     // Shared helpers used across ambient, hostile, and mystery handlers
-    bool IsStealthCapableClass(uint8 classId);
+    uint32 FindBestStealthOrInvisSpell(Player const* bot);
     bool TryApplyStealth(Player* bot, EncounterParticipant& part);
     void ClearStealthIfApplied(Player* bot, EncounterParticipant& part);
     void RestoreParticipantState(Player* bot, EncounterParticipant& part);

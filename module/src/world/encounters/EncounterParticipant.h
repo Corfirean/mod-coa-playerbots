@@ -108,6 +108,8 @@ struct EncounterParticipant
     float lastNavTargetZ = 0.0f;
     uint32 subState = 0;
     uint32 subStateEnteredAtMs = 0;
+    uint32 stealthSpellId = 0;
+    uint32 openerSpellId = 0;
 
     float cautiousness = 0.5f; // Used for cowardly/cautious early PvP retreat check
     bool stealthCapable = false;

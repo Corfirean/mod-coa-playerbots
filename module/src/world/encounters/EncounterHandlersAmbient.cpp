@@ -16,12 +16,11 @@
 #include "Player.h"
 #include "SharedDefines.h"
 #include "SpellAuras.h"
+#include "SpellMgr.h"
 #include <cmath>
 
 namespace
 {
-    constexpr uint32 SPELL_ROGUE_STEALTH = 1784;
-    constexpr uint32 SPELL_DRUID_PROWL   = 5215;
     constexpr uint32 DUEL_ARBITER_GOB_ENTRY = 21680;
     constexpr uint32 ROAD_DUEL_SAFE_HP_PCT  = 24;
 
@@ -353,9 +352,58 @@ namespace
 
 namespace EncounterHandlers
 {
-    bool IsStealthCapableClass(uint8 classId)
+    uint32 FindBestStealthOrInvisSpell(Player const* bot)
     {
-        return classId == CLASS_ROGUE || classId == CLASS_DRUID;
+        if (!bot)
+            return 0;
+
+        uint32 bestSpellId = 0;
+        int32 bestDuration = -2;
+
+        for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+        {
+            if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                continue;
+
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+            if (!spellInfo || spellInfo->IsPassive() || !spellInfo->IsPositive())
+                continue;
+            if (spellInfo->NeedsExplicitUnitTarget())
+                continue;
+
+            bool isStealthOrInvis = false;
+            for (auto const& eff : spellInfo->GetEffects())
+            {
+                if (!eff.IsEffect())
+                    continue;
+                if (eff.IsAura(SPELL_AURA_MOD_STEALTH) || eff.IsAura(SPELL_AURA_MOD_INVISIBILITY))
+                {
+                    isStealthOrInvis = true;
+                    break;
+                }
+                if (eff.IsAura(SPELL_AURA_MOD_SHAPESHIFT) && eff.MiscValue == FORM_STEALTH)
+                {
+                    isStealthOrInvis = true;
+                    break;
+                }
+            }
+
+            if (isStealthOrInvis)
+            {
+                int32 dur = spellInfo->GetMaxDuration();
+                if (dur == -1) // Permanent stealth gets top priority
+                {
+                    bestSpellId = spellId;
+                    break;
+                }
+                if (dur > bestDuration)
+                {
+                    bestDuration = dur;
+                    bestSpellId = spellId;
+                }
+            }
+        }
+        return bestSpellId;
     }
 
     bool TryApplyStealth(Player* bot, EncounterParticipant& part)
@@ -372,15 +420,14 @@ namespace EncounterHandlers
         if (bot->IsMounted())
             BotMovement::RequestDismount(bot, MoveOwner::Encounter, DismountReason::Manual);
 
-        uint32 spellId = 0;
-        if (bot->getClass() == CLASS_ROGUE && bot->HasSpell(SPELL_ROGUE_STEALTH))
-            spellId = SPELL_ROGUE_STEALTH;
-        else if (bot->getClass() == CLASS_DRUID && bot->HasSpell(SPELL_DRUID_PROWL))
-            spellId = SPELL_DRUID_PROWL;
+        uint32 spellId = part.stealthSpellId;
+        if (spellId == 0 || !bot->HasSpell(spellId))
+            spellId = FindBestStealthOrInvisSpell(bot);
 
         if (spellId != 0)
         {
             bot->CastSpell(bot, spellId, true);
+            part.stealthSpellId = spellId;
             part.stealthApplied = true;
             return true;
         }
@@ -392,6 +439,9 @@ namespace EncounterHandlers
         if (!bot || !part.stealthApplied)
             return;
         bot->RemoveAurasByType(SPELL_AURA_MOD_STEALTH);
+        bot->RemoveAurasByType(SPELL_AURA_MOD_INVISIBILITY);
+        if (part.stealthSpellId != 0)
+            bot->RemoveAurasDueToSpell(part.stealthSpellId);
         part.stealthApplied = false;
     }
 

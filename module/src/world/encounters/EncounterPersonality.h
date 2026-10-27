@@ -53,47 +53,68 @@ public:
         return t;
     }
 
-    static constexpr uint8 ENC_CLASS_ROGUE = 4;
-    static constexpr uint8 ENC_CLASS_DRUID = 11;
-
-    // Assassin Contract class priority tier (§1):
-    //   3 = CLASS_ROGUE (highest priority)
-    //   2 = stealth-capable CLASS_DRUID (Prowl available)
-    //   1 = fallback non-stealth class (only used when no Rogue or stealth Druid is eligible)
-    static uint8 GetAssassinClassTier(uint8 classId, bool hasStealthSpell)
+    // Assassin Contract capability priority tier:
+    //   3 = Stealth / Invisibility + Usable Opener + DPS role (e.g. Stalker/Ambush spec)
+    //   2 = Stealth / Invisibility capable (has active stealth/invisibility spell)
+    //   1 = DPS fallback without stealth (melee stalker / direct DPS)
+    //   0 = Non-DPS fallback (Tank / Healer / Support without stealth)
+    // Completely independent of vanilla class identity (designed for Ascension custom classes 12-32).
+    static uint8 GetAssassinCapabilityTier(AssassinCapability const& cap)
     {
-        if (classId == ENC_CLASS_ROGUE)
+        if (cap.hasStealthOrInvis && cap.hasStealthOpener && cap.combatRole == EncounterCombatRole::Dps)
             return 3;
-        if (classId == ENC_CLASS_DRUID && hasStealthSpell)
+        if (cap.hasStealthOrInvis)
             return 2;
-        return 1;
+        if (cap.combatRole == EncounterCombatRole::Dps)
+            return 1;
+        return 0;
     }
 
-    static char const* GetAssassinClassPreferenceLabel(uint8 classId, bool hasStealthSpell)
+    static char const* GetAssassinCapabilityPreferenceLabel(AssassinCapability const& cap)
     {
-        uint8 tier = GetAssassinClassTier(classId, hasStealthSpell);
+        uint8 tier = GetAssassinCapabilityTier(cap);
         if (tier == 3)
-            return "rogue_primary";
+            return cap.isMeleeStalker ? "stealth_opener_melee" : "stealth_opener_stalker";
         if (tier == 2)
-            return "druid_stealth";
-        return "fallback_non_stealth";
+            return cap.combatRole == EncounterCombatRole::Dps ? "stealth_dps" : "stealth_support";
+        if (tier == 1)
+            return cap.isMeleeStalker ? "fallback_melee_dps" : "fallback_dps";
+        return "fallback_non_dps";
     }
 
-    // Scores an Assassin Contract candidate combining strict class tier preference
-    // (Rogue > stealth Druid > fallback) with existing personality traits (aggressive/loner/patient).
+    // Scores an Assassin Contract candidate combining capability tier
+    // (stealth+opener > stealth > dps fallback > non-dps fallback) with
+    // combat role, melee affinity, and personality traits (aggressive/loner/patient).
     static float ScoreAssassinCandidate(
         WorldPersona const& persona,
-        uint8 classId,
-        bool hasStealthSpell)
+        AssassinCapability const& cap)
     {
         DerivedEncounterTraits const t = Derive(persona);
         float personalityScore = std::clamp(
             t.aggressive * 0.40f + t.loner * 0.35f + t.patient * 0.25f,
             0.05f, 1.0f);
 
-        uint8 tier = GetAssassinClassTier(classId, hasStealthSpell);
-        float classBoost = (tier == 3) ? 2.0f : ((tier == 2) ? 1.0f : 0.0f);
-        return classBoost + personalityScore;
+        uint8 tier = GetAssassinCapabilityTier(cap);
+        float capabilityScore = 0.0f;
+        switch (tier)
+        {
+            case 3:
+                capabilityScore = 4.0f + (cap.isMeleeStalker ? 0.40f : 0.0f);
+                break;
+            case 2:
+                capabilityScore = 2.5f + (cap.combatRole == EncounterCombatRole::Dps ? 0.35f : 0.0f)
+                                       + (cap.isMeleeStalker ? 0.20f : 0.0f);
+                break;
+            case 1:
+                capabilityScore = 1.0f + (cap.isMeleeStalker ? 0.30f : 0.0f);
+                break;
+            case 0:
+            default:
+                capabilityScore = 0.20f;
+                break;
+        }
+
+        return capabilityScore + personalityScore;
     }
 
     // Returns an affinity score in [0.0, 2.0] for selecting a bot for a given encounter & role.

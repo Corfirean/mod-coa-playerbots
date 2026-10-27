@@ -27,6 +27,8 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SharedDefines.h"
+#include "SpellAuras.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
 #include "WorldBrainState.h"
 #include "WorldExecutor.h"
@@ -53,6 +55,7 @@ namespace
     std::unordered_set<ObjectGuid> _knownSocialActive;
     std::unordered_map<ObjectGuid, uint32> _rareCreatureCooldownUntilMs;
     std::unordered_set<uint32> _encounterTempGroups;
+    AssassinCapabilityCache _assassinCapabilityCache;
     uint64 _nextEncounterId = 1;
 
     uint32 _evalAccumMs = 0;
@@ -283,6 +286,136 @@ namespace
         return snap;
     }
 
+    AssassinCapability ResolveAndCacheAssassinCapability(Player* bot)
+    {
+        AssassinCapability cap;
+        if (!bot)
+            return cap;
+
+        uint8 classId = bot->getClass();
+        uint32 specId = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+        uint32 spellCount = static_cast<uint32>(bot->GetSpellMap().size());
+
+        if (_assassinCapabilityCache.TryGet(classId, specId, cap))
+        {
+            if (cap.spellCount == spellCount || (cap.stealthSpellId != 0 && bot->HasSpell(cap.stealthSpellId)))
+                return cap;
+        }
+
+        cap.classId = classId;
+        cap.specId = specId;
+        cap.spellCount = spellCount;
+
+        // Combat role from active BotAI role
+        BotRole bRole = BotAI::GetRole(bot->GetGUID());
+        switch (bRole)
+        {
+            case BotRole::Dps:     cap.combatRole = EncounterCombatRole::Dps; break;
+            case BotRole::Tank:    cap.combatRole = EncounterCombatRole::Tank; break;
+            case BotRole::Healer:  cap.combatRole = EncounterCombatRole::Healer; break;
+            case BotRole::Support: cap.combatRole = EncounterCombatRole::Support; break;
+            default:               cap.combatRole = EncounterCombatRole::Dps; break;
+        }
+
+        uint32 meleeAttacks = 0;
+        uint32 rangedAttacks = 0;
+        uint32 bestStealthSpell = 0;
+        int32 bestStealthDuration = -2;
+        uint32 bestOpenerSpell = 0;
+        int32 bestOpenerPriority = -1;
+
+        for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+        {
+            if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                continue;
+
+            SpellInfo const* sInfo = sSpellMgr->GetSpellInfo(spellId);
+            if (!sInfo || sInfo->IsPassive())
+                continue;
+
+            // 1. Stealth / Invisibility detection via SpellInfo
+            if (sInfo->IsPositive() && !sInfo->NeedsExplicitUnitTarget())
+            {
+                bool grantsStealth = false;
+                for (auto const& eff : sInfo->GetEffects())
+                {
+                    if (!eff.IsEffect())
+                        continue;
+                    if (eff.IsAura(SPELL_AURA_MOD_STEALTH) || eff.IsAura(SPELL_AURA_MOD_INVISIBILITY))
+                    {
+                        grantsStealth = true;
+                        break;
+                    }
+                    if (eff.IsAura(SPELL_AURA_MOD_SHAPESHIFT) && eff.MiscValue == FORM_STEALTH)
+                    {
+                        grantsStealth = true;
+                        break;
+                    }
+                }
+
+                if (grantsStealth)
+                {
+                    int32 dur = sInfo->GetMaxDuration();
+                    if (dur == -1) // Permanent stealth gets top priority
+                    {
+                        bestStealthSpell = spellId;
+                        bestStealthDuration = -1;
+                    }
+                    else if (bestStealthDuration != -1 && dur > bestStealthDuration)
+                    {
+                        bestStealthDuration = dur;
+                        bestStealthSpell = spellId;
+                    }
+                }
+            }
+
+            // 2. Melee vs ranged ratio & stealth opener detection
+            if (!sInfo->IsPositive() && sInfo->NeedsExplicitUnitTarget())
+            {
+                if (sInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE || sInfo->GetMaxRange(false, bot) <= 8.0f)
+                    ++meleeAttacks;
+                else if (sInfo->DmgClass == SPELL_DAMAGE_CLASS_RANGED || sInfo->GetMaxRange(false, bot) >= 20.0f)
+                    ++rangedAttacks;
+
+                bool isDedicatedOpener = false;
+                if ((sInfo->Attributes & SPELL_ATTR0_ONLY_STEALTHED) != 0)
+                    isDedicatedOpener = true;
+                else if ((sInfo->Stances & (1u << (FORM_STEALTH - 1))) != 0)
+                    isDedicatedOpener = true;
+                else if (sInfo->CasterAuraState == AURA_STATE_STEALTH)
+                    isDedicatedOpener = true;
+
+                if (isDedicatedOpener)
+                {
+                    bestOpenerSpell = spellId;
+                    bestOpenerPriority = 10;
+                }
+                else if (bestOpenerPriority < 5)
+                {
+                    // High-damage gap closer or strike usable while stealthed
+                    if ((sInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE || sInfo->GetMaxRange(false, bot) <= 8.0f) &&
+                        !sInfo->HasAttribute(SPELL_ATTR0_NOT_SHAPESHIFT))
+                    {
+                        if (sInfo->HasEffect(SPELL_EFFECT_TELEPORT_UNITS) || sInfo->HasEffect(SPELL_EFFECT_CHARGE) || sInfo->FacingCasterFlags != 0)
+                        {
+                            bestOpenerSpell = spellId;
+                            bestOpenerPriority = 5;
+                        }
+                    }
+                }
+            }
+        }
+
+        cap.stealthSpellId = bestStealthSpell;
+        cap.hasStealthOrInvis = (bestStealthSpell != 0);
+        cap.openerSpellId = bestOpenerSpell;
+        cap.hasStealthOpener = (bestOpenerSpell != 0);
+        cap.isMeleeStalker = (meleeAttacks > 0 && meleeAttacks >= rangedAttacks);
+
+        _assassinCapabilityCache.Store(cap);
+        return cap;
+    }
+
     CandidateBotSnapshot BuildCandidateBotSnapshot(Player* bot, Unit const* optionalHostileTarget = nullptr)
     {
         CandidateBotSnapshot snap;
@@ -296,6 +429,7 @@ namespace
         snap.teamId = uint32(bot->GetTeamId());
         snap.level = bot->GetLevel();
         snap.classId = bot->getClass();
+        snap.specId = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
         snap.x = bot->GetPositionX();
         snap.y = bot->GetPositionY();
         snap.z = bot->GetPositionZ();
@@ -305,8 +439,8 @@ namespace
         snap.isInCapitalOrSafeZone = IsCapitalOrSafeZone(bot);
         snap.isContestedOrPvPArea = IsContestedOrPvPZone(bot);
         snap.canLegallyAttackTarget = optionalHostileTarget ? bot->IsValidAttackTarget(optionalHostileTarget) : true;
-        snap.hasStealthSpell = (bot->getClass() == CLASS_ROGUE && bot->HasSpell(1784)) ||
-                               (bot->getClass() == CLASS_DRUID && bot->HasSpell(5215));
+        snap.assassinCap = ResolveAndCacheAssassinCapability(bot);
+        snap.hasStealthSpell = snap.assassinCap.hasStealthOrInvis;
         return snap;
     }
 
@@ -408,8 +542,10 @@ namespace
         p.originalDisplayId = bot->GetDisplayId();
         p.originalHealthPct = bot->GetHealthPct();
         p.originalRunSpeedRate = bot->GetSpeedRate(MOVE_RUN);
-        p.stealthCapable = (bot->getClass() == CLASS_ROGUE && bot->HasSpell(1784)) ||
-                           (bot->getClass() == CLASS_DRUID && bot->HasSpell(5215));
+        AssassinCapability cap = ResolveAndCacheAssassinCapability(bot);
+        p.stealthCapable = cap.hasStealthOrInvis;
+        p.stealthSpellId = cap.stealthSpellId;
+        p.openerSpellId = cap.openerSpellId;
         p.cautiousness = EncounterPersonality::Derive(GetPersonaForBot(bot->GetGUID())).cautious;
         return p;
     }
@@ -733,7 +869,7 @@ namespace
             float score = 0.0f;
             if (type == EncounterType::AssassinContract)
             {
-                score = EncounterPersonality::ScoreAssassinCandidate(persona, botSnap.classId, botSnap.hasStealthSpell);
+                score = EncounterPersonality::ScoreAssassinCandidate(persona, botSnap.assassinCap);
             }
             else
             {
@@ -902,10 +1038,12 @@ namespace
         }
 
         int32 levelDelta = static_cast<int32>(bestBot->GetLevel()) - static_cast<int32>(playerSnap.level);
-        char const* classPref = EncounterPersonality::GetAssassinClassPreferenceLabel(bestBot->getClass(), leadPart.stealthCapable);
+        AssassinCapability leadCap = ResolveAndCacheAssassinCapability(bestBot);
+        char const* capPref = EncounterPersonality::GetAssassinCapabilityPreferenceLabel(leadCap);
         uint32 botCount = uint32(inst.participants.size());
         std::string leadName = bestBot->GetName();
         uint8 leadClass = bestBot->getClass();
+        uint32 leadSpec = leadCap.specId;
         uint8 leadLevel = bestBot->GetLevel();
         uint32 leadTeam = uint32(bestBot->GetTeamId());
 
@@ -914,7 +1052,7 @@ namespace
         if (_debugLogging || bypassBudgetAndCooldown)
         {
             LOG_INFO("module.coa-playerbots.world",
-                "Encounter #{} START type={} targetPlayer={}({}) level={} leadBot={}({}) class={} level={} levelDelta={:+} faction={} score={:.2f} classPreference={} stealthCapable={}",
+                "Encounter #{} START type={} targetPlayer={}({}) level={} leadBot={}({}) class={} spec={} level={} levelDelta={:+} faction={} score={:.2f} capability={} stealthSpell={} openerSpell={}",
                 id,
                 EncounterTypeName(type),
                 targetPlayer->GetName(),
@@ -923,17 +1061,19 @@ namespace
                 leadName,
                 bestBot->GetGUID().GetCounter(),
                 uint32(leadClass),
+                leadSpec,
                 uint32(leadLevel),
                 levelDelta,
                 leadTeam == TEAM_ALLIANCE ? "Alliance" : "Horde",
                 bestScore,
-                classPref,
-                leadPart.stealthCapable ? "yes" : "no");
+                capPref,
+                leadCap.stealthSpellId,
+                leadCap.openerSpellId);
         }
 
         outReason = Acore::StringFormat(
-            "Started {} (#{}) with {} bot(s) (lead: {} lvl={} delta={:+} class={} pref={})",
-            EncounterTypeName(type), id, botCount, leadName, uint32(leadLevel), levelDelta, uint32(leadClass), classPref);
+            "Started {} (#{}) with {} bot(s) (lead: {} lvl={} delta={:+} class={} spec={} cap={})",
+            EncounterTypeName(type), id, botCount, leadName, uint32(leadLevel), levelDelta, uint32(leadClass), leadSpec, capPref);
         return true;
     }
 
@@ -2176,6 +2316,7 @@ namespace WorldEncounterDirector
         _rareCreatureCooldownUntilMs.clear();
         EncounterNarrator::Gate().Clear();
         _knownSocialActive.clear();
+        _assassinCapabilityCache.Clear();
     }
 
     std::string DescribeBot(ObjectGuid botGuid)

@@ -7,6 +7,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SharedDefines.h"
+#include "SpellMgr.h"
 #include <cmath>
 
 namespace
@@ -299,6 +300,10 @@ namespace EncounterHandlers
                             bot->HandleEmoteCommand(EMOTE_ONESHOT_ATTACK1H);
                         }
                     }
+                }
+                if (part.openerSpellId != 0 && bot->HasSpell(part.openerSpellId) && !bot->IsInCombat())
+                {
+                    bot->CastSpell(target, part.openerSpellId, false);
                 }
                 EngagePvPOrCreature(bot, target);
             }
@@ -791,14 +796,26 @@ namespace EncounterHandlers
         if (hunter->IsMounted())
             BotMovement::RequestDismount(hunter, MoveOwner::Encounter, DismountReason::Manual);
 
-        // Use class mobility spell if known; otherwise apply temporary +15% run speed modifier for the chase
+        // Use self mobility spell if known; otherwise apply temporary +15% run speed modifier for the chase
         uint32 mobilitySpell = 0;
-        if (prey->getClass() == CLASS_ROGUE && prey->HasSpell(2983))
-            mobilitySpell = 2983; // Sprint
-        else if (prey->getClass() == CLASS_DRUID && prey->HasSpell(1850))
-            mobilitySpell = 1850; // Dash
-        else if (prey->getClass() == CLASS_SHAMAN && prey->HasSpell(2645))
-            mobilitySpell = 2645; // Ghost Wolf
+        for (auto const& [spellId, playerSpell] : prey->GetSpellMap())
+        {
+            if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                continue;
+            SpellInfo const* sInfo = sSpellMgr->GetSpellInfo(spellId);
+            if (!sInfo || sInfo->IsPassive() || !sInfo->IsPositive() || sInfo->NeedsExplicitUnitTarget())
+                continue;
+            for (auto const& eff : sInfo->GetEffects())
+            {
+                if (eff.IsAura(SPELL_AURA_MOD_INCREASE_SPEED) || eff.IsAura(SPELL_AURA_MOD_SPEED_ALWAYS))
+                {
+                    mobilitySpell = spellId;
+                    break;
+                }
+            }
+            if (mobilitySpell != 0)
+                break;
+        }
 
         if (mobilitySpell != 0)
         {

@@ -49,6 +49,78 @@ struct TargetPlayerSnapshot
     float distanceToCapitalYards = 500.0f;
 };
 
+enum class EncounterCombatRole : uint8
+{
+    Dps     = 0,
+    Tank    = 1,
+    Healer  = 2,
+    Support = 3
+};
+
+inline char const* EncounterCombatRoleName(EncounterCombatRole role)
+{
+    switch (role)
+    {
+        case EncounterCombatRole::Dps:     return "Dps";
+        case EncounterCombatRole::Tank:    return "Tank";
+        case EncounterCombatRole::Healer:  return "Healer";
+        case EncounterCombatRole::Support: return "Support";
+        default:                           return "Unknown";
+    }
+}
+
+// Capability profile derived from a bot's actual active spec and spellbook (SpellInfo),
+// completely independent of vanilla class identity (supports CoA custom classes 12-32).
+struct AssassinCapability
+{
+    uint8 classId = 0;
+    uint32 specId = 0;
+    uint32 spellCount = 0;
+    EncounterCombatRole combatRole = EncounterCombatRole::Dps;
+    uint32 stealthSpellId = 0;       // Usable spell granting stealth / invisibility / stealth form
+    uint32 openerSpellId = 0;        // Usable stealth opener / ambush / gap-closer strike
+    bool hasStealthOrInvis = false;  // True when stealthSpellId != 0
+    bool hasStealthOpener = false;   // True when openerSpellId != 0
+    bool isMeleeStalker = false;     // True when spec/spellbook is melee-oriented DPS
+};
+
+// Caches resolved AssassinCapability by (classId, specId).
+class AssassinCapabilityCache
+{
+public:
+    static constexpr uint64 MakeKey(uint8 classId, uint32 specId)
+    {
+        return (static_cast<uint64>(classId) << 32) | static_cast<uint64>(specId);
+    }
+
+    bool TryGet(uint8 classId, uint32 specId, AssassinCapability& outCap) const
+    {
+        auto it = _entries.find(MakeKey(classId, specId));
+        if (it == _entries.end())
+            return false;
+        outCap = it->second;
+        return true;
+    }
+
+    void Store(AssassinCapability const& cap)
+    {
+        _entries[MakeKey(cap.classId, cap.specId)] = cap;
+    }
+
+    void Clear()
+    {
+        _entries.clear();
+    }
+
+    size_t Size() const
+    {
+        return _entries.size();
+    }
+
+private:
+    std::unordered_map<uint64, AssassinCapability> _entries;
+};
+
 struct CandidateBotSnapshot
 {
     BotActivitySnapshot activity;
@@ -57,7 +129,8 @@ struct CandidateBotSnapshot
     uint32 areaId = 0;
     uint32 teamId = 0; // 0 = Alliance, 1 = Horde
     uint8 level = 60;
-    uint8 classId = 1;
+    uint8 classId = 12;
+    uint32 specId = 0;
 
     float x = 0.0f;
     float y = 0.0f;
@@ -69,7 +142,8 @@ struct CandidateBotSnapshot
     bool isInCapitalOrSafeZone = false;
     bool isContestedOrPvPArea = true;
     bool canLegallyAttackTarget = true; // Result of core IsValidAttackTarget / PvP rule check
-    bool hasStealthSpell = false;       // True if Rogue with Stealth or Druid with Prowl
+    bool hasStealthSpell = false;       // True if bot has a usable stealth/invisibility spell in its spellbook/spec
+    AssassinCapability assassinCap;
 };
 
 class EncounterEligibility
