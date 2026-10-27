@@ -242,7 +242,7 @@ namespace EncounterHandlers
             }
             else if (dist >= 28.0f && dist <= 40.0f)
             {
-                BotMovement::Stop(bot, MoveOwner::Encounter);
+                BotMovement::Stop(bot, part.moveToken);
                 bot->SetFacingToObject(target);
             }
 
@@ -352,7 +352,7 @@ namespace EncounterHandlers
                 if (d <= 14.0f)
                 {
                     part.arrivedAtStaging = true;
-                    BotMovement::Stop(bot, MoveOwner::Encounter);
+                    BotMovement::Stop(bot, part.moveToken);
                     if (part.stealthCapable)
                         TryApplyStealth(bot, part);
 

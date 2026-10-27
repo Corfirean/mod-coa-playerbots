@@ -62,7 +62,7 @@ namespace EncounterHandlers
             {
                 if (bot->IsMounted())
                     BotMovement::RequestDismount(bot, MoveOwner::Encounter, DismountReason::Manual);
-                BotMovement::Stop(bot, MoveOwner::Encounter);
+                BotMovement::Stop(bot, part.moveToken);
                 bot->SetFacingToObject(target);
                 inst.state.TransitionTo(EncounterPhase::Active, nowMs);
                 return;
@@ -88,7 +88,7 @@ namespace EncounterHandlers
 
         if (inst.state.phase == EncounterPhase::Active)
         {
-            BotMovement::Stop(bot, MoveOwner::Encounter);
+            BotMovement::Stop(bot, part.moveToken);
             bot->SetFacingToObject(target);
 
             uint32 elapsed = inst.state.PhaseElapsedMs(nowMs);
@@ -104,16 +104,18 @@ namespace EncounterHandlers
 
                 if (cfg.mysteryRuneGameObjectEntry != 0 && sObjectMgr->GetGameObjectTemplate(cfg.mysteryRuneGameObjectEntry))
                 {
-                    if (Map* map = bot->GetMap())
+                    if (bot->GetMap())
                     {
-                        QuaternionData rot = QuaternionData::fromEulerAnglesZYX(bot->GetOrientation(), 0.0f, 0.0f);
                         if (GameObject* gob = bot->SummonGameObject(
                                 cfg.mysteryRuneGameObjectEntry,
                                 bot->GetPositionX(),
                                 bot->GetPositionY(),
                                 bot->GetPositionZ(),
                                 bot->GetOrientation(),
-                                rot,
+                                0.0f,
+                                0.0f,
+                                0.0f,
+                                0.0f,
                                 12))
                         {
                             part.temporaryGobGuid = gob->GetGUID();

@@ -39,7 +39,7 @@ namespace
         std::vector<Creature*> creatures;
         Acore::AnyUnfriendlyUnitInObjectRangeCheck uCheck(leader, leader, radius);
         Acore::CreatureListSearcher<Acore::AnyUnfriendlyUnitInObjectRangeCheck> searcher(leader, creatures, uCheck);
-        Cell::VisitGridObjects(leader, searcher, radius);
+        Cell::VisitObjects(leader, searcher, radius);
 
         for (Creature* c : creatures)
         {
@@ -204,7 +204,7 @@ namespace EncounterHandlers
             if (bot->IsMounted())
                 BotMovement::RequestDismount(bot, MoveOwner::Encounter, DismountReason::Manual);
 
-            BotMovement::Stop(bot, MoveOwner::Encounter);
+            BotMovement::Stop(bot, part.moveToken);
             bot->SetFacingToObject(opponent);
             if (!part.arrivedAtStaging)
             {
@@ -229,13 +229,13 @@ namespace EncounterHandlers
                 return;
             }
 
-            BotMovement::Stop(bot, MoveOwner::Encounter);
+            BotMovement::Stop(bot, part.moveToken);
             bot->SetFacingToObject(opponent);
 
             if (nowMs - part.lastActionMs >= 1500)
             {
                 part.lastActionMs = nowMs;
-                bot->HandleEmoteCommand(( (nowMs / 1500) % 2 == 0 ) ? EMOTE_ONESHOT_ATTACK1H : EMOTE_ONESHOT_PARRYUNARMED);
+                bot->HandleEmoteCommand(((nowMs / 1500) % 2 == 0) ? EMOTE_ONESHOT_ATTACK1H : EMOTE_ONESHOT_PARRY_UNARMED);
 
                 // Controlled non-lethal duel exchange: never reduce below 20% health
                 uint32 oppMaxHp = opponent->GetMaxHealth();
@@ -264,7 +264,7 @@ namespace EncounterHandlers
             if (!part.emoteDone)
             {
                 part.emoteDone = true;
-                BotMovement::Stop(bot, MoveOwner::Encounter);
+                BotMovement::Stop(bot, part.moveToken);
                 bot->SetFacingToObject(opponent);
                 if (inst.duelWinnerGuid == bot->GetGUID())
                     bot->HandleEmoteCommand(EMOTE_ONESHOT_CHEER);
@@ -396,7 +396,7 @@ namespace EncounterHandlers
             {
                 if (bot->IsMounted())
                     BotMovement::RequestDismount(bot, MoveOwner::Encounter, DismountReason::Manual);
-                BotMovement::Stop(bot, MoveOwner::Encounter);
+                BotMovement::Stop(bot, part.moveToken);
                 bot->SetStandState(UNIT_STAND_STATE_SIT);
                 part.sitApplied = true;
                 inst.state.TransitionTo(EncounterPhase::Active, nowMs);

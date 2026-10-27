@@ -24,12 +24,14 @@
 #include "SharedDefines.h"
 #include "StringFormat.h"
 #include "WorldBrainState.h"
+#include "WorldExecutor.h"
 #include "WorldParties.h"
 #include "WorldSession.h"
 #include "WorldSocial.h"
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -41,6 +43,7 @@ namespace
 
     std::unordered_map<uint64, EncounterInstance> _encounters;
     std::unordered_map<ObjectGuid, WorldPersona> _knownPersonas;
+    std::unordered_set<ObjectGuid> _knownSocialActive;
     uint64 _nextEncounterId = 1;
 
     uint32 _evalAccumMs = 0;
@@ -115,7 +118,8 @@ namespace
     {
         if (!p || IsSanctuaryArea(p) || IsCapitalOrSafeZone(p))
             return false;
-        if (p->IsFFAPvP() || p->IsPvP())
+        if (p->HasByteFlag(UNIT_FIELD_BYTES_2, 1, UNIT_BYTE2_FLAG_FFA_PVP) ||
+            p->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_IN_PVP))
             return true;
         if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(p->GetAreaId()))
         {
@@ -141,7 +145,7 @@ namespace
         Group const* grp = bot ? bot->GetGroup() : nullptr;
         if (!grp)
             return false;
-        if (WorldParties::IsWorldParty(grp))
+        if (WorldParties::IsInParty(bot->GetGUID()))
             return false;
         return true;
     }
@@ -158,10 +162,10 @@ namespace
         snap.isInFlight = bot->IsInFlight();
         snap.inDungeonOrBG = (bot->GetMap() && bot->GetMap()->Instanceable()) || bot->InBattleground() || bot->InArena();
         snap.inBattlegroundQueueCritical = bot->InBattlegroundQueue();
-        snap.hasManualCommand = (BotAI::GetManualCommand(bot) != BotManualCommand::None);
         snap.inPlayerControlledGroup = IsPlayerControlledGroup(bot);
-        snap.inWorldParty = (bot->GetGroup() && WorldParties::IsWorldParty(bot->GetGroup()));
-        snap.isHelpingSocial = WorldSocial::IsHelping(bot);
+        snap.hasManualCommand = snap.inPlayerControlledGroup;
+        snap.inWorldParty = (bot->GetGroup() && WorldParties::IsInParty(bot->GetGUID()));
+        snap.isHelpingSocial = (_knownSocialActive.find(bot->GetGUID()) != _knownSocialActive.end());
         MoveOwner curOwner = BotMovement::CurrentOwner(bot);
         snap.isLootingOrCorpseRun = (curOwner == MoveOwner::Loot || curOwner == MoveOwner::Corpse ||
                                      curOwner == MoveOwner::AutoDungeon || curOwner == MoveOwner::Battleground);
@@ -247,7 +251,7 @@ namespace
         std::vector<Player*> players;
         Acore::AnyPlayerInObjectRangeCheck check(centerObj, radius, true);
         Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(centerObj, players, check);
-        Cell::VisitWorldObjects(centerObj, searcher, radius);
+        Cell::VisitObjects(centerObj, searcher, radius);
 
         for (Player* p : players)
         {
@@ -267,7 +271,7 @@ namespace
         std::vector<Creature*> creatures;
         Acore::AnyUnitInObjectRangeCheck uCheck(centerObj, radius);
         Acore::CreatureListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(centerObj, creatures, uCheck);
-        Cell::VisitGridObjects(centerObj, searcher, radius);
+        Cell::VisitObjects(centerObj, searcher, radius);
 
         Creature* best = nullptr;
         float bestDist = radius;
@@ -303,7 +307,7 @@ namespace
         p.lastActionMs = nowMs;
         p.originalDisplayId = bot->GetDisplayId();
         p.stealthCapable = EncounterHandlers::IsStealthCapableClass(bot->getClass());
-        p.cautiousness = EncounterPersonality::Derive(GetPersonaForBot(bot->GetGUID())).cautiousness;
+        p.cautiousness = EncounterPersonality::Derive(GetPersonaForBot(bot->GetGUID())).cautious;
         return p;
     }
 
@@ -674,14 +678,18 @@ namespace
             inst.destX = leader->GetPositionX() + std::cos(angle) * 110.0f;
             inst.destY = leader->GetPositionY() + std::sin(angle) * 110.0f;
             inst.destZ = leader->GetPositionZ();
-            for (BotWorldPoi::Hub const& hub : BotWorldPoi::GetHubsForMap(mapId))
+            std::vector<Poi const*> vendorPois;
+            BotWorldPoi::Query(mapId, leader->GetPositionX(), leader->GetPositionY(), 450.0f, PoiKind::Vendor, vendorPois);
+            for (Poi const* poi : vendorPois)
             {
-                float d = Dist2D(leader->GetPositionX(), leader->GetPositionY(), hub.x, hub.y);
+                if (!poi)
+                    continue;
+                float d = Dist2D(leader->GetPositionX(), leader->GetPositionY(), poi->x, poi->y);
                 if (d >= 70.0f && d <= 450.0f)
                 {
-                    inst.destX = hub.x;
-                    inst.destY = hub.y;
-                    inst.destZ = hub.z;
+                    inst.destX = poi->x;
+                    inst.destY = poi->y;
+                    inst.destZ = poi->z;
                     break;
                 }
             }
@@ -1045,6 +1053,10 @@ namespace WorldEncounterDirector
             return false;
 
         _knownPersonas[bot->GetGUID()] = persona;
+        if (brainState.socialActive)
+            _knownSocialActive.insert(bot->GetGUID());
+        else
+            _knownSocialActive.erase(bot->GetGUID());
 
         uint64 encId = _ownership.GetEncounterId(bot->GetGUID());
         if (encId == 0)
@@ -1305,6 +1317,7 @@ namespace WorldEncounterDirector
         _memory.ForgetBot(botGuid);
         EncounterNarrator::Gate().ForgetBot(botGuid);
         _knownPersonas.erase(botGuid);
+        _knownSocialActive.erase(botGuid);
     }
 
     void ResetAll()
@@ -1320,6 +1333,7 @@ namespace WorldEncounterDirector
         _budget.Clear();
         _memory.Clear();
         EncounterNarrator::Gate().Clear();
+        _knownSocialActive.clear();
     }
 
     std::string DescribeBot(ObjectGuid botGuid)
