@@ -151,3 +151,33 @@ To eliminate false-positive cache assumptions and ensure combat stability in Pro
 ### Final Verdict
 
 **`ASSASSIN CAPABILITY SELECTION READY`**
+
+---
+
+## 7. Live Server Crash Root Cause Analysis & Double-Free Fix
+
+### Incident Summary
+- **Events:** Server crashed twice during live testing (20:35:53 and 20:39:55).
+- **Exit Code:** `0xC0000374` (`STATUS_HEAP_CORRUPTION`) inside `ntdll.dll!RtlReportCriticalFailure`.
+- **Symptom in Server Manager:** Manager showed `"Отчётов о падениях не найдено"` because `Core\Crashes` directory was missing, and heap corruption triggers Windows Fail-Fast / WER directly before user-mode unhandled exception filters.
+
+### Root Cause
+- In [`WorldEncounterDirector.cpp`](file:///C:/games/source/server/playerbots-pr12/module/src/world/encounters/WorldEncounterDirector.cpp), `DissolveTemporaryEncounterGroup`:
+  ```cpp
+  group->Disband(true);
+  sGroupMgr->RemoveGroup(group);
+  delete group;
+  ```
+- In AzerothCore (`Group.cpp`), `Group::Disband(bool hideDestroy)` calls `Group::ForcedDisband()`, which already executes:
+  ```cpp
+  sGroupMgr->RemoveGroup(this);
+  delete this;
+  ```
+- Calling `delete group;` immediately after `group->Disband(true)` resulted in an explicit **double-free**, corrupting the heap and triggering fast-fail termination (`0xC0000374`).
+
+### Resolution
+1. **Source Fix:** Removed `sGroupMgr->RemoveGroup(group)` and `delete group;` from `DissolveTemporaryEncounterGroup`. Rely solely on `group->Disband(true)`.
+2. **Crash Dump Reporting:** Created directory `C:\games\CoA Server 2\Core\Crashes\` and populated the minidumps and crash summary files so the server manager crash dialog displays the crash history.
+3. **Verification:**
+   - Standalone unit tests: `encounter_tests.exe`: 9,866 checks, 0 failures.
+   - Core rebuild: `worldserver.exe` successfully compiled and deployed to `C:\games\CoA Server 2\Core\`.
