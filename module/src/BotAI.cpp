@@ -773,6 +773,13 @@ KitWeaponDemand GetKitWeaponDemand(Player* bot)
         SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
         if (!info || info->IsPassive() || info->EquippedItemSubClassMask <= 0)
             continue;
+        // Enchanting recipes name the item they enchant ("Enchant Shield - Minor Stamina", "Enchant 2H Weapon - Minor
+        // Impact") through the same equipment fields as a combat ability. Bots learn every profession, so every one of
+        // them counted a shield as required and a two-hander as a loss: a Crusader (whose core spells need a two-hander)
+        // always kept one-handed maces.
+        if (info->HasEffect(SPELL_EFFECT_ENCHANT_ITEM) || info->HasEffect(SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY) ||
+            info->HasEffect(SPELL_EFFECT_ENCHANT_HELD_ITEM) || info->HasEffect(SPELL_EFFECT_ENCHANT_ITEM_PRISMATIC))
+            continue;
         if (info->EquippedItemClass == ITEM_CLASS_ARMOR && (info->EquippedItemSubClassMask & (1 << ITEM_SUBCLASS_ARMOR_SHIELD)))
         {
             if (families.insert(sSpellMgr->GetFirstSpellInChain(spellId)).second)

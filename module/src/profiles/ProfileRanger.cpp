@@ -460,6 +460,26 @@ namespace BotAI
             }
             {
                 AbilityDescriptor d;
+                // The Archery book has no Aimed Shot or Multi-Shot; Precision Shot is the focus-paid single-target hit that was never listed.
+                d.name = "Precision Shot";
+                d.rootSpellId = 500075;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 220.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
+                d.name = "Brutal Shot";
+                d.rootSpellId = 570014;
+                d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
+                d.targetType = TargetType::CurrentTarget;
+                d.internalThrottleMs = 25000;
+                d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+            {
+                AbilityDescriptor d;
                 d.name = "Serrated Shot";
                 d.rootSpellId = 500073;
                 d.tags = AbilityTag::RangedAttack;
