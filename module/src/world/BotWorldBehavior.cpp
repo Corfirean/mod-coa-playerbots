@@ -112,6 +112,7 @@ namespace
     // an empty zone can't turn into a retry loop -- the lesson from the gathering loops.
     constexpr uint32 FAIL_COOLDOWN_MS = 90000;
     constexpr uint32 NO_CANDIDATE_COOLDOWN_MS = 60000;
+    constexpr uint32 UNSERVED_COOLDOWN_MS = 10 * MINUTE * IN_MILLISECONDS;
 
     struct WorldState
     {
@@ -844,7 +845,18 @@ namespace
         BotMovement::Stop(bot, state.travelToken);
 
         if (state.intent == WorldIntent::Repair || state.intent == WorldIntent::Vendor)
+        {
             BotAI::MaintainEquipmentNow(bot);
+
+            // The errand achieved nothing (the vendor the index pointed at does not repair or buy, or cannot be reached):
+            // do not make the same trip again a minute later -- one bot made 62 in ten minutes, never repairing once.
+            if ((state.intent == WorldIntent::Repair && BotAI::NeedsRepair(bot)) ||
+                (state.intent == WorldIntent::Vendor && BotAI::NeedsVendor(bot)))
+            {
+                SetCooldown(state, state.intent, now, UNSERVED_COOLDOWN_MS);
+                Trace(bot, "the {} errand achieved nothing, not trying again for {}s.", IntentName(state.intent), UNSERVED_COOLDOWN_MS / IN_MILLISECONDS);
+            }
+        }
 
         if (state.intent == WorldIntent::Errand || state.intent == WorldIntent::Repair
             || state.intent == WorldIntent::Vendor)

@@ -816,6 +816,11 @@ void BotMgr::TryFollowLeaderAcrossMaps(WorldSession* session)
     if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
         return;
 
+    // A ghost runs back to its corpse (and TryReturnGhostToCorpseMap covers a corpse on another map); pulling it
+    // to the leader would cancel that run every time the group moved on, and it would never get there.
+    if (!bot->IsAlive())
+        return;
+
     Group* group = bot->GetGroup();
     if (!group)
         return;

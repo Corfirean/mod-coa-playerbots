@@ -119,6 +119,7 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include <algorithm>
+#include <list>
 #include <atomic>
 #include <array>
 #include <cmath>
@@ -317,6 +318,14 @@ struct BotAIState
 
     // Death failsafe: duration spent as a ghost (for stuck ghost fallback)
     uint32 ghostDurationMs = 0;
+    // How long the corpse run has been refused by the movement layer in a row (no path, held by another owner).
+    uint32 ghostMoveFailMs = 0;
+    // How long the ghost has stood at its body waiting for the creatures around it to leave.
+    uint32 ghostHoldMs = 0;
+    // Set when a dead bot comes back (a corpse reclaim restores half its health): it rests to near full before it goes
+    // on, instead of walking back into the mobs that killed it, which it did within seconds.
+    bool recoverAfterDeath = false;
+    uint32 recoverAfterDeathMs = 0;
 
     // Natural follow latency
     uint32 followReactionDelayMs = 0;
@@ -332,6 +341,19 @@ struct BotAIState
 // healer's own GCD/cast-time/reaction, short enough that a bot doesn't sit dead for a full
 // minute in a group with no healer at all. See UpdateDeathHandling.
 constexpr uint32 DEATH_REZ_GRACE_MS = 15000;
+
+// A ghost that cannot reach its corpse is brought back where it stands after this long, and sooner when
+// the movement layer refuses the corpse run for GHOST_MOVE_GIVE_UP_MS in a row (no path to the corpse).
+constexpr uint32 GHOST_FAILSAFE_MS = 240000;
+constexpr uint32 GHOST_MOVE_GIVE_UP_MS = 20000;
+// A ghost at its body waits this long for hostile creatures standing next to it to wander off before it comes back
+// anyway; they usually killed it, and coming back at half health among them killed it again within seconds.
+constexpr uint32 GHOST_HOLD_MAX_MS = 45000;
+constexpr float GHOST_HOLD_RANGE = 24.0f;
+// A body this close with creatures it cannot beat standing over it (CorpseIsCamped) is given up on, the ghost coming back
+// where it stands instead of walking the rest of the way into them.
+constexpr float GHOST_CAMP_RANGE = 30.0f;
+constexpr float GHOST_ABANDON_RANGE = 110.0f;
 
 // How often a Support bot re-checks whether its party/raid buff needs (re)applying. Real
 // Ascension buffs of this shape run tens of minutes; checking every 15s is cheap and still
@@ -1153,8 +1175,18 @@ void TryMaintainEquipment(Player* bot, BotRole role, bool force)
         if (repairNpc)
         {
             uint32 cost = bot->DurabilityRepairAll(true, 1.0f, false);
-            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' repaired gear at '{}' for {} copper.",
-                bot->GetName(), repairNpc->GetName(), cost);
+            // Whatever the paid repair left undone is mended without a charge. On this server the paid path returned 0
+            // copper and mended nothing, even for bots holding plenty of gold (the cost lookup finds no entry for these
+            // items), so gear stayed broken -- a third of the gear of the level 15-25 bots was at 0 durability -- the bots
+            // died more, and walked to a repairer again every minute instead of questing.
+            bool credit = false;
+            if (HasGearBelowRepairThreshold(bot))
+            {
+                bot->DurabilityRepairAll(false, 1.0f, false);
+                credit = true;
+            }
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' repaired gear at '{}' for {} copper{}.",
+                bot->GetName(), repairNpc->GetName(), cost, credit ? " (the rest free)" : "");
         }
     }
 
@@ -1809,7 +1841,7 @@ bool TryProcessPendingLoot(Player* bot, uint32 /*diff*/, BotAIState& state)
 }
 
 // Out-of-combat rest behavior: sits and consumes food/drink when HP or mana are depleted between pulls
-bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& state)
+bool TryRestIfNeeded(Player* bot, uint32 diff, BotRole role, BotAIState& state)
 {
     if (bot->IsInCombat())
     {
@@ -1871,24 +1903,40 @@ bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& sta
     bool usesMana = (bot->getPowerType() == POWER_MANA);
     float manaPct = usesMana ? bot->GetPowerPct(POWER_MANA) : 100.0f;
 
-    float startHpPct = 45.0f;
-    float startManaPct = 25.0f;
-    float endHpPct = 75.0f;
-    float endManaPct = 70.0f;
+    // A level-20 bot has a few hundred health and dies in a handful of hits, so it sits down well before it is low and
+    // stands up nearly full; the rest aura makes this cheap.
+    float startHpPct = 60.0f;
+    float startManaPct = 35.0f;
+    float endHpPct = 88.0f;
+    float endManaPct = 75.0f;
 
     if (role == BotRole::Healer)
     {
-        startHpPct = 60.0f;
+        startHpPct = 65.0f;
         startManaPct = 50.0f;
-        endHpPct = 80.0f;
+        endHpPct = 90.0f;
         endManaPct = 85.0f;
     }
     else if (role == BotRole::Tank)
     {
-        startHpPct = 60.0f;
-        startManaPct = 30.0f;
-        endHpPct = 85.0f;
-        endManaPct = 60.0f;
+        startHpPct = 70.0f;
+        startManaPct = 35.0f;
+        endHpPct = 92.0f;
+        endManaPct = 65.0f;
+    }
+
+    if (state.recoverAfterDeath)
+    {
+        state.recoverAfterDeathMs += diff;
+        if (state.recoverAfterDeathMs > 150000 || (!state.isResting && hpPct >= 92.0f && manaPct >= 70.0f))
+            state.recoverAfterDeath = false;
+        else
+        {
+            startHpPct = std::max(startHpPct, 92.0f);
+            startManaPct = std::max(startManaPct, 70.0f);
+            endHpPct = std::max(endHpPct, 95.0f);
+            endManaPct = std::max(endManaPct, 80.0f);
+        }
     }
 
     // In an auto-dungeon the tank holds the pull until everybody is above AutoDungeonWaitReason's limits (health 70% to start waiting and 90% to go on,
@@ -4840,6 +4888,47 @@ void UpdateSupport(Player* bot, uint32 diff, BotAIState& state)
     UpdateOffensive(bot, diff, BotRole::Dps, BotRole::Support, state);
 }
 
+// Awake hostile creatures of some weight within range of a point: what a ghost would wake up next to.
+class GhostThreatCheck
+{
+public:
+    GhostThreatCheck(Player const* me, float x, float y, float range) : _me(me), _x(x), _y(y), _range(range) { }
+    bool operator()(Creature* c) const
+    {
+        if (!c->IsAlive() || c->IsInEvadeMode() || c->IsCivilian() || c->IsTotem() || c->IsPet() || c->IsGuardian())
+            return false;
+        if (CreatureTemplate const* t = c->GetCreatureTemplate(); t && t->type == CREATURE_TYPE_CRITTER)
+            return false;
+        if (c->GetLevel() + 6 < _me->GetLevel() || !c->IsWithinDist2d(_x, _y, _range))
+            return false;
+        return c->IsHostileTo(_me);
+    }
+
+private:
+    Player const* _me;
+    float _x, _y, _range;
+};
+
+// True when a ghost coming back at `corpse` would wake up among creatures it cannot beat: one much above its level or
+// a pack. Open world only; in a dungeon the group is fighting right there and the ordinary rules apply.
+bool CorpseIsCamped(Player* bot, Corpse const* corpse, float range, bool* any = nullptr)
+{
+    if (Map const* map = bot->GetMap(); !map || map->IsDungeon() || map->IsRaid() || bot->InBattleground())
+        return false;
+    std::list<Creature*> threats;
+    GhostThreatCheck check(bot, corpse->GetPositionX(), corpse->GetPositionY(), range);
+    Acore::CreatureListSearcher<GhostThreatCheck> searcher(bot, threats, check);
+    Cell::VisitObjects(corpse, searcher, range + 5.0f);
+    if (any)
+        *any = !threats.empty();
+    if (threats.size() >= 3)
+        return true;
+    for (Creature const* c : threats)
+        if (c->GetLevel() >= bot->GetLevel() + 5)
+            return true;
+    return false;
+}
+
 // Called every tick a bot is dead, instead of the normal role update -- see BotAI::Update.
 // Mirrors what a real player does on death, in three phases:
 //  1. Body not yet released: a real player who sees a healer coming waits instead of
@@ -4869,9 +4958,9 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
 
         // Failsafe: if a ghost has been unable to reach its corpse for > 3 minutes (e.g. unreachable terrain),
         // accept spirit resurrection instead of being permanently stuck.
-        if (state.ghostDurationMs > 180000)
+        if (state.ghostDurationMs > GHOST_FAILSAFE_MS)
         {
-            bot->ResurrectPlayer(0.5f, true);
+            bot->ResurrectPlayer(0.5f, false);
             bot->SpawnCorpseBones();
             state.ghostDurationMs = 0;
             return;
@@ -4895,18 +4984,82 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
         if (corpse->GetMapId() != bot->GetMapId())
             return;
 
+        if (bot->IsBeingTeleported())
+            return;
+
         if (bot->GetDistance(corpse) > CORPSE_RECLAIM_RADIUS)
         {
-            MoveBotToPoint(bot, MoveOwner::Corpse, corpse->GetPositionX(), corpse->GetPositionY(),
-                corpse->GetPositionZ());
+            // Whatever the bot was doing when it died (a fight, a quest walk) still holds the movement slot, and
+            // a combat or quest claim outranks the corpse run: without this the ghost could not start walking.
+            MoveOwner const holder = BotMovement::CurrentOwner(bot);
+            if (holder != MoveOwner::None && holder != MoveOwner::Corpse)
+                BotMovement::ForceReleaseOwner(bot, holder);
+
+            // A body lying among creatures the bot cannot beat (a level 45 mob over a level 20 bot, a pack) is given up on
+            // while it is still a long way off: coming back there only gets the bot killed again at once, over and over.
+            if (bot->GetDistance(corpse) < GHOST_ABANDON_RANGE && CorpseIsCamped(bot, corpse, GHOST_CAMP_RANGE))
+            {
+                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: ghost '{}' gives up its body ({:.0f} yd away): creatures it cannot beat stand over it; coming back where it stands.",
+                    bot->GetName(), bot->GetDistance(corpse));
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
+                bot->ResurrectPlayer(0.5f, false);
+                bot->SpawnCorpseBones();
+                state.ghostMoveFailMs = 0;
+                state.ghostDurationMs = 0;
+                return;
+            }
+
+            // Legs, not one path: a single path request fails ("no path") beyond some 250 yards, and a graveyard is
+            // often farther than that from the body.
+            NavStatus const nav = BotMovement::Navigate(bot, MoveOwner::Corpse, uint64(bot->GetGUID().GetCounter()) << 8 | 0xC0,
+                corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), CORPSE_RECLAIM_RADIUS * 0.8f, nullptr, /*allowMount=*/false);
+            if (nav == NavStatus::Moving)
+            {
+                state.ghostMoveFailMs = 0;
+            }
+            else if ((state.ghostMoveFailMs += diff) > GHOST_MOVE_GIVE_UP_MS)
+            {
+                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: ghost '{}' cannot walk to its corpse ({:.0f} yd away); coming back where it stands.",
+                    bot->GetName(), bot->GetDistance(corpse));
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
+                bot->ResurrectPlayer(0.5f, false);
+                bot->SpawnCorpseBones();
+                state.ghostMoveFailMs = 0;
+                state.ghostDurationMs = 0;
+            }
             return;
         }
 
         // Administrative release: bot arrived in reclaim radius of corpse
         BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
 
-        // The handler itself enforces the post-release reclaim delay and the exact-range
-        // recheck -- harmless (and expected) to call this every tick until it actually lands.
+        // Hostile creatures standing at the body usually killed the bot. Ghosts cannot be attacked, so it waits for them
+        // to go (patrols, leashing) for a while instead of coming back among them at half health.
+        if (state.ghostHoldMs < GHOST_HOLD_MAX_MS)
+        {
+            bool anyThreat = false;
+            CorpseIsCamped(bot, corpse, GHOST_HOLD_RANGE, &anyThreat);
+            if (anyThreat)
+            {
+                state.ghostHoldMs += diff;
+                return;
+            }
+        }
+
+        // The reclaim delay (30, 60, then 120 seconds with every recent death) is there to keep players from
+        // spamming deaths; a bot that keeps dying in the open world stood at its body for two minutes each time.
+        // Standing on the body, it comes back at once, exactly what a reclaim does.
+        if (time_t(corpse->GetGhostTime() + bot->GetCorpseReclaimDelay(corpse->GetType() == CORPSE_RESURRECTABLE_PVP)) >
+            GameTime::GetGameTime().count())
+        {
+            bot->ResurrectPlayer(0.5f, false);
+            bot->SpawnCorpseBones();
+            state.ghostDurationMs = 0;
+            return;
+        }
+
+        // The handler itself enforces the exact-range recheck -- harmless (and expected) to call this every tick
+        // until it actually lands.
         WorldPacket reclaimPacket;
         reclaimPacket << bot->GetGUID();
         bot->GetSession()->HandleReclaimCorpseOpcode(reclaimPacket);
@@ -5088,9 +5241,14 @@ void Update(Player* bot, uint32 diff)
         return;
     }
     state.ghostDurationMs = 0;
+    state.ghostMoveFailMs = 0;
+    state.ghostHoldMs = 0;
     if (state.wasDead)
     {
         state.wasDead = false;
+        state.recoverAfterDeath = true;
+        state.recoverAfterDeathMs = 0;
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
         Player* lead = bot->GetGroup() ? ObjectAccessor::FindPlayer(bot->GetGroup()->GetLeaderGUID()) : nullptr;
         LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' is alive again on map {} at ({:.0f} {:.0f} {:.0f}), {:.0f} yd from its leader.",
             bot->GetName(), bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),

@@ -474,7 +474,7 @@ namespace BotMovement
     // gives no other trace, as every refusal below is a silent "return {}".
     static void NoteMoveRefusal(Player* bot, MoveOwner owner, char const* reason, float x, float y)
     {
-        if (owner != MoveOwner::AutoDungeon)
+        if (owner != MoveOwner::AutoDungeon && owner != MoveOwner::Corpse)
             return;
         static std::unordered_map<ObjectGuid, std::pair<std::string, uint32>> last;
         auto& entry = last[bot->GetGUID()];
@@ -483,13 +483,18 @@ namespace BotMovement
         if (entry.first == key && now - entry.second < 5000)
             return;
         entry = { key, now };
-        LOG_INFO("module.coa-playerbots", "AutoDungeon: movement of '{}' refused: {} (goal {:.0f} {:.0f}, now {:.0f} {:.0f} {:.0f}).",
-            bot->GetName(), reason, x, y, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        LOG_INFO("module.coa-playerbots", "{}: movement of '{}' refused: {} (goal {:.0f} {:.0f}, now {:.0f} {:.0f} {:.0f}).",
+            owner == MoveOwner::Corpse ? "CorpseRun" : "AutoDungeon", bot->GetName(), reason, x, y, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
     }
 
     LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard)
     {
-        if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+        if (!bot || !bot->IsInWorld())
+            return {};
+
+        // A released ghost is not alive, but walking back to its corpse is exactly what it has to do: refusing
+        // every move of a dead bot meant no ghost ever reached its body and each came back only on the failsafe.
+        if (!bot->IsAlive() && !(owner == MoveOwner::Corpse && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST)))
             return {};
 
         // An active Auto Shot / Shoot (the auto-repeat slot) is not a cast in progress: it stays set for the whole fight and, counted here, kept every
@@ -649,7 +654,11 @@ namespace BotMovement
 
     NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius, LocomotionToken* outToken, bool allowMount)
     {
-        if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+        if (!bot || !bot->IsInWorld())
+            return NavStatus::Blocked;
+
+        // A released ghost walking back to its corpse (see MoveToInternal).
+        if (!bot->IsAlive() && !(owner == MoveOwner::Corpse && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST)))
             return NavStatus::Blocked;
 
         if (IsExternallyControlled(bot))
