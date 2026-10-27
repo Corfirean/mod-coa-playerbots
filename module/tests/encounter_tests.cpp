@@ -23,6 +23,23 @@
 #include "EncounterTypes.h"
 #include "WorldTask.h"
 
+#define PLAYERBOT_TEST_HARNESS 1
+#include "dialogue/DialogueTypes.h"
+#include "dialogue/DialogueLine.h"
+#include "dialogue/DialogueLocalization.h"
+#include "dialogue/DialogueMemory.h"
+#include "dialogue/DialogueSelector.h"
+#include "dialogue/DialoguePool.h"
+#include "dialogue/DialoguePool.cpp"
+#include "dialogue/BotDialogueManager.h"
+#include "dialogue/BotDialogueManager.cpp"
+#include "dialogue/TacticalCalloutManager.h"
+#include "dialogue/TacticalCalloutManager.cpp"
+#include "dialogue/EncounterVisualResolver.h"
+#include "dialogue/EncounterVisualResolver.cpp"
+#include "dialogue/EncounterPresentation.h"
+#include "dialogue/EncounterPresentation.cpp"
+
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -1935,6 +1952,241 @@ static void TestAssassinContract20RunsTargetedValidation()
     std::printf("=========================================================================================\n\n");
 }
 
+// ============================================================================
+// 19. Dialogue Framework, Localization Fallback, & Placeholders
+// ============================================================================
+static void TestDialogueLocalizationAndPlaceholders()
+{
+    DialoguePool pool;
+    std::string err;
+    bool okGeneric = pool.LoadFromJsonFile("module/data/dialogue/generic.json", err);
+    CHECK(okGeneric);
+    bool okGroup = pool.LoadFromJsonFile("module/data/dialogue/group.json", err);
+    CHECK(okGroup);
+    bool okCombat = pool.LoadFromJsonFile("module/data/dialogue/combat.json", err);
+    CHECK(okCombat);
+    bool okEncounters = pool.LoadFromJsonFile("module/data/dialogue/encounters.json", err);
+    CHECK(okEncounters);
+    bool okMystery = pool.LoadFromJsonFile("module/data/dialogue/mystery.json", err);
+    CHECK(okMystery);
+
+    // Placeholders test
+    DialogueLine line;
+    line.id = "test.line.1";
+    line.beat = DialogueBeat::Greeting;
+    line.locales[DialogueLocale::EnUS] = "Greetings, {playerName}! You are an honorable {playerRace}.";
+    line.locales[DialogueLocale::RuRU] = "Приветствую, {playerName}! Ты благородный {playerRace}.";
+    line.locales[DialogueLocale::DeDE] = "Sei gegrüßt, {playerName}! Du bist ein ehrenhafter {playerRace}.";
+
+    DialogueContext ctx;
+    ctx.targetName = "Arthas";
+    ctx.targetRace = 1; // Human
+
+    // enUS resolution
+    ctx.requestedLocale = DialogueLocale::EnUS;
+    std::string textEn = DialogueSelector::FormatLineText(line, ctx);
+    CHECK(textEn == "Greetings, Arthas! You are an honorable human.");
+
+    // ruRU resolution
+    ctx.requestedLocale = DialogueLocale::RuRU;
+    std::string textRu = DialogueSelector::FormatLineText(line, ctx);
+    CHECK(textRu == "Приветствую, Arthas! Ты благородный человек.");
+
+    // deDE resolution
+    ctx.requestedLocale = DialogueLocale::DeDE;
+    std::string textDe = DialogueSelector::FormatLineText(line, ctx);
+    CHECK(textDe == "Sei gegrüßt, Arthas! Du bist ein ehrenhafter Mensch.");
+
+    // Fallback chain: request zhCN on line that only has enUS/ruRU/deDE -> falls back to enUS
+    ctx.requestedLocale = DialogueLocale::ZhCN;
+    std::string textFallback = DialogueSelector::FormatLineText(line, ctx);
+    CHECK(textFallback == "Greetings, Arthas! You are an honorable human.");
+
+    // Localized race names across all 6 locales
+    uint8 orcRace = 2; // Orc
+    CHECK(DialogueLocalization::GetRaceDisplayName(orcRace, DialogueLocale::EnUS) == "orc");
+    CHECK(DialogueLocalization::GetRaceDisplayName(orcRace, DialogueLocale::RuRU) == "орк");
+    CHECK(DialogueLocalization::GetRaceDisplayName(orcRace, DialogueLocale::DeDE) == "Ork");
+    CHECK(DialogueLocalization::GetRaceDisplayName(orcRace, DialogueLocale::FrFR) == "orc");
+    CHECK(DialogueLocalization::GetRaceDisplayName(orcRace, DialogueLocale::EsES) == "orco");
+    CHECK(DialogueLocalization::GetRaceDisplayName(orcRace, DialogueLocale::ZhCN) == "兽人");
+}
+
+// ============================================================================
+// 20. Dialogue Memory & Anti-Repeat Anti-Spam
+// ============================================================================
+static void TestDialogueMemoryAndAntiRepeat()
+{
+    DialogueMemory mem;
+    ObjectGuid botGuid(2001);
+    uint32 groupLow = 50;
+    uint32 nowMs = 10000;
+
+    CHECK(!mem.IsBotOnChatterCooldown(botGuid, nowMs));
+    CHECK(!mem.IsGroupOnChatterCooldown(groupLow, nowMs));
+    CHECK(!mem.IsLineOnCooldown("test.line", nowMs));
+
+    // Record line spoken with line cooldown 30s, bot cooldown 15s, group cooldown 20s, beat cooldown 25s
+    mem.RecordSpoken(botGuid, groupLow, "test.line", DialogueBeat::Greeting, 30, 15, 20, 25, nowMs);
+
+    // Immediate repeat of same line -> suppressed
+    CHECK(mem.IsLineOnCooldown("test.line", nowMs + 1000));
+    CHECK(mem.IsLineOnCooldown("test.line", nowMs + 29000));
+    CHECK(!mem.IsLineOnCooldown("test.line", nowMs + 31000));
+
+    // Bot cooldown (15s)
+    CHECK(mem.IsBotOnChatterCooldown(botGuid, nowMs + 5000));
+    CHECK(mem.IsBotOnChatterCooldown(botGuid, nowMs + 14900));
+    CHECK(!mem.IsBotOnChatterCooldown(botGuid, nowMs + 15100));
+
+    // Group cooldown (20s)
+    CHECK(mem.IsGroupOnChatterCooldown(groupLow, nowMs + 10000));
+    CHECK(!mem.IsGroupOnChatterCooldown(groupLow, nowMs + 21000));
+
+    // Ring buffer size limit check
+    for (int i = 0; i < 20; ++i)
+    {
+        mem.RecordSpoken(botGuid, groupLow, "line_" + std::to_string(i), DialogueBeat::Greeting, 10, 5, 5, 5, nowMs + i * 1000);
+    }
+    CHECK(mem.WasRecentlySpokenByBot(botGuid, "line_19"));
+    CHECK(!mem.WasRecentlySpokenByBot(botGuid, "line_0")); // evicted from ring buffer
+}
+
+// ============================================================================
+// 21. Group Downtime & Readiness Chatter
+// ============================================================================
+static void TestDialogueGroupDowntimeConversations()
+{
+    DialoguePool pool;
+    std::string err;
+    pool.LoadFromJsonFile("module/data/dialogue/group.json", err);
+    DialogueMemory mem;
+
+    DialogueContext casterCtx;
+    casterCtx.speakerGuid = ObjectGuid(3001);
+    casterCtx.speakerName = "MageBot";
+    casterCtx.isCaster = true;
+    casterCtx.currentManaPct = 12.0f; // low mana (< 20%)
+
+    std::string reason;
+    DialogueLine const* lineNeedMana = DialogueSelector::SelectLine(
+        pool, mem, casterCtx, DialogueBeat::NeedMana, 1000, reason);
+    CHECK(lineNeedMana != nullptr);
+
+    // Non-caster should not ask for mana
+    DialogueContext warriorCtx;
+    warriorCtx.speakerGuid = ObjectGuid(3002);
+    warriorCtx.speakerName = "WarriorBot";
+    warriorCtx.isCaster = false;
+    warriorCtx.currentManaPct = 0.0f;
+
+    DialogueLine const* lineWarrior = DialogueSelector::SelectLine(
+        pool, mem, warriorCtx, DialogueBeat::NeedMana, 1000, reason);
+    CHECK(lineWarrior == nullptr); // filtered by role
+
+    // High mana caster (> 20%) should not ask for mana
+    casterCtx.currentManaPct = 85.0f;
+    DialogueLine const* lineHighMana = DialogueSelector::SelectLine(
+        pool, mem, casterCtx, DialogueBeat::NeedMana, 1000, reason);
+    CHECK(lineHighMana == nullptr);
+
+    // Leader wait acknowledgment
+    DialogueContext leaderCtx;
+    leaderCtx.speakerGuid = ObjectGuid(3003);
+    leaderCtx.speakerName = "PaladinLeader";
+    DialogueLine const* lineWait = DialogueSelector::SelectLine(
+        pool, mem, leaderCtx, DialogueBeat::LeaderWaitAck, 1000, reason);
+    CHECK(lineWait != nullptr);
+
+    // Ready again once regenerated
+    casterCtx.currentManaPct = 95.0f;
+    DialogueLine const* lineReady = DialogueSelector::SelectLine(
+        pool, mem, casterCtx, DialogueBeat::ReadyAgain, 1000, reason);
+    CHECK(lineReady != nullptr);
+}
+
+// ============================================================================
+// 22. Tactical Callout Mechanics & Group Deduplication
+// ============================================================================
+static void TestTacticalCalloutMechanicsAndDeduplication()
+{
+    sTacticalCalloutMgr.Reset();
+    uint32 nowMs = 50000;
+
+    TacticalCalloutSignal sigInterrupt;
+    sigInterrupt.mechanicType = TacticalMechanicType::Interrupt;
+    sigInterrupt.mechanicId = 12345;
+    sigInterrupt.sourceGuid = 999001;
+    sigInterrupt.castId = 12345;
+    sigInterrupt.spellName = "Pyroblast";
+    sigInterrupt.priority = DialoguePriority::High;
+    sigInterrupt.deduplicationTtlMs = 6000;
+
+    // Bot 1 attempts interrupt callout -> succeeds
+    bool call1 = sTacticalCalloutMgr.TryEmitTacticalCallout(nullptr, sigInterrupt, nowMs);
+    CHECK(call1);
+
+    // Bot 2 attempts identical interrupt callout 200ms later on same spell cast -> SUPPRESSED
+    bool call2 = sTacticalCalloutMgr.TryEmitTacticalCallout(nullptr, sigInterrupt, nowMs + 200);
+    CHECK(!call2);
+
+    // Different mechanic or spell on same caster -> succeeds
+    TacticalCalloutSignal sigDifferent;
+    sigDifferent.mechanicType = TacticalMechanicType::MoveFromGround;
+    sigDifferent.mechanicId = 55555;
+    sigDifferent.sourceGuid = 999001;
+    sigDifferent.castId = 55555;
+    sigDifferent.priority = DialoguePriority::High;
+    bool callDiff = sTacticalCalloutMgr.TryEmitTacticalCallout(nullptr, sigDifferent, nowMs + 300);
+    CHECK(callDiff);
+
+    // After deduplication TTL expires (6000ms), same interrupt cast can be called out again
+    bool callExpired = sTacticalCalloutMgr.TryEmitTacticalCallout(nullptr, sigInterrupt, nowMs + 6500);
+    CHECK(callExpired);
+}
+
+// ============================================================================
+// 23. Encounter Presentation & Shath'Yar Mystery Isolation
+// ============================================================================
+static void TestEncounterPresentationAndMysteryIsolation()
+{
+    DialoguePool pool;
+    std::string err;
+    pool.LoadFromJsonFile("module/data/dialogue/generic.json", err);
+    pool.LoadFromJsonFile("module/data/dialogue/mystery.json", err);
+    DialogueMemory mem;
+
+    // 1. Isolation check: standard bot query for whispers should NEVER receive Shath'Yar lines
+    DialogueContext normalCtx;
+    normalCtx.speakerGuid = ObjectGuid(4001);
+    normalCtx.isMysteryQuery = false;
+
+    std::string reason;
+    DialogueLine const* lineNormal = DialogueSelector::SelectLine(
+        pool, mem, normalCtx, DialogueBeat::MysteryWhisper, 1000, reason);
+    CHECK(lineNormal == nullptr);
+
+    // 2. Mystery cultist query with isMysteryQuery = true
+    DialogueContext cultistCtx;
+    cultistCtx.speakerGuid = ObjectGuid(4002);
+    cultistCtx.isMysteryQuery = true;
+    DialogueLine const* lineCultist = DialogueSelector::SelectLine(
+        pool, mem, cultistCtx, DialogueBeat::MysteryShathYarWhisper, 1000, reason);
+    CHECK(lineCultist != nullptr);
+    CHECK(lineCultist->nonCanonicalStyled == true);
+
+    // 3. Presentation & Appearance preset restoration
+    EncounterParticipant part;
+    part.botGuid = ObjectGuid(4003);
+    part.originalDisplayId = 1234;
+
+    sEncounterVisualResolver.ApplyAppearancePreset(nullptr, part, AppearancePresetType::Watcher);
+    CHECK(part.morphApplied);
+
+    sEncounterVisualResolver.RestoreAppearance(nullptr, part);
+    CHECK(!part.morphApplied);
+}
+
 int main()
 {
     TestEncounterEligibility();
@@ -1955,6 +2207,11 @@ int main()
     TestMultiHourEquivalentStress();
     TestLiveValidationRound2Regressions();
     TestAssassinContract20RunsTargetedValidation();
+    TestDialogueLocalizationAndPlaceholders();
+    TestDialogueMemoryAndAntiRepeat();
+    TestDialogueGroupDowntimeConversations();
+    TestTacticalCalloutMechanicsAndDeduplication();
+    TestEncounterPresentationAndMysteryIsolation();
 
     std::printf("encounter_tests: %d checks, %d failures.\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;
