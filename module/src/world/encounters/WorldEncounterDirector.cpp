@@ -769,9 +769,10 @@ namespace
             inst.participants.push_back(secPart);
         }
 
+        uint32 botCount = uint32(inst.participants.size());
         uint64 id = CommitEncounter(std::move(inst), nowMs);
         outReason = Acore::StringFormat("Started {} (#{}) with {} bot(s) (lead: {})",
-            EncounterTypeName(type), id, inst.participants.size(), bestBot->GetName());
+            EncounterTypeName(type), id, botCount, bestBot->GetName());
         return true;
     }
 
