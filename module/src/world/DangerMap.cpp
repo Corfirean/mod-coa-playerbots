@@ -23,10 +23,10 @@ namespace
     constexpr float MIN_ROUTE_YARDS = 150.0f;
     constexpr float BOX_PADDING = 250.0f;
     constexpr int MAX_GRID = 80;            // 4000 yards a side
-    constexpr float RISK_MARGIN = 3.0f;     // levels above the bot that are still fine
+    constexpr float RISK_MARGIN = 2.0f;     // levels above the bot that are still fine
     constexpr float RISK_CAP = 12.0f;
     constexpr float RISK_WEIGHT = 0.5f;     // extra cost per risk point, as a fraction of the distance
-    constexpr float DEATH_WEIGHT = 4.0f;
+    constexpr float DEATH_WEIGHT = 6.0f;
     constexpr uint32 DEATH_MEMORY_MS = 30 * MINUTE * IN_MILLISECONDS;
     constexpr size_t MAX_WAYPOINTS = 6;
 

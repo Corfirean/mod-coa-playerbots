@@ -259,6 +259,9 @@ namespace QuestInteraction
             }
 
             uint32 reward = PickRewardIndex(bot, quest);
+            // Full bags are the common reason a finished quest cannot be handed in: make room first.
+            if (!bot->CanRewardQuest(quest, reward, false) && bot->GetFreeInventorySpace() < 3)
+                BotAI::FreeBagSlots(bot, 3);
             if (!bot->CanRewardQuest(quest, reward, false))
             {
                 ++result.rewardBlocked;

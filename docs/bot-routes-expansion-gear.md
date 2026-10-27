@@ -54,8 +54,32 @@ Logger `module.coa-playerbots.quests` (INFO): `QuestAccepted`, `QuestTurnIn` (bo
 `QuestTurnInFailed` with the reason: quest not complete (and its status), cannot be rewarded (reward choice, free bag
 slots), or the npc does not take the quest. The sandbox appender rolls the file at 64 MB.
 
+## Full bags and quest work in deadly places
+
+- A finished quest cannot be handed in with full bags (`CanRewardQuest`): in the live database 4010 quests sat finished and
+  not handed in, and the stress run logged `cannot be rewarded: ... 0 free bag slots` for every failed hand-in.
+  `BotAI::FreeBagSlots` (called by `ProcessGiver` before giving up) clears junk, then the least valuable stacks that no open
+  quest, bag, tool, consumable, start-quest item or epic needs, until 3 slots are free (`BagRoom:` log line).
+- `WorldPlanner` leaves out objective areas, enders and givers whose risk (DangerMap, including recent bot deaths nearby)
+  is 8 or more, so a bot that died twice in a camp does not walk back into it for the next half hour. One bot died 14
+  times in one spot before this.
+- A ghost that stays beside a camped body for 45 s is resurrected and moved to a hub instead of reclaiming into it.
+
 ## Stress run
 
 `.agents/stress/` (not in git): `run_world_quiet.py` (console to NUL), `spawn_stress.py`, `monitor.py` (per-minute
 counts, memory, disk; shuts the world down when free RAM falls under 2.5 GB or the disk under 12 GB), `where.py`.
-Findings are in the commit message of the run and in the memory notes.
+Runs of 505 bots (levels 8-60, 40 of them saved in Outland proper), scaling off, cap 60, on the sandbox world (6.5 GB, 23 ms mean tick):
+
+| | first runs (before the last fixes) | last run |
+|---|---|---|
+| quests handed in per 100 bots and minute | about 1.5 | 1.5-2 |
+| deaths per 100 bots and minute | 9 | 3 (first 17 minutes, ramp-up included) |
+| bodies given up because a camp stood over them | 54% of deaths | 53% |
+| bots on closed expansion maps | 0 | 0 |
+
+What the logs showed: bots spend about 44% of their time walking to objective areas, 22% dead or recovering, 10% fighting;
+a fifth are on a deliberate session break. Quest task failures: "no targets" (competition for the same mobs) 30%, died 20%,
+timeouts walking 19%. Town guards of neutral hubs (Light's Hope, Everlook, Gadgetzan) killed level 59-60 bots on arrival in
+the sandbox with scaling off; hubs with deaths are now skipped. Other builds on the machine (a 22 GB linker) forced the
+world down three times; `supervisor.py` restarts it when memory is back.

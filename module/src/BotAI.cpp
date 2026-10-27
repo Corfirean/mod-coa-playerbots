@@ -5414,6 +5414,54 @@ bool NeedsVendor(Player* bot)
     return bot->GetFreeInventorySpace() <= BAG_CLEANUP_FREE_SLOT_THRESHOLD && HasSellableJunk(bot, GetRole(bot->GetGUID()));
 }
 
+uint32 FreeBagSlots(Player* bot, uint32 wanted)
+{
+    if (!bot)
+        return 0;
+    if (bot->GetFreeInventorySpace() >= wanted)
+        return bot->GetFreeInventorySpace();
+
+    TryMaintainEquipment(bot, GetRole(bot->GetGUID()), true);
+
+    struct Candidate
+    {
+        Item* item;
+        uint64 value;
+    };
+    std::vector<Candidate> stacks;
+    auto consider = [&](Item* item)
+    {
+        if (!item || item->IsNotEmptyBag() || item->IsRefundable() || bot->GetLootGUID() == item->GetGUID() || BotGear::Archived(item))
+            return;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || proto->Class == ITEM_CLASS_QUEST || proto->StartQuest || proto->Class == ITEM_CLASS_CONTAINER ||
+            proto->Class == ITEM_CLASS_CONSUMABLE || proto->Quality >= ITEM_QUALITY_EPIC || IsProfessionTool(proto) ||
+            bot->HasQuestForItem(proto->ItemId))
+            return;
+        stacks.push_back({ item, uint64(proto->SellPrice) * item->GetCount() });
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        if (Bag* pBag = bot->GetBagByPos(bag))
+            for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+                consider(pBag->GetItemByPos(j));
+
+    std::sort(stacks.begin(), stacks.end(), [](Candidate const& a, Candidate const& b) { return a.value < b.value; });
+    uint32 destroyed = 0;
+    for (Candidate const& stack : stacks)
+    {
+        if (bot->GetFreeInventorySpace() >= wanted)
+            break;
+        bot->DestroyItem(stack.item->GetBagSlot(), stack.item->GetSlot(), true);
+        ++destroyed;
+    }
+    if (destroyed)
+        LOG_INFO("module.coa-playerbots.quests", "BagRoom: '{}' (level {}) destroyed {} stack(s) to get {} free slots (now {}).", bot->GetName(),
+            uint32(bot->GetLevel()), destroyed, wanted, bot->GetFreeInventorySpace());
+    return bot->GetFreeInventorySpace();
+}
+
 void MaintainEquipmentNow(Player* bot)
 {
     TryMaintainEquipment(bot, GetRole(bot->GetGUID()), false);
