@@ -69,6 +69,7 @@ struct CandidateBotSnapshot
     bool isInCapitalOrSafeZone = false;
     bool isContestedOrPvPArea = true;
     bool canLegallyAttackTarget = true; // Result of core IsValidAttackTarget / PvP rule check
+    bool hasStealthSpell = false;       // True if Rogue with Stealth or Druid with Prowl
 };
 
 class EncounterEligibility
@@ -82,6 +83,45 @@ public:
     static uint32 LevelDifference(uint8 levelA, uint8 levelB)
     {
         return static_cast<uint32>(std::abs(static_cast<int>(levelA) - static_cast<int>(levelB)));
+    }
+
+    // Shared helper (§6): checks whether a bot's level is within [referenceLevel + minDelta, referenceLevel + maxDelta].
+    static bool IsLevelCompatible(uint8 candidateLevel, uint8 referenceLevel, int32 minDelta, int32 maxDelta)
+    {
+        int32 delta = static_cast<int32>(candidateLevel) - static_cast<int32>(referenceLevel);
+        return delta >= minDelta && delta <= maxDelta;
+    }
+
+    // Assassin Contract (§1): strict [playerLevel, playerLevel + 3], never lower, never > +3.
+    static bool IsAssassinLevelCompatible(uint8 botLevel, uint8 playerLevel)
+    {
+        return IsLevelCompatible(botLevel, playerLevel, 0, 3);
+    }
+
+    // Hunter and Prey (§4): strict abs(hunterLevel - preyLevel) <= 2.
+    static bool IsHunterPreyLevelCompatible(uint8 hunterLevel, uint8 preyLevel)
+    {
+        return LevelDifference(hunterLevel, preyLevel) <= 2;
+    }
+
+    // Caravan & Rival Party (§3, §5): guards/members within +-3 levels of leader.
+    static bool IsPartyMemberLevelCompatible(uint8 memberLevel, uint8 leaderLevel, uint32 maxDiff = 3)
+    {
+        return LevelDifference(memberLevel, leaderLevel) <= maxDiff;
+    }
+
+    // Shared helper (§6): strict opposing faction check (Alliance vs Horde) + legal attack check.
+    static bool AreOpposingFactions(uint32 teamA, uint32 teamB, bool canLegallyAttack = true)
+    {
+        return (teamA == 0 || teamA == 1) && (teamB == 0 || teamB == 1) &&
+               (teamA != teamB) && canLegallyAttack;
+    }
+
+    // Shared helper (§6): true only when bot is free from player groups, dungeons/BG, manual commands,
+    // existing WorldParties, social rescue, looting/corpse run, and other encounters.
+    static bool IsAvailableForEncounter(BotActivitySnapshot const& snap, bool allowWorldPartyMember = false)
+    {
+        return EncounterPriorityArbiter::CanClaimBot(snap, allowWorldPartyMember);
     }
 
     // Evaluates whether a real player can be targeted by a personal encounter.
@@ -143,15 +183,22 @@ public:
         if (dist > cfg.searchRadiusYards || dist < 12.0f)
             return false;
 
-        if (LevelDifference(bot.level, player.level) > cfg.maxLevelDiff)
+        if (type == EncounterType::AssassinContract)
+        {
+            if (!IsAssassinLevelCompatible(bot.level, player.level))
+                return false;
+        }
+        else if (LevelDifference(bot.level, player.level) > cfg.maxLevelDiff)
+        {
             return false;
+        }
 
         if (IsHostilePlayerEncounter(type))
         {
             // Must be opposite faction and legally able to PvP attack the player
-            if (bot.teamId == player.teamId)
+            if (!AreOpposingFactions(bot.teamId, player.teamId, bot.canLegallyAttackTarget))
                 return false;
-            if (!bot.isContestedOrPvPArea || !bot.canLegallyAttackTarget)
+            if (!bot.isContestedOrPvPArea)
                 return false;
         }
 

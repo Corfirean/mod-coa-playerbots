@@ -81,13 +81,15 @@ namespace
 
     bool EnsureCanAttack(EncounterInstance const& inst, Player* bot, Player* target)
     {
+        if (inst.isForcedTest && target->IsGameMaster())
+            return true;
         if (bot->IsValidAttackTarget(target))
             return true;
         if (inst.isForcedTest)
         {
             bot->SetPvP(true);
             target->SetPvP(true);
-            if (bot->IsValidAttackTarget(target))
+            if (target->IsGameMaster() || bot->IsValidAttackTarget(target))
                 return true;
         }
         return false;
@@ -95,14 +97,15 @@ namespace
 
     bool EnsureCanAttackBots(EncounterInstance const& inst, Player* botA, Player* botB)
     {
+        if (!botA || !botB || botA->GetTeamId() == botB->GetTeamId())
+            return false;
         if (botA->IsValidAttackTarget(botB))
             return true;
         if (inst.isForcedTest)
         {
             botA->SetPvP(true);
             botB->SetPvP(true);
-            if (botA->IsValidAttackTarget(botB))
-                return true;
+            return botA->IsValidAttackTarget(botB);
         }
         return false;
     }
@@ -166,14 +169,15 @@ namespace EncounterHandlers
             part.lastActionMs = nowMs;
 
             // Contextual atmospheric message before attack once stalking in close range and in LOS
-            if (!inst.introNarrated && dist <= 38.0f && inst.stalkAccumulatedMs >= 3200 && bot->IsWithinLOSInMap(target))
+            if (!inst.introNarrated && dist <= 42.0f && (inst.stalkAccumulatedMs >= 1000 || inst.isForcedTest))
             {
                 if (EncounterNarrator::TrySendPlayerAtmosphere(target, bot, EncounterType::AssassinContract, inst.stalkAccumulatedMs, uint32(inst.id)))
                     inst.introNarrated = true;
             }
 
-            // Opportune strike moment: target is distracted in combat/sitting while close, or full stalking sequence completed
-            bool opportuneMoment = (part.subState >= 5 && dist <= 26.0f) ||
+            // Opportune strike moment: target is distracted in combat/sitting while close, or full stalking sequence completed, or forced test
+            bool opportuneMoment = (inst.isForcedTest && dist <= 28.0f && inst.stalkAccumulatedMs >= 1500) ||
+                                   (part.subState >= 5 && dist <= 26.0f) ||
                                    (dist <= 28.0f && inst.stalkAccumulatedMs >= 7500) ||
                                    (dist <= 22.0f && inst.stalkAccumulatedMs >= 2500 && (target->IsInCombat() || !target->IsStandState()));
             if (opportuneMoment)
@@ -272,16 +276,29 @@ namespace EncounterHandlers
 
             if (!bot->IsInCombat() || bot->GetVictim() != target)
             {
-                if (dist > 15.0f)
+                if (dist > 3.0f)
                 {
-                    if (part.navGoalId == 0 || Dist2DPoint(target, part.lastNavTargetX, part.lastNavTargetY) > 10.0f)
+                    if (part.navGoalId == 0 || Dist2DPoint(target, part.lastNavTargetX, part.lastNavTargetY) > 5.0f)
                     {
                         part.lastNavTargetX = target->GetPositionX();
                         part.lastNavTargetY = target->GetPositionY();
                         part.navGoalId = (inst.id << 8) + 50u + (++inst.subStage);
                     }
                     BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
-                        target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), 3.5f, &part.moveToken, false);
+                        target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), 2.5f, &part.moveToken, false);
+                }
+                else
+                {
+                    BotMovement::Stop(bot, part.moveToken);
+                    bot->SetFacingToObject(target);
+                    if (inst.isForcedTest && target->IsPlayer() && target->ToPlayer()->IsGameMaster())
+                    {
+                        if (nowMs - part.lastActionMs >= 1400)
+                        {
+                            part.lastActionMs = nowMs;
+                            bot->HandleEmoteCommand(EMOTE_ONESHOT_ATTACK1H);
+                        }
+                    }
                 }
                 EngagePvPOrCreature(bot, target);
             }

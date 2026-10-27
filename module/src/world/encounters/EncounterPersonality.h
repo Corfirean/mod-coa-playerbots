@@ -53,6 +53,49 @@ public:
         return t;
     }
 
+    static constexpr uint8 ENC_CLASS_ROGUE = 4;
+    static constexpr uint8 ENC_CLASS_DRUID = 11;
+
+    // Assassin Contract class priority tier (§1):
+    //   3 = CLASS_ROGUE (highest priority)
+    //   2 = stealth-capable CLASS_DRUID (Prowl available)
+    //   1 = fallback non-stealth class (only used when no Rogue or stealth Druid is eligible)
+    static uint8 GetAssassinClassTier(uint8 classId, bool hasStealthSpell)
+    {
+        if (classId == ENC_CLASS_ROGUE)
+            return 3;
+        if (classId == ENC_CLASS_DRUID && hasStealthSpell)
+            return 2;
+        return 1;
+    }
+
+    static char const* GetAssassinClassPreferenceLabel(uint8 classId, bool hasStealthSpell)
+    {
+        uint8 tier = GetAssassinClassTier(classId, hasStealthSpell);
+        if (tier == 3)
+            return "rogue_primary";
+        if (tier == 2)
+            return "druid_stealth";
+        return "fallback_non_stealth";
+    }
+
+    // Scores an Assassin Contract candidate combining strict class tier preference
+    // (Rogue > stealth Druid > fallback) with existing personality traits (aggressive/loner/patient).
+    static float ScoreAssassinCandidate(
+        WorldPersona const& persona,
+        uint8 classId,
+        bool hasStealthSpell)
+    {
+        DerivedEncounterTraits const t = Derive(persona);
+        float personalityScore = std::clamp(
+            t.aggressive * 0.40f + t.loner * 0.35f + t.patient * 0.25f,
+            0.05f, 1.0f);
+
+        uint8 tier = GetAssassinClassTier(classId, hasStealthSpell);
+        float classBoost = (tier == 3) ? 2.0f : ((tier == 2) ? 1.0f : 0.0f);
+        return classBoost + personalityScore;
+    }
+
     // Returns an affinity score in [0.0, 2.0] for selecting a bot for a given encounter & role.
     static float ScoreAffinity(
         EncounterType type,

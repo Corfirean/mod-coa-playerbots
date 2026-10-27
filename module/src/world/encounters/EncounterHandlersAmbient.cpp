@@ -89,8 +89,6 @@ namespace EncounterHandlers
             spellId = SPELL_ROGUE_STEALTH;
         else if (bot->getClass() == CLASS_DRUID && bot->HasSpell(SPELL_DRUID_PROWL))
             spellId = SPELL_DRUID_PROWL;
-        else if (bot->getClass() == CLASS_ROGUE)
-            spellId = SPELL_ROGUE_STEALTH;
 
         if (spellId != 0)
         {
@@ -205,7 +203,14 @@ namespace EncounterHandlers
         if (!bot || !target || !bot->IsAlive() || !target->IsAlive())
             return;
         if (!bot->IsValidAttackTarget(target))
-            return;
+        {
+            if (target->IsPlayer() && target->ToPlayer()->IsGameMaster())
+            {
+                // allow attacking GameMaster in test encounters
+            }
+            else
+                return;
+        }
 
         if (bot->IsMounted())
             BotMovement::RequestDismount(bot, MoveOwner::Encounter, DismountReason::Combat);

@@ -242,6 +242,8 @@ namespace
         snap.isInCapitalOrSafeZone = IsCapitalOrSafeZone(bot);
         snap.isContestedOrPvPArea = IsContestedOrPvPZone(bot);
         snap.canLegallyAttackTarget = optionalHostileTarget ? bot->IsValidAttackTarget(optionalHostileTarget) : true;
+        snap.hasStealthSpell = (bot->getClass() == CLASS_ROGUE && bot->HasSpell(1784)) ||
+                               (bot->getClass() == CLASS_DRUID && bot->HasSpell(5215));
         return snap;
     }
 
@@ -342,7 +344,8 @@ namespace
         p.subStateEnteredAtMs = nowMs;
         p.originalDisplayId = bot->GetDisplayId();
         p.originalHealthPct = bot->GetHealthPct();
-        p.stealthCapable = EncounterHandlers::IsStealthCapableClass(bot->getClass());
+        p.stealthCapable = (bot->getClass() == CLASS_ROGUE && bot->HasSpell(1784)) ||
+                           (bot->getClass() == CLASS_DRUID && bot->HasSpell(5215));
         p.cautiousness = EncounterPersonality::Derive(GetPersonaForBot(bot->GetGUID())).cautious;
         return p;
     }
@@ -637,8 +640,26 @@ namespace
         Player* secondBestBot = nullptr;
         float secondBestScore = -1.0f;
 
+        auto scoreCandidateForPlayer = [&](Player* bot, CandidateBotSnapshot const& botSnap) -> float
+        {
+            WorldPersona persona = GetPersonaForBot(bot->GetGUID());
+            float score = 0.0f;
+            if (type == EncounterType::AssassinContract)
+            {
+                score = EncounterPersonality::ScoreAssassinCandidate(persona, botSnap.classId, botSnap.hasStealthSpell);
+            }
+            else
+            {
+                score = EncounterPersonality::ScoreAffinity(type, role, persona, botSnap.hasStealthSpell);
+            }
+            score *= _memory.GetSelectionWeightMultiplier(playerSnap.guid, bot->GetGUID(), cfg, nowMs);
+            return score;
+        };
+
         for (Player* bot : nearbyBots)
         {
+            if (bot == targetPlayer)
+                continue;
             CandidateBotSnapshot botSnap = BuildCandidateBotSnapshot(
                 bot, IsHostilePlayerEncounter(type) ? targetPlayer : nullptr);
 
@@ -654,21 +675,26 @@ namespace
             }
             else
             {
-                if (!bot->IsInWorld() || !bot->IsAlive() || (bot->GetMap() && bot->GetMap()->Instanceable()))
+                if (!EncounterEligibility::IsAvailableForEncounter(botSnap.activity))
                     continue;
+                if (type == EncounterType::AssassinContract)
+                {
+                    // Strict Assassin Contract rules (§1): never relax level [playerLevel..playerLevel+3] or opposing faction
+                    if (!EncounterEligibility::AreOpposingFactions(botSnap.teamId, playerSnap.teamId, true))
+                        continue;
+                    if (!EncounterEligibility::IsAssassinLevelCompatible(botSnap.level, playerSnap.level))
+                        continue;
+                }
+                else if (IsHostilePlayerEncounter(type))
+                {
+                    if (!EncounterEligibility::AreOpposingFactions(botSnap.teamId, playerSnap.teamId, true))
+                        continue;
+                    if (EncounterEligibility::LevelDifference(botSnap.level, playerSnap.level) > cfg.maxLevelDiff)
+                        continue;
+                }
             }
 
-            WorldPersona persona = GetPersonaForBot(bot->GetGUID());
-            bool stealthCap = EncounterHandlers::IsStealthCapableClass(bot->getClass());
-            float score = EncounterPersonality::ScoreAffinity(type, role, persona, stealthCap);
-            score *= _memory.GetSelectionWeightMultiplier(playerSnap.guid, bot->GetGUID(), cfg, nowMs);
-
-            if (bypassBudgetAndCooldown && IsHostilePlayerEncounter(type))
-            {
-                if (botSnap.teamId != playerSnap.teamId)
-                    score += 1000.0f;
-            }
-
+            float score = scoreCandidateForPlayer(bot, botSnap);
             if (score > bestScore)
             {
                 secondBestScore = bestScore;
@@ -687,34 +713,47 @@ namespace
         {
             for (Player* ob : sBotMgr->GetOnlineBots())
             {
-                if (!ob || !ob->IsInWorld() || !ob->IsAlive() || (ob->GetMap() && ob->GetMap()->Instanceable()))
+                if (!ob || ob == targetPlayer || !ob->IsInWorld() || !ob->IsAlive() || (ob->GetMap() && ob->GetMap()->Instanceable()))
                     continue;
-                if (_ownership.IsOwned(ob->GetGUID()))
+                CandidateBotSnapshot obSnap = BuildCandidateBotSnapshot(ob, IsHostilePlayerEncounter(type) ? targetPlayer : nullptr);
+                if (!EncounterEligibility::IsAvailableForEncounter(obSnap.activity))
                     continue;
-                if (IsHostilePlayerEncounter(type) && ob->GetTeamId() == targetPlayer->GetTeamId())
-                    continue;
-                bestBot = ob;
-                break;
-            }
-            if (!bestBot)
-            {
-                for (Player* ob : sBotMgr->GetOnlineBots())
+
+                if (type == EncounterType::AssassinContract)
                 {
-                    if (!ob || !ob->IsInWorld() || !ob->IsAlive() || (ob->GetMap() && ob->GetMap()->Instanceable()))
+                    // Never relax Assassin level [playerLevel..playerLevel+3] or opposing faction filter (§1)
+                    if (!EncounterEligibility::AreOpposingFactions(obSnap.teamId, playerSnap.teamId, true))
                         continue;
-                    if (!_ownership.IsOwned(ob->GetGUID()))
-                    {
-                        bestBot = ob;
-                        break;
-                    }
+                    if (!EncounterEligibility::IsAssassinLevelCompatible(obSnap.level, playerSnap.level))
+                        continue;
+                }
+                else if (IsHostilePlayerEncounter(type))
+                {
+                    if (!EncounterEligibility::AreOpposingFactions(obSnap.teamId, playerSnap.teamId, true))
+                        continue;
+                    if (EncounterEligibility::LevelDifference(obSnap.level, playerSnap.level) > cfg.maxLevelDiff)
+                        continue;
+                }
+
+                float score = scoreCandidateForPlayer(ob, obSnap);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestBot = ob;
                 }
             }
             if (bestBot)
             {
                 float angle = targetPlayer->GetOrientation() + 3.14159f;
-                float tx = targetPlayer->GetPositionX() + std::cos(angle) * 25.0f;
-                float ty = targetPlayer->GetPositionY() + std::sin(angle) * 25.0f;
+                float tx = targetPlayer->GetPositionX() + std::cos(angle) * 28.0f;
+                float ty = targetPlayer->GetPositionY() + std::sin(angle) * 28.0f;
                 float tz = targetPlayer->GetPositionZ();
+                if (targetPlayer->GetMap())
+                {
+                    float gz = targetPlayer->GetMap()->GetHeight(targetPlayer->GetPhaseMask(), tx, ty, tz + 10.0f);
+                    if (gz > INVALID_HEIGHT)
+                        tz = gz;
+                }
                 bestBot->TeleportTo(targetPlayer->GetMapId(), tx, ty, tz, targetPlayer->GetOrientation());
                 sBotMgr->QueueTeleportAck(bestBot->GetSession());
             }
@@ -722,7 +761,16 @@ namespace
 
         if (!bestBot)
         {
-            outReason = "No eligible bot found nearby";
+            if (type == EncounterType::AssassinContract)
+            {
+                outReason = Acore::StringFormat(
+                    "AssassinContract build failed: no available opposing-faction bot in level range [{}-{}]",
+                    uint32(playerSnap.level), uint32(playerSnap.level) + 3u);
+            }
+            else
+            {
+                outReason = "No eligible bot found nearby";
+            }
             return false;
         }
 
@@ -747,10 +795,8 @@ namespace
         }
 
         EncounterParticipant leadPart = MakeParticipant(bestBot, role, nowMs);
-        if (IsHostilePlayerEncounter(type))
+        if (IsHostilePlayerEncounter(type) && bypassBudgetAndCooldown)
         {
-            if (bestBot->GetTeamId() == targetPlayer->GetTeamId())
-                bestBot->SetFaction(14);
             bestBot->SetPvP(true);
             targetPlayer->SetPvP(true);
         }
@@ -763,16 +809,44 @@ namespace
         {
             _memory.RecordEncounterConflict(secondBestBot->GetGUID(), playerSnap.guid, cfg, nowMs);
             EncounterParticipant secPart = MakeParticipant(secondBestBot, role, nowMs);
-            if (secondBestBot->GetTeamId() == targetPlayer->GetTeamId())
-                secondBestBot->SetFaction(14);
-            secondBestBot->SetPvP(true);
+            if (bypassBudgetAndCooldown)
+                secondBestBot->SetPvP(true);
             inst.participants.push_back(secPart);
         }
 
+        int32 levelDelta = static_cast<int32>(bestBot->GetLevel()) - static_cast<int32>(playerSnap.level);
+        char const* classPref = EncounterPersonality::GetAssassinClassPreferenceLabel(bestBot->getClass(), leadPart.stealthCapable);
         uint32 botCount = uint32(inst.participants.size());
+        std::string leadName = bestBot->GetName();
+        uint8 leadClass = bestBot->getClass();
+        uint8 leadLevel = bestBot->GetLevel();
+        uint32 leadTeam = uint32(bestBot->GetTeamId());
+
         uint64 id = CommitEncounter(std::move(inst), nowMs);
-        outReason = Acore::StringFormat("Started {} (#{}) with {} bot(s) (lead: {})",
-            EncounterTypeName(type), id, botCount, bestBot->GetName());
+
+        if (_debugLogging || bypassBudgetAndCooldown)
+        {
+            LOG_INFO("module.coa-playerbots.world",
+                "Encounter #{} START type={} targetPlayer={}({}) level={} leadBot={}({}) class={} level={} levelDelta={:+} faction={} score={:.2f} classPreference={} stealthCapable={}",
+                id,
+                EncounterTypeName(type),
+                targetPlayer->GetName(),
+                targetPlayer->GetGUID().GetCounter(),
+                uint32(playerSnap.level),
+                leadName,
+                bestBot->GetGUID().GetCounter(),
+                uint32(leadClass),
+                uint32(leadLevel),
+                levelDelta,
+                leadTeam == TEAM_ALLIANCE ? "Alliance" : "Horde",
+                bestScore,
+                classPref,
+                leadPart.stealthCapable ? "yes" : "no");
+        }
+
+        outReason = Acore::StringFormat(
+            "Started {} (#{}) with {} bot(s) (lead: {} lvl={} delta={:+} class={} pref={})",
+            EncounterTypeName(type), id, botCount, leadName, uint32(leadLevel), levelDelta, uint32(leadClass), classPref);
         return true;
     }
 
