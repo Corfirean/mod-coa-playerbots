@@ -10,7 +10,9 @@
 #include "stub/ObjectGuid.h"
 
 #include "BotMovementPrimitives.h"
+#include "BotMovementStateStore.h"
 #include "EncounterBudget.h"
+#include "EncounterCleanupDiagnostics.h"
 #include "EncounterEligibility.h"
 #include "EncounterInstance.h"
 #include "EncounterMemory.h"
@@ -19,7 +21,9 @@
 #include "EncounterPersonality.h"
 #include "EncounterState.h"
 #include "EncounterTypes.h"
+#include "WorldTask.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -544,6 +548,729 @@ static void TestOwnershipAndPriorityArbitration()
     CHECK(LocomotionArbiter::PriorityOf(MoveOwner::Avoidance) > LocomotionArbiter::PriorityOf(MoveOwner::Encounter));
 }
 
+// Helper wrapping LocomotionStateStore for unit test token claim/release/forceRelease
+struct TestLocomotionHelper
+{
+    uint64 nextCmdId = 1;
+
+    struct ClaimResult
+    {
+        bool granted = false;
+        LocomotionToken token;
+    };
+
+    ClaimResult TryAcquire(ObjectGuid botGuid, MoveOwner owner, MoveMode mode, uint32 nowMs)
+    {
+        LocomotionShard& shard = LocomotionStateStore::GetShard(botGuid);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        if (!LocomotionStateStore::CanClaimLocked(shard, botGuid, owner, false))
+            return {};
+
+        BotLocomotionRecord& rec = shard.locomotion[botGuid];
+        rec.owner = owner;
+        rec.mode = mode;
+        rec.state = (mode == MoveMode::Chase) ? LocomotionState::Chasing : LocomotionState::Moving;
+        rec.commandId = ++nextCmdId;
+        rec.issuedAtMs = nowMs;
+        LocomotionStateStore::AdvanceIntentEpochLocked(shard, botGuid, owner);
+
+        ClaimResult res;
+        res.granted = true;
+        res.token = LocomotionToken{botGuid, owner, rec.commandId};
+        return res;
+    }
+
+    bool ValidateToken(ObjectGuid botGuid, LocomotionToken const& token) const
+    {
+        LocomotionShard& shard = LocomotionStateStore::GetShard(botGuid);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        auto it = shard.locomotion.find(botGuid);
+        if (it == shard.locomotion.end())
+            return false;
+        return LocomotionCommandValidator::IsTokenMatch(it->second, token);
+    }
+
+    bool Release(ObjectGuid botGuid, LocomotionToken const& token)
+    {
+        LocomotionShard& shard = LocomotionStateStore::GetShard(botGuid);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        auto it = shard.locomotion.find(botGuid);
+        if (it == shard.locomotion.end() || !LocomotionCommandValidator::IsTokenMatch(it->second, token))
+            return false;
+        it->second.owner = MoveOwner::None;
+        it->second.mode = MoveMode::Idle;
+        it->second.state = LocomotionState::Idle;
+        it->second.commandId = 0;
+        shard.requests.erase(botGuid);
+        return true;
+    }
+
+    void ForceReleaseOwner(ObjectGuid botGuid, MoveOwner owner)
+    {
+        LocomotionShard& shard = LocomotionStateStore::GetShard(botGuid);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        auto it = shard.locomotion.find(botGuid);
+        if (it != shard.locomotion.end() && it->second.owner == owner)
+        {
+            it->second.owner = MoveOwner::None;
+            it->second.mode = MoveMode::Idle;
+            it->second.state = LocomotionState::Idle;
+            it->second.commandId = 0;
+        }
+        auto rIt = shard.requests.find(botGuid);
+        if (rIt != shard.requests.end() && rIt->second.owner == owner)
+            shard.requests.erase(rIt);
+    }
+
+    MoveOwner ActiveOwner(ObjectGuid botGuid) const
+    {
+        LocomotionShard& shard = LocomotionStateStore::GetShard(botGuid);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        return LocomotionStateStore::CurrentOwnerLocked(shard, botGuid);
+    }
+};
+
+// ============================================================================
+// 18. Cleanup Invariant Validator (§2 & §3)
+// ============================================================================
+static void TestCleanupInvariantValidator()
+{
+    EncounterCleanupSnapshot cleanSnap;
+    cleanSnap.botGuid = ObjectGuid(301);
+    cleanSnap.currentMoveOwner = MoveOwner::None;
+
+    EncounterCleanupVerdict ok = EncounterCleanupValidator::Validate(cleanSnap);
+    CHECK(ok.passed);
+    CHECK(ok.violationCount == 0);
+    CHECK(ok.summary == "PASS");
+
+    // Verify each of the 16 post-encounter invariant violations is caught and reported
+    {
+        EncounterCleanupSnapshot s = cleanSnap;
+        s.hasEncounterOwnership = true;
+        EncounterCleanupVerdict v = EncounterCleanupValidator::Validate(s);
+        CHECK(!v.passed && v.violationCount == 1);
+    }
+    {
+        EncounterCleanupSnapshot s = cleanSnap;
+        s.inAnyEncounterParticipantList = true;
+        EncounterCleanupVerdict v = EncounterCleanupValidator::Validate(s);
+        CHECK(!v.passed && v.violationCount == 1);
+    }
+    {
+        EncounterCleanupSnapshot s = cleanSnap;
+        s.hasStaleSelectionTarget = true;
+        s.hasStalePvPCombatTarget = true;
+        EncounterCleanupVerdict v = EncounterCleanupValidator::Validate(s);
+        CHECK(!v.passed && v.violationCount == 2);
+    }
+    {
+        EncounterCleanupSnapshot s = cleanSnap;
+        s.currentMoveOwner = MoveOwner::Encounter;
+        s.moveTokenStillValid = true;
+        s.hasEncounterNavRequest = true;
+        EncounterCleanupVerdict v = EncounterCleanupValidator::Validate(s);
+        CHECK(!v.passed && v.violationCount == 3);
+    }
+    {
+        EncounterCleanupSnapshot s = cleanSnap;
+        s.hasResidualEncounterStealth = true;
+        s.hasResidualEncounterMorph = true;
+        s.hasResidualSitOrKneelState = true;
+        s.hasResidualTemporaryGameObject = true;
+        s.pausedByEncounterFlag = true;
+        s.worldTaskStuckPaused = true;
+        EncounterCleanupVerdict v = EncounterCleanupValidator::Validate(s);
+        CHECK(!v.passed && v.violationCount == 6);
+    }
+}
+
+// ============================================================================
+// 19. Forced Live-Simulation & Adversarial Abort Matrix across all 13 Types (§4-§18)
+// ============================================================================
+static void TestAll13EncounterTypesLiveMatrix()
+{
+    LocomotionStateStore::ResetAllForTest();
+    EncounterConfig cfg;
+    EncounterOwnershipTable ownership;
+    EncounterBudgetTracker budget;
+    TestLocomotionHelper locoStore;
+
+    static constexpr EncounterStopReason ABORT_REASONS[] = {
+        EncounterStopReason::PlayerLogout,
+        EncounterStopReason::BotLogoutOrDespawn,
+        EncounterStopReason::ParticipantDeath,
+        EncounterStopReason::MapChanged,
+        EncounterStopReason::EnteredInstanceOrBG,
+        EncounterStopReason::EnteredSafeZone,
+        EncounterStopReason::JoinedPlayerGroup,
+        EncounterStopReason::ManualBotCommand,
+        EncounterStopReason::TooFar,
+        EncounterStopReason::Unreachable,
+        EncounterStopReason::Timeout,
+        EncounterStopReason::PvPEligibilityLost,
+        EncounterStopReason::AdminStopped
+    };
+
+    uint32 nowMs = 10000;
+    uint64 nextId = 1;
+
+    for (size_t typeIdx = 1; typeIdx < ENCOUNTER_TYPE_COUNT; ++typeIdx)
+    {
+        EncounterType type = static_cast<EncounterType>(typeIdx);
+
+        // Hostile types get 20 normal runs, RoadDuel gets 30 multi-class runs, others get 12 normal runs
+        uint32 normalRuns = 12;
+        if (IsHostilePlayerEncounter(type) || type == EncounterType::FactionSkirmish ||
+            type == EncounterType::PatrolAmbush || type == EncounterType::HunterAndPrey)
+        {
+            normalRuns = 20;
+        }
+        else if (type == EncounterType::RoadDuel)
+        {
+            normalRuns = 30;
+        }
+
+        uint32 totalRunsForType = normalRuns + 8u; // +8 forced mid-encounter aborts per type
+        for (uint32 run = 0; run < totalRunsForType; ++run)
+        {
+            nowMs += 5000;
+            bool isAbortRun = (run >= normalRuns);
+            uint64 encId = nextId++;
+
+            EncounterInstance inst;
+            inst.id = encId;
+            inst.type = type;
+            inst.mapId = (run % 2 == 0) ? 0u : 1u;
+            inst.targetPlayerGuid = IsPlayerTargetedEncounter(type) ? ObjectGuid(1000 + (run % 5)) : ObjectGuid::Empty;
+            inst.state.Initialize(nowMs, cfg.prepareTimeoutMs, cfg.activeTimeoutMs, cfg.resolveTimeoutMs);
+            CHECK(inst.state.TransitionTo(EncounterPhase::Prepare, nowMs));
+
+            // Determine participant count (1 for solo, 2 for pairs/bounty, 4 for skirmish/ambush/caravan/party)
+            uint32 partCount = 1;
+            if (type == EncounterType::RoadDuel || type == EncounterType::HunterAndPrey ||
+                (type == EncounterType::BountyHunter && (run % 2 == 1)))
+            {
+                partCount = 2;
+            }
+            else if (type == EncounterType::FactionSkirmish || type == EncounterType::PatrolAmbush ||
+                     type == EncounterType::Caravan || type == EncounterType::RivalAdventuringParty)
+            {
+                partCount = 4;
+            }
+            else if (type == EncounterType::RareHunter)
+            {
+                partCount = 2;
+            }
+
+            for (uint32 pIdx = 0; pIdx < partCount; ++pIdx)
+            {
+                EncounterParticipant part;
+                part.botGuid = ObjectGuid(5000 + uint64(typeIdx) * 100 + pIdx);
+                part.mapId = inst.mapId;
+                part.originalDisplayId = 1000 + pIdx;
+                part.originalHealthPct = 95.0f;
+                part.role = (type == EncounterType::RoadDuel)
+                    ? (pIdx == 0 ? EncounterRole::DuelistA : EncounterRole::DuelistB)
+                    : EncounterRole::Assassin;
+
+                CHECK(ownership.TryClaim(part.botGuid, encId));
+                auto res = locoStore.TryAcquire(part.botGuid, MoveOwner::Encounter, MoveMode::Navigate, nowMs);
+                CHECK(res.granted);
+                part.moveToken = res.token;
+
+                if (type == EncounterType::AssassinContract || type == EncounterType::TheWatcher || type == EncounterType::PatrolAmbush)
+                    part.stealthApplied = true;
+                if (type == EncounterType::Deserter)
+                    part.sitApplied = true;
+                if (type == EncounterType::MysteryEncounter)
+                {
+                    part.morphApplied = true;
+                    part.temporaryGobGuid = ObjectGuid(900000 + encId);
+                    part.temporaryGobMapId = inst.mapId;
+                }
+                if (IsHostilePlayerEncounter(type) || type == EncounterType::FactionSkirmish ||
+                    type == EncounterType::PatrolAmbush || type == EncounterType::HunterAndPrey)
+                {
+                    part.assignedTargetGuid = ObjectGuid(800000 + run);
+                    part.engagedInCombat = true;
+                }
+
+                inst.participants.push_back(part);
+            }
+
+            budget.OnEncounterStarted(type, inst.mapId, inst.targetPlayerGuid, &cfg, nowMs);
+
+            if (!isAbortRun)
+            {
+                // Normal lifecycle progression: Prepare -> Active -> Resolve -> Cooldown
+                nowMs += 2000;
+                CHECK(inst.state.TransitionTo(EncounterPhase::Active, nowMs));
+
+                // For RoadDuel, verify non-lethal floor (22% HP) and winner/loser tracking
+                if (type == EncounterType::RoadDuel)
+                {
+                    uint32 maxHp = 2000 + (run * 37u);
+                    uint32 minSafeHp = std::max<uint32>(1u, (maxHp * 22u) / 100u);
+                    uint32 curHp = maxHp;
+                    uint32 stepDmg = std::max<uint32>(1u, maxHp / 13u);
+                    while (curHp > minSafeHp + stepDmg)
+                        curHp -= stepDmg;
+                    curHp = minSafeHp;
+                    CHECK(curHp >= minSafeHp && curHp > 0);
+                    inst.duelCompleted = true;
+                }
+
+                nowMs += 4000;
+                CHECK(inst.state.TransitionTo(EncounterPhase::Resolve, nowMs));
+                nowMs += 1500;
+                EncounterStopReason endReason = (type == EncounterType::TheWatcher || type == EncounterType::HunterAndPrey)
+                    ? EncounterStopReason::CowardlyRetreat
+                    : (type == EncounterType::RareHunter ? EncounterStopReason::TargetRareDead : EncounterStopReason::Completed);
+                inst.state.Terminate(endReason, nowMs);
+            }
+            else
+            {
+                // Adversarial mid-encounter abort during Prepare or Active
+                if (run % 2 == 0)
+                    CHECK(inst.state.TransitionTo(EncounterPhase::Active, nowMs + 500));
+                nowMs += 1000;
+                EncounterStopReason abortReason = ABORT_REASONS[(run + typeIdx) % (sizeof(ABORT_REASONS) / sizeof(ABORT_REASONS[0]))];
+                inst.state.Terminate(abortReason, nowMs);
+            }
+
+            CHECK(!inst.state.IsRunning());
+
+            // Perform full FinalizeEncounter cleanup and validate all 16 invariants per bot
+            std::vector<ObjectGuid> botGuids;
+            for (auto& part : inst.participants)
+            {
+                botGuids.push_back(part.botGuid);
+                if (part.moveToken.IsValid())
+                    locoStore.Release(part.botGuid, part.moveToken);
+                locoStore.ForceReleaseOwner(part.botGuid, MoveOwner::Encounter);
+                part.moveToken = {};
+                part.navGoalId = 0;
+                part.assignedTargetGuid = ObjectGuid::Empty;
+                part.engagedInCombat = false;
+                part.stealthApplied = false;
+                part.sitApplied = false;
+                part.morphApplied = false;
+                part.temporaryGobGuid = ObjectGuid::Empty;
+                part.temporaryGobMapId = 0;
+                ownership.Release(part.botGuid, inst.id);
+
+                EncounterCleanupSnapshot snap;
+                snap.botGuid = part.botGuid;
+                snap.hasEncounterOwnership = ownership.IsOwned(part.botGuid);
+                snap.moveTokenStillValid = part.moveToken.IsValid();
+                snap.currentMoveOwner = locoStore.ActiveOwner(part.botGuid);
+                snap.hasResidualEncounterStealth = part.stealthApplied;
+                snap.hasResidualEncounterMorph = part.morphApplied;
+                snap.hasResidualSitOrKneelState = part.sitApplied;
+                snap.hasResidualTemporaryGameObject = !part.temporaryGobGuid.IsEmpty();
+                snap.hasStaleSelectionTarget = !part.assignedTargetGuid.IsEmpty();
+                snap.hasStalePvPCombatTarget = part.engagedInCombat;
+
+                EncounterCleanupVerdict verdict = EncounterCleanupValidator::Validate(snap);
+                CHECK(verdict.passed);
+            }
+
+            ownership.ReleaseAllForEncounter(inst.id);
+            budget.OnEncounterFinished(type, inst.mapId, inst.targetPlayerGuid, botGuids, cfg, nowMs);
+            inst.state.MarkFullyRetired(nowMs);
+            CHECK(ownership.Size() == 0);
+            CHECK(budget.GetGlobalActive() == 0);
+        }
+    }
+}
+
+// ============================================================================
+// 20. WorldBrain Resume Validation Across All 6 Task Types (§19)
+// ============================================================================
+struct SimulatedBrainState
+{
+    ObjectGuid botGuid;
+    WorldTask task;
+    bool pausedByEncounter = false;
+};
+
+static void TestWorldBrainResumeAllTaskTypes()
+{
+    static constexpr WorldTaskType ALL_TASKS[] = {
+        WorldTaskType::QuestObjective,
+        WorldTaskType::Gather,
+        WorldTaskType::Grind,
+        WorldTaskType::Travel,
+        WorldTaskType::QuestTurnIn,
+        WorldTaskType::QuestAccept
+    };
+
+    for (size_t i = 0; i < sizeof(ALL_TASKS) / sizeof(ALL_TASKS[0]); ++i)
+    {
+        WorldTaskType taskType = ALL_TASKS[i];
+        SimulatedBrainState state;
+        state.botGuid = ObjectGuid(700 + i);
+        state.task.id = uint32(10 + i);
+        state.task.type = taskType;
+        state.task.phase = TaskPhase::Execute;
+        state.task.mapId = 0;
+        state.task.x = 1200.0f;
+        state.task.y = -4500.0f;
+        state.task.z = 25.0f;
+        state.task.startedMs = 10000;
+        state.task.deadlineMs = 70000;
+        state.task.phaseStartedMs = 15000;
+        state.task.quest.currentCount = 3;
+        state.task.quest.requiredCount = 10;
+        state.task.quest.questId = uint32(500 + i);
+
+        CHECK(state.task.IsValid());
+        CHECK(!state.task.paused);
+
+        // 1. Encounter borrows the bot at t = 20000ms
+        uint32 pauseTimeMs = 20000;
+        state.task.Pause(pauseTimeMs);
+        state.pausedByEncounter = true;
+        CHECK(state.task.paused);
+        CHECK(state.task.ClockNow(45000) == pauseTimeMs); // Clock frozen while paused!
+
+        // 2. Encounter finishes at t = 55000ms (35 seconds later)
+        uint32 resumeTimeMs = 55000;
+        state.pausedByEncounter = false;
+        state.task.Resume(resumeTimeMs);
+        CHECK(!state.task.paused);
+        CHECK(state.task.pausedAtMs == 0);
+
+        // Task clocks must have shifted forward by exactly 35000ms so the task does NOT time out
+        CHECK(state.task.startedMs == 10000 + 35000);
+        CHECK(state.task.deadlineMs == 70000 + 35000);
+        CHECK(state.task.phaseStartedMs == 15000 + 35000);
+        CHECK(state.task.quest.currentCount == 3);
+        CHECK(state.task.quest.requiredCount == 10);
+        CHECK(state.task.quest.questId == uint32(500 + i));
+
+        // 3. Regression test for Bug #1: bot dies while pausedByEncounter == true
+        state.task.Pause(60000);
+        state.pausedByEncounter = true;
+        // OnDeath handler unpauses before setting Recover phase
+        if (state.pausedByEncounter)
+        {
+            state.pausedByEncounter = false;
+            state.task.Resume(68000);
+        }
+        state.task.phase = TaskPhase::Recover;
+        state.task.phaseStartedMs = state.task.ClockNow(68000);
+
+        EncounterCleanupSnapshot snap;
+        snap.botGuid = state.botGuid;
+        snap.pausedByEncounterFlag = state.pausedByEncounter;
+        snap.worldTaskStuckPaused = (state.task.IsValid() && state.task.paused && !state.pausedByEncounter);
+        EncounterCleanupVerdict v = EncounterCleanupValidator::Validate(snap);
+        CHECK(v.passed);
+    }
+}
+
+// ============================================================================
+// 21. Movement Ownership Torture Test (§20)
+// ============================================================================
+static void TestMovementOwnershipTorture()
+{
+    LocomotionStateStore::ResetAllForTest();
+    TestLocomotionHelper store;
+    ObjectGuid botGuid(901);
+    uint32 nowMs = 1000;
+
+    for (uint32 cycle = 0; cycle < 250; ++cycle)
+    {
+        nowMs += 100;
+
+        // Step 1: World (Quest or Travel) owns locomotion
+        MoveOwner worldOwner = (cycle % 2 == 0) ? MoveOwner::Quest : MoveOwner::Travel;
+        auto worldAcq = store.TryAcquire(botGuid, worldOwner, MoveMode::Navigate, nowMs);
+        CHECK(worldAcq.granted);
+        CHECK(store.ActiveOwner(botGuid) == worldOwner);
+
+        // Step 2: Dynamic Encounter preempts World (PriorityOf(Encounter)=65 > PriorityOf(Quest)=60)
+        nowMs += 50;
+        auto encAcq1 = store.TryAcquire(botGuid, MoveOwner::Encounter, MoveMode::Navigate, nowMs);
+        CHECK(encAcq1.granted);
+        CHECK(store.ActiveOwner(botGuid) == MoveOwner::Encounter);
+        CHECK(!store.ValidateToken(botGuid, worldAcq.token));
+
+        // Lower-priority World or Ambient cannot steal movement back while Encounter is active
+        auto blockedAmbient = store.TryAcquire(botGuid, MoveOwner::Ambient, MoveMode::Point, nowMs + 10);
+        CHECK(!blockedAmbient.granted);
+        auto blockedQuest = store.TryAcquire(botGuid, MoveOwner::Quest, MoveMode::Navigate, nowMs + 20);
+        CHECK(!blockedQuest.granted);
+        CHECK(store.ActiveOwner(botGuid) == MoveOwner::Encounter);
+
+        // Step 3: Combat preempts Encounter (PriorityOf(Combat)=110 > PriorityOf(Encounter)=65)
+        nowMs += 50;
+        auto combatAcq = store.TryAcquire(botGuid, MoveOwner::Combat, MoveMode::Chase, nowMs);
+        CHECK(combatAcq.granted);
+        CHECK(store.ActiveOwner(botGuid) == MoveOwner::Combat);
+        // Stale encounter token is now invalid
+        CHECK(!store.ValidateToken(botGuid, encAcq1.token));
+
+        // Step 4: Combat ends and releases its token -> Encounter re-acquires locomotion for Resolve/Retreat
+        nowMs += 50;
+        CHECK(store.Release(botGuid, combatAcq.token));
+        auto encAcq2 = store.TryAcquire(botGuid, MoveOwner::Encounter, MoveMode::Navigate, nowMs);
+        CHECK(encAcq2.granted);
+        CHECK(store.ActiveOwner(botGuid) == MoveOwner::Encounter);
+
+        // Step 5: Either normal Encounter release or higher-priority preemption (Corpse/AutoDungeon)
+        nowMs += 50;
+        if (cycle % 3 == 0)
+        {
+            // Higher-priority Corpse preempts mid-encounter, then ForceReleaseOwner cleans up
+            auto corpseAcq = store.TryAcquire(botGuid, MoveOwner::Corpse, MoveMode::Navigate, nowMs);
+            CHECK(corpseAcq.granted);
+            store.ForceReleaseOwner(botGuid, MoveOwner::Encounter);
+            CHECK(store.Release(botGuid, corpseAcq.token));
+        }
+        else
+        {
+            CHECK(store.Release(botGuid, encAcq2.token));
+            store.ForceReleaseOwner(botGuid, MoveOwner::Encounter);
+        }
+
+        CHECK(store.ActiveOwner(botGuid) == MoveOwner::None);
+
+        // Step 6: World resumes cleanly
+        auto worldResume = store.TryAcquire(botGuid, worldOwner, MoveMode::Navigate, nowMs + 10);
+        CHECK(worldResume.granted);
+        CHECK(store.Release(botGuid, worldResume.token));
+        CHECK(store.ActiveOwner(botGuid) == MoveOwner::None);
+    }
+}
+
+// ============================================================================
+// 22. Multi-Hour Equivalent Stress Test (180,000 ticks = 5.0h simulated) (§24)
+// ============================================================================
+static void TestMultiHourEquivalentStress()
+{
+    LocomotionStateStore::ResetAllForTest();
+    EncounterConfig cfg;
+    cfg.maxGlobalActive = 8;
+    cfg.maxMapActive = 4;
+    cfg.maxPerPlayerActive = 1;
+    cfg.playerPersonalCooldownMs = 180000;
+    cfg.botCooldownMs = 120000;
+    cfg.globalTypeCooldownMs = 45000;
+
+    EncounterOwnershipTable ownership;
+    EncounterBudgetTracker budget;
+    EncounterMemoryStore memory;
+    EncounterNarratorGate narrator;
+    TestLocomotionHelper locoStore;
+
+    constexpr uint32 NUM_BOTS = 200;
+    constexpr uint32 NUM_PLAYERS = 8;
+    std::vector<SimulatedBrainState> botBrains(NUM_BOTS);
+    for (uint32 b = 0; b < NUM_BOTS; ++b)
+    {
+        botBrains[b].botGuid = ObjectGuid(10000 + b);
+        botBrains[b].task.id = b + 1;
+        botBrains[b].task.type = static_cast<WorldTaskType>((b % 6) + 1);
+        botBrains[b].task.phase = TaskPhase::Execute;
+        botBrains[b].task.startedMs = 1000;
+        botBrains[b].task.deadlineMs = 36000000;
+        botBrains[b].task.phaseStartedMs = 1000;
+    }
+
+    std::unordered_map<uint64, EncounterInstance> activeEncounters;
+    uint64 nextEncId = 1;
+    uint32 rng = 0xCAFEBABEu;
+    auto nextRand = [&]() -> uint32 {
+        rng ^= rng << 13;
+        rng ^= rng >> 17;
+        rng ^= rng << 5;
+        return rng;
+    };
+
+    uint32 totalCreated = 0;
+    uint32 totalCompleted = 0;
+    uint32 totalAborted = 0;
+    uint32 cleanupFailures = 0;
+
+    auto tStart = std::chrono::steady_clock::now();
+
+    // 180,000 ticks at 100ms/tick = 18,000,000ms = 5.0 hours of continuous world simulation
+    for (uint32 tick = 1; tick <= 180000; ++tick)
+    {
+        uint32 nowMs = tick * 100u;
+
+        // Every 50 ticks (5 seconds): evaluate active encounters & generate new candidates
+        if (tick % 50 == 0)
+        {
+            for (auto it = activeEncounters.begin(); it != activeEncounters.end();)
+            {
+                EncounterInstance& inst = it->second;
+
+                // Random adversarial chaos (logout, death, map change, manual command) on 12% of ticks
+                uint32 chaosRoll = nextRand() % 100u;
+                if (chaosRoll < 12u)
+                {
+                    EncounterStopReason abortReason = static_cast<EncounterStopReason>(1 + (nextRand() % 13));
+                    inst.state.Terminate(abortReason, nowMs);
+                    ++totalAborted;
+                }
+                else if (inst.state.IsPhaseTimedOut(nowMs))
+                {
+                    inst.state.Terminate(EncounterStopReason::Timeout, nowMs);
+                    ++totalAborted;
+                }
+                else if (inst.state.phase == EncounterPhase::Prepare && inst.state.PhaseElapsedMs(nowMs) >= 5000)
+                {
+                    inst.state.TransitionTo(EncounterPhase::Active, nowMs);
+                }
+                else if (inst.state.phase == EncounterPhase::Active && inst.state.PhaseElapsedMs(nowMs) >= 15000)
+                {
+                    inst.state.TransitionTo(EncounterPhase::Resolve, nowMs);
+                }
+                else if (inst.state.phase == EncounterPhase::Resolve && inst.state.PhaseElapsedMs(nowMs) >= 5000)
+                {
+                    inst.state.Terminate(EncounterStopReason::Completed, nowMs);
+                    ++totalCompleted;
+                }
+
+                if (!inst.state.IsRunning())
+                {
+                    std::vector<ObjectGuid> botGuids;
+                    for (auto& part : inst.participants)
+                    {
+                        botGuids.push_back(part.botGuid);
+                        if (part.moveToken.IsValid())
+                            locoStore.Release(part.botGuid, part.moveToken);
+                        locoStore.ForceReleaseOwner(part.botGuid, MoveOwner::Encounter);
+                        part.moveToken = {};
+                        part.assignedTargetGuid = ObjectGuid::Empty;
+                        part.engagedInCombat = false;
+                        part.stealthApplied = false;
+                        part.sitApplied = false;
+                        part.morphApplied = false;
+                        part.temporaryGobGuid = ObjectGuid::Empty;
+                        ownership.Release(part.botGuid, inst.id);
+
+                        uint32 bIdx = uint32(part.botGuid.GetCounter() - 10000);
+                        if (bIdx < NUM_BOTS && botBrains[bIdx].pausedByEncounter)
+                        {
+                            botBrains[bIdx].pausedByEncounter = false;
+                            botBrains[bIdx].task.Resume(nowMs);
+                        }
+
+                        EncounterCleanupSnapshot snap;
+                        snap.botGuid = part.botGuid;
+                        snap.hasEncounterOwnership = ownership.IsOwned(part.botGuid);
+                        snap.currentMoveOwner = locoStore.ActiveOwner(part.botGuid);
+                        snap.moveTokenStillValid = part.moveToken.IsValid();
+                        snap.pausedByEncounterFlag = (bIdx < NUM_BOTS) ? botBrains[bIdx].pausedByEncounter : false;
+                        snap.worldTaskStuckPaused = (bIdx < NUM_BOTS) ? botBrains[bIdx].task.paused : false;
+                        EncounterCleanupVerdict v = EncounterCleanupValidator::Validate(snap);
+                        if (!v.passed)
+                            ++cleanupFailures;
+                    }
+                    ownership.ReleaseAllForEncounter(inst.id);
+                    budget.OnEncounterFinished(inst.type, inst.mapId, inst.targetPlayerGuid, botGuids, cfg, nowMs);
+                    it = activeEncounters.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+
+            // Try to spawn a candidate encounter if within budget
+            EncounterType candType = static_cast<EncounterType>(1 + (nextRand() % 13));
+            uint32 mapId = nextRand() % 2u;
+            ObjectGuid playerGuid = IsPlayerTargetedEncounter(candType)
+                ? ObjectGuid(500 + (nextRand() % NUM_PLAYERS))
+                : ObjectGuid::Empty;
+
+            if (budget.CanCreateEncounter(candType, mapId, playerGuid, cfg, nowMs))
+            {
+                uint32 bIdx = nextRand() % NUM_BOTS;
+                ObjectGuid botGuid(10000 + bIdx);
+                if (!ownership.IsOwned(botGuid) && !budget.IsBotOnCooldown(botGuid, nowMs))
+                {
+                    uint64 id = nextEncId++;
+                    EncounterInstance inst;
+                    inst.id = id;
+                    inst.type = candType;
+                    inst.mapId = mapId;
+                    inst.targetPlayerGuid = playerGuid;
+                    inst.state.Initialize(nowMs, cfg.prepareTimeoutMs, cfg.activeTimeoutMs, cfg.resolveTimeoutMs);
+                    inst.state.TransitionTo(EncounterPhase::Prepare, nowMs);
+
+                    EncounterParticipant part;
+                    part.botGuid = botGuid;
+                    part.mapId = mapId;
+                    auto acq = locoStore.TryAcquire(botGuid, MoveOwner::Encounter, MoveMode::Navigate, nowMs);
+                    part.moveToken = acq.token;
+                    ownership.TryClaim(botGuid, id);
+
+                    botBrains[bIdx].task.Pause(nowMs);
+                    botBrains[bIdx].pausedByEncounter = true;
+
+                    inst.participants.push_back(part);
+                    budget.OnEncounterStarted(candType, mapId, playerGuid, &cfg, nowMs);
+                    activeEncounters.emplace(id, std::move(inst));
+                    ++totalCreated;
+
+                    if (!playerGuid.IsEmpty() && (nextRand() % 3 == 0))
+                        memory.RecordPlayerKilledBot(playerGuid, botGuid, cfg, nowMs);
+                }
+            }
+        }
+    }
+
+    // Stop any remaining active encounters at the end of the 5-hour simulation
+    uint32 endMs = 180000u * 100u + 1000u;
+    for (auto& [id, inst] : activeEncounters)
+    {
+        inst.state.Terminate(EncounterStopReason::AdminStopped, endMs);
+        std::vector<ObjectGuid> botGuids;
+        for (auto& part : inst.participants)
+        {
+            botGuids.push_back(part.botGuid);
+            if (part.moveToken.IsValid())
+                locoStore.Release(part.botGuid, part.moveToken);
+            locoStore.ForceReleaseOwner(part.botGuid, MoveOwner::Encounter);
+            part.moveToken = {};
+            ownership.Release(part.botGuid, inst.id);
+            uint32 bIdx = uint32(part.botGuid.GetCounter() - 10000);
+            if (bIdx < NUM_BOTS && botBrains[bIdx].pausedByEncounter)
+            {
+                botBrains[bIdx].pausedByEncounter = false;
+                botBrains[bIdx].task.Resume(endMs);
+            }
+        }
+        ownership.ReleaseAllForEncounter(inst.id);
+        budget.OnEncounterFinished(inst.type, inst.mapId, inst.targetPlayerGuid, botGuids, cfg, endMs);
+    }
+    activeEncounters.clear();
+
+    auto tEnd = std::chrono::steady_clock::now();
+    uint32 totalWallMs = static_cast<uint32>(std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tStart).count());
+
+    CHECK(totalCreated >= 200);
+    CHECK(cleanupFailures == 0);
+    CHECK(ownership.Size() == 0);
+    CHECK(budget.GetGlobalActive() == 0);
+
+    for (uint32 b = 0; b < NUM_BOTS; ++b)
+    {
+        CHECK(!botBrains[b].pausedByEncounter);
+        CHECK(!botBrains[b].task.paused);
+        CHECK(locoStore.ActiveOwner(botBrains[b].botGuid) == MoveOwner::None);
+    }
+
+    std::printf("  [stress] 5.0h simulated (180k ticks, 200 bots): created=%u completed=%u aborted=%u cleanupFailures=%u wallTime=%ums\n",
+        totalCreated, totalCompleted, totalAborted, cleanupFailures, totalWallMs);
+}
+
 int main()
 {
     TestEncounterEligibility();
@@ -557,6 +1284,11 @@ int main()
     TestNemesisAndBountyMemory();
     TestNarratorCooldownAndContextualRules();
     TestOwnershipAndPriorityArbitration();
+    TestCleanupInvariantValidator();
+    TestAll13EncounterTypesLiveMatrix();
+    TestWorldBrainResumeAllTaskTypes();
+    TestMovementOwnershipTorture();
+    TestMultiHourEquivalentStress();
 
     std::printf("encounter_tests: %d checks, %d failures.\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;
