@@ -93,6 +93,7 @@ struct BrainState
     bool socialActive = false;        // a help action (a resurrection cast) owns the bot
     uint32 socialUntilMs = 0;
     bool pausedBySocial = false;      // the task is paused while the bot helps someone
+    bool pausedByEncounter = false;   // the task is paused while Dynamic Bot Encounters owns the bot
     uint32 rezSpellId = 0;            // best resurrection spell the bot knows, 0 = none
     uint32 rezSpellCheckedMs = 0;
     uint32 nextPartyAttemptMs = 0;

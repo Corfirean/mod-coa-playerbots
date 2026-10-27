@@ -95,6 +95,7 @@
 #include "BotSpawnRandom.h"
 #include "WorldBrain.h"
 #include "WorldParties.h"
+#include "encounters/WorldEncounterDirector.h"
 #include "GameTime.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -3860,22 +3861,28 @@ void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
     // Persistent half-hour lean (personality + session variety); the brain uses it as a bias.
     UpdateSoloIntent(bot, diff, state);
 
-    // A trip to town to sell (BotEconomy.h) owns the tick while the bot is walking there.
-    if (BotEconomy::UpdateTrip(bot, diff))
-    {
-        WorldBrain::NotifyAmbientBusy(bot);
-        return;
-    }
-
     AmbientProfile ambientProfile = MakeAmbientProfile(bot, state);
-    AmbientTick ambient = BotWorldBehavior::UpdateBeforeSolo(bot, ambientProfile);
-    if (ambient == AmbientTick::Busy)
+
+    // While a bot is actively owned by a Dynamic Bot Encounter, do not let economy errands or
+    // ambient solo idles preempt the encounter before WorldBrain::Update dispatches UpdateBot.
+    if (!WorldEncounterDirector::IsBotInEncounter(bot->GetGUID()))
     {
-        WorldBrain::NotifyAmbientBusy(bot);
-        return;
+        // A trip to town to sell (BotEconomy.h) owns the tick while the bot is walking there.
+        if (BotEconomy::UpdateTrip(bot, diff))
+        {
+            WorldBrain::NotifyAmbientBusy(bot);
+            return;
+        }
+
+        AmbientTick ambient = BotWorldBehavior::UpdateBeforeSolo(bot, ambientProfile);
+        if (ambient == AmbientTick::Busy)
+        {
+            WorldBrain::NotifyAmbientBusy(bot);
+            return;
+        }
+        if (ambient == AmbientTick::Relocated)
+            state.hasGrindAnchor = false;
     }
-    if (ambient == AmbientTick::Relocated)
-        state.hasGrindAnchor = false;
 
     WorldDirective directive = WorldBrain::Update(bot, diff, MakeWorldPersona(bot, state));
     if (directive != WorldDirective::Fish)
@@ -4080,7 +4087,11 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             if (TryRestIfNeeded(bot, diff, combatRole, state))
                 return;
 
-            if (!bot->InBattleground())
+            bool inEncounter = WorldEncounterDirector::IsBotInEncounter(bot->GetGUID());
+            bool inEncounterGroup = bot->GetGroup() &&
+                WorldEncounterDirector::IsEncounterTemporaryGroup(bot->GetGroup()->GetGUID().GetCounter());
+
+            if (!bot->InBattleground() && !inEncounter)
                 ResumeFollowingLeader(bot, state);
 
             // Ungrouped means no leader to fight alongside or follow -- ResumeFollowingLeader
@@ -4095,12 +4106,22 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             // something to kill.
             // The leader of a temporary bot-only party (WorldParties) keeps living its own open-world
             // life while grouped; the other members are ordinary grouped bots that follow it.
+            // Bots owned by an active Dynamic Encounter (including members of a temporary encounter
+            // group) always route through UpdateSoloWorld so WorldEncounterDirector maintains ownership.
             bool worldPartyLeader = bot->GetGroup() && WorldParties::IsLeader(bot->GetGUID());
-            if ((!bot->GetGroup() || worldPartyLeader) && state.manualCommand != BotManualCommand::Stay)
+            if ((!bot->GetGroup() || worldPartyLeader || (inEncounter && inEncounterGroup)) && state.manualCommand != BotManualCommand::Stay)
             {
+                if (inEncounter)
+                {
+                    state.gatherTargetGuid = ObjectGuid::Empty;
+                    state.gatherWalkTargetGuid = ObjectGuid::Empty;
+                    state.fishingBobberGuid = ObjectGuid::Empty;
+                    state.fishingCastInProgress = false;
+                    UpdateSoloWorld(bot, diff, state);
+                }
                 // An in-flight gathering or fishing action finishes before anything else is
                 // decided; everything else goes through the open-world layer (UpdateSoloWorld).
-                if (!state.gatherTargetGuid.IsEmpty())
+                else if (!state.gatherTargetGuid.IsEmpty())
                     TryFinishGathering(bot, state);
                 else if (!state.gatherWalkTargetGuid.IsEmpty())
                     TryContinueGatherWalk(bot, diff, state);
@@ -4154,6 +4175,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     // handled unconditionally at the top of this function, before target acquisition, so
     // state.flee.fleeing is always false by this point -- this only evaluates fresh triggers
     // against this tick's live target and starts a new flee on one firing.
+    // Skip panic-fleeing when the bot is in a duel so duelists fight to the duel threshold.
+    if (!bot->duel)
     {
         CombatContext fleeCtx = CombatContext::Build(bot, target);
         FleeReason reason = BotFlee::Evaluate(bot, target, fleeCtx, state.flee, getMSTime());

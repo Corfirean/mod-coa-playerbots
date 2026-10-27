@@ -17,6 +17,7 @@
 #include "BotTalentBuilds.h"
 #include "BotZoneProgression.h"
 #include "WorldBrain.h"
+#include "world/encounters/WorldEncounterDirector.h"
 #include "ClassSpecRoles.h"
 #include "CellImpl.h"
 #include "CharacterCache.h"
@@ -2917,6 +2918,12 @@ void BotMgr::ProcessKillEvents()
         if (_botSessions.empty())
             continue;
 
+        if (event.victim.IsPlayer())
+        {
+            WorldEncounterDirector::OnPvPKill(event.killer, event.victim);
+            continue;
+        }
+
         if (Player* killer = ObjectAccessor::FindPlayer(event.killer))
             BotAI::EnqueuePendingLoot(killer, event.victim);
     }
@@ -3316,6 +3323,7 @@ void BotMgr::Update(uint32 diff)
     BotSpawn::ProcessPendingLeveledBotSpawns(diff);
     BotZoneProgression::ProcessPendingRelocations(diff);
     WorldBrain::GlobalUpdate(diff);
+    WorldEncounterDirector::Update(diff);
 
     // See QueueAllBotsForAutoLogin -- gradual login for every known bot character, throttled the
     // same way SpawnRandomBots/SpawnLeveledBots throttle bulk creation (login itself is much
