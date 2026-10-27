@@ -203,19 +203,11 @@ namespace
         if (!group)
             return;
 
-        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
-        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_GROUP);
-        stmt->SetData(0, low);
-        trans->Append(stmt);
-
-        stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_GROUP_MEMBER_ALL);
-        stmt->SetData(0, low);
-        trans->Append(stmt);
-        CharacterDatabase.CommitTransaction(trans);
-
+        // Group::Disband(true) handles OnGroupDisband script notification, member detachment,
+        // database records cleanup (CHAR_DEL_GROUP, CHAR_DEL_GROUP_MEMBER_ALL, CHAR_DEL_LFG_DATA),
+        // removes itself from GroupMgr, and deletes itself (delete this).
+        // Never call sGroupMgr->RemoveGroup or delete group afterwards to avoid double-free/heap corruption.
         group->Disband(true);
-        sGroupMgr->RemoveGroup(group);
-        delete group;
     }
 
     bool IsPlayerControlledGroup(Player const* bot)
