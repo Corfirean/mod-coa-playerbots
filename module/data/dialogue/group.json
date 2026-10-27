@@ -1,0 +1,182 @@
+[
+  {
+    "id": "group.need_mana.001",
+    "beat": "NeedMana",
+    "tags": ["caster", "calm"],
+    "weight": 1.0,
+    "cooldownSec": 35,
+    "locales": {
+      "enUS": "Give me a moment. I need mana.",
+      "ruRU": "Минуту. Мне нужно восстановить ману.",
+      "deDE": "Einen Moment. Ich brauche Mana.",
+      "frFR": "Un instant. J'ai besoin de mana.",
+      "esES": "Un momento. Necesito maná.",
+      "zhCN": "稍等一下，我需要法力值。"
+    }
+  },
+  {
+    "id": "group.need_mana.002",
+    "beat": "NeedMana",
+    "tags": ["caster", "impatient"],
+    "weight": 1.0,
+    "cooldownSec": 35,
+    "locales": {
+      "enUS": "Hold on. Out of mana.",
+      "ruRU": "Стойте. Мана закончилась.",
+      "deDE": "Wartet. Kein Mana mehr.",
+      "frFR": "Attendez. Plus de mana.",
+      "esES": "Esperad. Sin maná.",
+      "zhCN": "等等，没蓝了。"
+    }
+  },
+  {
+    "id": "group.need_mana.003",
+    "beat": "NeedMana",
+    "tags": ["caster", "sociable"],
+    "weight": 1.0,
+    "cooldownSec": 35,
+    "locales": {
+      "enUS": "Give me a few seconds to catch my breath and replenish mana.",
+      "ruRU": "Дайте мне несколько секунд перевести дух и восстановить ману.",
+      "deDE": "Gebt mir ein paar Sekunden, um zu verschnaufen und Mana aufzuladen.",
+      "frFR": "Laissez-moi quelques secondes pour reprendre mon souffle et ma mana.",
+      "esES": "Dadme unos segundos para respirar y recuperar maná.",
+      "zhCN": "给我几秒钟喘口气并恢复法力。"
+    }
+  },
+  {
+    "id": "group.need_drink.001",
+    "beat": "NeedDrink",
+    "tags": ["caster", "calm"],
+    "weight": 1.0,
+    "cooldownSec": 35,
+    "locales": {
+      "enUS": "Wait up, need to drink.",
+      "ruRU": "Подождите, мне нужно попить.",
+      "deDE": "Wartet kurz, muss trinken.",
+      "frFR": "Attendez, je dois boire un coup.",
+      "esES": "Esperad, tengo que beber algo.",
+      "zhCN": "等等，我喝口水。"
+    }
+  },
+  {
+    "id": "group.need_drink.002",
+    "beat": "NeedDrink",
+    "tags": ["caster", "impatient"],
+    "weight": 0.9,
+    "cooldownSec": 35,
+    "locales": {
+      "enUS": "Drinking. Don't pull yet.",
+      "ruRU": "Пью. Не пуллите пока.",
+      "deDE": "Trinke. Noch nicht pullen.",
+      "frFR": "Je bois. N'engagez pas encore.",
+      "esES": "Bebiendo. No atraigáis todavía.",
+      "zhCN": "在喝水，先别开怪。"
+    }
+  },
+  {
+    "id": "group.need_heal.001",
+    "beat": "NeedHeal",
+    "tags": ["health", "urgent"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "I need some heals before the next fight!",
+      "ruRU": "Мне нужно подлечиться перед следующим боем!",
+      "deDE": "Ich brauche Heilung vor dem nächsten Kampf!",
+      "frFR": "J'ai besoin de soins avant le prochain combat !",
+      "esES": "¡Necesito curación antes del próximo combate!",
+      "zhCN": "在下一次战斗前我需要治疗！"
+    }
+  },
+  {
+    "id": "group.ready_again.001",
+    "beat": "ReadyAgain",
+    "tags": ["calm", "ready"],
+    "weight": 1.0,
+    "cooldownSec": 20,
+    "locales": {
+      "enUS": "Ready to go.",
+      "ruRU": "Готов.",
+      "deDE": "Wieder bereit.",
+      "frFR": "Prêt à repartir.",
+      "esES": "Listo.",
+      "zhCN": "准备好了。"
+    }
+  },
+  {
+    "id": "group.ready_again.002",
+    "beat": "ReadyAgain",
+    "tags": ["aggressive", "ready"],
+    "weight": 1.0,
+    "cooldownSec": 20,
+    "locales": {
+      "enUS": "Full resources. Let's hit them!",
+      "ruRU": "Полон сил. Погнали!",
+      "deDE": "Wieder voll da. Lasst es uns tun!",
+      "frFR": "À fond. Allons-y !",
+      "esES": "Lleno de energía. ¡Vamos a por ellos!",
+      "zhCN": "状态回满了，冲！"
+    }
+  },
+  {
+    "id": "group.leader_wait.001",
+    "beat": "LeaderWaitAck",
+    "tags": ["leader", "calm"],
+    "weight": 1.0,
+    "cooldownSec": 20,
+    "locales": {
+      "enUS": "Understood. Take your time.",
+      "ruRU": "Понял. Ждём.",
+      "deDE": "Verstanden. Nehmt euch Zeit.",
+      "frFR": "Compris. Prenez votre temps.",
+      "esES": "Entendido. Tómate tu tiempo.",
+      "zhCN": "明白，慢慢来。"
+    }
+  },
+  {
+    "id": "group.leader_proceed.001",
+    "beat": "LeaderProceed",
+    "tags": ["leader", "command"],
+    "weight": 1.0,
+    "cooldownSec": 20,
+    "locales": {
+      "enUS": "Moving out!",
+      "ruRU": "Идём дальше!",
+      "deDE": "Weiter geht's!",
+      "frFR": "En route !",
+      "esES": "¡En marcha!",
+      "zhCN": "出发！"
+    }
+  },
+  {
+    "id": "group.regroup.001",
+    "beat": "Regroup",
+    "tags": ["travel", "leader"],
+    "weight": 1.0,
+    "cooldownSec": 25,
+    "locales": {
+      "enUS": "Stay close, don't wander off.",
+      "ruRU": "Держитесь вместе, не разбредайтесь.",
+      "deDE": "Bleibt zusammen, nicht verstreuen.",
+      "frFR": "Restez groupés, ne vous éloignez pas.",
+      "esES": "Manteneos cerca, no os disperséis.",
+      "zhCN": "靠拢，别走散了。"
+    }
+  },
+  {
+    "id": "group.danger_ahead.001",
+    "beat": "DangerAhead",
+    "tags": ["travel", "warning"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Heads up, enemies spotted ahead.",
+      "ruRU": "Внимание, впереди враги.",
+      "deDE": "Achtung, Feinde voraus.",
+      "frFR": "Attention, ennemis repérés devant.",
+      "esES": "Cuidado, enemigos al frente.",
+      "zhCN": "小心，前方发现敌人。"
+    }
+  }
+]

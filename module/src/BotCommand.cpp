@@ -9,10 +9,13 @@
 #include "BotMgr.h"
 #include "WorldBrain.h"
 #include "world/encounters/WorldEncounterDirector.h"
+#include "dialogue/BotDialogueManager.h"
+#include "dialogue/EncounterPresentation.h"
 #include "BotSpawnRandom.h"
 #include "BotTalentBuilds.h"
 #include "Chat.h"
 #include "CommandScript.h"
+#include "GameTime.h"
 #include "LFGMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -65,6 +68,7 @@ public:
             { "brain",        HandleBotBrainCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "worldstats",   HandleBotWorldStatsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "encounter",    HandleBotEncounterCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "dialogue",     HandleBotDialogueCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "learnspec",    HandleBotLearnSpecCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "itemfit",      HandleBotItemFitCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "follow",       HandleBotFollowCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -1024,6 +1028,86 @@ public:
 
         if (handler)
             handler->SendSysMessage("Usage: .botcmd encounter <status|list|bot|validate|memory|start|stop|debug|cooldown|reload>");
+        return true;
+    }
+
+    static bool HandleBotDialogueCommand(ChatHandler* handler, Tail args)
+    {
+        std::string text(args);
+        std::istringstream iss(text);
+        std::string subcmd;
+        iss >> subcmd;
+
+        if (subcmd.empty() || subcmd == "help" || subcmd == "status")
+        {
+            if (handler)
+            {
+                handler->PSendSysMessage("BotDialogue: pools active beats={}, debug={}",
+                    sBotDialogueMgr.GetPool().BeatCount(),
+                    sBotDialogueMgr.IsDebugLogging() ? "ON" : "OFF");
+                handler->SendSysMessage("Usage: .botcmd dialogue <reload|debug on/off|say <beat>|status>");
+            }
+            return true;
+        }
+
+        if (subcmd == "reload")
+        {
+            sBotDialogueMgr.LoadAllData();
+            if (handler)
+                handler->PSendSysMessage("BotDialogue: reloaded data pools. Total active beats: {}",
+                    sBotDialogueMgr.GetPool().BeatCount());
+            return true;
+        }
+
+        if (subcmd == "debug")
+        {
+            std::string toggle;
+            iss >> toggle;
+            bool enable = (toggle == "1" || toggle == "on" || toggle == "true");
+            sBotDialogueMgr.SetDebugLogging(enable);
+            if (handler)
+                handler->PSendSysMessage("BotDialogue: debug logging {}", enable ? "ENABLED" : "DISABLED");
+            return true;
+        }
+
+        if (subcmd == "say")
+        {
+            std::string beatStr;
+            iss >> beatStr;
+            DialogueBeat beat = DialogueUtils::StringToBeat(beatStr);
+            if (beat == DialogueBeat::None)
+            {
+                if (handler)
+                    handler->PSendSysMessage("BotDialogue: unknown beat '{}'", beatStr);
+                return true;
+            }
+
+            Player* speaker = nullptr;
+            if (handler)
+                speaker = handler->getSelectedPlayer();
+            if (!speaker && handler)
+                speaker = handler->GetPlayer();
+
+            if (!speaker)
+            {
+                if (handler)
+                    handler->SendSysMessage("BotDialogue: select a bot or player first.");
+                return true;
+            }
+
+            DialogueContext ctx;
+            ctx.speaker = speaker;
+            ctx.channel = DialogueChannel::Say;
+            ctx.priority = DialoguePriority::High;
+
+            bool ok = sBotDialogueMgr.Emit(beat, ctx, GameTime::GetGameTimeMS().count());
+            if (handler)
+                handler->PSendSysMessage("BotDialogue: emit beat '{}' -> {}", beatStr, ok ? "SUCCESS" : "SUPPRESSED");
+            return true;
+        }
+
+        if (handler)
+            handler->SendSysMessage("Usage: .botcmd dialogue <reload|debug on/off|say <beat>|status>");
         return true;
     }
 };

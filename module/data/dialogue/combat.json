@@ -1,0 +1,182 @@
+[
+  {
+    "id": "tactical.interrupt.001",
+    "beat": "Interrupt",
+    "tags": ["combat", "tactical", "dps"],
+    "weight": 1.0,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Interrupt {spellName}!",
+      "ruRU": "Сбиваем {spellName}!",
+      "deDE": "Unterbrecht {spellName}!",
+      "frFR": "Interrompez {spellName} !",
+      "esES": "¡Interrumpid {spellName}!",
+      "zhCN": "打断 {spellName}！"
+    }
+  },
+  {
+    "id": "tactical.interrupt.002",
+    "beat": "Interrupt",
+    "tags": ["combat", "tactical", "dps"],
+    "weight": 0.9,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Kick the cast!",
+      "ruRU": "Сбейте ему каст!",
+      "deDE": "Zauber unterbrechen!",
+      "frFR": "Coupez l'incantation !",
+      "esES": "¡Cortad el lanzamiento!",
+      "zhCN": "打断读条！"
+    }
+  },
+  {
+    "id": "tactical.kill_adds.001",
+    "beat": "KillAdds",
+    "tags": ["combat", "tactical", "dps"],
+    "weight": 1.0,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Reinforcements! Switch to the adds!",
+      "ruRU": "Подкрепление! Переключаемся на аддов!",
+      "deDE": "Verstärkung! Geht auf die Adds!",
+      "frFR": "Renforts ! Passez sur les adds !",
+      "esES": "¡Refuerzos! ¡Cambiad a los esbirros!",
+      "zhCN": "增援来了！转火小怪！"
+    }
+  },
+  {
+    "id": "tactical.kill_adds.002",
+    "beat": "KillAdds",
+    "tags": ["combat", "tactical", "dps"],
+    "weight": 0.8,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Clear the extra enemies first!",
+      "ruRU": "Сначала разберитесь с лишними мобами!",
+      "deDE": "Beseitigt zuerst die zusätzlichen Feinde!",
+      "frFR": "Éliminez les ennemis supplémentaires d'abord !",
+      "esES": "¡Eliminad primero a los enemigos adicionales!",
+      "zhCN": "先清理杂兵！"
+    }
+  },
+  {
+    "id": "tactical.move_ground.001",
+    "beat": "MoveFromGround",
+    "tags": ["combat", "critical", "warning"],
+    "weight": 1.0,
+    "cooldownSec": 10,
+    "locales": {
+      "enUS": "Move out of the hazard!",
+      "ruRU": "Не стойте в луже! Выходите!",
+      "deDE": "Raus aus der Fläche!",
+      "frFR": "Sortez de la zone !",
+      "esES": "¡Salid de la zona peligrosa!",
+      "zhCN": "快离开危险区域！"
+    }
+  },
+  {
+    "id": "tactical.move_ground.002",
+    "beat": "MoveFromGround",
+    "tags": ["combat", "critical", "warning"],
+    "weight": 0.9,
+    "cooldownSec": 10,
+    "locales": {
+      "enUS": "Watch your feet! Ground danger!",
+      "ruRU": "Под ноги смотрите! Опасно на земле!",
+      "deDE": "Vorsicht vor euren Füßen! Bodenfläche!",
+      "frFR": "Regardez où vous marchez ! Danger au sol !",
+      "esES": "¡Cuidado con el suelo! ¡Peligro!",
+      "zhCN": "注意脚下！地面有危险！"
+    }
+  },
+  {
+    "id": "tactical.spread_out.001",
+    "beat": "SpreadOut",
+    "tags": ["combat", "critical", "movement"],
+    "weight": 1.0,
+    "cooldownSec": 12,
+    "locales": {
+      "enUS": "Spread out!",
+      "ruRU": "Разбегаемся!",
+      "deDE": "Verteilt euch!",
+      "frFR": "Dispersez-vous !",
+      "esES": "¡Dispersaos!",
+      "zhCN": "分散！"
+    }
+  },
+  {
+    "id": "tactical.stack_together.001",
+    "beat": "StackTogether",
+    "tags": ["combat", "critical", "movement"],
+    "weight": 1.0,
+    "cooldownSec": 12,
+    "locales": {
+      "enUS": "Stack up together!",
+      "ruRU": "Собираемся вместе!",
+      "deDE": "Zusammenstellen!",
+      "frFR": "Rassemblez-vous !",
+      "esES": "¡Juntaos!",
+      "zhCN": "集合！"
+    }
+  },
+  {
+    "id": "tactical.tank_danger.001",
+    "beat": "TankInDanger",
+    "tags": ["combat", "critical", "healer"],
+    "weight": 1.0,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Tank is dropping! Pop defensives!",
+      "ruRU": "Танк просел! Защитные!",
+      "deDE": "Der Tank fällt! Defensive ziehen!",
+      "frFR": "Le tank faiblit ! Utilisez vos défenses !",
+      "esES": "¡El tanque cae! ¡Usad defensas!",
+      "zhCN": "坦克血崩！开减伤！"
+    }
+  },
+  {
+    "id": "tactical.target_switch.001",
+    "beat": "TargetSwitch",
+    "tags": ["combat", "tactical", "dps"],
+    "weight": 1.0,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Focus {targetName} now!",
+      "ruRU": "Смена цели! Бейте {targetName}!",
+      "deDE": "Fokus auf {targetName}!",
+      "frFR": "Focalisez {targetName} maintenant !",
+      "esES": "¡Concentrad el fuego en {targetName}!",
+      "zhCN": "立即集火 {targetName}！"
+    }
+  },
+  {
+    "id": "tactical.dispel.001",
+    "beat": "Dispel",
+    "tags": ["combat", "tactical", "healer"],
+    "weight": 1.0,
+    "cooldownSec": 20,
+    "locales": {
+      "enUS": "Dispel that debuff!",
+      "ruRU": "Рассейте дебафф!",
+      "deDE": "Reinigt diesen Schwächungszauber!",
+      "frFR": "Dissipez cet affaiblissement !",
+      "esES": "¡Disipad ese perjuicio!",
+      "zhCN": "驱散那个负面状态！"
+    }
+  },
+  {
+    "id": "tactical.burst_now.001",
+    "beat": "BurstNow",
+    "tags": ["combat", "offensive", "dps"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Burn it down! All cooldowns!",
+      "ruRU": "Вливайте всё! Бурст!",
+      "deDE": "Alles raushauen! Voller Schaden!",
+      "frFR": "Défouraillez tout ! Tous les temps de recharge !",
+      "esES": "¡A por todas! ¡Todos los recursos!",
+      "zhCN": "开大爆发！全部技能交！"
+    }
+  }
+]
