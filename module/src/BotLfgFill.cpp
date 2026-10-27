@@ -121,13 +121,13 @@ bool JoinBotToLfg(Player* bot, uint8 roleBit, lfg::LfgDungeonSet dungeons, uint6
 
     if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_QUEUED)
     {
-        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+        LOG_INFO("module.coa-playerbots.lfgfill",
             "BotLfgFill: bot '{}' (role {}) was rejected from the LFG queue (not eligible for this dungeon?).",
             bot->GetName(), roleBit);
         return false;
     }
 
-    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (role {}) joined the LFG queue (op {}).",
+    LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: bot '{}' (role {}) joined the LFG queue (op {}).",
         bot->GetName(), roleBit, opId);
     queuedBots.push_back(bot->GetGUID().GetCounter());
 
@@ -170,6 +170,7 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
         return JoinBotToLfg(bot, roleBit, dungeons, opId);
     };
 
+    LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: looking for a role {} bot among {} idle online bots of team {}.", uint32(roleBit), eligible.size(), uint32(team));
     // Pass 1: an idle bot already spec'd for this role.
     for (Player* bot : eligible)
     {
@@ -198,7 +199,7 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
                 return;
         }
 
-        LOG_DEBUG("module.coa-playerbots",
+        LOG_INFO("module.coa-playerbots.lfgfill",
             "BotLfgFill: no online {} bot available for team {} (none to respec either).",
             roleBit == lfg::PLAYER_ROLE_TANK ? "tank" : "healer", uint32(team));
         return;
@@ -310,7 +311,7 @@ void ProcessQueuedBots()
             if (proposalId)
             {
                 sLFGMgr->UpdateProposal(proposalId, guid, true);
-                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(guid), "BotLfgFill: bot '{}' accepted LFG proposal {}.",
+                LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: bot '{}' accepted LFG proposal {}.",
                     bot->GetName(), proposalId);
             }
             it = queuedBots.erase(it);
@@ -362,7 +363,7 @@ void ProcessGroupRoleChecks()
             {
                 sLFGMgr->UpdateProposal(proposalId, bot->GetGUID(), true);
                 proposalAccepted.insert(lowGuid);
-                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (grouped) accepted LFG proposal {}.",
+                LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: bot '{}' (grouped) accepted LFG proposal {}.",
                     bot->GetName(), proposalId);
             }
             continue;
@@ -463,6 +464,9 @@ public:
         // Strict intent gating: only BOT_FILL triggers bot spawning!
         if (policy.compositionMode != lfg::LfgCompositionMode::BOT_FILL)
             return true;
+
+        LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: '{}' queues (roles {}, {} dungeon(s), group {}), filling with bots.",
+            player->GetName(), uint32(roles), dungeons.size(), player->GetGroup() ? player->GetGroup()->GetMembersCount() : 1u);
 
         lfg::LfgDungeonSet dungeonsCopy(dungeons.begin(), dungeons.end());
         TeamId team = player->GetTeamId();
