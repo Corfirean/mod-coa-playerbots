@@ -78,6 +78,34 @@ namespace
         BotMovement::Navigate(bot, MoveOwner::Encounter, goalId, part.originX, part.originY, part.originZ, 8.0f, &part.moveToken, false);
         return true;
     }
+
+    bool EnsureCanAttack(EncounterInstance const& inst, Player* bot, Player* target)
+    {
+        if (bot->IsValidAttackTarget(target))
+            return true;
+        if (inst.isForcedTest)
+        {
+            bot->SetPvP(true);
+            target->SetPvP(true);
+            if (bot->IsValidAttackTarget(target))
+                return true;
+        }
+        return false;
+    }
+
+    bool EnsureCanAttackBots(EncounterInstance const& inst, Player* botA, Player* botB)
+    {
+        if (botA->IsValidAttackTarget(botB))
+            return true;
+        if (inst.isForcedTest)
+        {
+            botA->SetPvP(true);
+            botB->SetPvP(true);
+            if (botA->IsValidAttackTarget(botB))
+                return true;
+        }
+        return false;
+    }
 }
 
 namespace EncounterHandlers
@@ -121,7 +149,7 @@ namespace EncounterHandlers
                 return;
             }
 
-            if (!bot->IsValidAttackTarget(target))
+            if (!EnsureCanAttack(inst, bot, target))
             {
                 inst.state.Terminate(EncounterStopReason::PvPEligibilityLost, nowMs);
                 return;
@@ -236,7 +264,7 @@ namespace EncounterHandlers
                 return;
             }
 
-            if (!bot->IsValidAttackTarget(target))
+            if (!EnsureCanAttack(inst, bot, target))
             {
                 inst.state.Terminate(EncounterStopReason::PvPEligibilityLost, nowMs);
                 return;
@@ -644,7 +672,7 @@ namespace EncounterHandlers
         {
             if (dist <= 22.0f)
             {
-                if (!bot->IsValidAttackTarget(target))
+                if (!EnsureCanAttack(inst, bot, target))
                 {
                     inst.state.Terminate(EncounterStopReason::PvPEligibilityLost, nowMs);
                     return;
@@ -688,7 +716,7 @@ namespace EncounterHandlers
                 return;
             }
 
-            if (!bot->IsValidAttackTarget(target))
+            if (!EnsureCanAttack(inst, bot, target))
             {
                 inst.state.Terminate(EncounterStopReason::PvPEligibilityLost, nowMs);
                 return;
@@ -770,7 +798,7 @@ namespace EncounterHandlers
             {
                 inst.subStage = 100;
                 Player* opponent = (bot == hunter) ? prey : hunter;
-                if (!bot->IsValidAttackTarget(opponent))
+                if (!EnsureCanAttackBots(inst, bot, opponent))
                 {
                     inst.state.Terminate(EncounterStopReason::PvPEligibilityLost, nowMs);
                     return;

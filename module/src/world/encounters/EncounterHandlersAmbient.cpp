@@ -176,6 +176,12 @@ namespace EncounterHandlers
             part.morphApplied = false;
         }
 
+        if (part.originalFaction != 0 && bot->GetFaction() != part.originalFaction)
+        {
+            bot->SetFaction(part.originalFaction);
+            part.originalFaction = 0;
+        }
+
         if (!part.temporaryGobGuid.IsEmpty())
         {
             GameObject* gob = ObjectAccessor::GetGameObject(*bot, part.temporaryGobGuid);

@@ -96,6 +96,7 @@ struct EncounterParticipant
     uint32 joinedAtMs = 0;
     uint32 lastActionMs = 0;
     uint32 originalDisplayId = 0;
+    uint32 originalFaction = 0;
     uint32 temporaryGobGuidLow = 0;
     uint32 temporaryGobMapId = 0;
     ObjectGuid temporaryGobGuid;

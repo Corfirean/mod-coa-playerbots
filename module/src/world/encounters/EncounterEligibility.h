@@ -200,31 +200,40 @@ public:
         EncounterType type,
         CandidateBotSnapshot const& botA,
         CandidateBotSnapshot const& botB,
-        EncounterConfig const& cfg)
+        EncounterConfig const& cfg,
+        bool bypassRestrictions = false)
     {
         if (botA.activity.botGuid == botB.activity.botGuid)
             return false;
-        if (!EncounterPriorityArbiter::CanClaimBot(botA.activity) ||
-            !EncounterPriorityArbiter::CanClaimBot(botB.activity))
-            return false;
         if (botA.mapId != botB.mapId)
             return false;
-        if (botA.isInSanctuary || botB.isInSanctuary ||
-            botA.isInCapitalOrSafeZone || botB.isInCapitalOrSafeZone)
-            return false;
-        if (LevelDifference(botA.level, botB.level) > cfg.maxLevelDiff)
-            return false;
 
-        float dist = Distance2D(botA.x, botA.y, botB.x, botB.y);
-        if (dist > cfg.searchRadiusYards)
-            return false;
+        if (!bypassRestrictions)
+        {
+            if (!EncounterPriorityArbiter::CanClaimBot(botA.activity) ||
+                !EncounterPriorityArbiter::CanClaimBot(botB.activity))
+                return false;
+            if (botA.isInSanctuary || botB.isInSanctuary ||
+                botA.isInCapitalOrSafeZone || botB.isInCapitalOrSafeZone)
+                return false;
+            if (LevelDifference(botA.level, botB.level) > cfg.maxLevelDiff)
+                return false;
+
+            float dist = Distance2D(botA.x, botA.y, botB.x, botB.y);
+            if (dist > cfg.searchRadiusYards)
+                return false;
+        }
 
         if (type == EncounterType::RoadDuel)
         {
+            if (bypassRestrictions)
+                return true;
             return botA.teamId == botB.teamId && botA.healthPct >= 80.0f && botB.healthPct >= 80.0f;
         }
         if (type == EncounterType::HunterAndPrey || type == EncounterType::FactionSkirmish || type == EncounterType::PatrolAmbush)
         {
+            if (bypassRestrictions)
+                return true;
             return botA.teamId != botB.teamId &&
                    botA.isContestedOrPvPArea && botB.isContestedOrPvPArea &&
                    botA.canLegallyAttackTarget &&
@@ -253,13 +262,13 @@ public:
             return EncounterStopReason::EnteredInstanceOrBG;
         if (player.isInFlight)
             return EncounterStopReason::PlayerInFlight;
-        if (player.isInSanctuary || player.isInCapitalOrSafeZone)
-            return EncounterStopReason::EnteredSafeZone;
         if (distToBotYards > cfg.maxChaseDistanceYards)
             return EncounterStopReason::TooFar;
 
         if (IsHostilePlayerEncounter(type))
         {
+            if (player.isInSanctuary || player.isInCapitalOrSafeZone)
+                return EncounterStopReason::EnteredSafeZone;
             if (!player.isContestedOrPvPArea || !player.isPvPFlaggedOrAttackable)
                 return EncounterStopReason::PvPEligibilityLost;
             if (type == EncounterType::AssassinContract && player.partySize > cfg.maxPlayerPartySizeForSoloAssassin)

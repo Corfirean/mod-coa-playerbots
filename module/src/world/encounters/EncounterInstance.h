@@ -24,6 +24,7 @@ struct EncounterInstance
     uint64 id = 0;
     EncounterType type = EncounterType::None;
     EncounterStateMachine state;
+    bool isForcedTest = false;
 
     uint32 mapId = 0;
     uint32 zoneId = 0;

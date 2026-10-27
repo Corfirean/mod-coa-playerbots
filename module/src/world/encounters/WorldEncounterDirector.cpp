@@ -79,6 +79,13 @@ namespace
         return std::hypot(ax - bx, ay - by);
     }
 
+    float Dist2D(WorldObject const* a, WorldObject const* b)
+    {
+        if (!a || !b)
+            return 99999.0f;
+        return a->GetDistance2d(b);
+    }
+
     bool IsRealPlayer(Player const* p)
     {
         if (!p || !p->IsInWorld() || !p->GetSession())
@@ -249,7 +256,7 @@ namespace
         return def;
     }
 
-    void GatherNearbyCandidateBots(WorldObject* centerObj, float radius, std::vector<Player*>& outBots)
+    void GatherNearbyCandidateBots(WorldObject* centerObj, float radius, std::vector<Player*>& outBots, bool ignoreCooldown = false)
     {
         outBots.clear();
         if (!centerObj || !centerObj->IsInWorld())
@@ -265,7 +272,7 @@ namespace
         {
             if (!IsBotPlayer(p))
                 continue;
-            if (_budget.IsBotOnCooldown(p->GetGUID(), NowMs()))
+            if (!ignoreCooldown && _budget.IsBotOnCooldown(p->GetGUID(), NowMs()))
                 continue;
             outBots.push_back(p);
         }
@@ -325,6 +332,7 @@ namespace
         p.botGuid = bot->GetGUID();
         p.role = role;
         p.teamId = uint32(bot->GetTeamId());
+        p.originalFaction = bot->GetFaction();
         p.mapId = bot->GetMapId();
         p.originX = bot->GetPositionX();
         p.originY = bot->GetPositionY();
@@ -403,6 +411,8 @@ namespace
             snap.currentMoveOwner = BotMovement::CurrentOwner(bot);
             if (releasedPart && releasedPart->originalDisplayId != 0 && bot->GetDisplayId() != releasedPart->originalDisplayId)
                 snap.hasResidualEncounterMorph = true;
+            if (releasedPart && releasedPart->originalFaction != 0 && bot->GetFaction() != releasedPart->originalFaction)
+                snap.hasResidualFactionOverride = true;
             if (bot->getStandState() == UNIT_STAND_STATE_SIT || bot->getStandState() == UNIT_STAND_STATE_KNEEL)
             {
                 if (releasedPart && releasedPart->sitApplied)
@@ -604,9 +614,9 @@ namespace
         }
         else
         {
-            if (!playerSnap.isOnlineAndInWorld || !playerSnap.isAlive || playerSnap.isInSanctuary)
+            if (!playerSnap.isOnlineAndInWorld || !playerSnap.isAlive)
             {
-                outReason = "Player is offline, dead, or in sanctuary";
+                outReason = "Player is offline or dead";
                 return false;
             }
         }
@@ -644,9 +654,7 @@ namespace
             }
             else
             {
-                if (!EncounterPriorityArbiter::CanClaimBot(botSnap.activity))
-                    continue;
-                if (IsHostilePlayerEncounter(type) && (botSnap.teamId == playerSnap.teamId || !botSnap.canLegallyAttackTarget))
+                if (!bot->IsInWorld() || !bot->IsAlive() || (bot->GetMap() && bot->GetMap()->Instanceable()))
                     continue;
             }
 
@@ -654,6 +662,12 @@ namespace
             bool stealthCap = EncounterHandlers::IsStealthCapableClass(bot->getClass());
             float score = EncounterPersonality::ScoreAffinity(type, role, persona, stealthCap);
             score *= _memory.GetSelectionWeightMultiplier(playerSnap.guid, bot->GetGUID(), cfg, nowMs);
+
+            if (bypassBudgetAndCooldown && IsHostilePlayerEncounter(type))
+            {
+                if (botSnap.teamId != playerSnap.teamId)
+                    score += 1000.0f;
+            }
 
             if (score > bestScore)
             {
@@ -666,6 +680,43 @@ namespace
             {
                 secondBestScore = score;
                 secondBestBot = bot;
+            }
+        }
+
+        if (!bestBot && bypassBudgetAndCooldown)
+        {
+            for (Player* ob : sBotMgr->GetOnlineBots())
+            {
+                if (!ob || !ob->IsInWorld() || !ob->IsAlive() || (ob->GetMap() && ob->GetMap()->Instanceable()))
+                    continue;
+                if (_ownership.IsOwned(ob->GetGUID()))
+                    continue;
+                if (IsHostilePlayerEncounter(type) && ob->GetTeamId() == targetPlayer->GetTeamId())
+                    continue;
+                bestBot = ob;
+                break;
+            }
+            if (!bestBot)
+            {
+                for (Player* ob : sBotMgr->GetOnlineBots())
+                {
+                    if (!ob || !ob->IsInWorld() || !ob->IsAlive() || (ob->GetMap() && ob->GetMap()->Instanceable()))
+                        continue;
+                    if (!_ownership.IsOwned(ob->GetGUID()))
+                    {
+                        bestBot = ob;
+                        break;
+                    }
+                }
+            }
+            if (bestBot)
+            {
+                float angle = targetPlayer->GetOrientation() + 3.14159f;
+                float tx = targetPlayer->GetPositionX() + std::cos(angle) * 25.0f;
+                float ty = targetPlayer->GetPositionY() + std::sin(angle) * 25.0f;
+                float tz = targetPlayer->GetPositionZ();
+                bestBot->TeleportTo(targetPlayer->GetMapId(), tx, ty, tz, targetPlayer->GetOrientation());
+                sBotMgr->QueueTeleportAck(bestBot->GetSession());
             }
         }
 
@@ -682,6 +733,7 @@ namespace
 
         EncounterInstance inst;
         inst.type = type;
+        inst.isForcedTest = bypassBudgetAndCooldown;
         inst.mapId = targetPlayer->GetMapId();
         inst.zoneId = targetPlayer->GetZoneId();
         inst.areaId = targetPlayer->GetAreaId();
@@ -693,7 +745,16 @@ namespace
         {
             inst.subStage = _memory.GetGrudgeScore(playerSnap.guid, bestBot->GetGUID(), cfg, nowMs);
         }
-        inst.participants.push_back(MakeParticipant(bestBot, role, nowMs));
+
+        EncounterParticipant leadPart = MakeParticipant(bestBot, role, nowMs);
+        if (IsHostilePlayerEncounter(type))
+        {
+            if (bestBot->GetTeamId() == targetPlayer->GetTeamId())
+                bestBot->SetFaction(14);
+            bestBot->SetPvP(true);
+            targetPlayer->SetPvP(true);
+        }
+        inst.participants.push_back(leadPart);
 
         // Bounty Hunter supports 1-2 coordinated hunters when a second eligible opposing bot is nearby
         if (type == EncounterType::BountyHunter && secondBestBot && secondBestBot != bestBot &&
@@ -701,7 +762,11 @@ namespace
             Dist2D(bestBot->GetPositionX(), bestBot->GetPositionY(), secondBestBot->GetPositionX(), secondBestBot->GetPositionY()) <= 95.0f)
         {
             _memory.RecordEncounterConflict(secondBestBot->GetGUID(), playerSnap.guid, cfg, nowMs);
-            inst.participants.push_back(MakeParticipant(secondBestBot, role, nowMs));
+            EncounterParticipant secPart = MakeParticipant(secondBestBot, role, nowMs);
+            if (secondBestBot->GetTeamId() == targetPlayer->GetTeamId())
+                secondBestBot->SetFaction(14);
+            secondBestBot->SetPvP(true);
+            inst.participants.push_back(secPart);
         }
 
         uint64 id = CommitEncounter(std::move(inst), nowMs);
@@ -745,11 +810,35 @@ namespace
                         type, snap, mapId, anchorUnit->GetPositionX(), anchorUnit->GetPositionY(), anchorUnit->GetLevel(), cfg))
                     continue;
             }
-            else if (!EncounterPriorityArbiter::CanClaimBot(snap.activity))
+            else
             {
-                continue;
+                if (!b->IsInWorld() || !b->IsAlive() || (b->GetMap() && b->GetMap()->Instanceable()))
+                    continue;
             }
             freeBots.push_back(b);
+        }
+
+        if (bypassBudgetAndCooldown && freeBots.size() < 2)
+        {
+            for (Player* ob : sBotMgr->GetOnlineBots())
+            {
+                if (!ob || !ob->IsInWorld() || !ob->IsAlive() || (ob->GetMap() && ob->GetMap()->Instanceable()))
+                    continue;
+                if (_ownership.IsOwned(ob->GetGUID()))
+                    continue;
+                if (std::find(freeBots.begin(), freeBots.end(), ob) == freeBots.end())
+                    freeBots.push_back(ob);
+                if (freeBots.size() >= 2)
+                    break;
+            }
+            for (Player* fb : freeBots)
+            {
+                if (fb->GetMapId() != mapId || Dist2D(fb, anchorUnit) > 35.0f)
+                {
+                    fb->TeleportTo(mapId, anchorUnit->GetPositionX() + 6.0f, anchorUnit->GetPositionY() + 6.0f, anchorUnit->GetPositionZ(), 0.0f);
+                    sBotMgr->QueueTeleportAck(fb->GetSession());
+                }
+            }
         }
 
         if (freeBots.empty())
@@ -764,6 +853,7 @@ namespace
             Player* chosen = freeBots.front();
             EncounterInstance inst;
             inst.type = EncounterType::Deserter;
+            inst.isForcedTest = bypassBudgetAndCooldown;
             inst.mapId = mapId;
             inst.zoneId = chosen->GetZoneId();
             inst.areaId = chosen->GetAreaId();
@@ -796,11 +886,12 @@ namespace
                 for (size_t j = i + 1; j < freeBots.size(); ++j)
                 {
                     CandidateBotSnapshot snapB = BuildCandidateBotSnapshot(freeBots[j]);
-                    if (!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::RoadDuel, snapA, snapB, cfg))
+                    if (!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::RoadDuel, snapA, snapB, cfg, bypassBudgetAndCooldown))
                         continue;
 
                     EncounterInstance inst;
                     inst.type = EncounterType::RoadDuel;
+                    inst.isForcedTest = bypassBudgetAndCooldown;
                     inst.mapId = mapId;
                     inst.zoneId = freeBots[i]->GetZoneId();
                     inst.areaId = freeBots[i]->GetAreaId();
@@ -828,11 +919,12 @@ namespace
                 {
                     CandidateBotSnapshot snapA = BuildCandidateBotSnapshot(freeBots[i], freeBots[j]);
                     CandidateBotSnapshot snapB = BuildCandidateBotSnapshot(freeBots[j], freeBots[i]);
-                    if (!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, snapA, snapB, cfg))
+                    if (!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, snapA, snapB, cfg, bypassBudgetAndCooldown))
                         continue;
 
                     EncounterInstance inst;
                     inst.type = EncounterType::HunterAndPrey;
+                    inst.isForcedTest = bypassBudgetAndCooldown;
                     inst.mapId = mapId;
                     inst.zoneId = freeBots[i]->GetZoneId();
                     inst.areaId = freeBots[i]->GetAreaId();
@@ -1840,7 +1932,7 @@ namespace WorldEncounterDirector
         EncounterConfig const& cfg = EncounterSettings::Get();
         uint32 nowMs = NowMs();
         std::vector<Player*> nearbyBots;
-        GatherNearbyCandidateBots(targetOrNearPlayer, std::max(cfg.searchRadiusYards, 350.0f), nearbyBots);
+        GatherNearbyCandidateBots(targetOrNearPlayer, std::max(cfg.searchRadiusYards, 350.0f), nearbyBots, /*ignoreCooldown=*/true);
 
         if (IsPlayerTargetedEncounter(type))
             return TryBuildPlayerEncounter(type, targetOrNearPlayer, nearbyBots, true, nowMs, outMessage);
