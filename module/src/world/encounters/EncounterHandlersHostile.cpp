@@ -1194,11 +1194,6 @@ namespace EncounterHandlers
                             inst.destZ = gz;
                     }
                     part.navGoalId = (inst.id << 8) + 50u + part.subState;
-                    BotMovement::Navigate(prey, MoveOwner::Encounter, part.navGoalId,
-                        part.lastNavTargetX, part.lastNavTargetY, inst.destZ, 5.0f, &part.moveToken, false);
-                }
-            }
-        }
                 }
 
                 NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
