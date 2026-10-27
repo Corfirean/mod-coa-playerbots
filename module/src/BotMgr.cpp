@@ -332,14 +332,31 @@ constexpr ProfessionSkillEntry PROFESSION_SKILLS[] =
 // upper-cased by AccountMgr::CreateAccount regardless of how the prefix is cased in config.
 bool BotMgr::IsBotAccountId(uint32 accountId)
 {
+    // AccountMgr::GetName is a synchronous login-database query. The question is asked per player in per-tick loops (the encounter director asks it
+    // twice for every online player every five seconds), and at 850 bots those queries alone took over half a second of the world thread. An account's
+    // name does not change while the server runs, so the answer is kept; accounts that could not be resolved are not remembered.
+    static std::mutex cacheMutex;
+    static std::unordered_map<uint32, bool> cache;
+    if (!accountId)
+        return false;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        auto const it = cache.find(accountId);
+        if (it != cache.end())
+            return it->second;
+    }
+
     std::string prefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
     std::string name;
-    if (!accountId || !AccountMgr::GetName(accountId, name) || name.size() < prefix.size())
+    if (!AccountMgr::GetName(accountId, name))
         return false;
-    return std::equal(prefix.begin(), prefix.end(), name.begin(), [](char a, char b)
+    bool const isBot = name.size() >= prefix.size() && std::equal(prefix.begin(), prefix.end(), name.begin(), [](char a, char b)
     {
         return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
     });
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    cache[accountId] = isBot;
+    return isBot;
 }
 
 BotMgr* BotMgr::instance()
