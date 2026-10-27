@@ -181,3 +181,33 @@ To eliminate false-positive cache assumptions and ensure combat stability in Pro
 3. **Verification:**
    - Standalone unit tests: `encounter_tests.exe`: 9,866 checks, 0 failures.
    - Core rebuild: `worldserver.exe` successfully compiled and deployed to `C:\games\CoA Server 2\Core\`.
+
+---
+
+## 8. Hunter & Prey Dynamic Chase Hardening: Gap-Closers & Dynamic Starting Distances
+
+### Background & Problem Statement
+- Live testing revealed that in ~99% of Hunter & Prey encounters, the Hunter was unable to catch the Prey.
+- **Root Cause Analysis:**
+  1. Prey received an initial +15% run speed modifier (or sprint spell) which remained active permanently across the entire 28s chase.
+  2. Hunter had no speed boost, no gap-closer integration, and had a mandatory 2.2s reaction delay.
+  3. Spacing was statically fixed at 27yd (Prey 32yd ahead, Hunter 5yd ahead).
+  4. Combat lock required `activeElapsedMs >= 6500u`, forcing `AttackStop()` even if the Hunter managed to get close early.
+
+### Implemented Solutions
+1. **Three Dynamic Starting Distance & Head-Start Tiers:**
+   - **Tier 0 (Close / Hunter Advantage):** Spacing ~17yd (Prey 22yd, Hunter 5yd). Head-start reaction: 1.0s. High catch probability (~85%).
+   - **Tier 1 (Medium / Balanced Chase):** Spacing ~25yd (Prey 30yd, Hunter 5yd). Head-start reaction: 1.8s. Balanced contest (~50/50).
+   - **Tier 2 (Distant / Prey Advantage):** Spacing ~35yd (Prey 40yd, Hunter 5yd). Head-start reaction: 2.5s. High escape probability (~85%).
+2. **Hunter Movement Abilities & Gap-Closers:**
+   - `TryHunterUseMobilityOrGapCloser` evaluates the Hunter's real spellbook during pursuit:
+     - **Targeted Gap-Closers (8..32yd):** `SPELL_EFFECT_CHARGE`, `CHARGE_DEST`, `JUMP_DEST`, `TELEPORT_UNITS` (Charge, Intercept, Shadowstep, Felhoof Charge, Divine Charge, Ram, Death Grip, Feral Charge). Casts spell on Prey with a 15s internal cooldown.
+     - **Self-Mobility Spells (>12yd):** `SPELL_AURA_MOD_INCREASE_SPEED` (Sprint, Dash, Cheetah).
+     - **Pursuit Adrenaline Burst (Fallback):** Grants Hunter a temporary +25% run speed boost (`speedBoostApplied = true`) so the Hunter actively closes the gap against fleeing targets.
+3. **Prey Stamina Fatigue:**
+   - Prey's panic speed boost (+15%) expires after 8.0s of pursuit, restoring normal running speed and allowing mid-to-late chase convergence.
+4. **Immediate Melee Combat Lock:**
+   - Hunter immediately engages into combat upon closing within 5.0yd melee range or 10.0yd after the head-start window, eliminating unnatural `AttackStop()` pauses while adjacent to the target.
+5. **Verification & Clean Cleanup:**
+   - All 9,874 checks in `encounter_tests.exe` pass (0 failures).
+   - Speed boosts on both Hunter and Prey are cleanly restored upon combat transition or encounter termination (`ValidateEncounterCleanup` 100% PASS).
