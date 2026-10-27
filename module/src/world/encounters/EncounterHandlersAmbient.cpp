@@ -4,6 +4,7 @@
 #include "Creature.h"
 #include "EncounterConfig.h"
 #include "EncounterNarrator.h"
+#include "dialogue/EncounterPresentation.h"
 #include "GameObject.h"
 #include "GameTime.h"
 #include "GridNotifiers.h"
@@ -249,6 +250,7 @@ namespace
         botB->SetSelection(botA->GetGUID());
         botA->Attack(botB, true);
         botB->Attack(botA, true);
+        sEncounterPresentation.ApplyRoadDuelChallenge(botA, botB, GameTime::GetGameTimeMS().count());
     }
 
     Creature* FindNearbyHostileMobForParty(Player* leader, float radius)
@@ -650,6 +652,11 @@ namespace EncounterHandlers
                 inst.duelLoserGuid = oppLost ? opponent->GetGUID() : bot->GetGUID();
 
                 StopRoadDuelSafely(bot, part, opponent, otherPart);
+                if (Player* winner = ObjectAccessor::FindConnectedPlayer(inst.duelWinnerGuid))
+                {
+                    Player* loser = ObjectAccessor::FindConnectedPlayer(inst.duelLoserGuid);
+                    sEncounterPresentation.ApplyRoadDuelVictory(winner, loser, nowMs);
+                }
                 inst.state.TransitionTo(EncounterPhase::Resolve, nowMs);
                 return;
             }

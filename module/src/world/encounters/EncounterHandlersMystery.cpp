@@ -2,6 +2,7 @@
 #include "BotMovement.h"
 #include "EncounterConfig.h"
 #include "EncounterNarrator.h"
+#include "dialogue/EncounterPresentation.h"
 #include "GameObject.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
@@ -105,6 +106,7 @@ namespace EncounterHandlers
             bot->SetFacingToObject(target);
 
             uint32 elapsed = inst.state.PhaseElapsedMs(nowMs);
+            sEncounterPresentation.ApplyMysteryPresentation(bot, part, target, uint8(inst.id % 5), elapsed, nowMs);
 
             // Stage 0 (at ~4s): kneel / channel and leave rune visual or temporary safe GameObject
             if (inst.subStage == 0 && elapsed >= 4000)
@@ -159,6 +161,11 @@ namespace EncounterHandlers
 
         if (inst.state.phase == EncounterPhase::Resolve)
         {
+            if (part.subState != 999)
+            {
+                part.subState = 999;
+                sEncounterPresentation.ApplyMysteryDeparture(bot, part, target, nowMs);
+            }
             uint64 goalId = (inst.id << 8) | 99u;
             BotMovement::Navigate(bot, MoveOwner::Encounter, goalId, part.originX, part.originY, part.originZ, 8.0f, &part.moveToken, false);
             if (inst.state.PhaseElapsedMs(nowMs) >= 6000)

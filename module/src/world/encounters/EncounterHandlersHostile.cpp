@@ -4,6 +4,7 @@
 #include "EncounterEligibility.h"
 #include "EncounterNarrator.h"
 #include "EncounterPersonality.h"
+#include "dialogue/EncounterPresentation.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SharedDefines.h"
@@ -394,6 +395,7 @@ namespace EncounterHandlers
             // immediately stealth (if capable), pick a retreat point directly away from the player, and leave!
             if (dist < 24.0f)
             {
+                sEncounterPresentation.ApplyWatcherVanish(bot, part, target, nowMs);
                 if (part.stealthCapable)
                     TryApplyStealth(bot, part);
                 ComputeVectorOffsetPoint(bot, target, 0.0f, 52.0f, part.originX, part.originY, part.originZ);
@@ -425,7 +427,7 @@ namespace EncounterHandlers
             if (part.subState == 0 && dist <= 46.0f)
             {
                 BotMovement::Stop(bot, part.moveToken);
-                bot->SetFacingToObject(target);
+                sEncounterPresentation.ApplyWatcherObservation(bot, part, target, inst.stalkAccumulatedMs, nowMs);
                 if (stateElapsed >= 7000u)
                 {
                     part.subState = 1;
@@ -726,6 +728,8 @@ namespace EncounterHandlers
                 {
                     uint32 variantSeed = uint32(inst.id) + inst.subStage;
                     EncounterNarrator::TryBotSpeak(bot, target, speakType, NarratorChannel::BotSay, variantSeed);
+                    if (speakType == EncounterType::Nemesis)
+                        sEncounterPresentation.ApplyNemesisGreeting(bot, target, nowMs);
                     inst.introNarrated = true;
                 }
 
@@ -1064,7 +1068,11 @@ namespace EncounterHandlers
 
             uint32 headStartDelayMs = inst.stalkAccumulatedMs > 0 ? inst.stalkAccumulatedMs : 1800u;
             if (inst.subStage == 1 && activeElapsedMs >= headStartDelayMs)
+            {
                 inst.subStage = 2;
+                sEncounterPresentation.ApplyHunterThreat(hunter, prey, nowMs);
+                sEncounterPresentation.ApplyPreyPanic(prey, hunter, nowMs);
+            }
 
             // Combat lock condition:
             // Hunter catches Prey if:
