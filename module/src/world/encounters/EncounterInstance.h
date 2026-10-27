@@ -51,6 +51,8 @@ struct EncounterInstance
     std::vector<EncounterParticipant> participants;
 
     // Handler-specific runtime state
+    uint32 temporaryGroupLowGuid = 0;
+    uint32 postCombatRegroupUntilMs = 0;
     uint32 stalkAccumulatedMs = 0;
     uint32 subStage = 0;
     uint32 lastSubStageChangeMs = 0;
@@ -59,6 +61,7 @@ struct EncounterInstance
     bool duelCompleted = false;
     ObjectGuid duelWinnerGuid;
     ObjectGuid duelLoserGuid;
+    std::string routeSource;
 
     EncounterParticipant* FindParticipant(ObjectGuid botGuid)
     {

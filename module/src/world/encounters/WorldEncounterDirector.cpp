@@ -6,6 +6,7 @@
 #include "CellImpl.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "DatabaseEnv.h"
 #include "EncounterBudget.h"
 #include "EncounterCleanupDiagnostics.h"
 #include "EncounterConfig.h"
@@ -19,6 +20,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
+#include "GroupMgr.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
@@ -50,6 +52,7 @@ namespace
     std::unordered_map<ObjectGuid, WorldPersona> _knownPersonas;
     std::unordered_set<ObjectGuid> _knownSocialActive;
     std::unordered_map<ObjectGuid, uint32> _rareCreatureCooldownUntilMs;
+    std::unordered_set<uint32> _encounterTempGroups;
     uint64 _nextEncounterId = 1;
 
     uint32 _evalAccumMs = 0;
@@ -154,12 +157,72 @@ namespace
         return 500.0f;
     }
 
+    uint32 CreateTemporaryEncounterGroup(Player* leader, std::vector<Player*> const& members)
+    {
+        if (!leader || members.size() < 2)
+            return 0;
+
+        for (Player* m : members)
+        {
+            if (!m || m->GetGroup() != nullptr)
+                return 0;
+        }
+
+        Group* group = new Group();
+        if (!group->Create(leader))
+        {
+            delete group;
+            return 0;
+        }
+
+        sGroupMgr->AddGroup(group);
+        for (Player* m : members)
+        {
+            if (m != leader)
+                group->AddMember(m);
+        }
+
+        uint32 lowGuid = group->GetGUID().GetCounter();
+        _encounterTempGroups.insert(lowGuid);
+        return lowGuid;
+    }
+
+    void DissolveTemporaryEncounterGroup(uint32& groupLowGuid)
+    {
+        if (groupLowGuid == 0)
+            return;
+
+        uint32 low = groupLowGuid;
+        groupLowGuid = 0;
+        _encounterTempGroups.erase(low);
+
+        Group* group = sGroupMgr->GetGroupByGUID(low);
+        if (!group)
+            return;
+
+        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_GROUP);
+        stmt->SetData(0, low);
+        trans->Append(stmt);
+
+        stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_GROUP_MEMBER_ALL);
+        stmt->SetData(0, low);
+        trans->Append(stmt);
+        CharacterDatabase.CommitTransaction(trans);
+
+        group->Disband(true);
+        sGroupMgr->RemoveGroup(group);
+        delete group;
+    }
+
     bool IsPlayerControlledGroup(Player const* bot)
     {
         Group const* grp = bot ? bot->GetGroup() : nullptr;
         if (!grp)
             return false;
         if (WorldParties::IsInParty(bot->GetGUID()))
+            return false;
+        if (_encounterTempGroups.find(grp->GetGUID().GetCounter()) != _encounterTempGroups.end())
             return false;
         return true;
     }
@@ -423,6 +486,11 @@ namespace
             }
             if (bot->duel != nullptr || bot->GetUInt32Value(PLAYER_DUEL_TEAM) != 0 || !bot->GetGuidValue(PLAYER_DUEL_ARBITER).IsEmpty())
                 snap.hasResidualEncounterFlags = true;
+            if (Group const* grp = bot->GetGroup())
+            {
+                if (_encounterTempGroups.find(grp->GetGUID().GetCounter()) != _encounterTempGroups.end())
+                    snap.hasTemporaryEncounterGroup = true;
+            }
         }
 
         if (BrainState const* bState = WorldBrainInternal::FindState(botGuid))
@@ -443,6 +511,8 @@ namespace
         EncounterConfig const& cfg = EncounterSettings::Get();
         std::vector<ObjectGuid> botGuids;
         botGuids.reserve(inst.participants.size());
+
+        DissolveTemporaryEncounterGroup(inst.temporaryGroupLowGuid);
 
         for (auto& part : inst.participants)
         {
@@ -575,7 +645,18 @@ namespace
         inst.state.TransitionTo(EncounterPhase::Prepare, nowMs);
 
         for (auto const& p : inst.participants)
+        {
             _ownership.TryClaim(p.botGuid, id);
+            if (BrainState* bState = WorldBrainInternal::FindState(p.botGuid))
+            {
+                if (bState->task.IsValid() && !bState->pausedByEncounter)
+                {
+                    Player* bot = ObjectAccessor::FindConnectedPlayer(p.botGuid);
+                    WorldExecutor::PauseTask(bot, *bState, "dynamic encounter");
+                    bState->pausedByEncounter = true;
+                }
+            }
+        }
 
         _budget.OnEncounterStarted(inst.type, inst.mapId, inst.targetPlayerGuid, &cfg, nowMs);
 
@@ -1037,20 +1118,54 @@ namespace
                     if (!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, snapA, snapB, cfg, bypassBudgetAndCooldown))
                         continue;
 
+                    Player* hunter = freeBots[i];
+                    Player* prey = freeBots[j];
+
                     EncounterInstance inst;
                     inst.type = EncounterType::HunterAndPrey;
                     inst.isForcedTest = bypassBudgetAndCooldown;
                     inst.mapId = mapId;
-                    inst.zoneId = freeBots[i]->GetZoneId();
-                    inst.areaId = freeBots[i]->GetAreaId();
-                    inst.centerX = freeBots[i]->GetPositionX();
-                    inst.centerY = freeBots[i]->GetPositionY();
-                    inst.centerZ = freeBots[i]->GetPositionZ();
-                    inst.participants.push_back(MakeParticipant(freeBots[i], EncounterRole::Hunter, nowMs));
-                    inst.participants.push_back(MakeParticipant(freeBots[j], EncounterRole::Prey, nowMs));
+                    inst.zoneId = anchorUnit->GetZoneId();
+                    inst.areaId = anchorUnit->GetAreaId();
+
+                    if (bypassBudgetAndCooldown)
+                    {
+                        float aOri = anchorUnit->GetOrientation();
+                        float fwdX = std::cos(aOri);
+                        float fwdY = std::sin(aOri);
+
+                        inst.centerX = anchorUnit->GetPositionX() + fwdX * 8.0f;
+                        inst.centerY = anchorUnit->GetPositionY() + fwdY * 8.0f;
+                        inst.centerZ = anchorUnit->GetPositionZ();
+
+                        // Stage prey 18yd ahead of GM, hunter 5yd ahead of GM (13yd gap)
+                        float preyX = anchorUnit->GetPositionX() + fwdX * 18.0f;
+                        float preyY = anchorUnit->GetPositionY() + fwdY * 18.0f;
+                        float hunterX = anchorUnit->GetPositionX() + fwdX * 5.0f;
+                        float hunterY = anchorUnit->GetPositionY() + fwdY * 5.0f;
+
+                        prey->TeleportTo(mapId, preyX, preyY, inst.centerZ, aOri);
+                        sBotMgr->QueueTeleportAck(prey->GetSession());
+                        hunter->TeleportTo(mapId, hunterX, hunterY, inst.centerZ, aOri);
+                        sBotMgr->QueueTeleportAck(hunter->GetSession());
+
+                        if (hunter->GetTeamId() == prey->GetTeamId())
+                            hunter->SetFaction(14);
+                        hunter->SetPvP(true);
+                        prey->SetPvP(true);
+                    }
+                    else
+                    {
+                        inst.centerX = hunter->GetPositionX();
+                        inst.centerY = hunter->GetPositionY();
+                        inst.centerZ = hunter->GetPositionZ();
+                    }
+
+                    inst.participants.push_back(MakeParticipant(hunter, EncounterRole::Hunter, nowMs));
+                    inst.participants.push_back(MakeParticipant(prey, EncounterRole::Prey, nowMs));
                     uint64 id = CommitEncounter(std::move(inst), nowMs);
                     outReason = Acore::StringFormat("Started hunter_prey (#{}) between {} and {}",
-                        id, freeBots[i]->GetName(), freeBots[j]->GetName());
+                        id, hunter->GetName(), prey->GetName());
                     return true;
                 }
             }
@@ -1063,55 +1178,104 @@ namespace
         {
             uint32 minCount = (type == EncounterType::Caravan) ? cfg.caravanMinMembers : cfg.rivalPartyMinMembers;
             uint32 maxCount = (type == EncounterType::Caravan) ? cfg.caravanMaxMembers : cfg.rivalPartyMaxMembers;
-            if (bypassBudgetAndCooldown)
-                minCount = std::min<uint32>(minCount, 2u);
+            minCount = std::max<uint32>(minCount, 3u);
 
-            std::vector<Player*> allianceBots;
-            std::vector<Player*> hordeBots;
-            for (Player* b : freeBots)
+            std::vector<Player*> selectedParty;
+            for (Player* candidateLeader : freeBots)
             {
-                if (b->GetTeamId() == TEAM_ALLIANCE)
-                    allianceBots.push_back(b);
-                else
-                    hordeBots.push_back(b);
+                std::vector<Player*> cluster;
+                cluster.push_back(candidateLeader);
+                for (Player* candidateMember : freeBots)
+                {
+                    if (candidateMember == candidateLeader)
+                        continue;
+                    if (candidateMember->GetTeamId() != candidateLeader->GetTeamId())
+                        continue;
+                    if (!EncounterEligibility::IsPartyMemberLevelCompatible(candidateLeader->GetLevel(), candidateMember->GetLevel()))
+                        continue;
+                    cluster.push_back(candidateMember);
+                    if (cluster.size() >= maxCount)
+                        break;
+                }
+                if (cluster.size() > selectedParty.size())
+                    selectedParty = std::move(cluster);
+                if (selectedParty.size() >= maxCount)
+                    break;
             }
 
-            std::vector<Player*> const& pool = (allianceBots.size() >= hordeBots.size()) ? allianceBots : hordeBots;
-            if (pool.size() < minCount)
+            if (selectedParty.size() < minCount)
             {
-                outReason = "Not enough same-faction bots nearby for party/caravan";
+                outReason = Acore::StringFormat(
+                    "{} build failed: need at least {} same-faction bots within +/-3 levels (found {})",
+                    EncounterTypeName(type), minCount, uint32(selectedParty.size()));
                 return false;
             }
 
-            Player* leader = pool.front();
+            Player* leader = selectedParty.front();
             EncounterInstance inst;
             inst.type = type;
+            inst.isForcedTest = bypassBudgetAndCooldown;
             inst.mapId = mapId;
-            inst.zoneId = leader->GetZoneId();
-            inst.areaId = leader->GetAreaId();
+            inst.zoneId = anchorUnit->GetZoneId();
+            inst.areaId = anchorUnit->GetAreaId();
             inst.targetPlayerGuid = optionalPlayerGuid;
-            inst.centerX = leader->GetPositionX();
-            inst.centerY = leader->GetPositionY();
-            inst.centerZ = leader->GetPositionZ();
+            inst.routeSource = "forward_navigable_path";
 
-            // Choose a destination hub or POI ~90..220 yards away
-            float angle = float(NextRand() % 628) / 100.0f;
-            inst.destX = leader->GetPositionX() + std::cos(angle) * 110.0f;
-            inst.destY = leader->GetPositionY() + std::sin(angle) * 110.0f;
-            inst.destZ = leader->GetPositionZ();
-            std::vector<Poi const*> vendorPois;
-            BotWorldPoi::Query(mapId, leader->GetPositionX(), leader->GetPositionY(), 450.0f, PoiKind::Vendor, vendorPois);
-            for (Poi const* poi : vendorPois)
+            if (bypassBudgetAndCooldown)
             {
-                if (!poi)
-                    continue;
-                float d = Dist2D(leader->GetPositionX(), leader->GetPositionY(), poi->x, poi->y);
-                if (d >= 70.0f && d <= 450.0f)
+                float aOri = anchorUnit->GetOrientation();
+                float fwdX = std::cos(aOri);
+                float fwdY = std::sin(aOri);
+
+                inst.centerX = anchorUnit->GetPositionX() + fwdX * 8.0f;
+                inst.centerY = anchorUnit->GetPositionY() + fwdY * 8.0f;
+                inst.centerZ = anchorUnit->GetPositionZ();
+
+                inst.destX = inst.centerX + fwdX * 65.0f;
+                inst.destY = inst.centerY + fwdY * 65.0f;
+                inst.destZ = inst.centerZ;
+                if (anchorUnit->GetMap())
                 {
-                    inst.destX = poi->x;
-                    inst.destY = poi->y;
-                    inst.destZ = poi->z;
-                    break;
+                    float gz = anchorUnit->GetMap()->GetHeight(anchorUnit->GetPhaseMask(), inst.destX, inst.destY, inst.destZ + 12.0f);
+                    if (gz > INVALID_HEIGHT)
+                        inst.destZ = gz;
+                }
+
+                for (size_t pIdx = 0; pIdx < selectedParty.size(); ++pIdx)
+                {
+                    float stageDist = 8.0f + float(pIdx) * 3.5f;
+                    float px = anchorUnit->GetPositionX() + fwdX * stageDist;
+                    float py = anchorUnit->GetPositionY() + fwdY * stageDist;
+                    selectedParty[pIdx]->TeleportTo(mapId, px, py, inst.centerZ, aOri);
+                    sBotMgr->QueueTeleportAck(selectedParty[pIdx]->GetSession());
+                }
+            }
+            else
+            {
+                inst.centerX = leader->GetPositionX();
+                inst.centerY = leader->GetPositionY();
+                inst.centerZ = leader->GetPositionZ();
+
+                // Choose a destination hub or POI ~90..220 yards away
+                float angle = float(NextRand() % 628) / 100.0f;
+                inst.destX = leader->GetPositionX() + std::cos(angle) * 110.0f;
+                inst.destY = leader->GetPositionY() + std::sin(angle) * 110.0f;
+                inst.destZ = leader->GetPositionZ();
+                std::vector<Poi const*> vendorPois;
+                BotWorldPoi::Query(mapId, leader->GetPositionX(), leader->GetPositionY(), 450.0f, PoiKind::Vendor, vendorPois);
+                for (Poi const* poi : vendorPois)
+                {
+                    if (!poi)
+                        continue;
+                    float d = Dist2D(leader->GetPositionX(), leader->GetPositionY(), poi->x, poi->y);
+                    if (d >= 70.0f && d <= 450.0f)
+                    {
+                        inst.destX = poi->x;
+                        inst.destY = poi->y;
+                        inst.destZ = poi->z;
+                        inst.routeSource = "vendor_poi";
+                        break;
+                    }
                 }
             }
             inst.waypoints.push_back({inst.destX, inst.destY, inst.destZ});
@@ -1119,16 +1283,33 @@ namespace
             EncounterRole leadRole = (type == EncounterType::Caravan) ? EncounterRole::CaravanLeader : EncounterRole::RivalLeader;
             EncounterRole memRole = (type == EncounterType::Caravan) ? EncounterRole::CaravanMember : EncounterRole::RivalMember;
 
-            uint32 count = std::min<uint32>(uint32(pool.size()), maxCount);
+            uint32 count = std::min<uint32>(uint32(selectedParty.size()), maxCount);
+            selectedParty.resize(count);
             for (uint32 i = 0; i < count; ++i)
             {
-                inst.participants.push_back(MakeParticipant(pool[i], i == 0 ? leadRole : memRole, nowMs));
-                if (!optionalPlayerGuid.IsEmpty() && _memory.GetGrudgeScore(optionalPlayerGuid, pool[i]->GetGUID(), cfg, nowMs) > 0)
+                inst.participants.push_back(MakeParticipant(selectedParty[i], i == 0 ? leadRole : memRole, nowMs));
+                if (!optionalPlayerGuid.IsEmpty() && _memory.GetGrudgeScore(optionalPlayerGuid, selectedParty[i]->GetGUID(), cfg, nowMs) > 0)
                     inst.subStage = 1;
             }
 
+            inst.temporaryGroupLowGuid = CreateTemporaryEncounterGroup(leader, selectedParty);
+            std::string leadName = leader->GetName();
+            uint8 leadLvl = leader->GetLevel();
+            uint32 tempGrp = inst.temporaryGroupLowGuid;
+            std::string routeSrc = inst.routeSource;
+            float routeX = inst.destX;
+            float routeY = inst.destY;
+
             uint64 id = CommitEncounter(std::move(inst), nowMs);
-            outReason = Acore::StringFormat("Started {} (#{}) with {} bots", EncounterTypeName(type), id, count);
+            if (_debugLogging || bypassBudgetAndCooldown)
+            {
+                LOG_INFO("module.coa-playerbots.world",
+                    "Encounter #{} START type={} leader={}({}) lvl={} members={} tempGroup={} routeSource={} dest=({:.1f},{:.1f})",
+                    id, EncounterTypeName(type), leadName, leader->GetGUID().GetCounter(), uint32(leadLvl),
+                    count, tempGrp, routeSrc, routeX, routeY);
+            }
+            outReason = Acore::StringFormat("Started {} (#{}) with {} bots (leader={} lvl={} tempGroup={})",
+                EncounterTypeName(type), id, count, leadName, uint32(leadLvl), tempGrp);
             return true;
         }
 
@@ -1661,6 +1842,11 @@ namespace WorldEncounterDirector
         return _ownership.IsOwned(botGuid);
     }
 
+    bool IsEncounterTemporaryGroup(uint32 groupLowGuid)
+    {
+        return groupLowGuid != 0 && _encounterTempGroups.find(groupLowGuid) != _encounterTempGroups.end();
+    }
+
     void OnBotSuspended(Player* bot, char const* /*reason*/)
     {
         if (!bot)
@@ -1885,7 +2071,7 @@ namespace WorldEncounterDirector
         uint32 tempGoCount = (part && !part->temporaryGobGuid.IsEmpty()) ? 1u : 0u;
 
         return Acore::StringFormat(
-            "encounter: #{} type={} phase={} bot={}({}) role={} target={} map={}/zone={} dist={:.1f}yd moveOwner={} combatTarget={} timeoutLeft={}s prevTask={} brainPaused={} narrator={} tempGroup=none tempGO={} stopReason={}",
+            "encounter: #{} type={} phase={} bot={}({}) role={} target={} map={}/zone={} dist={:.1f}yd moveOwner={} combatTarget={} timeoutLeft={}s prevTask={} brainPaused={} narrator={} tempGroup={} tempGO={} stopReason={}",
             inst.id,
             EncounterTypeName(inst.type),
             EncounterPhaseName(inst.state.phase),
@@ -1902,6 +2088,7 @@ namespace WorldEncounterDirector
             prevTask,
             brainPaused ? "yes" : "no",
             (inst.introNarrated || (part && part->narratorSpoken)) ? "spoken" : "silent",
+            inst.temporaryGroupLowGuid != 0 ? "yes" : "none",
             tempGoCount,
             EncounterStopReasonName(inst.state.stopReason));
     }

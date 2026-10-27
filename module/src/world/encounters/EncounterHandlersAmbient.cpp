@@ -282,6 +282,73 @@ namespace
         }
         return best;
     }
+
+    // Computes distinct 5-10 yard formation slots around the party/caravan leader (left-rear, right-rear, left-flank, right-flank)
+    // so members never stack on a single point (§3, §5).
+    void ComputePartyFormationSlot(uint32 followerIdx, float& outDist, float& outAngleOffset)
+    {
+        switch (followerIdx)
+        {
+            case 0: outDist = 5.5f; outAngleOffset =  2.35f; break; // left-rear
+            case 1: outDist = 5.5f; outAngleOffset = -2.35f; break; // right-rear
+            case 2: outDist = 8.0f; outAngleOffset =  1.85f; break; // left-flank
+            case 3: outDist = 8.0f; outAngleOffset = -1.85f; break; // right-flank
+            default:
+                outDist = 6.5f + float(followerIdx / 2u) * 2.0f;
+                outAngleOffset = (followerIdx % 2u == 0) ? 2.15f : -2.15f;
+                break;
+        }
+    }
+
+    char const* GetFormationSlotLabel(uint32 followerIdx)
+    {
+        switch (followerIdx)
+        {
+            case 0: return "left_rear(5.5yd)";
+            case 1: return "right_rear(5.5yd)";
+            case 2: return "left_flank(8.0yd)";
+            case 3: return "right_flank(8.0yd)";
+            default: return "rear_guard(8.5yd)";
+        }
+    }
+
+    Unit* FindSharedCombatTargetForParty(EncounterInstance const& inst, Player* leader)
+    {
+        if (!leader || !leader->IsInWorld())
+            return nullptr;
+
+        if (Unit* lv = leader->GetVictim())
+        {
+            if (lv->IsAlive() && leader->IsValidAttackTarget(lv))
+                return lv;
+        }
+
+        for (Unit* att : leader->getAttackers())
+        {
+            if (att && att->IsAlive() && leader->IsValidAttackTarget(att))
+                return att;
+        }
+
+        for (auto const& m : inst.participants)
+        {
+            if (m.retreated)
+                continue;
+            Player* member = ObjectAccessor::FindConnectedPlayer(m.botGuid);
+            if (!member || !member->IsInWorld() || !member->IsAlive() || member->GetMapId() != leader->GetMapId())
+                continue;
+            if (Unit* mv = member->GetVictim())
+            {
+                if (mv->IsAlive() && leader->IsValidAttackTarget(mv))
+                    return mv;
+            }
+            for (Unit* att : member->getAttackers())
+            {
+                if (att && att->IsAlive() && leader->IsValidAttackTarget(att))
+                    return att;
+            }
+        }
+        return nullptr;
+    }
 }
 
 namespace EncounterHandlers
@@ -791,7 +858,7 @@ namespace EncounterHandlers
     }
 
     // =========================================================================
-    // 7.11 Rival Adventuring Party
+    // 7.11 Rival Adventuring Party (Cohesive Group Ownership, 5-10yd Formation, Shared Combat & Regroup)
     // =========================================================================
     void UpdateRivalParty(EncounterInstance& inst, Player* bot, EncounterParticipant& part, uint32 nowMs)
     {
@@ -811,27 +878,78 @@ namespace EncounterHandlers
             if (p.role != EncounterRole::RivalLeader)
                 ++followerIdx;
         }
-        float slotDist = 4.5f + float(followerIdx / 2u) * 3.5f;
-        float slotAngle = (followerIdx % 2u == 0) ? 2.40f : -2.40f;
+        float slotDist = 5.5f;
+        float slotAngle = 2.35f;
+        ComputePartyFormationSlot(followerIdx, slotDist, slotAngle);
 
         if (inst.state.phase == EncounterPhase::Prepare)
         {
-            part.subStateEnteredAtMs = nowMs;
-            inst.state.TransitionTo(EncounterPhase::Active, nowMs);
+            if (part.role == EncounterRole::RivalLeader)
+            {
+                part.arrivedAtStaging = true;
+                bool allReady = true;
+                for (auto const& p : inst.participants)
+                {
+                    if (!p.retreated && !p.arrivedAtStaging)
+                        allReady = false;
+                }
+                if (allReady || inst.state.PhaseElapsedMs(nowMs) >= 5500)
+                {
+                    part.subStateEnteredAtMs = nowMs;
+                    inst.state.TransitionTo(EncounterPhase::Active, nowMs);
+                }
+            }
+            else
+            {
+                float d = Dist2D(bot, leader);
+                if (d <= 14.0f)
+                {
+                    part.arrivedAtStaging = true;
+                    part.moveToken = BotMovement::Follow(bot, MoveOwner::Encounter, leader, slotDist, slotAngle);
+                }
+                else
+                {
+                    if (part.navGoalId == 0)
+                        part.navGoalId = (inst.id << 8) | 1u;
+                    NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
+                        leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), 8.0f, &part.moveToken, true);
+                    if (nav == NavStatus::Stuck)
+                        part.retreated = true;
+                }
+            }
             return;
         }
 
         if (inst.state.phase == EncounterPhase::Active)
         {
             if (bot->IsInCombat())
-                return;
-
-            // If leader is fighting a mob, members assist
-            if (leader->IsInCombat() && leader->GetVictim() && bot != leader)
             {
-                part.assignedTargetGuid = leader->GetVictim()->GetGUID();
+                inst.postCombatRegroupUntilMs = nowMs + 3500u;
                 part.engagedInCombat = true;
-                EngagePvPOrCreature(bot, leader->GetVictim());
+                return;
+            }
+
+            // Shared group combat: if leader or any party member is fighting, all members converge and assist
+            if (Unit* sharedTarget = FindSharedCombatTargetForParty(inst, leader))
+            {
+                inst.postCombatRegroupUntilMs = nowMs + 3500u;
+                part.assignedTargetGuid = sharedTarget->GetGUID();
+                part.engagedInCombat = true;
+                EngagePvPOrCreature(bot, sharedTarget);
+                return;
+            }
+
+            // Post-combat regroup window (3.5s): pause leader travel while followers return to 5-10yd formation slots
+            if (inst.postCombatRegroupUntilMs != 0 && nowMs < inst.postCombatRegroupUntilMs)
+            {
+                if (part.role == EncounterRole::RivalLeader)
+                {
+                    BotMovement::Stop(bot, part.moveToken);
+                }
+                else
+                {
+                    part.moveToken = BotMovement::Follow(bot, MoveOwner::Encounter, leader, slotDist, slotAngle);
+                }
                 return;
             }
 
@@ -850,20 +968,35 @@ namespace EncounterHandlers
                     }
                 }
 
-                // Periodically look for a level-appropriate hostile mob along the route
-                if (nowMs - part.lastActionMs >= 4000)
+                // Periodically look for a level-appropriate hostile mob within 28 yards along the route
+                if (nowMs - part.lastActionMs >= 2000)
                 {
                     part.lastActionMs = nowMs;
-                    if (Creature* mob = FindNearbyHostileMobForParty(bot, 24.0f))
+                    if (Creature* mob = FindNearbyHostileMobForParty(bot, 28.0f))
                     {
+                        inst.postCombatRegroupUntilMs = nowMs + 3500u;
                         part.assignedTargetGuid = mob->GetGUID();
                         part.engagedInCombat = true;
                         EngagePvPOrCreature(bot, mob);
+                        for (auto& m : inst.participants)
+                        {
+                            if (m.botGuid == bot->GetGUID() || m.retreated)
+                                continue;
+                            if (Player* member = ObjectAccessor::FindConnectedPlayer(m.botGuid))
+                            {
+                                if (member->IsInWorld() && member->IsAlive() && member->GetMapId() == bot->GetMapId())
+                                {
+                                    m.assignedTargetGuid = mob->GetGUID();
+                                    m.engagedInCombat = true;
+                                    EngagePvPOrCreature(member, mob);
+                                }
+                            }
+                        }
                         return;
                     }
                 }
 
-                // Pace control: keep party together
+                // Pace control: keep party together within formation distance
                 float maxFollowerDist = 0.0f;
                 for (auto& m : inst.participants)
                 {
@@ -885,20 +1018,37 @@ namespace EncounterHandlers
                     }
                 }
 
-                if (maxFollowerDist > 35.0f && (nowMs - part.subStateEnteredAtMs) < 6000)
+                if (maxFollowerDist > 28.0f && (nowMs - part.subStateEnteredAtMs) < 6000)
                 {
                     BotMovement::Stop(bot, part.moveToken);
                     return;
                 }
-                if (maxFollowerDist <= 22.0f)
+                if (maxFollowerDist <= 18.0f)
                     part.subStateEnteredAtMs = nowMs;
 
-                uint64 goalId = (inst.id << 8) | 10u;
-                NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, goalId, inst.destX, inst.destY, inst.destZ, 15.0f, &part.moveToken, true);
-                if (nav == NavStatus::Arrived || Dist2DPoint(bot, inst.destX, inst.destY) <= 16.0f)
-                    inst.state.TransitionTo(EncounterPhase::Resolve, nowMs);
+                float wx = inst.destX;
+                float wy = inst.destY;
+                float wz = inst.destZ;
+                if (inst.currentWaypointIdx < inst.waypoints.size())
+                {
+                    wx = inst.waypoints[inst.currentWaypointIdx].x;
+                    wy = inst.waypoints[inst.currentWaypointIdx].y;
+                    wz = inst.waypoints[inst.currentWaypointIdx].z;
+                }
+
+                uint64 goalId = (inst.id << 8) + 10u + uint64(inst.currentWaypointIdx);
+                NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, goalId, wx, wy, wz, 14.0f, &part.moveToken, true);
+                if (nav == NavStatus::Arrived || Dist2DPoint(bot, wx, wy) <= 15.0f)
+                {
+                    if (inst.currentWaypointIdx + 1 < inst.waypoints.size())
+                        ++inst.currentWaypointIdx;
+                    else
+                        inst.state.TransitionTo(EncounterPhase::Resolve, nowMs);
+                }
                 else if (nav == NavStatus::Stuck)
+                {
                     inst.state.Terminate(EncounterStopReason::Unreachable, nowMs);
+                }
             }
             else
             {
@@ -908,21 +1058,22 @@ namespace EncounterHandlers
                     part.retreated = true;
                     return;
                 }
-                if (d <= 45.0f)
+                if (d <= 38.0f)
                 {
                     part.moveToken = BotMovement::Follow(bot, MoveOwner::Encounter, leader, slotDist, slotAngle);
                 }
                 else
                 {
-                    if (part.navGoalId == 0 || Dist2DPoint(leader, part.lastNavTargetX, part.lastNavTargetY) > 15.0f)
+                    if (part.navGoalId == 0 || Dist2DPoint(leader, part.lastNavTargetX, part.lastNavTargetY) > 12.0f)
                     {
-                        part.lastNavTargetX = leader->GetPositionX();
-                        part.lastNavTargetY = leader->GetPositionY();
+                        float leaderOri = leader->GetOrientation();
+                        part.lastNavTargetX = leader->GetPositionX() + std::cos(leaderOri + slotAngle) * slotDist;
+                        part.lastNavTargetY = leader->GetPositionY() + std::sin(leaderOri + slotAngle) * slotDist;
                         part.lastNavTargetZ = leader->GetPositionZ();
                         part.navGoalId = (inst.id << 8) + 30u + (++part.subState);
                     }
                     NavStatus nav = BotMovement::Navigate(bot, MoveOwner::Encounter, part.navGoalId,
-                        part.lastNavTargetX, part.lastNavTargetY, part.lastNavTargetZ, 7.5f, &part.moveToken, true);
+                        part.lastNavTargetX, part.lastNavTargetY, part.lastNavTargetZ, 6.0f, &part.moveToken, true);
                     if (nav == NavStatus::Stuck)
                         part.retreated = true;
                 }

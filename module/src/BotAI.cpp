@@ -3984,7 +3984,11 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             if (TryRestIfNeeded(bot, diff, combatRole, state))
                 return;
 
-            if (!bot->InBattleground())
+            bool inEncounter = WorldEncounterDirector::IsBotInEncounter(bot->GetGUID());
+            bool inEncounterGroup = bot->GetGroup() &&
+                WorldEncounterDirector::IsEncounterTemporaryGroup(bot->GetGroup()->GetGUID().GetCounter());
+
+            if (!bot->InBattleground() && !inEncounter)
                 ResumeFollowingLeader(bot, state);
 
             // Ungrouped means no leader to fight alongside or follow -- ResumeFollowingLeader
@@ -3999,12 +4003,22 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             // something to kill.
             // The leader of a temporary bot-only party (WorldParties) keeps living its own open-world
             // life while grouped; the other members are ordinary grouped bots that follow it.
+            // Bots owned by an active Dynamic Encounter (including members of a temporary encounter
+            // group) always route through UpdateSoloWorld so WorldEncounterDirector maintains ownership.
             bool worldPartyLeader = bot->GetGroup() && WorldParties::IsLeader(bot->GetGUID());
-            if ((!bot->GetGroup() || worldPartyLeader) && state.manualCommand != BotManualCommand::Stay)
+            if ((!bot->GetGroup() || worldPartyLeader || (inEncounter && inEncounterGroup)) && state.manualCommand != BotManualCommand::Stay)
             {
+                if (inEncounter)
+                {
+                    state.gatherTargetGuid = ObjectGuid::Empty;
+                    state.gatherWalkTargetGuid = ObjectGuid::Empty;
+                    state.fishingBobberGuid = ObjectGuid::Empty;
+                    state.fishingCastInProgress = false;
+                    UpdateSoloWorld(bot, diff, state);
+                }
                 // An in-flight gathering or fishing action finishes before anything else is
                 // decided; everything else goes through the open-world layer (UpdateSoloWorld).
-                if (!state.gatherTargetGuid.IsEmpty())
+                else if (!state.gatherTargetGuid.IsEmpty())
                     TryFinishGathering(bot, state);
                 else if (!state.gatherWalkTargetGuid.IsEmpty())
                     TryContinueGatherWalk(bot, diff, state);

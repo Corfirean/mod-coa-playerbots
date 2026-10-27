@@ -39,6 +39,9 @@ namespace WorldEncounterDirector
     // Query whether a bot is currently participating in an active encounter.
     bool IsBotInEncounter(ObjectGuid botGuid);
 
+    // Query whether a Group low GUID belongs to a temporary encounter party/caravan.
+    bool IsEncounterTemporaryGroup(uint32 groupLowGuid);
+
     // Lifecycle & preemption hooks
     void OnBotSuspended(Player* bot, char const* reason);
     void OnParticipantDeath(Unit* victim, Unit* killer = nullptr);
