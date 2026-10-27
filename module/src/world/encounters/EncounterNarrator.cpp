@@ -1,11 +1,17 @@
 #include "EncounterNarrator.h"
+#include "BotMgr.h"
+#include "CellImpl.h"
 #include "Chat.h"
 #include "EncounterConfig.h"
 #include "GameTime.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Map.h"
 #include "Player.h"
 #include "SharedDefines.h"
+#include "WorldSession.h"
 #include <cmath>
+#include <vector>
 
 namespace
 {
@@ -128,12 +134,15 @@ namespace EncounterNarrator
     {
         if (!targetPlayer || !sourceBot || !targetPlayer->IsInWorld() || !sourceBot->IsInWorld())
             return false;
+        if (!targetPlayer->IsAlive() || !sourceBot->IsAlive())
+            return false;
         if (!targetPlayer->GetSession())
             return false;
 
         EncounterConfig const& cfg = EncounterSettings::Get();
         uint32 now = NowMs();
         float dist = Dist2D(targetPlayer, sourceBot);
+        bool inLos = sourceBot->IsWithinLOSInMap(targetPlayer);
 
         if (!_gate.CanSendToPlayer(
                 targetPlayer->GetGUID(),
@@ -143,16 +152,20 @@ namespace EncounterNarrator
                 dist,
                 stalkElapsedMs,
                 cfg,
-                now))
+                now,
+                EncounterPhase::Active,
+                sourceBot->IsAlive(),
+                inLos))
         {
             return false;
         }
 
-        char const* line = SelectLine(type, NarratorChannel::PlayerAtmosphere, variantSeed);
+        uint32 dedupedSeed = _gate.AvoidDuplicateVariant(targetPlayer->GetGUID(), variantSeed, 3u);
+        char const* line = SelectLine(type, NarratorChannel::PlayerAtmosphere, dedupedSeed);
         if (!line)
             return false;
 
-        _gate.RecordPlayerMessage(targetPlayer->GetGUID(), cfg, now);
+        _gate.RecordPlayerMessage(targetPlayer->GetGUID(), cfg, now, dedupedSeed);
         ChatHandler(targetPlayer->GetSession()).SendSysMessage(line);
         return true;
     }
@@ -170,27 +183,44 @@ namespace EncounterNarrator
         EncounterConfig const& cfg = EncounterSettings::Get();
         uint32 now = NowMs();
 
-        uint32 listenerMapId = bot->GetMapId();
-        float dist = 0.0f;
-
-        if (specificListener)
+        Player* listener = specificListener;
+        if (!listener)
         {
-            if (!specificListener->IsInWorld())
+            // For local ambient/skirmish speech, verify a real player is actually within hearing range and LOS
+            std::vector<Player*> nearbyPlayers;
+            Acore::AnyPlayerInObjectRangeCheck check(bot, cfg.narratorMaxDistanceYards, true);
+            Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(bot, nearbyPlayers, check);
+            Cell::VisitObjects(bot, searcher, cfg.narratorMaxDistanceYards);
+            for (Player* p : nearbyPlayers)
+            {
+                if (p && p->IsInWorld() && p->GetSession() &&
+                    !sBotMgr->IsBotAccountId(p->GetSession()->GetAccountId()) &&
+                    bot->IsWithinLOSInMap(p))
+                {
+                    listener = p;
+                    break;
+                }
+            }
+            if (!listener)
                 return false;
-            listenerMapId = specificListener->GetMapId();
-            dist = Dist2D(bot, specificListener);
         }
+
+        if (!listener->IsInWorld() || !bot->IsWithinLOSInMap(listener))
+            return false;
+
+        uint32 listenerMapId = listener->GetMapId();
+        float dist = Dist2D(bot, listener);
 
         if (!_gate.CanBotSpeak(bot->GetGUID(), bot->GetMapId(), listenerMapId, dist, cfg, now))
             return false;
 
-        char const* line = SelectLine(type, channel, variantSeed);
+        uint32 dedupedSeed = _gate.AvoidDuplicateVariant(listener->GetGUID(), variantSeed, 3u);
+        char const* line = SelectLine(type, channel, dedupedSeed);
         if (!line)
             return false;
 
         _gate.RecordBotSpeech(bot->GetGUID(), cfg, now);
-        if (specificListener)
-            _gate.RecordPlayerMessage(specificListener->GetGUID(), cfg, now);
+        _gate.RecordPlayerMessage(listener->GetGUID(), cfg, now, dedupedSeed);
 
         switch (channel)
         {

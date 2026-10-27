@@ -37,24 +37,36 @@ public:
         float distanceYards,
         uint32 stalkElapsedMs,
         EncounterConfig const& cfg,
-        uint32 nowMs) const
+        uint32 nowMs,
+        EncounterPhase phase = EncounterPhase::Active,
+        bool sourceBotAlive = true,
+        bool hasLineOfSight = true) const
     {
         if (!cfg.narratorEnabled || playerGuid.IsEmpty())
+            return false;
+        if (!sourceBotAlive || !hasLineOfSight)
+            return false;
+        if (phase != EncounterPhase::Prepare && phase != EncounterPhase::Active)
             return false;
         if (botMapId != playerMapId)
             return false;
         if (distanceYards > cfg.narratorMaxDistanceYards)
             return false;
 
-        // Assassin narrator rule (§8): only when assassin is in close proximity and has stalked for a while
+        // Assassin narrator rule (§8 & §18): only when assassin is in close proximity (<38yd), in LOS, and has stalked for a while
         if (type == EncounterType::AssassinContract)
         {
-            if (distanceYards > 45.0f || stalkElapsedMs < 3000)
+            if (distanceYards > 38.0f || stalkElapsedMs < 3000)
                 return false;
         }
         else if (type == EncounterType::TheWatcher)
         {
-            if (distanceYards > 55.0f || stalkElapsedMs < 2000)
+            if (distanceYards > 48.0f || stalkElapsedMs < 2000)
+                return false;
+        }
+        else if (type == EncounterType::MysteryEncounter)
+        {
+            if (distanceYards > 42.0f)
                 return false;
         }
 
@@ -87,10 +99,24 @@ public:
         return true;
     }
 
-    void RecordPlayerMessage(ObjectGuid playerGuid, EncounterConfig const& cfg, uint32 nowMs)
+    void RecordPlayerMessage(ObjectGuid playerGuid, EncounterConfig const& cfg, uint32 nowMs, uint32 lineVariant = 0xFFFFFFFFu)
     {
         if (!playerGuid.IsEmpty())
+        {
             _playerNextAllowedMs[playerGuid] = nowMs + cfg.narratorPlayerCooldownMs;
+            if (lineVariant != 0xFFFFFFFFu)
+                _playerLastVariant[playerGuid] = lineVariant;
+        }
+    }
+
+    uint32 AvoidDuplicateVariant(ObjectGuid playerGuid, uint32 proposedVariant, uint32 poolSize) const
+    {
+        if (poolSize <= 1 || playerGuid.IsEmpty())
+            return proposedVariant;
+        auto it = _playerLastVariant.find(playerGuid);
+        if (it != _playerLastVariant.end() && (proposedVariant % poolSize) == (it->second % poolSize))
+            return proposedVariant + 1u;
+        return proposedVariant;
     }
 
     void RecordBotSpeech(ObjectGuid botGuid, EncounterConfig const& cfg, uint32 nowMs)
@@ -107,17 +133,20 @@ public:
     void ForgetPlayer(ObjectGuid playerGuid)
     {
         _playerNextAllowedMs.erase(playerGuid);
+        _playerLastVariant.erase(playerGuid);
     }
 
     void Clear()
     {
         _playerNextAllowedMs.clear();
         _botNextAllowedMs.clear();
+        _playerLastVariant.clear();
     }
 
 private:
     std::unordered_map<ObjectGuid, uint32> _playerNextAllowedMs;
     std::unordered_map<ObjectGuid, uint32> _botNextAllowedMs;
+    std::unordered_map<ObjectGuid, uint32> _playerLastVariant;
 };
 
 namespace EncounterNarrator
