@@ -23,6 +23,7 @@
 #include "WorldPlanner.h"
 #include "WorldReservations.h"
 #include "WorldSocial.h"
+#include "encounters/WorldEncounterDirector.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -610,6 +611,11 @@ namespace WorldBrain
                 return state.opportunity;
         }
 
+        // Dynamic Bot Encounters temporarily intercept open-world intent while pausing the bot's
+        // normal WorldBrain task; once the encounter finishes, the task resumes from its pause.
+        if (WorldEncounterDirector::UpdateBot(bot, state, persona, diff))
+            return WorldDirective::Busy;
+
         // Someone nearby needs a hand (a fight they are losing, a corpse to resurrect).
         if (WorldSocial::IsHelping(bot, state) || WorldSocial::TryHelp(bot, state))
             return WorldDirective::Busy;
@@ -770,6 +776,7 @@ namespace WorldBrain
 
     void Suspend(Player* bot, SuspendReason reason)
     {
+        WorldEncounterDirector::OnBotSuspended(bot, SuspendReasonName(reason));
         auto itr = _states.find(bot->GetGUID());
         if (itr == _states.end() || itr->second.suspended)
             return;
@@ -785,6 +792,7 @@ namespace WorldBrain
         state.nextPresenceMs = 0;
         state.suspended = true;
         state.suspendReason = reason;
+        state.pausedByEncounter = false;
         // A detour in progress is given up; the task was already paused for it and stays paused.
         state.opportunityActive = false;
         extra.opportunityStarted = false;
@@ -796,6 +804,7 @@ namespace WorldBrain
 
     void OnDeath(Player* bot)
     {
+        WorldEncounterDirector::OnParticipantDeath(bot);
         auto itr = _states.find(bot->GetGUID());
         if (itr == _states.end())
             return;
@@ -805,6 +814,7 @@ namespace WorldBrain
         extra.deathHandled = true;
 
         BrainState& state = itr->second;
+        state.pausedByEncounter = false;
         // Dying on a detour ends the detour; the task is resumed (not left paused) and recovers
         // like any other death. The corpse run itself is the task's own business (the brain-gap
         // rule takes it off the phase clock).
@@ -976,6 +986,8 @@ namespace WorldBrain
         if (!party.empty())
             handler->PSendSysMessage("  {}", party);
 
+        handler->PSendSysMessage("  {}", WorldEncounterDirector::DescribeBot(bot->GetGUID()));
+
         if (!state.lastEvent.empty())
             handler->PSendSysMessage("  Last event ({} ago): {}", SecondsText(now - state.lastEventMs), state.lastEvent);
 
@@ -1040,10 +1052,12 @@ namespace WorldBrain
         PopulationGrid const& grid = PopulationHeatmap::Grid();
         handler->PSendSysMessage("Reservations: {} exclusive, {} shared, {} conflicts. Heatmap: {} bots in {} cells.",
             table.ExclusiveCount(), table.SharedCount(), table.Conflicts(), grid.BotCount(), grid.CellCount());
+        handler->PSendSysMessage("{}", WorldEncounterDirector::DescribeStats());
     }
 
     void Forget(ObjectGuid botGuid)
     {
+        WorldEncounterDirector::ForgetBot(botGuid);
         WorldParties::Forget(botGuid);
         WorldReservations::ReleaseAll(botGuid);
         PopulationHeatmap::Remove(botGuid);

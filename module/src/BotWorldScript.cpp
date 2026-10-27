@@ -4,6 +4,7 @@
 #include "BotTalentBuilds.h"
 #include "BotWorldBehavior.h"
 #include "WorldBrain.h"
+#include "world/encounters/WorldEncounterDirector.h"
 #include "Config.h"
 #include "Creature.h"
 #include "KillRewarder.h"
@@ -33,6 +34,7 @@ public:
         CoaTraining::Shutdown();
         if (!sBotMgr->BotsEnabled())
             return;
+        WorldEncounterDirector::ResetAll();
         sBotMgr->LogoutAllBots();
     }
 
@@ -53,6 +55,7 @@ public:
         BotWorldBehavior::LoadConfig();
         // Quest knowledge base, objective handlers' config: built once, after the world loaded.
         WorldBrain::Initialize();
+        WorldEncounterDirector::LoadConfig();
 
         if (sConfigMgr->GetOption<bool>("CoaBots.AutoLoginOnStartup", false))
             sBotMgr->QueueAllBotsForAutoLogin();
@@ -62,7 +65,14 @@ public:
 class coa_playerbots_playerscript : public PlayerScript
 {
 public:
-    coa_playerbots_playerscript() : PlayerScript("coa_playerbots_playerscript", { PLAYERHOOK_ON_REWARD_KILL_REWARDER }) { }
+    coa_playerbots_playerscript() : PlayerScript("coa_playerbots_playerscript", { PLAYERHOOK_ON_REWARD_KILL_REWARDER, PLAYERHOOK_ON_LOGOUT }) { }
+
+    void OnPlayerLogout(Player* player) override
+    {
+        if (!sBotMgr->BotsEnabled() || !player)
+            return;
+        WorldEncounterDirector::OnPlayerLogout(player->GetGUID());
+    }
 
     void OnPlayerRewardKillRewarder(Player* player, KillRewarder* rewarder, bool /*isDungeon*/, float& /*rate*/) override
     {
@@ -72,6 +82,15 @@ public:
         Unit* victim = rewarder->GetVictim();
         if (!victim)
             return;
+
+        if (Player* victimPlayer = victim->ToPlayer())
+        {
+            BotMgr::KillEvent pvpEvent;
+            pvpEvent.killer = player->GetGUID();
+            pvpEvent.victim = victimPlayer->GetGUID();
+            sBotMgr->PostKillEvent(pvpEvent);
+            return;
+        }
 
         Creature* creature = victim->ToCreature();
         if (!creature)

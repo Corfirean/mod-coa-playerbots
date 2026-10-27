@@ -8,6 +8,7 @@
 #include "BotLfgFill.h"
 #include "BotMgr.h"
 #include "WorldBrain.h"
+#include "world/encounters/WorldEncounterDirector.h"
 #include "BotSpawnRandom.h"
 #include "BotTalentBuilds.h"
 #include "Chat.h"
@@ -63,6 +64,7 @@ public:
             { "strategy",     HandleBotStrategyCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "brain",        HandleBotBrainCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "worldstats",   HandleBotWorldStatsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "encounter",    HandleBotEncounterCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "learnspec",    HandleBotLearnSpecCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "itemfit",      HandleBotItemFitCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "follow",       HandleBotFollowCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -826,6 +828,140 @@ public:
         BotAI::SetSuspended(ObjectGuid::Create<HighGuid::Player>(charLowGuid), false);
         if (handler)
             handler->PSendSysMessage("BotMgr: guid {} BotAI resumed.", charLowGuid);
+        return true;
+    }
+
+    static bool HandleBotEncounterCommand(ChatHandler* handler, Tail args)
+    {
+        std::string text(args);
+        std::istringstream iss(text);
+        std::string subcmd;
+        iss >> subcmd;
+
+        if (subcmd.empty() || subcmd == "stats")
+        {
+            if (handler)
+                handler->PSendSysMessage("{}", WorldEncounterDirector::DescribeStats());
+            return true;
+        }
+
+        if (subcmd == "reload")
+        {
+            WorldEncounterDirector::LoadConfig();
+            if (handler)
+                handler->SendSysMessage("DynamicEncounters: configuration reloaded.");
+            return true;
+        }
+
+        if (subcmd == "bot")
+        {
+            uint32 guidLow = 0;
+            iss >> guidLow;
+            ObjectGuid botGuid;
+            if (guidLow != 0)
+                botGuid = ObjectGuid::Create<HighGuid::Player>(guidLow);
+            else if (handler && handler->getSelectedPlayer())
+                botGuid = handler->getSelectedPlayer()->GetGUID();
+
+            if (botGuid.IsEmpty())
+            {
+                if (handler)
+                    handler->SendSysMessage("Usage: .botcmd encounter bot <botGuidLow>");
+                return true;
+            }
+            if (handler)
+                handler->PSendSysMessage("Bot {}: {}", botGuid.GetCounter(), WorldEncounterDirector::DescribeBot(botGuid));
+            return true;
+        }
+
+        if (subcmd == "memory" || subcmd == "bounty" || subcmd == "nemesis")
+        {
+            uint32 guidLow = 0;
+            iss >> guidLow;
+            ObjectGuid playerGuid;
+            if (guidLow != 0)
+                playerGuid = ObjectGuid::Create<HighGuid::Player>(guidLow);
+            else if (handler && handler->getSelectedPlayer())
+                playerGuid = handler->getSelectedPlayer()->GetGUID();
+            else if (handler && handler->GetPlayer())
+                playerGuid = handler->GetPlayer()->GetGUID();
+
+            if (playerGuid.IsEmpty())
+            {
+                if (handler)
+                    handler->SendSysMessage("Usage: .botcmd encounter memory [playerGuidLow]");
+                return true;
+            }
+            if (handler)
+                handler->PSendSysMessage("{}", WorldEncounterDirector::DescribeBountyAndNemesis(playerGuid));
+            return true;
+        }
+
+        if (subcmd == "stop")
+        {
+            std::string targetToken;
+            iss >> targetToken;
+            if (targetToken == "all" || targetToken.empty())
+            {
+                uint32 stopped = WorldEncounterDirector::StopAllEncounters();
+                if (handler)
+                    handler->PSendSysMessage("DynamicEncounters: stopped {} active encounter(s).", stopped);
+                return true;
+            }
+
+            uint64 id = std::strtoull(targetToken.c_str(), nullptr, 10);
+            std::string msg;
+            WorldEncounterDirector::StopEncounter(id, msg);
+            if (handler)
+                handler->PSendSysMessage("{}", msg);
+            return true;
+        }
+
+        if (subcmd == "start")
+        {
+            std::string typeToken;
+            std::string playerToken;
+            iss >> typeToken >> playerToken;
+            EncounterType type = ParseEncounterType(typeToken);
+            if (type == EncounterType::None)
+            {
+                if (handler)
+                    handler->SendSysMessage("Usage: .botcmd encounter start <assassin|watcher|skirmish|ambush|bounty|nemesis|duel|caravan|deserter|hunter_prey|rival_party|rare_hunter|mystery> [playerNameOrGuid]");
+                return true;
+            }
+
+            Player* targetPlayer = nullptr;
+            if (!playerToken.empty())
+            {
+                uint32 guidLow = static_cast<uint32>(std::strtoul(playerToken.c_str(), nullptr, 10));
+                if (guidLow != 0)
+                    targetPlayer = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(guidLow));
+                if (!targetPlayer)
+                    targetPlayer = ObjectAccessor::FindPlayerByName(playerToken);
+            }
+            else if (handler)
+            {
+                targetPlayer = handler->getSelectedPlayer();
+                if (!targetPlayer)
+                    targetPlayer = handler->GetPlayer();
+            }
+
+            if (!targetPlayer)
+            {
+                if (handler)
+                    handler->SendSysMessage("DynamicEncounters: target/anchor player not found online.");
+                return true;
+            }
+
+            std::string msg;
+            WorldEncounterDirector::ForceStartEncounter(type, targetPlayer, msg);
+            if (handler)
+                handler->PSendSysMessage("{}", msg);
+            return true;
+        }
+
+        if (handler)
+            handler->SendSysMessage("Usage: .botcmd encounter <stats|bot|memory|start|stop|reload>");
         return true;
     }
 };
