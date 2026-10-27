@@ -20,6 +20,7 @@
 #include "ClassSpecRoles.h"
 #include "Config.h"
 #include "DBCStores.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "LFGMgr.h"
 #include "Log.h"
@@ -341,6 +342,53 @@ uint8 RoleBitFor(Player* bot)
     }
 }
 
+// When the dungeon finder has formed a group and put it in LFG_STATE_DUNGEON, LFGMgr teleports every member once. A bot that cannot take that
+// one teleport (in combat, falling or flying on a mount, dead, still arriving from an earlier teleport) used to stay where it was, and the
+// player waited at the dungeon door for a group that never came. Try again every few seconds until the bot is on the dungeon's map.
+struct LfgTeleportRetry
+{
+    uint32 nextAtMs{0};
+    uint8 tries{0};
+};
+std::unordered_map<ObjectGuid::LowType, LfgTeleportRetry> lfgTeleportRetry;
+
+void RetryLfgTeleport(Player* bot, Group* grp)
+{
+    constexpr uint8 MAX_TRIES = 20;
+    constexpr uint32 RETRY_MS = 4000;
+    ObjectGuid::LowType const low = bot->GetGUID().GetCounter();
+    lfg::LFGDungeonData const* dungeon = sLFGMgr->GetLFGDungeon(sLFGMgr->GetDungeon(grp->GetGUID()));
+    if (!dungeon)
+        return;
+    if (bot->GetMapId() == uint32(dungeon->map))
+    {
+        lfgTeleportRetry.erase(low);
+        return;
+    }
+    if (bot->IsBeingTeleported())
+        return;
+
+    uint32 const now = uint32(GameTime::GetGameTimeMS().count());
+    LfgTeleportRetry& retry = lfgTeleportRetry[low];
+    if (retry.nextAtMs == 0)
+    {
+        retry.nextAtMs = now + RETRY_MS; // the group's own teleport is still on its way
+        return;
+    }
+    if (now < retry.nextAtMs || retry.tries >= MAX_TRIES)
+        return;
+    retry.nextAtMs = now + RETRY_MS;
+    ++retry.tries;
+
+    LOG_INFO("module.coa-playerbots.lfgfill",
+        "BotLfgFill: bot '{}' is in an LFG group for dungeon {} (map {}) but on map {}; teleport retry {} (alive {}, combat {}, falling {}, flying {}, mounted {}).",
+        bot->GetName(), dungeon->id, dungeon->map, bot->GetMapId(), uint32(retry.tries), bot->IsAlive(), bot->IsInCombat(), bot->IsFalling(),
+        bot->IsFlying(), bot->IsMounted());
+    if (bot->IsMounted())
+        bot->Dismount();
+    sLFGMgr->TeleportPlayer(bot, false);
+}
+
 void ProcessGroupRoleChecks()
 {
     for (Player* bot : sBotMgr->GetOnlineBots())
@@ -350,6 +398,9 @@ void ProcessGroupRoleChecks()
 
         if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
             sBotMgr->QueueTeleportAck(bot->GetSession());
+
+        if (Group* lfgGroup = bot->GetGroup(); lfgGroup && lfgGroup->isLFGGroup() && sLFGMgr->GetState(lfgGroup->GetGUID()) == lfg::LFG_STATE_DUNGEON)
+            RetryLfgTeleport(bot, lfgGroup);
 
         ObjectGuid::LowType lowGuid = bot->GetGUID().GetCounter();
         lfg::LfgState state = sLFGMgr->GetState(bot->GetGUID());
