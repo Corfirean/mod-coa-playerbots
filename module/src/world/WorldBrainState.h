@@ -10,6 +10,7 @@
 #define COA_PLAYERBOTS_WORLD_BRAIN_STATE_H
 
 #include "BotMovementPrimitives.h"
+#include "DangerMap.h"
 #include "FailureMemory.h"
 #include "Log.h"
 #include "ObjectGuid.h"
@@ -35,6 +36,17 @@ struct RouteStep
     float utility = 0.0f;
 };
 
+// The waypoints the danger map suggested for the current travel goal (WorldExecutor::TravelTo).
+struct TravelRoute
+{
+    uint64 key = 0;                  // goal the route was planned for
+    uint32 plannedAtMs = 0;
+    size_t next = 0;                 // index of the waypoint being walked to
+    bool disabled = false;           // a waypoint could not be reached: go straight for this goal
+    uint32 blockedSinceMs = 0;       // the movement layer has been refusing the current waypoint since then
+    std::vector<DangerMap::Waypoint> points;
+};
+
 struct BrainState
 {
     // Set once by StateFor when the state is first created -- lets NoteEvent (the single existing
@@ -46,6 +58,7 @@ struct BrainState
     WorldGoal goal = WorldGoal::None;
     WorldTask task;
     LocomotionToken travelToken;
+    TravelRoute travelRoute;
     uint32 nextTaskId = 1;
 
     uint32 nextPlanMs = 0;

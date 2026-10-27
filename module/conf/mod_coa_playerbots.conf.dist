@@ -471,3 +471,10 @@ CoaBots.Training.RealisticDamageLegacyPath = 0
 
 # Reserved training phases: bits 30..27; configure only on isolated servers.
 CoaBots.Training.MaxParallelArenas = 1
+
+# Outland (map 530) and Northrend (map 571) for bots. 2 = automatic: closed when MaxPlayerLevel is 60 or lower and the
+# content scaling that brings those expansions down to that range is off (CoAContentScaling.Enable, with CoATBC.Enable
+# for Outland and CoAWotLK.Enable for Northrend). 1 = always closed, 0 = always open. A closed map means: no
+# spawns, no hubs, no quests, no flights there, and bots found there are moved out. The starting areas of the
+# Blood Elves (Eversong, Ghostlands, Silvermoon) and the Draenei (Azuremyst, Bloodmyst, the Exodar) stay open.
+CoaBots.RestrictExpansionZones = 2

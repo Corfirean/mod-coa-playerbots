@@ -125,6 +125,11 @@ namespace BotAI
     // would make learned spells uncastable (wrong subclass, two-hander with an off-hand-only spell).
     float WeaponKitFit(Player* bot, ItemTemplate const* proto);
 
+    // True when the bot's learned Ascension kit needs a melee or ranged weapon subclass that nothing it has equipped
+    // provides (a Sentinel with a staff and a wand and no bow): its core spells then fail with "equipped item
+    // requirement" and it fights with white hits.
+    bool KitGearMismatch(Player* bot);
+
     // Training A/B switch: true makes ScoreItemForBot use the old class-only stat guess instead of the spec stat model.
     void SetLegacyGearScoring(bool legacy);
 

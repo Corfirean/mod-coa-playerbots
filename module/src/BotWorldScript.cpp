@@ -4,6 +4,7 @@
 #include "BotTalentBuilds.h"
 #include "BotWorldBehavior.h"
 #include "WorldBrain.h"
+#include "DangerMap.h"
 #include "Config.h"
 #include "Creature.h"
 #include "KillRewarder.h"
@@ -55,6 +56,7 @@ public:
         BotWorldBehavior::LoadConfig();
         // Quest knowledge base, objective handlers' config: built once, after the world loaded.
         WorldBrain::Initialize();
+        DangerMap::Initialize();
 
         if (sConfigMgr->GetOption<bool>("CoaBots.AutoLoginOnStartup", false))
             sBotMgr->QueueAllBotsForAutoLogin();
@@ -86,6 +88,7 @@ public:
         if (!player || !BotMgr::IsBotAccountId(player->GetSession()->GetAccountId()))
             return;
 
+        DangerMap::NoteDeath(player->GetMapId(), player->GetPositionX(), player->GetPositionY());
         LOG_INFO("module.coa-playerbots", "BotDeath: '{}' (class {}, level {}) died on map {} zone {} at ({:.0f} {:.0f} {:.0f}), underwater {}, attackers {}, in combat {}.",
             player->GetName(), uint32(player->getClass()), uint32(player->GetLevel()), player->GetMapId(), player->GetZoneId(),
             player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->IsUnderWater(), player->getAttackers().size(), player->IsInCombat());

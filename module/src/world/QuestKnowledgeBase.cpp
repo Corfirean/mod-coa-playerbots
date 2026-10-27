@@ -1,4 +1,5 @@
 #include "QuestKnowledgeBase.h"
+#include "BotZoneProgression.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
@@ -65,7 +66,7 @@ namespace
 
     void AddSpawn(std::unordered_map<uint32, std::vector<SpawnPoint>>& index, uint32 entry, SpawnData const& data)
     {
-        if (!entry)
+        if (!entry || BotZoneProgression::ExpansionBlocked(data.mapid, data.posX, data.posY))
             return;
         index[entry].push_back(SpawnPoint{ data.mapid, data.posX, data.posY, data.posZ, uint32(data.spawnId), data.phaseMask });
     }

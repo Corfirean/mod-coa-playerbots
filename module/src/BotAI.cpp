@@ -92,6 +92,7 @@
 #include "BotEconomy.h"
 #include "BotWorldBehavior.h"
 #include "BotZoneProgression.h"
+#include "BotSpawnRandom.h"
 #include "WorldBrain.h"
 #include "WorldParties.h"
 #include "GameTime.h"
@@ -875,6 +876,27 @@ float WeaponKitFit(Player* bot, ItemTemplate const* proto)
             break;
     }
     return std::max(-KIT_WEAPON_CAP, std::min(KIT_WEAPON_CAP, fit));
+}
+
+bool KitGearMismatch(Player* bot)
+{
+    if (!bot || bot->getClass() < 12)
+        return false;
+    KitWeaponDemand const demand = GetKitWeaponDemand(bot);
+    auto satisfied = [&](std::vector<uint32> const& masks, uint8 slot)
+    {
+        if (masks.empty())
+            return true;
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item || item->GetTemplate()->Class != ITEM_CLASS_WEAPON)
+            return false;
+        uint32 const bit = 1u << item->GetTemplate()->SubClass;
+        for (uint32 mask : masks)
+            if (mask & bit)
+                return true;
+        return false;
+    };
+    return !satisfied(demand.melee, EQUIPMENT_SLOT_MAINHAND) || !satisfied(demand.ranged, EQUIPMENT_SLOT_RANGED);
 }
 
 namespace
@@ -5046,6 +5068,20 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
             }
         }
 
+        // Still creatures it cannot beat over the body after waiting (a graveyard inside a camp, guards that attack on sight): the
+        // bot comes back and is moved to a level-appropriate hub at once, before they act. Reclaiming here killed it again, over
+        // and over, on the same spot.
+        if (CorpseIsCamped(bot, corpse, GHOST_HOLD_RANGE))
+        {
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: ghost '{}' leaves its body on map {} at ({:.0f} {:.0f}): creatures it cannot beat stand over it; moving to a hub.",
+                bot->GetName(), bot->GetMapId(), corpse->GetPositionX(), corpse->GetPositionY());
+            bot->ResurrectPlayer(0.5f, false);
+            bot->SpawnCorpseBones();
+            state.ghostDurationMs = 0;
+            BotZoneProgression::RelocateBot(bot, true);
+            return;
+        }
+
         // The reclaim delay (30, 60, then 120 seconds with every recent death) is there to keep players from
         // spamming deaths; a bot that keeps dying in the open world stood at its body for two minutes each time.
         // Standing on the body, it comes back at once, exactly what a reclaim does.
@@ -5220,8 +5256,12 @@ void Update(Player* bot, uint32 diff)
     if (state.lastLevel == 0)
     {
         state.lastLevel = currentLevel;
-        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel))
+        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel) || BotZoneProgression::ExpansionBlocked(bot))
             BotZoneProgression::QueueRelocation(bot);
+        // Gear that does not suit the bot (empty slots, pieces above its level, the weapon type its spells need missing) is
+        // fixed once per login, through the same throttled queue the gear repair command uses.
+        if (BotSpawn::NeedsGearRefit(bot))
+            BotGear::Queue(bot);
     }
     else if (currentLevel > state.lastLevel)
     {
@@ -5230,8 +5270,10 @@ void Update(Player* bot, uint32 diff)
         // level-up, and a talent pick can depend on an ability the book only just taught.
         BotProgression::OnLevelUp(bot, currentLevel);
         BotTalentBuilds::ApplyBuildForLevel(bot, currentLevel);
+        if (BotSpawn::NeedsGearRefit(bot))
+            BotGear::Queue(bot);
         SpellResolver::Invalidate(bot->GetGUID());
-        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel))
+        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel) || BotZoneProgression::ExpansionBlocked(bot))
             BotZoneProgression::QueueRelocation(bot);
     }
 

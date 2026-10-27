@@ -805,6 +805,7 @@ namespace WorldBrain
         extra.deathHandled = true;
 
         BrainState& state = itr->second;
+        state.travelRoute = TravelRoute(); // the death is now on the danger map: plan the way again
         // Dying on a detour ends the detour; the task is resumed (not left paused) and recovers
         // like any other death. The corpse run itself is the task's own business (the brain-gap
         // rule takes it off the phase clock).

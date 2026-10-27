@@ -8,6 +8,8 @@
 #include "BotLfgFill.h"
 #include "BotMgr.h"
 #include "WorldBrain.h"
+#include "DangerMap.h"
+#include "StringFormat.h"
 #include "BotSpawnRandom.h"
 #include "BotTalentBuilds.h"
 #include "Chat.h"
@@ -85,6 +87,8 @@ public:
             { "economy",      HandleBotEconomyCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "movement",     HandleBotMovementCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "pathtest",     HandleBotPathTestCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "dangertest",   HandleBotDangerTestCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "dangernote",   HandleBotDangerNoteCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "talenttest",   HandleBotTalentTestCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "train", HandleTrainingCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "autodungeon",  HandleBotAutoDungeonCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
@@ -590,6 +594,44 @@ public:
                     force, ok, uint32(path.GetPathType()), pts.size(), path.getPathLength(), end.x, end.y, end.z,
                     bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), x, y, z);
         }
+        return true;
+    }
+
+    // The danger map around a bot and the route it would take to a point: `.botcmd dangertest <guid> <x> <y>`.
+    static bool HandleBotDangerTestCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, float x, float y)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        uint8 const level = bot->GetLevel();
+        uint8 const team = uint8(bot->GetTeamId());
+        handler->PSendSysMessage("{}", DangerMap::Summary());
+        handler->PSendSysMessage("risk here {:.1f}, at the goal {:.1f} (level {}, team {})", DangerMap::Risk(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), level, team),
+            DangerMap::Risk(bot->GetMapId(), x, y, level, team), uint32(level), uint32(team));
+        std::vector<DangerMap::Waypoint> route = DangerMap::Plan(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), x, y, level, team);
+        std::string line;
+        for (int i = 0; i <= 10; ++i)
+        {
+            float t = float(i) / 10.0f;
+            line += Acore::StringFormat(" {:.0f}", DangerMap::Risk(bot->GetMapId(), bot->GetPositionX() + (x - bot->GetPositionX()) * t, bot->GetPositionY() + (y - bot->GetPositionY()) * t, level, team));
+        }
+        handler->PSendSysMessage("risk along the straight line, every tenth:{}", line);
+        handler->PSendSysMessage("route: {} waypoint(s)", route.size());
+        for (DangerMap::Waypoint const& w : route)
+            handler->PSendSysMessage("  ({:.0f}, {:.0f}) risk {:.1f}", w.x, w.y, DangerMap::Risk(bot->GetMapId(), w.x, w.y, level, team));
+        return true;
+    }
+
+    // Marks a spot as one where bots died (test aid): `.botcmd dangernote <map> <x> <y> <times>`.
+    static bool HandleBotDangerNoteCommand(ChatHandler* handler, uint32 mapId, float x, float y, uint32 times)
+    {
+        for (uint32 i = 0; i < std::min<uint32>(times, 10); ++i)
+            DangerMap::NoteDeath(mapId, x, y);
+        handler->PSendSysMessage("noted {} death(s) at map {} ({:.0f}, {:.0f})", std::min<uint32>(times, 10), mapId, x, y);
         return true;
     }
 

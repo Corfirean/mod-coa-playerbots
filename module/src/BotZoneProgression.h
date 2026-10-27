@@ -23,6 +23,17 @@ namespace BotZoneProgression
         uint8 maxLevel;
     };
 
+    // Outland (map 530) and Northrend (map 571) are closed to bots when the server's level cap is 60 or lower and the
+    // content scaling that brings them down to that range is off (CoaBots.RestrictExpansionZones = 2, the default;
+    // 1 always closes them, 0 never). The starting areas of the Blood Elves and Draenei, which are on map 530, stay open.
+    // Pure position tests, no terrain lookup, so they are cheap enough for every spawn of the quest index.
+    bool ExpansionRestricted(uint32 mapId);
+    bool ExpansionBlocked(uint32 mapId, float x, float y);
+    // The same test from a zone id alone (the hand-written zone lists below have no position).
+    bool ExpansionZoneBlocked(uint32 zoneId);
+    // Where a bot stands, for callers that have a Player.
+    bool ExpansionBlocked(Player const* bot);
+
     // Returns the race's designated 1-10 starting hub (all coordinates from game_tele)
     ZoneHub const* GetStartingHubForRace(uint8 race);
 

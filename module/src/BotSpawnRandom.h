@@ -64,6 +64,11 @@ void ResetAccountLookupCache();
 // original hand-made test characters predate it and have zero profession skills).
 void RepairGear(Player* bot);
 
+// True when the bot's equipment does not suit it: an empty armor or main-hand slot, a piece that needs a higher level,
+// three or more pieces far below its level, or the weapon type its learned spells need missing (BotAI::KitGearMismatch).
+// RepairGear then runs the level-bracketed gear-up over it, replacing a piece only when the new one scores better.
+bool NeedsGearRefit(Player* bot);
+
 // Training A/B only: strips all equipment and equips by the live gear-up logic (see the definition).
 void GearUpForTraining(Player* bot);
 
