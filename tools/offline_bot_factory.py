@@ -39,6 +39,7 @@ import argparse
 import hashlib
 import os
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -340,7 +341,69 @@ class GuidAllocator:
         return v
 
 
-def build_template_roster(mysql: MysqlClient, bot_account_ids: set[int]) -> dict[int, dict[int, ClassTemplate]]:
+def factory_race_policy(repack: Path):
+    modules = repack / "Core/configs/modules"
+    def read(name):
+        path = modules / name
+        if not path.is_file():
+            return {}
+        values = {}
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip().strip('"')
+        return values
+    races = read("coa_custom_races.conf")
+    companions = read("mod_coa_playerbots.conf")
+    squid = read("playerbots.conf")
+    def ids(raw, strict=False):
+        result = set()
+        if not raw.strip():
+            return result
+        for token in raw.split(","):
+            token = token.strip()
+            if not re.fullmatch(r"[0-9]+", token) or not 0 < int(token) <= 255:
+                raise ValueError("Invalid bot race restriction list")
+            race = int(token)
+            if strict and (race in result or race in {1,2,3,4,5,6,7,8,10,11}):
+                raise ValueError("Invalid owner race restriction list")
+            result.add(race)
+        return result
+    disabled = ids(races.get("CoACustomRaces.DisabledRaceIds", ""), True)
+    expected_catalog = races.get("CoACustomRaces.DisabledRaceCatalogSha256", "").lower()
+    if expected_catalog and not re.fullmatch(r"[0-9a-f]{64}", expected_catalog):
+        raise ValueError("Invalid race catalog fingerprint")
+    custom = all(values.get(key, fallback).lower() in {"1", "true"} for values, key, fallback in [
+        (races, "CoACustomRaces.Enable", "0"), (races, "CoACustomRaces.BotsEnable", "0"),
+        (companions, "CoaBots.CustomRaces.Enable", "1")])
+    excluded = ids(companions.get("CoaBots.ExcludedBotRaces", "")) | ids(squid.get("AiPlayerbot.ExcludedBotRaces", ""))
+    excluded |= ids(squid.get("AiPlayerbot.CrashingBotRaces", "32,72,77,97"))
+    if disabled:
+        world_config = modules / "../worldserver.conf"
+        world = read("../worldserver.conf")
+        if world_config.is_file():
+            data_directory = Path(world.get("DataDir", "."))
+            if not data_directory.is_absolute():
+                data_directory = repack / "Core" / data_directory
+        else:
+            data_directory = repack / "Data"
+        dbc = data_directory / "dbc_races/ChrRaces.dbc"
+        data = dbc.read_bytes()
+        if expected_catalog and hashlib.sha256(data).hexdigest() != expected_catalog:
+            raise ValueError("Race catalog changed; review the owner restrictions before generating bots")
+        if len(data) < 20:
+            raise ValueError("Truncated server race catalog")
+        magic, count, fields, size, strings = struct.unpack_from("<4sIIII", data)
+        if magic != b"WDBC" or fields != 69 or size != 276 or len(data) != 20 + count * size + strings:
+            raise ValueError("Unsupported server race catalog")
+        known = {struct.unpack_from("<I", data, 20 + index * size)[0] for index in range(count)}
+        if not disabled <= known:
+            raise ValueError("Owner restriction contains an unknown RaceID")
+    return lambda race: race not in excluded and (race in {1,2,3,4,5,6,7,8,10,11} or (custom and race not in disabled))
+
+
+def build_template_roster(mysql: MysqlClient, bot_account_ids: set[int], allowed_race=None) -> dict[int, dict[int, ClassTemplate]]:
     rows = mysql.run(
         "SELECT class, guid, race, account FROM characters WHERE account <> 1 AND level >= 80 "
         "AND class BETWEEN 12 AND 32 ORDER BY guid",
@@ -351,6 +414,8 @@ def build_template_roster(mysql: MysqlClient, bot_account_ids: set[int]) -> dict
         if int(account_s) in bot_account_ids:
             continue
         classId, guid, race = int(class_s), int(guid_s), int(race_s)
+        if allowed_race is not None and not allowed_race(race):
+            continue
         team = 0 if race in ALLIANCE_RACES else 1
         slot = roster.setdefault(classId, {})
         if team not in slot:
@@ -519,6 +584,7 @@ def main() -> None:
 
     rng = random.Random(args.seed)
     mysql = find_repack_mysql(args.mysql_exe, args.defaults_file)
+    allowed_race = factory_race_policy(mysql.exe.resolve().parents[2])
 
     print(f"Reading current DB state via {mysql.exe} ...")
     existing_bot_accounts = mysql.run(
@@ -526,7 +592,7 @@ def main() -> None:
     )
     bot_account_ids = {int(r[0]) for r in existing_bot_accounts}
 
-    roster = build_template_roster(mysql, bot_account_ids)
+    roster = build_template_roster(mysql, bot_account_ids, allowed_race)
     missing = [c for c in range(12, 33) if c not in roster]
     if missing:
         print(f"WARNING: no level-80+ template character found for class id(s) {missing} "

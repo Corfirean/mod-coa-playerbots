@@ -44,6 +44,7 @@
 #include "Log.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "ScriptMgr.h"
 #include "World.h"
 #include <algorithm>
 #include <array>
@@ -105,9 +106,23 @@ std::vector<uint8> GetValidBotRaces()
     }
 
     std::vector<uint8> races;
+    std::unordered_set<uint8> crashing;
+    std::stringstream crashList(sConfigMgr->GetOption<std::string>("AiPlayerbot.CrashingBotRaces", "32,72,77,97"));
+    std::string crashToken;
+    while (std::getline(crashList, crashToken, ','))
+    {
+        try
+        {
+            size_t consumed = 0;
+            unsigned long race = std::stoul(crashToken, &consumed);
+            if (race > 0 && race <= 255 && crashToken.find_first_not_of(" \t\r\n", consumed) == std::string::npos)
+                crashing.insert(static_cast<uint8>(race));
+        }
+        catch (...) { }
+    }
     constexpr uint8 stockRaces[] = { 1, 2, 3, 4, 5, 6, 7, 8, 10, 11 };
     for (uint8 r : stockRaces)
-        if (!excluded.count(r))
+        if (!excluded.count(r) && !crashing.count(r))
             races.push_back(r);
 
     if (customRacesEnabled)
@@ -121,6 +136,8 @@ std::vector<uint8> GetValidBotRaces()
             if (excluded.empty() && defaultExpExclusions.count(r))
                 continue;
             if (excluded.count(r))
+                continue;
+            if (crashing.count(r))
                 continue;
 
             if (sChrRacesStore.LookupEntry(r))
@@ -694,6 +711,9 @@ std::vector<std::pair<std::string, std::string>> FreshCharacterOverrides(uint8 l
 // papered over.
 ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId = 0)
 {
+    auto const allowedRaces = GetValidBotRaces();
+    if (std::find(allowedRaces.begin(), allowedRaces.end(), race) == allowedRaces.end())
+        return 0;
     std::unordered_map<uint8, ClassTemplates> const& templateRoster = GetClassTemplateRoster();
     if (templateRoster.empty())
     {
@@ -754,6 +774,13 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
     uint32 accountId = FindOrCreateBotAccount(accountPrefix, charactersPerAccount, handler);
     if (!accountId)
         return 0;
+
+    if (!sScriptMgr->CanAccountCreateCharacter(accountId, race, classId))
+    {
+        LOG_INFO("module.coa-playerbots", "BotMgr: creation of race {} class {} rejected by server policy",
+            uint32(race), uint32(classId));
+        return 0;
+    }
 
     ClassTemplates const& templates = templateRoster.at(classId);
     uint32 templateGuid = templates.byTeam[wantedTeam].guid ? templates.byTeam[wantedTeam].guid
