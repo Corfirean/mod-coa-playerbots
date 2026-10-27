@@ -1,6 +1,7 @@
 #include "training/TrainingArenaManager.h"
 #include "BotGear.h"
 #include "BotEconomy.h"
+#include "Map.h"
 
 #include "AuctionHouseMgr.h"
 #include "Bag.h"
@@ -946,6 +947,8 @@ namespace BotEconomy
             Player* bot = session->GetPlayer();
             if (!bot || CoaTraining::Owns(bot->GetGUID()) || !bot->IsInWorld() || bot->IsInCombat() || !bot->IsAlive())
                 continue;
+            if (bot->GetGroup() || bot->InBattleground() || (bot->GetMap() && bot->GetMap()->IsDungeon()))
+                continue;
 
             auto [it, isNew] = g_nextScanAt.try_emplace(bot->GetGUID(), now);
             if (!isNew && int32(now - it->second) < 0)
@@ -1301,6 +1304,19 @@ namespace BotEconomy
 
         ObjectGuid const guid = bot->GetGUID();
         uint32 const now = GameTime::GetGameTimeMS().count();
+
+        // A bot in a group, a dungeon or a battleground belongs to that: it does not walk off to town (confirmed in the soak test: the
+        // members of dungeon teams were sent to the auction house in the middle of a run).
+        if (bot->GetGroup() || bot->InBattleground() || bot->InArena() || (bot->GetMap() && bot->GetMap()->IsDungeon()))
+        {
+            if (g_trips.erase(guid))
+            {
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::Travel);
+                EndStockRun(guid);
+            }
+            g_wantsTrip.erase(guid);
+            return false;
+        }
 
         auto trip = g_trips.find(guid);
         if (trip == g_trips.end())

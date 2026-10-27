@@ -225,7 +225,15 @@ public:
         }
         lfg::LfgDungeonSet dungeons;
         dungeons.insert(dungeonId);
+        lfg::LfgLockMap const locks = sLFGMgr->GetLockedDungeons(bot->GetGUID());
+        auto lockItr = locks.find(dungeonId);
+        lfg::LfgQueuePolicy policy;
+        sScriptMgr->OnResolveLfgQueuePolicy(bot->GetGUID(), policy);
         sLFGMgr->JoinLfg(bot, roleBit, dungeons, "");
+        if (handler)
+            handler->PSendSysMessage("BotMgr: lfg state before {} after {}; lock status of dungeon {}: {}; queue mode {}; deserter aura {}; in group {}; options {}.",
+                0, uint32(sLFGMgr->GetState(bot->GetGUID())), dungeonId, lockItr == locks.end() ? -1 : int32(lockItr->second), uint32(policy.compositionMode),
+                bot->HasAura(lfg::LFG_SPELL_DUNGEON_DESERTER), bot->GetGroup() != nullptr, uint32(sLFGMgr->GetOptions()));
         BotLfgFill::WatchForProposal(bot);
         if (handler)
             handler->PSendSysMessage("BotMgr: bot '{}' asked to join LFG for dungeon {} as role {}.",

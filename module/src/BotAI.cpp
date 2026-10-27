@@ -1677,6 +1677,32 @@ private:
 // Quest targets are not this check's business any more: quest objectives are executed by the
 // open-world layer (world/QuestExecutor), which searches for its own live targets around the
 // objective area. Grinding is only ever grinding.
+// Creatures a bot gave up on because it stood in front of them for seconds without either side losing health (unreachable behind a gate or a
+// ledge, evading, immune): not picked as a pull or grind target again for a while. Without this a tank re-picked the same Scholomance Adept
+// every tick and the whole group stood at the entrance until the run was called stuck.
+std::unordered_map<ObjectGuid, std::unordered_map<ObjectGuid, uint32>> s_ignoredTargets;
+
+void IgnoreTargetFor(ObjectGuid bot, ObjectGuid target, uint32 ms)
+{
+    s_ignoredTargets[bot][target] = getMSTime() + ms;
+}
+
+bool IsIgnoredTarget(ObjectGuid bot, ObjectGuid target)
+{
+    auto it = s_ignoredTargets.find(bot);
+    if (it == s_ignoredTargets.end())
+        return false;
+    auto t = it->second.find(target);
+    if (t == it->second.end())
+        return false;
+    if (int32(t->second - getMSTime()) <= 0)
+    {
+        it->second.erase(t);
+        return false;
+    }
+    return true;
+}
+
 class GrindHostileUnitCheck
 {
 public:
@@ -1687,6 +1713,8 @@ public:
         if (!_me->IsWithinDistInMap(u, _range, true, false, false))
             return false;
         if (!_me->IsValidAttackTarget(u))
+            return false;
+        if (IsIgnoredTarget(_me->GetGUID(), u->GetGUID()))
             return false;
         if (u->GetLevel() > _maxLevel)
             return false;
@@ -4063,6 +4091,10 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         }
     }
 
+    // A creature given up on (see IgnoreTargetFor) is not fought again unless it is the one hitting us.
+    if (target && IsIgnoredTarget(bot->GetGUID(), target->GetGUID()) && target->GetVictim() != bot && !bot->getAttackers().count(target))
+        target = nullptr;
+
     if (target && !target->IsAlive())
     {
         BotAI::EnqueuePendingLoot(bot, target->GetGUID());
@@ -4165,10 +4197,25 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         snap.y = bot->GetPositionY();
         snap.z = bot->GetPositionZ();
         if (state.stuckDetector.Update(snap, getMSTime()))
+        {
             LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                 "STUCK-DETECTOR: bot '{}' made no progress against '{}' for {}ms (self {:.1f}% HP, target {:.1f}% HP, "
                 "holding spell {}) -- possible AI deadlock.",
                 bot->GetName(), target->GetName(), StuckDetectorRules{}.stallMs, snap.selfHpPct, snap.targetHpPct, snap.castSpellId);
+
+            // A mob nobody is hurting and that is not hurting us (an attacker would have changed one of the two numbers): give it up for a
+            // minute and a half instead of standing in front of it for good.
+            if (snap.targetHpPct >= 99.0f && target->GetVictim() != bot && !bot->getAttackers().count(target))
+            {
+                IgnoreTargetFor(bot->GetGUID(), target->GetGUID(), 90000);
+                bot->AttackStop();
+                BotMovement::ForceStopOwner(bot, MoveOwner::Combat);
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
+                state.lastCombatTargetGuid = ObjectGuid::Empty;
+                LOG_INFO("module.coa-playerbots", "STUCK-DETECTOR: bot '{}' gives up '{}' (entry {}) for 90 s.", bot->GetName(), target->GetName(), target->GetEntry());
+                return;
+            }
+        }
     }
 
     // Open-world flee response (BotFlee.h), new-trigger half: the "already fleeing" case was
