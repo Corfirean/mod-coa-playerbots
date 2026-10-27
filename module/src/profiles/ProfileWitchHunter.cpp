@@ -186,15 +186,15 @@ namespace BotAI
             p.useRangedAutoRepeat = true;
             p.preferredEngageDistance = PROFILE_RANGED_ENGAGE_DISTANCE;
 
-            // 1. Burst Cooldown: Repeater (Rapid Crossbow Barrage)
+            // 1. Heartseeking Bolt: 10 s cooldown, free, gives Rage and (with Bane of Witches) a Physical damage window.
+            // The spell id 805903 this slot used to hold ("Repeater") is not in Spell.dbc.
             {
                 AbilityDescriptor d;
-                d.name = "Repeater (Crossbow Barrage)";
-                d.rootSpellId = 805903;
-                d.tags = AbilityTag::RangedAttack | AbilityTag::OffensiveCD;
+                d.name = "Heartseeking Bolt";
+                d.rootSpellId = 805754;
+                d.tags = AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.internalThrottleMs = 30000;
-                d.baseScore = 260.0f;
+                d.baseScore = 250.0f;
                 p.abilities.push_back(d);
             }
 
@@ -209,11 +209,12 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
-            // 3. Primary Shot Builder: Coiling Shot
+            // 3. Primary Shot Builder: Darkslayer (instant, generates Rage, castable while moving with the spec passive).
+            // "Coiling Shot" (500082) is not in the spellbook, so the old builder never fired and Rage came only from procs.
             {
                 AbilityDescriptor d;
-                d.name = "Coiling Shot (Builder)";
-                d.rootSpellId = 500082;
+                d.name = "Darkslayer (Builder)";
+                d.rootSpellId = 804179;
                 d.tags = AbilityTag::RangedAttack | AbilityTag::Filler;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 170.0f;

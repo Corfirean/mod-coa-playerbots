@@ -232,7 +232,7 @@ class Lane:
             record['members_result'][m['name']] = {
                 'role': r['role'], 'level': m.get('lvl'), 'deaths': r['deaths'], 'minHp': r['minHp'], 'minPw': r['minPw'],
                 'damage': m.get('dmg', 0), 'healing': m.get('heal', 0), 'taken': m.get('taken', 0),
-                'kills': m.get('kills', 0), 'eliteKills': m.get('elite', 0)}
+                'kills': m.get('kills', 0), 'eliteKills': m.get('elite', 0), 'spells': m.get('spells', [])}
         record['wipes'] = wipes
         record['bossDone'], record['bossTotal'] = final.get('bossDone'), final.get('bossTotal')
         record['bossTimes'] = boss_times
@@ -284,15 +284,15 @@ def campaign(config):
     """One task per specialization: the actor is re-specced and re-equipped once, plays a warm-up run that is not counted (a bot that was just re-equipped lost its
     buffs and its AI state and died in its first fight in 29 of 33 runs, against 14 of 196 for the fixed team), then plays its counted runs in different dungeons."""
     specs = [s for s in spec_table() if s[0] >= 12]
-    if config.get('only_specs'):
-        specs = [s for s in specs if s[1] in config['only_specs']]
+    # The dungeon of a run follows the spec's place in the full list, so a re-run of a few specs plays the dungeons of the full campaign.
+    indexed = [(gi, s) for gi, s in enumerate(specs) if not config.get('only_specs') or s[1] in config['only_specs']]
     dungeons = load_dungeons(config['dungeons'], config['campaign_dungeons'])
     actors = {int(k): v for k, v in config['actors'].items()}
     attempts = config.get('attempts', 2)
     out_dir = Path(config['out'])
     done = {p.stem for p in out_dir.glob('*.json')} if out_dir.exists() else set()
     tasks = []
-    for i, (cls, spec, role, name) in enumerate(specs):
+    for i, (cls, spec, role, name) in indexed:
         runs = []
         for attempt in range(attempts):
             dungeon = dungeons[(i + attempt) % len(dungeons)]  # consecutive dungeons: every spec sees both halves of the list

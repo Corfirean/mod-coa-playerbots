@@ -492,7 +492,9 @@ namespace BotMovement
         if (!bot || !bot->IsInWorld() || !bot->IsAlive())
             return {};
 
-        if (bot->IsNonMeleeSpellCast(false))
+        // An active Auto Shot / Shoot (the auto-repeat slot) is not a cast in progress: it stays set for the whole fight and, counted here, kept every
+        // ranged bot from walking anywhere (retreating from a target in its dead zone, following, auto-dungeon legs) while it was on.
+        if (bot->IsNonMeleeSpellCast(false, false, /*skipAutorepeat=*/true))
         {
             NoteMoveRefusal(bot, owner, "the bot is casting a spell", x, y);
             return {};

@@ -1,4 +1,7 @@
 #include "training/TrainingSession.h"
+#include <algorithm>
+#include <map>
+#include <string_view>
 #include "BotAI.h"
 #include "BotMgr.h"
 #include "BotGear.h"
@@ -533,7 +536,8 @@ void Shutdown()
 // the keyboard) walks into a dungeon, so the group behaviour a real player sees -- follow, tank, heal, assist -- can be measured on the
 // isolated training server. Verbs: dgroup, dgo, dmove, dpull, dstat, dfree. Dedicated bot accounts only, never account 1.
 // Totals of what each bot of a dungeon probe group did since dgroup (damage to creatures, effective healing, damage taken), for the probe report.
-struct ProbeStats { uint64 damage = 0, healing = 0, taken = 0; uint32 kills = 0, eliteKills = 0; };
+struct SpellTally { uint32 casts = 0, hits = 0; uint64 damage = 0; };
+struct ProbeStats { uint64 damage = 0, healing = 0, taken = 0; uint32 kills = 0, eliteKills = 0; std::map<uint32, SpellTally> spells; };
 std::unordered_map<ObjectGuid, ProbeStats> probeStats;
 
 Player* DungeonBot(uint32 guid)
@@ -698,12 +702,21 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
             j["d"] = m == leader ? 0.0f : (m->GetMapId() == leader->GetMapId() ? m->GetDistance(leader) : -1.0f);
             j["cmb"] = m->IsInCombat();
             j["moving"] = m->isMoving();
-            if (Unit* v = m->GetVictim()) j["tgt"] = v->GetName();
+            if (Unit* v = m->GetVictim()) { j["tgt"] = v->GetName(); j["td"] = m->GetDistance(v); }
             if (m != leader) j["dbg"] = BotAI::DebugState(m);
             if (auto stats = probeStats.find(m->GetGUID()); stats != probeStats.end())
             {
                 j["dmg"] = stats->second.damage; j["heal"] = stats->second.healing; j["taken"] = stats->second.taken;
                 j["kills"] = stats->second.kills; j["elite"] = stats->second.eliteKills;
+                // Per-spell casts, hits and damage of this bot (the eight with most damage or casts), so a run shows what a weak spec actually does.
+                std::vector<std::pair<uint32, SpellTally>> ranked(stats->second.spells.begin(), stats->second.spells.end());
+                std::sort(ranked.begin(), ranked.end(), [](auto const& a, auto const& b) { return a.second.damage + a.second.casts * 1000ull > b.second.damage + b.second.casts * 1000ull; });
+                if (ranked.size() > 8) ranked.resize(8);
+                for (auto const& [id, t] : ranked)
+                {
+                    Json sp; sp["id"] = id; sp["casts"] = t.casts; sp["hits"] = t.hits; sp["dmg"] = t.damage;
+                    j["spells"].Push(sp);
+                }
             }
             j["lvl"] = m->GetLevel();
             Spell* cur = m->GetCurrentSpell(CURRENT_GENERIC_SPELL);
@@ -1127,6 +1140,12 @@ void RecordSpellDamage(Unit* attacker, Unit* target, uint32 spell, uint32 amount
     std::lock_guard lock(mutex);
     Session* s = Lookup(target->GetGUID());
     ObjectGuid principal = Principal(attacker);
+    if (!probeStats.empty() && target->GetTypeId() == TYPEID_UNIT)
+        if (auto dealer = probeStats.find(principal); dealer != probeStats.end())
+        {
+            SpellTally& t = dealer->second.spells[spell];
+            ++t.hits; t.damage += std::min(amount, target->GetHealth());
+        }
     if (!s || !s->running || principal != s->candidate || Lookup(principal) != s) return;
     if (std::find(s->enemies.begin(), s->enemies.end(), target->GetGUID()) == s->enemies.end()) return;
     Json row; row["type"] = "spell_damage"; row["spellId"] = spell; row["amount"] = std::min(amount, target->GetHealth());
@@ -1223,6 +1242,8 @@ void RecordSpellLifecycle(Unit* caster, ObjectGuid target, uint32 spell, char co
 {
     if (!Enabled.load(std::memory_order_relaxed) || !caster) return;
     std::lock_guard lock(mutex);
+    if (!probeStats.empty() && std::string_view(phase) == "dispatch")
+        if (auto bot = probeStats.find(caster->GetGUID()); bot != probeStats.end()) ++bot->second.spells[spell].casts;
     Session* s = Lookup(caster->GetGUID());
     if (!s || !s->running || s->candidate != caster->GetGUID()) return;
     Json row; row["type"] = "spell_lifecycle"; row["phase"] = phase;

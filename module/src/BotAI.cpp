@@ -3136,7 +3136,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
     // Suppress follow movement while a mount attempt is pending or the bot is actively casting
     // a non-melee spell (such as a 1.5s mount cast). Issuing movement while casting immediately
     // aborts the spell cast.
-    if (BotMovement::GetPendingMountSpell(bot) || bot->IsNonMeleeSpellCast(false))
+    if (BotMovement::GetPendingMountSpell(bot) || bot->IsNonMeleeSpellCast(false, false, /*skipAutorepeat=*/true))
         return;
 
     // Stay means exactly this: don't resume following just because there's nothing to fight
@@ -4267,8 +4267,10 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         {
             float x, y, z;
             target->GetNearPoint(bot, x, y, z, 0.0f, preferredDist, target->GetAngle(bot));
-            BotMovement::MoveTo(bot, MoveOwner::Combat, x, y, z);
-            return; // finish repositioning before a stationary filler stops the move
+            // Finish repositioning before a stationary filler stops the move -- but only if a move was issued: a refused one (no path to the
+            // point, another movement owner) used to end the tick here every tick and a bot cornered in a dead end never cast again.
+            if (BotMovement::MoveTo(bot, MoveOwner::Combat, x, y, z).IsValid())
+                return;
         }
         // A comfortable band, not a razor-thin one -- retreats once the enemy closes past
         // ~70% of preferredDist, holds anywhere between that and preferredDist itself.

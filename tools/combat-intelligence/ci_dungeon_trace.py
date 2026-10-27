@@ -63,8 +63,8 @@ def main(argv):
                 continue
             me = s['members'][index]
             row = {'t': round(time.time() - began, 1), 'name': me['name'], 'hp': me['hp'], 'pw': me['pw'], 'alive': me['alive'], 'cmb': me['cmb'], 'moving': me['moving'],
-                   'cast': me.get('cast'), 'tgt': me.get('tgt'), 'dist': round(me['d'], 1), 'dbg': me.get('dbg'), 'dmg': me.get('dmg'), 'groupCmb': s['inCombat'],
-                   'mobs': [(m['name'][:14], m['hp'], m.get('on')) for m in s.get('mobs', [])][:4], 'kills': me.get('kills')}
+                   'cast': me.get('cast'), 'tgt': me.get('tgt'), 'dist': round(me['d'], 1), 'td': round(me['td'], 1) if me.get('td') is not None else None, 'dbg': me.get('dbg'), 'dmg': me.get('dmg'), 'groupCmb': s['inCombat'],
+                   'mobs': [(m['name'][:14], m['hp'], m.get('on')) for m in s.get('mobs', [])][:4], 'kills': me.get('kills'), 'spells': me.get('spells')}
             f.write(json.dumps(row) + '\n')
     ra.run(f'botcmd train dauto {leader} off')
     ra.run(f'botcmd train dgo {leader} 0 -9449.0 64.0 56.0 0.0 all')
