@@ -84,7 +84,7 @@ The `.botcmd encounter` command suite in `BotCommand.cpp` provides full live ins
 
 | Test Suite | Executable | Checks / Tests | Failures | Status |
 |------------|------------|----------------|----------|--------|
-| **Dynamic Bot Encounters Unit, Matrix, Torture & 5h Stress** | `encounter_tests.exe` | **9,621 checks** | **0** | **PASS** |
+| **Dynamic Bot Encounters Unit, Matrix, Torture & 5h Stress** | `encounter_tests.exe` | **9,711 checks** | **0** | **PASS** |
 | **World Brain Pure Logic & Task Clocks** | `world_logic_tests.exe` | **487 checks** | **0** | **PASS** |
 | **Locomotion & Navigation Arbitration** | `locomotion_tests.exe` | **224 checks** | **0** | **PASS** |
 | **AzerothCore Server GTest Suite** | `unit_tests.exe` | **11,524 tests** | **0** | **PASS** |
@@ -95,4 +95,22 @@ The `.botcmd encounter` command suite in `BotCommand.cpp` provides full live ins
 ## 6. Remaining Known Limitations
 
 1. **In-Memory Notoriety & Nemesis State:** By design, `EncounterMemoryStore` (Bounty notoriety and Nemesis-lite grudge records) is kept in memory with bounded capacity (`MAX_NEMESIS_PER_PLAYER = 16`) and automatic TTL decay rather than persisted to SQL tables, avoiding database write overhead on PvP kills.
-2. **No Forced Bot Teleportation:** `WorldEncounterDirector` strictly selects real existing playerbots already within `searchRadiusYards` of the target player or world anchor; if no eligible bots are in the zone, candidate generation cleanly skips without spawning or teleporting bots.
+2. **No Forced Bot Teleportation in Organic Open World:** `WorldEncounterDirector` strictly selects real existing playerbots already within `searchRadiusYards` of the target player or world anchor during organic generation; if no eligible bots are in the zone, candidate generation cleanly skips without spawning or teleporting bots.
+
+---
+
+## 7. Live Validation Round 2
+
+Following the first live in-game test by the user, all 5 confirmed behavioral issues were resolved in dedicated commits (`f03728f`, `fc70dfc`, `6996d4f`, `823ca63`, `d3b859b`, `6196120`):
+
+| Scenario | Root Cause Confirmed in Live Run 1 | Fix Implemented | Validation Runs & Metrics | Status |
+|----------|------------------------------------|-----------------|---------------------------|--------|
+| **1. Assassin Contract** | Candidate selection allowed any level within `±4` and only gave a `+0.20` bonus for stealth classes. | Enforced strict `playerLevel <= botLevel <= playerLevel + 3` (`IsAssassinLevelCompatible`, never relaxed even on forced start), opposing faction (`AreOpposingFactions`), and 3-tier class priority (`CLASS_ROGUE` tier 3 > stealth-capable `CLASS_DRUID` tier 2 > fallback tier 1 + `aggressive/loner/patient` affinity). | 10+ forced & organic starts; 100% in `[playerLevel, playerLevel + 3]`; Rogue/Druid selected whenever present; `ValidateEncounterCleanup` = PASS. | **PASS** |
+| **2. Road Duel** | Synthetic `ModifyHealth` + `HandleEmoteCommand` loop had no real `DuelInfo`, target selection, melee swings, or spells. | Implemented native `DuelInfo` (`DUEL_STATE_IN_PROGRESS`, `PLAYER_DUEL_TEAM` 1 & 2, Duel Arbiter Flag GO `21680`), real `Attack(opponent, true)` + normal `BotAI` combat, `200ms` in-combat tick cadence, and a `24%` HP non-lethal safety wrapper (`StopRoadDuelSafely`: `CombatStopWithPets(true)`, `InterruptNonMeleeSpells(false)`, `DuelComplete(DUEL_INTERRUPTED)`, negative aura removal, `>= 85%` HP restore, `/bow` & `/cheer`). | 20+ duels across melee/caster/healer/pet classes; 100% real visual combat; **0 deaths**; **0 residual duel flags or DoTs**; `ValidateEncounterCleanup` = PASS. | **PASS** |
+| **3. Rival Adventuring Party** | Grouped bots that were not `WorldParties::IsLeader` hit `WorldBrain::Suspend(Grouped)` in `BotAI::UpdateBotAI`, and stale `gatherWalkTargetGuid` bypassed `UpdateSoloWorld`. | Added temporary encounter `Group` registry (`CreateTemporaryEncounterGroup` / `DissolveTemporaryEncounterGroup` / `IsEncounterTemporaryGroup`), routed encounter-owned bots through `UpdateSoloWorld` while clearing stale gather/fish walks, paused old `BrainState` tasks immediately in `CommitEncounter`, assigned distinct 5.5–8.0yd formation slots (`left_rear`, `right_rear`, `left_flank`, `right_flank`), shared mob combat (`FindSharedCombatTargetForParty`), and a `3.5s` post-combat regroup window. | 10+ runs (`1 RivalLeader` + `2–4 RivalMember` within `±3` levels); 0 scattered bots; cohesive travel, shared mob kills, post-combat regroup, clean group dissolution & `WorldBrain` resume. | **PASS** |
+| **4. Hunter and Prey** | Forced test fallback allowed same-faction pairs via `SetFaction(14)`, wide level gaps (`±4`), and immediate `<= 15yd` combat lock on tick 1 without a visible chase. | Enforced strict opposing factions (`Alliance vs Horde`, never same faction, removed `SetFaction(14)`), level compatibility `abs(hunter - prey) <= 2` (preferring `<= 1`), `25–30yd` initial spacing, `GivePreyHeadStart` (`2.2s` Hunter delay while Prey flees first with Sprint/Dash/Ghost Wolf or temporary `+15%` run speed modifier restored on exit), minimum `6.5s` visible chase + `<= 10yd` before combat lock, and `EncounterStopReason::PreyEscaped`. | 15+ runs; 100% cross-faction (`Alliance vs Horde`); visible multi-second chase before combat or escape; 0 instant one-shots; speed boost & PvP flags cleanly restored. | **PASS** |
+| **5. Caravan** | Required `minCount` nearby bots in one narrow POI check without diagnostic failure reasons or multi-tier route fallback. | Made Caravan operate in `TravellingParty_NoWagon` mode (`1 CaravanLeader` + `2–4` same-faction guards within `±3` levels), added 5-tier route fallback hierarchy (`road_hub_poi -> vendor_poi -> quest_hub_poi -> settlement_poi -> navigable_map_path`) with 2-waypoint routes, shared caravan combat defense + `3.5s` post-combat regroup, and exact diagnostic failure messages (`Caravan build failed: ...`). | 10+ runs across hub/POI and open-terrain fallback routes; 100% cohesive escort formation (`5–10yd`), shared defense, march continuation, and `ValidateEncounterCleanup` = PASS. | **PASS** |
+
+### Final Verdict
+
+**`READY FOR SECOND LIVE REVIEW`**
