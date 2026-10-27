@@ -48,6 +48,23 @@ characters). An earlier campaign (`campaign5`) had two confounds found afterward
   healer median (not tested for significance; three runs each in different dungeons).
 - **Support:** Fleshweaver (a healing support) did 36% of the support median damage with 169 healing per second; it is the only support that heals a lot.
 
+## Follow-up runs after the fixes (2026-10-27)
+
+Three smaller campaigns on the same fixed team and dungeon rotation, three runs per spec, own damage per active second (campaign 6 -> after the fixes).
+
+| Spec | Change | Own dps |
+|---|---|---|
+| Crusader | enchanting recipes no longer count as weapon/shield demand, so it wields a two-hander and Argent Blade / Righteous Tempest are cast | 137 -> 536 |
+| Archery | Precision Shot and Brutal Shot added to the rotation | 141 -> 204 |
+| Artificer | gear fix | 98 -> 153 |
+| Oathkeeper (tank) | gear fix | 182 -> 262 |
+| Boltslinger | real builder and Heartseeking Bolt, ranged bots may move while Auto Shot is active | 16 -> 54 |
+| Demolition, Farstrider | ranged movement fix | 138 -> 260, 134 -> 242 |
+
+Specs that looked worse in the first follow-up (Defiance 691 -> 279, Slayer 274 -> 183, War 128 -> 101, Gladiator 165 -> 130, Sentinel 126 -> 87) came back to the earlier level when the same runs were repeated (Defiance 444, Slayer 275, War 198, Gladiator 180, Sentinel 138). Three runs per spec do not separate a real change from noise below roughly a factor of 1.5; Defiance is the only one still clearly under its first value and has the widest spread.
+
+Still weak: War (resource starved, 140 of 167 decision windows without an action on the dummy), Inquisition (rage starved, a Pommel Smash proc spends 80 rage), Artificer (three dead descriptors, mana starvation), tanks Seraphim / Domination / Moon Guard, healers Flameweaving / Heretic.
+
 ## Problems the runs found
 
 1. **Dungeon bots waited 150 seconds after every fight (fixed, `9205661`).** The tank holds the pull until everybody is above 80% mana (60% to start waiting) and 90% health; a bot only sat down to
