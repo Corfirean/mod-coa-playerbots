@@ -575,6 +575,20 @@ public:
     {
         return sBotMgr->BotsEnabled() && sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true);
     }
+
+    // A filler bot must queue for a real five-player match with the person it was called for. The queue policy comes from each character's
+    // saved dungeon-finder mode, and almost every bot holds the old default (matchmaking), which scaling turns into "current party": the
+    // filler then formed a one-player proposal of its own, accepted it and walked into a dungeon alone while the player kept waiting.
+    void OnResolveLfgQueuePolicy(ObjectGuid const& guid, lfg::LfgQueuePolicy& policy) override
+    {
+        if (!filling || guid.IsGroup())
+            return;
+        policy.compositionMode = lfg::LfgCompositionMode::BOT_FILL;
+        policy.bypassMatchmaking = false;
+        policy.requireStandardRoles = true;
+        policy.minPlayers = 5;
+        policy.targetPlayers = 5;
+    }
 };
 }
 
