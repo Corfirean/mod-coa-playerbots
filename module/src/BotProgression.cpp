@@ -7,14 +7,18 @@
 #include "Log.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "PlayerScript.h"
 #include "ScriptMgr.h"
 #include "ScriptedGossip.h"
 #include "SharedDefines.h"
+#include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "TemporarySummon.h"
 #include "Trainer.h"
 #include <algorithm>
 #include <array>
+#include <mutex>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -291,8 +295,77 @@ namespace BotProgression
                 bot->learnSpell(spellId, false);
     }
 
+    // Learn/forget hooks fire on whichever thread changed the spellbook (a level-up happens on a map thread), so the counters are guarded.
+    std::mutex s_spellbookMutex;
+    std::unordered_map<ObjectGuid, uint32> s_spellbookRevision;
+
+    void BumpSpellbookRevision(Player* player)
+    {
+        if (!player || !player->IsBot())
+            return;
+        std::lock_guard<std::mutex> lock(s_spellbookMutex);
+        ++s_spellbookRevision[player->GetGUID()];
+    }
+
+    // The item that satisfies a spell's required TotemCategory, picked once per category: a plain tool (not a wearable) first, then the
+    // lowest item level, then the lowest entry. 0 when the realm has no such item.
+    uint32 ToolForTotemCategory(uint32 category)
+    {
+        static std::unordered_map<uint32, uint32> cache;
+        auto found = cache.find(category);
+        if (found != cache.end())
+            return found->second;
+
+        ItemTemplate const* best = nullptr;
+        for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
+        {
+            if (proto.TotemCategory != category)
+                continue;
+            auto rank = [](ItemTemplate const& item) { return std::tuple<int, uint32, uint32>(item.InventoryType == INVTYPE_NON_EQUIP ? 0 : 1, item.ItemLevel, item.ItemId); };
+            if (!best || rank(proto) < rank(*best))
+                best = &proto;
+        }
+        return cache[category] = best ? best->ItemId : 0;
+    }
+
+    // Spells such as the Witch Doctor's totems and wards or the Guardian's standards need a tool in the bags (Spell.dbc TotemCategory); a bot
+    // that was never given one answered every such cast with "missing totem category item", so those specs never used half their kit.
+    void GrantSpellTools(Player* bot)
+    {
+        for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+        {
+            if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive())
+                continue;
+            for (uint32 category : info->TotemCategory)
+            {
+                if (!category || bot->HasItemTotemCategory(category))
+                    continue;
+                if (uint32 tool = ToolForTotemCategory(category))
+                    GiveOnce(bot, tool);
+            }
+        }
+    }
+
+    uint32 SpellbookRevision(ObjectGuid botGuid)
+    {
+        std::lock_guard<std::mutex> lock(s_spellbookMutex);
+        auto found = s_spellbookRevision.find(botGuid);
+        return found != s_spellbookRevision.end() ? found->second : 0;
+    }
+
+    void ForgetSpellbook(ObjectGuid botGuid)
+    {
+        std::lock_guard<std::mutex> lock(s_spellbookMutex);
+        s_spellbookRevision.erase(botGuid);
+    }
+
     void GrantProfessionTools(Player* bot)
     {
+        GrantSpellTools(bot);
+
         for (auto const& [skill, itemId] : PROFESSION_TOOLS)
             if (bot->HasSkill(skill))
                 GiveOnce(bot, itemId);
@@ -320,6 +393,50 @@ namespace BotProgression
     uint32 PickDrink(uint8 level)
     {
         return PickConsumable(Consumables().drink, level);
+    }
+
+    namespace
+    {
+        // The ordinary healing and mana potion of each tier (required level, item). The world database holds dozens of look-alikes (injectors,
+        // battleground and "contraband" versions); these are the plain ones every tier has.
+        struct PotionTier { uint8 level; uint32 entry; };
+        constexpr PotionTier HEALING_TIERS[] = { {1, 118}, {3, 858}, {12, 929}, {21, 1710}, {35, 3928}, {45, 13446}, {55, 22829} };
+        constexpr PotionTier MANA_TIERS[] = { {5, 2455}, {14, 3385}, {20, 3827}, {31, 6149}, {41, 13443}, {49, 13444}, {55, 22832} };
+
+        template <size_t N>
+        uint32 PickPotionTier(PotionTier const (&tiers)[N], uint8 level)
+        {
+            uint32 best = 0;
+            for (PotionTier const& tier : tiers)
+                if (tier.level <= level && sObjectMgr->GetItemTemplate(tier.entry))
+                    best = tier.entry;
+            return best;
+        }
+    }
+
+    uint32 PickHealingPotion(uint8 level)
+    {
+        return PickPotionTier(HEALING_TIERS, level);
+    }
+
+    uint32 PickManaPotion(uint8 level)
+    {
+        return PickPotionTier(MANA_TIERS, level);
+    }
+
+    void ProvisionPotions(Player* bot, uint32 count)
+    {
+        if (!bot || !count)
+            return;
+        auto give = [&](uint32 entry)
+        {
+            if (!entry || bot->GetItemCount(entry) >= count)
+                return;
+            bot->StoreNewItemInBestSlots(entry, count - bot->GetItemCount(entry));
+        };
+        give(PickHealingPotion(bot->GetLevel()));
+        if (bot->getPowerType() == POWER_MANA)
+            give(PickManaPotion(bot->GetLevel()));
     }
 
     void ProvisionFood(Player* bot, uint32 stackSize)
@@ -352,5 +469,23 @@ namespace BotProgression
         LearnRecipesFromBook(bot);
         GrantProfessionTools(bot);
         ProvisionFood(bot, 20);
+        ProvisionPotions(bot, 5);
     }
+}
+
+namespace
+{
+class coa_bot_spellbook_script : public PlayerScript
+{
+public:
+    coa_bot_spellbook_script() : PlayerScript("coa_bot_spellbook_script", { PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_FORGOT_SPELL }) { }
+
+    void OnPlayerLearnSpell(Player* player, uint32 /*spellId*/) override { BotProgression::BumpSpellbookRevision(player); }
+    void OnPlayerForgotSpell(Player* player, uint32 /*spellId*/) override { BotProgression::BumpSpellbookRevision(player); }
+};
+}
+
+void AddSC_coa_bot_spellbook_script()
+{
+    new coa_bot_spellbook_script();
 }

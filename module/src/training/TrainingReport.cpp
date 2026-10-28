@@ -40,6 +40,12 @@ void Session::WriteReport(char const* reason)
     summary["combat"]["gcdUtilization"] = Json();
     summary["mechanics"]["avoidableHits"] = avoidableHits;
     summary["mechanics"]["avoidableDamage"] = avoidableDamage;
+    summary["mechanics"]["interruptCasts"] = interruptCasts;
+    summary["mechanics"]["interruptsStopped"] = interruptsStopped;
+    summary["mechanics"]["interruptKicksAttempted"] = kickAttempts;
+    summary["mechanics"]["interruptKicksAccepted"] = kicksAccepted;
+    summary["mechanics"]["interruptKicksApplied"] = kicksApplied;
+    summary["mechanics"]["interruptsByKick"] = interruptsByKick;
     summary["threat"]["aggroMs"] = aggroMs;
     summary["threat"]["aggroLosses"] = aggroLosses;
     summary["threat"]["recoveryTimesMs"] = recoveries;

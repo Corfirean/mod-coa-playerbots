@@ -1,0 +1,542 @@
+[
+ {
+  "key": "rfc",
+  "name": "Ragefire Chasm",
+  "map": 389,
+  "pos": [
+   3.81,
+   -14.82,
+   -17.84,
+   4.39
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "dm",
+  "name": "Deadmines",
+  "map": 36,
+  "pos": [
+   -16.4,
+   -383.07,
+   61.78,
+   1.86
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "wc",
+  "name": "Wailing Caverns",
+  "map": 43,
+  "pos": [
+   -163.49,
+   132.9,
+   -73.66,
+   5.83
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "sfk",
+  "name": "Shadowfang Keep",
+  "map": 33,
+  "pos": [
+   -229.135,
+   2109.18,
+   76.8898,
+   1.267
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "bfd",
+  "name": "Blackfathom Deeps",
+  "map": 48,
+  "pos": [
+   -151.89,
+   106.96,
+   -39.87,
+   4.53
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "stockade",
+  "name": "Stormwind Stockade",
+  "map": 34,
+  "pos": [
+   54.23,
+   0.28,
+   -18.34,
+   6.26
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "gnomer",
+  "name": "Gnomeregan",
+  "map": 90,
+  "pos": [
+   -332.22,
+   -2.28,
+   -150.86,
+   2.77
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "rfk",
+  "name": "Razorfen Kraul",
+  "map": 47,
+  "pos": [
+   1943.0,
+   1544.63,
+   82.0,
+   1.38
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "smgy",
+  "name": "Scarlet Monastery: Graveyard",
+  "map": 189,
+  "pos": [
+   1688.99,
+   1053.48,
+   18.6775,
+   0.00117
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "rfd",
+  "name": "Razorfen Downs",
+  "map": 129,
+  "pos": [
+   2592.55,
+   1107.5,
+   51.29,
+   4.74
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "uldaman",
+  "name": "Uldaman",
+  "map": 70,
+  "pos": [
+   -226.8,
+   49.09,
+   -46.03,
+   1.39
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "zf",
+  "name": "Zul'Farrak",
+  "map": 209,
+  "pos": [
+   1213.52,
+   841.59,
+   8.93,
+   6.09
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "mara",
+  "name": "Maraudon",
+  "map": 349,
+  "pos": [
+   1019.69,
+   -458.31,
+   -43.43,
+   0.31
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "st",
+  "name": "Sunken Temple",
+  "map": 109,
+  "pos": [
+   -319.24,
+   99.9,
+   -131.85,
+   3.19
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "brd",
+  "name": "Blackrock Depths",
+  "map": 230,
+  "pos": [
+   456.929,
+   34.0923,
+   -68.0896,
+   4.71239
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "lbrs",
+  "name": "Blackrock Spire",
+  "map": 229,
+  "pos": [
+   78.5083,
+   -225.044,
+   49.839,
+   5.1
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "strat",
+  "name": "Stratholme",
+  "map": 329,
+  "pos": [
+   3395.09,
+   -3380.25,
+   142.702,
+   0.1
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "scholo",
+  "name": "Scholomance",
+  "map": 289,
+  "pos": [
+   196.37,
+   127.05,
+   134.91,
+   6.09
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "dmaul",
+  "name": "Dire Maul",
+  "map": 429,
+  "pos": [
+   44.4499,
+   -154.822,
+   -2.71201,
+   0.0
+  ],
+  "era": "Classic"
+ },
+ {
+  "key": "ramparts",
+  "name": "Hellfire Ramparts",
+  "map": 543,
+  "pos": [
+   -1355.24,
+   1641.12,
+   68.2491,
+   0.6687
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "bf",
+  "name": "Blood Furnace",
+  "map": 542,
+  "pos": [
+   -3.9967,
+   14.6363,
+   -44.8009,
+   4.88748
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "sh",
+  "name": "Shattered Halls",
+  "map": 540,
+  "pos": [
+   -40.8716,
+   -19.7538,
+   -13.8065,
+   1.11133
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "sv",
+  "name": "Steamvault",
+  "map": 545,
+  "pos": [
+   -13.8425,
+   6.7542,
+   -4.2586,
+   0.0
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "ub",
+  "name": "Underbog",
+  "map": 546,
+  "pos": [
+   9.71391,
+   -16.2008,
+   -2.75334,
+   5.57082
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "sp",
+  "name": "Slave Pens",
+  "map": 547,
+  "pos": [
+   120.101,
+   -131.957,
+   -0.801547,
+   1.47574
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "mech",
+  "name": "Mechanar",
+  "map": 554,
+  "pos": [
+   -28.906,
+   0.680314,
+   -1.81282,
+   0.0345509
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "bot",
+  "name": "Botanica",
+  "map": 553,
+  "pos": [
+   40.0395,
+   -28.613,
+   -1.1189,
+   2.35856
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "arc",
+  "name": "Arcatraz",
+  "map": 552,
+  "pos": [
+   -1.23165,
+   0.0143459,
+   -0.204293,
+   0.0157123
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "sl",
+  "name": "Shadow Labyrinth",
+  "map": 555,
+  "pos": [
+   0.488033,
+   -0.215935,
+   -1.12788,
+   3.15888
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "seth",
+  "name": "Sethekk Halls",
+  "map": 556,
+  "pos": [
+   -4.6811,
+   -0.0930796,
+   0.0062,
+   0.0353424
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "mt",
+  "name": "Mana-Tombs",
+  "map": 557,
+  "pos": [
+   0.0191,
+   0.9478,
+   -0.9543,
+   3.03164
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "ac",
+  "name": "Auchenai Crypts",
+  "map": 558,
+  "pos": [
+   -21.8975,
+   0.16,
+   -0.1206,
+   0.0353412
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "ohb",
+  "name": "Old Hillsbrad",
+  "map": 560,
+  "pos": [
+   2741.87,
+   1315.25,
+   14.0423,
+   2.96016
+  ],
+  "era": "TBC"
+ },
+ {
+  "key": "uk",
+  "name": "Utgarde Keep",
+  "map": 574,
+  "pos": [
+   153.789,
+   -86.548,
+   12.551,
+   0.304
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "up",
+  "name": "Utgarde Pinnacle",
+  "map": 575,
+  "pos": [
+   584.117,
+   -327.974,
+   110.138,
+   3.122
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "nexus",
+  "name": "The Nexus",
+  "map": 576,
+  "pos": [
+   145.87,
+   -10.554,
+   -16.636,
+   1.528
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "oculus",
+  "name": "The Oculus",
+  "map": 578,
+  "pos": [
+   1055.93,
+   986.85,
+   361.07,
+   5.745
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "cos",
+  "name": "Culling of Stratholme",
+  "map": 595,
+  "pos": [
+   1431.1,
+   556.92,
+   36.69,
+   5.16
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "hos",
+  "name": "Halls of Stone",
+  "map": 599,
+  "pos": [
+   1153.24,
+   806.164,
+   195.937,
+   4.715
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "dtk",
+  "name": "Drak'Tharon Keep",
+  "map": 600,
+  "pos": [
+   -517.343,
+   -487.976,
+   11.01,
+   4.831
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "an",
+  "name": "Azjol-Nerub",
+  "map": 601,
+  "pos": [
+   413.314,
+   795.968,
+   831.351,
+   5.5
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "hol",
+  "name": "Halls of Lightning",
+  "map": 602,
+  "pos": [
+   1331.47,
+   259.619,
+   53.398,
+   4.772
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "gundrak",
+  "name": "Gundrak",
+  "map": 604,
+  "pos": [
+   1891.84,
+   832.169,
+   176.669,
+   2.109
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "vh",
+  "name": "Violet Hold",
+  "map": 608,
+  "pos": [
+   1808.82,
+   803.93,
+   44.364,
+   6.282
+  ],
+  "era": "WotLK"
+ },
+ {
+  "key": "ak",
+  "name": "Ahn'kahet",
+  "map": 619,
+  "pos": [
+   333.351,
+   -1109.94,
+   69.772,
+   0.553
+  ],
+  "era": "WotLK"
+ }
+]

@@ -88,6 +88,11 @@ namespace BotAI
     // before handing out a task, so the bot starts with room to actually carry the result.
     void PrepareBagsForTask(Player* bot);
 
+    // Makes at least `wanted` bag slots free: junk first (PrepareBagsForTask), then, if the bags are still full of things
+    // that sell for something, the least valuable stacks that no open quest, bag, tool, consumable or epic needs. A finished
+    // quest cannot be handed in with full bags, and bots hoard trade goods without end. Returns the free slots afterwards.
+    uint32 FreeBagSlots(Player* bot, uint32 wanted);
+
     // The bot's persistent personality preferences for gathering and fishing (0-100), used to
     // shape its profession skills at creation the same way they shape its solo intent.
     void GetProfessionLeans(Player* bot, uint8& gathering, uint8& fishing);
@@ -124,6 +129,11 @@ namespace BotAI
     // learned spell needs one) that the bot's learned Ascension kit can use, minus points for weapons that
     // would make learned spells uncastable (wrong subclass, two-hander with an off-hand-only spell).
     float WeaponKitFit(Player* bot, ItemTemplate const* proto);
+
+    // True when the bot's learned Ascension kit needs a melee or ranged weapon subclass that nothing it has equipped
+    // provides (a Sentinel with a staff and a wand and no bow): its core spells then fail with "equipped item
+    // requirement" and it fights with white hits.
+    bool KitGearMismatch(Player* bot);
 
     // Training A/B switch: true makes ScoreItemForBot use the old class-only stat guess instead of the spec stat model.
     void SetLegacyGearScoring(bool legacy);

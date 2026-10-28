@@ -13,6 +13,9 @@ bool Scenario::Find(std::string const& name, Scenario& s)
     if (name == "CLEAVE") { s.enemyCount = 2; return true; }
     if (name == "EXECUTE") { s.targetHealthPct = 30; return true; }
     if (name == "AOE") { s.enemyCount = 5; return true; }
+    if (name == "INTERRUPT_MULTI") { s.group = true; s.enemyCount = 2; s.melee = 150; s.multiInterrupt = true; s.durationMs = 90000; return true; }
+    if (name == "TANKBUSTER_TELEGRAPH") { s.group = true; s.melee = 200; s.telegraphedBuster = 1800; return true; }
+    if (name == "TANKBUSTER_PCT") { s.group = true; s.melee = 200; s.telegraphedBuster = 20; s.busterIsPercent = true; return true; } // percentage: CoaBots.Training.TankbusterPercent
     if (name == "SURVIVAL") { s.melee = 400; s.tankbuster = 1800; return true; }
     if (name == "GROUND_HAZARDS") { s.hazardDamage = 1800; return true; }
     if (name == "RESURRECT_AFTER_PULL")
@@ -53,9 +56,11 @@ std::vector<Mechanic> Scenario::Timeline(uint32_t seed, uint32_t members) const
         }
     };
     result.push_back({0, "pull", 0, 0});
-    append(35000, 45000, "interruptible_cast", 0, false);
+    if (multiInterrupt) append(10000, 10000, "interruptible_cast_all", 0, false);
+    else append(35000, 45000, "interruptible_cast", 0, false);
     if (melee) append(2000, 2000, "melee", melee, false);
     if (tankbuster) append(7000, 15000, "tankbuster", tankbuster, false);
+    if (telegraphedBuster) append(7000, 15000, "tankbuster_cast", telegraphedBuster, false);
     if (partyDamage) append(14000, 20000, "party_aoe", partyDamage, false);
     if (targetedDamage) append(25000, 17000, "targeted_damage", targetedDamage, true);
     if (hazardDamage)

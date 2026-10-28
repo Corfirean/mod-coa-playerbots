@@ -76,6 +76,14 @@ namespace BotAI
         float botIncomingDps = 0.0f;
         bool worthDefensiveCooldown = false;
 
+        // Burst prediction: an enemy that is attacking the bot is casting a damaging spell at it right now (a tankbuster with a cast
+        // bar). predictedBurstPct is that cast's damage as a share of the bot's maximum health, burstRemainingMs the time until it lands.
+        // burstIncoming means the hit is big enough (BURST_PCT_THRESHOLD of max health) and close enough for a defensive cooldown to
+        // matter - the case that a health-percent rule never catches, because the tank is at full health when the cast starts.
+        float predictedBurstPct = 0.0f;
+        uint32 burstRemainingMs = 0;
+        bool burstIncoming = false;
+
         // Metadata
         uint8 classId = 0;
         uint32 activeSpec = 0;

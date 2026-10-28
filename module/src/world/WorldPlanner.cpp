@@ -1,5 +1,6 @@
 #include "WorldPlanner.h"
 #include "CreatureData.h"
+#include "DangerMap.h"
 #include "IQuestObjectiveHandler.h"
 #include "ObjectMgr.h"
 #include "ObjectiveCommon.h"
@@ -19,6 +20,8 @@ using namespace WorldBrainInternal;
 namespace
 {
     // Objectives with areas this close count as "on the way" for each other.
+    // Risk (DangerMap) from which a place is not worked at all by this bot.
+    constexpr float AVOID_RISK = 8.0f;
     constexpr float ROUTE_NEIGHBOUR_YARDS = 150.0f;
     // Objectives this close (or sharing targets) are done on the same trip.
     constexpr float BUNDLE_YARDS = 70.0f;
@@ -117,6 +120,8 @@ namespace
                 float d = Dist(bot, sp.x, sp.y);
                 if (d > cfg.maxObjectiveDistance * 1.5f)
                     continue;
+                if (DangerMap::Risk(sp.mapId, sp.x, sp.y, bot->GetLevel(), uint8(bot->GetTeamId())) >= AVOID_RISK)
+                    continue;
                 if (!found || d < out.distance)
                 {
                     out = EnderSpot{ entry, gameObject, sp, d };
@@ -175,6 +180,9 @@ namespace WorldPlanner
                     continue;
                 float d = Dist(bot, area->x, area->y);
                 if (d > cfg.maxObjectiveDistance)
+                    continue;
+                // Places this bot cannot survive (creatures far above its level, a spot where bots keep dying) are not worked.
+                if (DangerMap::Risk(mapId, area->x, area->y, bot->GetLevel(), uint8(bot->GetTeamId())) >= AVOID_RISK)
                     continue;
 
                 ClusterScoreInput in;
@@ -556,7 +564,8 @@ namespace WorldPlanner
             {
                 if (evaluated >= MAX_GIVERS_EVALUATED)
                     break;
-                if (!PhaseVisible(bot, spot->phaseMask) || state.failures.Has(FailKind::Npc, spot->spawnId, now))
+                if (!PhaseVisible(bot, spot->phaseMask) || state.failures.Has(FailKind::Npc, spot->spawnId, now) ||
+                    DangerMap::Risk(spot->mapId, spot->x, spot->y, bot->GetLevel(), uint8(bot->GetTeamId())) >= AVOID_RISK)
                     continue;
                 if (!seenEntries.insert(spot->entry | (spot->gameObject ? 0x80000000u : 0u)).second)
                     continue;

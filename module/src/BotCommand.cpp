@@ -8,10 +8,19 @@
 #include "BotLfgFill.h"
 #include "BotMgr.h"
 #include "WorldBrain.h"
+#include "DangerMap.h"
+#include "StringFormat.h"
+#include "world/encounters/WorldEncounterDirector.h"
+#include "dialogue/BotDialogueManager.h"
+#include "dialogue/EncounterPresentation.h"
 #include "BotSpawnRandom.h"
+#include "engine/CombatUtility.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "BotTalentBuilds.h"
 #include "Chat.h"
 #include "CommandScript.h"
+#include "GameTime.h"
 #include "LFGMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -63,6 +72,8 @@ public:
             { "strategy",     HandleBotStrategyCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "brain",        HandleBotBrainCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "worldstats",   HandleBotWorldStatsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "encounter",    HandleBotEncounterCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "dialogue",     HandleBotDialogueCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "learnspec",    HandleBotLearnSpecCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "itemfit",      HandleBotItemFitCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "follow",       HandleBotFollowCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -73,6 +84,7 @@ public:
             { "resume",       HandleBotResumeCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "manaspells",   HandleBotManaSpellsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "quickfill",    HandleBotQuickFillCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "invitebot",    HandleBotInviteRoleCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "botlist",      HandleBotListCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -85,6 +97,8 @@ public:
             { "economy",      HandleBotEconomyCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "movement",     HandleBotMovementCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "pathtest",     HandleBotPathTestCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "dangertest",   HandleBotDangerTestCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "dangernote",   HandleBotDangerNoteCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "talenttest",   HandleBotTalentTestCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "train", HandleTrainingCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "autodungeon",  HandleBotAutoDungeonCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes }
@@ -192,6 +206,25 @@ public:
         return true;
     }
 
+    // Lists the spells of an online bot that the combat layer treats as mana restoration.
+    static bool HandleBotManaSpellsCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        std::string line;
+        for (uint32 id : BotAI::CombatUtility::ListManaRestoreSpells(bot))
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+            line += Acore::StringFormat(" {}({})", id, info ? info->SpellName[0] : "?");
+        }
+        handler->PSendSysMessage("MANASPELLS class {} power {}: {}", uint32(bot->getClass()), uint32(bot->getPowerType()), line.empty() ? " none" : line);
+        return true;
+    }
+
     // Debug/testing entry point: makes an online bot solo-join the real Dungeon Finder queue
     // (LFGMgr::JoinLfg -- the exact same call HandleLfgJoinOpcode itself makes for a real
     // client), which naturally triggers BotLfgFill's auto-fill hook (PLAYERHOOK_CAN_JOIN_LFG
@@ -215,7 +248,15 @@ public:
         }
         lfg::LfgDungeonSet dungeons;
         dungeons.insert(dungeonId);
+        lfg::LfgLockMap const locks = sLFGMgr->GetLockedDungeons(bot->GetGUID());
+        auto lockItr = locks.find(dungeonId);
+        lfg::LfgQueuePolicy policy;
+        sScriptMgr->OnResolveLfgQueuePolicy(bot->GetGUID(), policy);
         sLFGMgr->JoinLfg(bot, roleBit, dungeons, "");
+        if (handler)
+            handler->PSendSysMessage("BotMgr: lfg state before {} after {}; lock status of dungeon {}: {}; queue mode {}; deserter aura {}; in group {}; options {}.",
+                0, uint32(sLFGMgr->GetState(bot->GetGUID())), dungeonId, lockItr == locks.end() ? -1 : int32(lockItr->second), uint32(policy.compositionMode),
+                bot->HasAura(lfg::LFG_SPELL_DUNGEON_DESERTER), bot->GetGroup() != nullptr, uint32(sLFGMgr->GetOptions()));
         BotLfgFill::WatchForProposal(bot);
         if (handler)
             handler->PSendSysMessage("BotMgr: bot '{}' asked to join LFG for dungeon {} as role {}.",
@@ -593,6 +634,44 @@ public:
         return true;
     }
 
+    // The danger map around a bot and the route it would take to a point: `.botcmd dangertest <guid> <x> <y>`.
+    static bool HandleBotDangerTestCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid, float x, float y)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        uint8 const level = bot->GetLevel();
+        uint8 const team = uint8(bot->GetTeamId());
+        handler->PSendSysMessage("{}", DangerMap::Summary());
+        handler->PSendSysMessage("risk here {:.1f}, at the goal {:.1f} (level {}, team {})", DangerMap::Risk(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), level, team),
+            DangerMap::Risk(bot->GetMapId(), x, y, level, team), uint32(level), uint32(team));
+        std::vector<DangerMap::Waypoint> route = DangerMap::Plan(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), x, y, level, team);
+        std::string line;
+        for (int i = 0; i <= 10; ++i)
+        {
+            float t = float(i) / 10.0f;
+            line += Acore::StringFormat(" {:.0f}", DangerMap::Risk(bot->GetMapId(), bot->GetPositionX() + (x - bot->GetPositionX()) * t, bot->GetPositionY() + (y - bot->GetPositionY()) * t, level, team));
+        }
+        handler->PSendSysMessage("risk along the straight line, every tenth:{}", line);
+        handler->PSendSysMessage("route: {} waypoint(s)", route.size());
+        for (DangerMap::Waypoint const& w : route)
+            handler->PSendSysMessage("  ({:.0f}, {:.0f}) risk {:.1f}", w.x, w.y, DangerMap::Risk(bot->GetMapId(), w.x, w.y, level, team));
+        return true;
+    }
+
+    // Marks a spot as one where bots died (test aid): `.botcmd dangernote <map> <x> <y> <times>`.
+    static bool HandleBotDangerNoteCommand(ChatHandler* handler, uint32 mapId, float x, float y, uint32 times)
+    {
+        for (uint32 i = 0; i < std::min<uint32>(times, 10); ++i)
+            DangerMap::NoteDeath(mapId, x, y);
+        handler->PSendSysMessage("noted {} death(s) at map {} ({:.0f}, {:.0f})", std::min<uint32>(times, 10), mapId, x, y);
+        return true;
+    }
+
     static bool HandleBotMovementCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
     {
         Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
@@ -826,6 +905,282 @@ public:
         BotAI::SetSuspended(ObjectGuid::Create<HighGuid::Player>(charLowGuid), false);
         if (handler)
             handler->PSendSysMessage("BotMgr: guid {} BotAI resumed.", charLowGuid);
+        return true;
+    }
+
+    static bool HandleBotEncounterCommand(ChatHandler* handler, Tail args)
+    {
+        std::string text(args);
+        std::istringstream iss(text);
+        std::string subcmd;
+        iss >> subcmd;
+
+        if (subcmd.empty() || subcmd == "stats" || subcmd == "status")
+        {
+            if (handler)
+                handler->PSendSysMessage("{}", WorldEncounterDirector::DescribeStats());
+            return true;
+        }
+
+        if (subcmd == "list")
+        {
+            if (handler)
+                handler->PSendSysMessage("{}", WorldEncounterDirector::DescribeActiveList());
+            return true;
+        }
+
+        if (subcmd == "debug")
+        {
+            std::string toggle;
+            iss >> toggle;
+            bool enable = (toggle == "1" || toggle == "on" || toggle == "true" ||
+                          (toggle.empty() && !WorldEncounterDirector::IsDebugLogging()));
+            WorldEncounterDirector::SetDebugLogging(enable);
+            if (handler)
+                handler->PSendSysMessage("DynamicEncounters: debug logging {}.", enable ? "ON" : "OFF");
+            return true;
+        }
+
+        if (subcmd == "cooldown")
+        {
+            std::string action;
+            std::string playerToken;
+            iss >> action >> playerToken;
+            ObjectGuid playerGuid;
+            if (!playerToken.empty())
+            {
+                uint32 guidLow = static_cast<uint32>(std::strtoul(playerToken.c_str(), nullptr, 10));
+                if (guidLow != 0)
+                    playerGuid = ObjectGuid::Create<HighGuid::Player>(guidLow);
+                else if (Player* p = ObjectAccessor::FindPlayerByName(playerToken))
+                    playerGuid = p->GetGUID();
+            }
+            WorldEncounterDirector::ResetCooldowns(playerGuid);
+            if (handler)
+                handler->SendSysMessage("DynamicEncounters: cooldowns reset.");
+            return true;
+        }
+
+        if (subcmd == "validate")
+        {
+            uint32 guidLow = 0;
+            iss >> guidLow;
+            ObjectGuid botGuid;
+            if (guidLow != 0)
+                botGuid = ObjectGuid::Create<HighGuid::Player>(guidLow);
+            else if (handler && handler->getSelectedPlayer())
+                botGuid = handler->getSelectedPlayer()->GetGUID();
+
+            if (botGuid.IsEmpty())
+            {
+                if (handler)
+                    handler->SendSysMessage("Usage: .botcmd encounter validate <botGuidLow>");
+                return true;
+            }
+            std::string summary;
+            bool ok = WorldEncounterDirector::ValidateEncounterCleanup(botGuid, summary);
+            if (handler)
+                handler->PSendSysMessage("Bot {} cleanup validation: {} ({})", botGuid.GetCounter(), ok ? "PASS" : "FAIL", summary);
+            return true;
+        }
+
+        if (subcmd == "reload")
+        {
+            WorldEncounterDirector::LoadConfig();
+            if (handler)
+                handler->SendSysMessage("DynamicEncounters: configuration reloaded.");
+            return true;
+        }
+
+        if (subcmd == "bot")
+        {
+            uint32 guidLow = 0;
+            iss >> guidLow;
+            ObjectGuid botGuid;
+            if (guidLow != 0)
+                botGuid = ObjectGuid::Create<HighGuid::Player>(guidLow);
+            else if (handler && handler->getSelectedPlayer())
+                botGuid = handler->getSelectedPlayer()->GetGUID();
+
+            if (botGuid.IsEmpty())
+            {
+                if (handler)
+                    handler->SendSysMessage("Usage: .botcmd encounter bot <botGuidLow>");
+                return true;
+            }
+            if (handler)
+                handler->PSendSysMessage("Bot {}: {}", botGuid.GetCounter(), WorldEncounterDirector::DescribeBot(botGuid));
+            return true;
+        }
+
+        if (subcmd == "memory" || subcmd == "bounty" || subcmd == "nemesis")
+        {
+            uint32 guidLow = 0;
+            iss >> guidLow;
+            ObjectGuid playerGuid;
+            if (guidLow != 0)
+                playerGuid = ObjectGuid::Create<HighGuid::Player>(guidLow);
+            else if (handler && handler->getSelectedPlayer())
+                playerGuid = handler->getSelectedPlayer()->GetGUID();
+            else if (handler && handler->GetPlayer())
+                playerGuid = handler->GetPlayer()->GetGUID();
+
+            if (playerGuid.IsEmpty())
+            {
+                if (handler)
+                    handler->SendSysMessage("Usage: .botcmd encounter memory [playerGuidLow]");
+                return true;
+            }
+            if (handler)
+                handler->PSendSysMessage("{}", WorldEncounterDirector::DescribeBountyAndNemesis(playerGuid));
+            return true;
+        }
+
+        if (subcmd == "stop")
+        {
+            std::string targetToken;
+            iss >> targetToken;
+            if (targetToken == "all" || targetToken.empty())
+            {
+                uint32 stopped = WorldEncounterDirector::StopAllEncounters();
+                if (handler)
+                    handler->PSendSysMessage("DynamicEncounters: stopped {} active encounter(s).", stopped);
+                return true;
+            }
+
+            uint64 id = std::strtoull(targetToken.c_str(), nullptr, 10);
+            std::string msg;
+            WorldEncounterDirector::StopEncounter(id, msg);
+            if (handler)
+                handler->PSendSysMessage("{}", msg);
+            return true;
+        }
+
+        if (subcmd == "start")
+        {
+            std::string typeToken;
+            std::string playerToken;
+            iss >> typeToken >> playerToken;
+            EncounterType type = ParseEncounterType(typeToken);
+            if (type == EncounterType::None)
+            {
+                if (handler)
+                    handler->SendSysMessage("Usage: .botcmd encounter start <assassin|watcher|skirmish|ambush|bounty|nemesis|duel|caravan|deserter|hunter_prey|rival_party|rare_hunter|mystery> [playerNameOrGuid]");
+                return true;
+            }
+
+            Player* targetPlayer = nullptr;
+            if (!playerToken.empty())
+            {
+                uint32 guidLow = static_cast<uint32>(std::strtoul(playerToken.c_str(), nullptr, 10));
+                if (guidLow != 0)
+                    targetPlayer = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(guidLow));
+                if (!targetPlayer)
+                    targetPlayer = ObjectAccessor::FindPlayerByName(playerToken);
+            }
+            else if (handler)
+            {
+                targetPlayer = handler->getSelectedPlayer();
+                if (!targetPlayer)
+                    targetPlayer = handler->GetPlayer();
+            }
+
+            if (!targetPlayer)
+            {
+                if (handler)
+                    handler->SendSysMessage("DynamicEncounters: target/anchor player not found online.");
+                return true;
+            }
+
+            std::string msg;
+            WorldEncounterDirector::ForceStartEncounter(type, targetPlayer, msg);
+            if (handler)
+                handler->PSendSysMessage("{}", msg);
+            return true;
+        }
+
+        if (handler)
+            handler->SendSysMessage("Usage: .botcmd encounter <status|list|bot|validate|memory|start|stop|debug|cooldown|reload>");
+        return true;
+    }
+
+    static bool HandleBotDialogueCommand(ChatHandler* handler, Tail args)
+    {
+        std::string text(args);
+        std::istringstream iss(text);
+        std::string subcmd;
+        iss >> subcmd;
+
+        if (subcmd.empty() || subcmd == "help" || subcmd == "status")
+        {
+            if (handler)
+            {
+                handler->PSendSysMessage("BotDialogue: pools active beats={}, debug={}",
+                    sBotDialogueMgr.GetPool().BeatCount(),
+                    sBotDialogueMgr.IsDebugLogging() ? "ON" : "OFF");
+                handler->SendSysMessage("Usage: .botcmd dialogue <reload|debug on/off|say <beat>|status>");
+            }
+            return true;
+        }
+
+        if (subcmd == "reload")
+        {
+            sBotDialogueMgr.LoadAllData();
+            if (handler)
+                handler->PSendSysMessage("BotDialogue: reloaded data pools. Total active beats: {}",
+                    sBotDialogueMgr.GetPool().BeatCount());
+            return true;
+        }
+
+        if (subcmd == "debug")
+        {
+            std::string toggle;
+            iss >> toggle;
+            bool enable = (toggle == "1" || toggle == "on" || toggle == "true");
+            sBotDialogueMgr.SetDebugLogging(enable);
+            if (handler)
+                handler->PSendSysMessage("BotDialogue: debug logging {}", enable ? "ENABLED" : "DISABLED");
+            return true;
+        }
+
+        if (subcmd == "say")
+        {
+            std::string beatStr;
+            iss >> beatStr;
+            DialogueBeat beat = DialogueUtils::StringToBeat(beatStr);
+            if (beat == DialogueBeat::None)
+            {
+                if (handler)
+                    handler->PSendSysMessage("BotDialogue: unknown beat '{}'", beatStr);
+                return true;
+            }
+
+            Player* speaker = nullptr;
+            if (handler)
+                speaker = handler->getSelectedPlayer();
+            if (!speaker && handler)
+                speaker = handler->GetPlayer();
+
+            if (!speaker)
+            {
+                if (handler)
+                    handler->SendSysMessage("BotDialogue: select a bot or player first.");
+                return true;
+            }
+
+            DialogueContext ctx;
+            ctx.speaker = speaker;
+            ctx.channel = DialogueChannel::Say;
+            ctx.priority = DialoguePriority::High;
+
+            bool ok = sBotDialogueMgr.Emit(beat, ctx, GameTime::GetGameTimeMS().count());
+            if (handler)
+                handler->PSendSysMessage("BotDialogue: emit beat '{}' -> {}", beatStr, ok ? "SUCCESS" : "SUPPRESSED");
+            return true;
+        }
+
+        if (handler)
+            handler->SendSysMessage("Usage: .botcmd dialogue <reload|debug on/off|say <beat>|status>");
         return true;
     }
 };

@@ -31,6 +31,7 @@
 #include "SpellMgr.h"
 #include "Config.h"
 #include "Log.h"
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <string>
@@ -176,6 +177,23 @@ void BotBattlegroundAI::MoveToPoint(Player* bot, float x, float y, float z)
     float dist2d = bot->GetDistance2d(x, y);
     if (dist2d > 3.0f)
     {
+        // Every bot of a side heads for the same flag, node or graveyard and used to arrive on the very same coordinates, in one
+        // clump, again and again (confirmed in the soak test: five bots at identical positions). Far from the goal each bot aims at
+        // its own spot a few yards to the side of it, the offset fading out as it gets close; a spot the navigation mesh refuses
+        // falls back to the exact goal.
+        if (dist2d > 25.0f)
+        {
+            uint32 const h = bot->GetGUID().GetCounter() * 2654435761u;
+            float const angle = float(h % 6283) / 1000.0f;
+            float const radius = std::min(9.0f, dist2d * 0.06f) * (0.4f + 0.6f * float((h >> 8) % 100) / 100.0f);
+            float const jx = x + std::cos(angle) * radius;
+            float const jy = y + std::sin(angle) * radius;
+            float jz = groundZ;
+            if (!bot->CanFly())
+                bot->UpdateAllowedPositionZ(jx, jy, jz);
+            if (jz > INVALID_HEIGHT && std::fabs(jz - groundZ) < 6.0f && BotMovement::MoveTo(bot, MoveOwner::Battleground, jx, jy, jz).IsValid())
+                return;
+        }
         BotMovement::MoveTo(bot, MoveOwner::Battleground, x, y, groundZ);
     }
     else

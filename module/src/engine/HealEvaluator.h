@@ -16,8 +16,11 @@
 
 #include "Define.h"
 #include "ObjectGuid.h"
+#include "engine/CombatDecisions.h"
 
 class Player;
+class SpellInfo;
+class Unit;
 
 namespace BotAI
 {
@@ -39,6 +42,23 @@ namespace BotAI
         // Best heal target among the healer and its group within maxRange that passes
         // ShouldConsiderHealing, or nullptr if nobody currently needs it.
         static Player* SelectBestHealTarget(Player* healer, float maxRange = 60.0f);
+
+        // What a direct heal of `spellInfo` would restore on `target` if all of it landed on missing health (healing done / taken
+        // modifiers included, NOT capped at the missing health); 0 for a pure HoT or a script-only heal, whose amount is unknown.
+        static uint32 EstimateRawHeal(Player* healer, Unit* target, SpellInfo const* spellInfo);
+
+        // The forecast for casting `spellInfo` on `target` now: raw amount, damage expected before it lands (cast time x incoming damage, less
+        // the usable absorb), heals other healers have in flight, and from those the useful part (effective) and the waste (overheal).
+        static Decisions::HealForecast ForecastHeal(Player* healer, Unit* target, SpellInfo const* spellInfo);
+
+        // False when casting a direct heal on `target` would be waste: the target does not need healing at all (ShouldConsiderHealing), or
+        // the useful part is under 40% of the raw heal and nothing about the target is urgent (see Decisions::IsDirectHealWorthCasting).
+        // A heal of unknown size is judged as a 15% heal.
+        static bool IsDirectHealWorthCasting(Player* healer, Player* target, SpellInfo const* spellInfo);
+
+        // The absorb shields on `unit` that can be counted on over the next `horizonMs` against damage of `schoolMask` (0 = unknown). An
+        // absorb is not health: it lowers what reaches health, it never lowers missing health.
+        static uint32 UsableAbsorb(Unit const* unit, uint32 horizonMs, uint32 schoolMask);
 
         // Max range among the healer's own currently-known, usable heal-shaped spells (falls back
         // to `fallback` if it knows none) -- item 12: a healer with a 40yd heal shouldn't be

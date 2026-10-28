@@ -4,9 +4,13 @@
 #include "BotTalentBuilds.h"
 #include "BotWorldBehavior.h"
 #include "WorldBrain.h"
+#include "DangerMap.h"
+#include "world/encounters/WorldEncounterDirector.h"
 #include "Config.h"
 #include "Creature.h"
 #include "KillRewarder.h"
+#include "Log.h"
+#include "Group.h"
 #include "Player.h"
 #include "PlayerScript.h"
 #include "ScriptMgr.h"
@@ -33,6 +37,7 @@ public:
         CoaTraining::Shutdown();
         if (!sBotMgr->BotsEnabled())
             return;
+        WorldEncounterDirector::ResetAll();
         sBotMgr->LogoutAllBots();
     }
 
@@ -53,6 +58,8 @@ public:
         BotWorldBehavior::LoadConfig();
         // Quest knowledge base, objective handlers' config: built once, after the world loaded.
         WorldBrain::Initialize();
+        DangerMap::Initialize();
+        WorldEncounterDirector::LoadConfig();
 
         if (sConfigMgr->GetOption<bool>("CoaBots.AutoLoginOnStartup", false))
             sBotMgr->QueueAllBotsForAutoLogin();
@@ -62,7 +69,40 @@ public:
 class coa_playerbots_playerscript : public PlayerScript
 {
 public:
-    coa_playerbots_playerscript() : PlayerScript("coa_playerbots_playerscript", { PLAYERHOOK_ON_REWARD_KILL_REWARDER }) { }
+    coa_playerbots_playerscript() : PlayerScript("coa_playerbots_playerscript", { PLAYERHOOK_ON_REWARD_KILL_REWARDER, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE, PLAYERHOOK_ON_PLAYER_JUST_DIED }) { }
+
+    void OnPlayerLogout(Player* player) override
+    {
+        if (!sBotMgr->BotsEnabled() || !player)
+            return;
+        WorldEncounterDirector::OnPlayerLogout(player->GetGUID());
+    }
+
+    // One line per bot death, so what kills the open-world bots can be counted instead of guessed: the killer, its level
+    // against the bot's, how many creatures were on the bot, where. Runs on a map thread and only reads and logs.
+    void OnPlayerKilledByCreature(Creature* killer, Player* killed) override
+    {
+        if (!killer || !killed || !BotMgr::IsBotAccountId(killed->GetSession()->GetAccountId()))
+            return;
+
+        CreatureTemplate const* cinfo = killer->GetCreatureTemplate();
+        Group const* group = killed->GetGroup();
+        LOG_INFO("module.coa-playerbots", "BotDeath: '{}' (class {}, level {}, {} max hp) killed by '{}' (entry {}, level {}, rank {}, {} attackers) on map {} zone {} at ({:.0f} {:.0f} {:.0f}), group of {}, in combat {}.",
+            killed->GetName(), uint32(killed->getClass()), uint32(killed->GetLevel()), killed->GetMaxHealth(), killer->GetName(), killer->GetEntry(),
+            uint32(killer->GetLevel()), cinfo ? uint32(cinfo->rank) : 0u, killed->getAttackers().size(), killed->GetMapId(), killed->GetZoneId(),
+            killed->GetPositionX(), killed->GetPositionY(), killed->GetPositionZ(), group ? group->GetMembersCount() : 1u, killed->IsInCombat());
+    }
+
+    void OnPlayerJustDied(Player* player) override
+    {
+        if (!player || !BotMgr::IsBotAccountId(player->GetSession()->GetAccountId()))
+            return;
+
+        DangerMap::NoteDeath(player->GetMapId(), player->GetPositionX(), player->GetPositionY());
+        LOG_INFO("module.coa-playerbots", "BotDeath: '{}' (class {}, level {}) died on map {} zone {} at ({:.0f} {:.0f} {:.0f}), underwater {}, attackers {}, in combat {}.",
+            player->GetName(), uint32(player->getClass()), uint32(player->GetLevel()), player->GetMapId(), player->GetZoneId(),
+            player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->IsUnderWater(), player->getAttackers().size(), player->IsInCombat());
+    }
 
     void OnPlayerRewardKillRewarder(Player* player, KillRewarder* rewarder, bool /*isDungeon*/, float& /*rate*/) override
     {
@@ -72,6 +112,15 @@ public:
         Unit* victim = rewarder->GetVictim();
         if (!victim)
             return;
+
+        if (Player* victimPlayer = victim->ToPlayer())
+        {
+            BotMgr::KillEvent pvpEvent;
+            pvpEvent.killer = player->GetGUID();
+            pvpEvent.victim = victimPlayer->GetGUID();
+            sBotMgr->PostKillEvent(pvpEvent);
+            return;
+        }
 
         Creature* creature = victim->ToCreature();
         if (!creature)
