@@ -56,6 +56,7 @@
 #include "engine/CastGuard.h"
 #include "engine/CombatResource.h"
 #include "engine/CombatReservations.h"
+#include "engine/GroupDirector.h"
 #include "engine/CombatUtility.h"
 #include "engine/DamageTracker.h"
 #include "engine/HealEvaluator.h"
@@ -91,8 +92,10 @@
 #include "BotEconomy.h"
 #include "BotWorldBehavior.h"
 #include "BotZoneProgression.h"
+#include "BotSpawnRandom.h"
 #include "WorldBrain.h"
 #include "WorldParties.h"
+#include "encounters/WorldEncounterDirector.h"
 #include "GameTime.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -118,6 +121,8 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include <algorithm>
+#include <list>
+#include <map>
 #include <atomic>
 #include <array>
 #include <cmath>
@@ -298,6 +303,11 @@ struct BotAIState
     // gear-upgrade bag scan.
     uint32 nextProgressionCheckMs = 0;
 
+    // The spell tools (totems, standards) are checked once, then again whenever the bot learns or forgets a spell
+    // (BotProgression::SpellbookRevision counts those events; the size of the spellbook would miss a replaced spell).
+    bool toolsChecked = false;
+    uint32 toolCheckRevision = 0;
+
     // Flight paths a character of this level would know are granted once per session: bots created
     // before flight paths existed knew none and could never fly, and the grant is idempotent, so
     // doing it again on the next login is harmless but not worth doing every check.
@@ -311,6 +321,16 @@ struct BotAIState
 
     // Death failsafe: duration spent as a ghost (for stuck ghost fallback)
     uint32 ghostDurationMs = 0;
+    // How long the corpse run has been refused by the movement layer in a row (no path, held by another owner).
+    uint32 ghostMoveFailMs = 0;
+    // Game time (ms) until which the ghost is walking the last stretch to its body in a straight line (the navigation mesh has no path there).
+    uint32 ghostStraightUntilMs = 0;
+    // How long the ghost has stood at its body waiting for the creatures around it to leave.
+    uint32 ghostHoldMs = 0;
+    // Set when a dead bot comes back (a corpse reclaim restores half its health): it rests to near full before it goes
+    // on, instead of walking back into the mobs that killed it, which it did within seconds.
+    bool recoverAfterDeath = false;
+    uint32 recoverAfterDeathMs = 0;
 
     // Natural follow latency
     uint32 followReactionDelayMs = 0;
@@ -326,6 +346,24 @@ struct BotAIState
 // healer's own GCD/cast-time/reaction, short enough that a bot doesn't sit dead for a full
 // minute in a group with no healer at all. See UpdateDeathHandling.
 constexpr uint32 DEATH_REZ_GRACE_MS = 15000;
+
+// A ghost that cannot reach its corpse is brought back where it stands after this long, and sooner when
+// the movement layer refuses the corpse run for GHOST_MOVE_GIVE_UP_MS in a row (no path to the corpse).
+constexpr uint32 GHOST_FAILSAFE_MS = 240000;
+constexpr uint32 GHOST_MOVE_GIVE_UP_MS = 20000;
+// Navigate() reports Stuck only after its whole recovery ladder (leg, detour, route waypoint, backtrack) has failed: no point waiting out the rest of the 20 s.
+constexpr uint32 GHOST_STUCK_GIVE_UP_MS = 4000;
+// A ghost whose path is refused this long, and whose body is nearer than the range, walks the rest in a straight line.
+constexpr uint32 GHOST_STRAIGHT_AFTER_MS = 3000;
+constexpr float GHOST_STRAIGHT_RANGE = 350.0f;
+// A ghost at its body waits this long for hostile creatures standing next to it to wander off before it comes back
+// anyway; they usually killed it, and coming back at half health among them killed it again within seconds.
+constexpr uint32 GHOST_HOLD_MAX_MS = 45000;
+constexpr float GHOST_HOLD_RANGE = 24.0f;
+// A body this close with creatures it cannot beat standing over it (CorpseIsCamped) is given up on, the ghost coming back
+// where it stands instead of walking the rest of the way into them.
+constexpr float GHOST_CAMP_RANGE = 30.0f;
+constexpr float GHOST_ABANDON_RANGE = 110.0f;
 
 // How often a Support bot re-checks whether its party/raid buff needs (re)applying. Real
 // Ascension buffs of this shape run tens of minutes; checking every 15s is cheap and still
@@ -767,6 +805,13 @@ KitWeaponDemand GetKitWeaponDemand(Player* bot)
         SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
         if (!info || info->IsPassive() || info->EquippedItemSubClassMask <= 0)
             continue;
+        // Enchanting recipes name the item they enchant ("Enchant Shield - Minor Stamina", "Enchant 2H Weapon - Minor
+        // Impact") through the same equipment fields as a combat ability. Bots learn every profession, so every one of
+        // them counted a shield as required and a two-hander as a loss: a Crusader (whose core spells need a two-hander)
+        // always kept one-handed maces.
+        if (info->HasEffect(SPELL_EFFECT_ENCHANT_ITEM) || info->HasEffect(SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY) ||
+            info->HasEffect(SPELL_EFFECT_ENCHANT_HELD_ITEM) || info->HasEffect(SPELL_EFFECT_ENCHANT_ITEM_PRISMATIC))
+            continue;
         if (info->EquippedItemClass == ITEM_CLASS_ARMOR && (info->EquippedItemSubClassMask & (1 << ITEM_SUBCLASS_ARMOR_SHIELD)))
         {
             if (families.insert(sSpellMgr->GetFirstSpellInChain(spellId)).second)
@@ -840,6 +885,27 @@ float WeaponKitFit(Player* bot, ItemTemplate const* proto)
             break;
     }
     return std::max(-KIT_WEAPON_CAP, std::min(KIT_WEAPON_CAP, fit));
+}
+
+bool KitGearMismatch(Player* bot)
+{
+    if (!bot || bot->getClass() < 12)
+        return false;
+    KitWeaponDemand const demand = GetKitWeaponDemand(bot);
+    auto satisfied = [&](std::vector<uint32> const& masks, uint8 slot)
+    {
+        if (masks.empty())
+            return true;
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item || item->GetTemplate()->Class != ITEM_CLASS_WEAPON)
+            return false;
+        uint32 const bit = 1u << item->GetTemplate()->SubClass;
+        for (uint32 mask : masks)
+            if (mask & bit)
+                return true;
+        return false;
+    };
+    return !satisfied(demand.melee, EQUIPMENT_SLOT_MAINHAND) || !satisfied(demand.ranged, EQUIPMENT_SLOT_RANGED);
 }
 
 namespace
@@ -1140,8 +1206,18 @@ void TryMaintainEquipment(Player* bot, BotRole role, bool force)
         if (repairNpc)
         {
             uint32 cost = bot->DurabilityRepairAll(true, 1.0f, false);
-            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' repaired gear at '{}' for {} copper.",
-                bot->GetName(), repairNpc->GetName(), cost);
+            // Whatever the paid repair left undone is mended without a charge. On this server the paid path returned 0
+            // copper and mended nothing, even for bots holding plenty of gold (the cost lookup finds no entry for these
+            // items), so gear stayed broken -- a third of the gear of the level 15-25 bots was at 0 durability -- the bots
+            // died more, and walked to a repairer again every minute instead of questing.
+            bool credit = false;
+            if (HasGearBelowRepairThreshold(bot))
+            {
+                bot->DurabilityRepairAll(false, 1.0f, false);
+                credit = true;
+            }
+            LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' repaired gear at '{}' for {} copper{}.",
+                bot->GetName(), repairNpc->GetName(), cost, credit ? " (the rest free)" : "");
         }
     }
 
@@ -1359,6 +1435,13 @@ void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
     {
         BotTaxi::GrantNodesForLevel(bot);
         state.flightPathsGranted = true;
+    }
+    uint32 const spellbookRevision = BotProgression::SpellbookRevision(bot->GetGUID());
+    if (!state.toolsChecked || spellbookRevision != state.toolCheckRevision)
+    {
+        state.toolsChecked = true;
+        state.toolCheckRevision = spellbookRevision;
+        BotProgression::GrantSpellTools(bot);
     }
     TryUpgradeGearOnce(bot, state.role);
     TryMaintainEquipment(bot, state.role, false);
@@ -1602,6 +1685,32 @@ private:
 // Quest targets are not this check's business any more: quest objectives are executed by the
 // open-world layer (world/QuestExecutor), which searches for its own live targets around the
 // objective area. Grinding is only ever grinding.
+// Creatures a bot gave up on because it stood in front of them for seconds without either side losing health (unreachable behind a gate or a
+// ledge, evading, immune): not picked as a pull or grind target again for a while. Without this a tank re-picked the same Scholomance Adept
+// every tick and the whole group stood at the entrance until the run was called stuck.
+std::unordered_map<ObjectGuid, std::unordered_map<ObjectGuid, uint32>> s_ignoredTargets;
+
+void IgnoreTargetFor(ObjectGuid bot, ObjectGuid target, uint32 ms)
+{
+    s_ignoredTargets[bot][target] = getMSTime() + ms;
+}
+
+bool IsIgnoredTarget(ObjectGuid bot, ObjectGuid target)
+{
+    auto it = s_ignoredTargets.find(bot);
+    if (it == s_ignoredTargets.end())
+        return false;
+    auto t = it->second.find(target);
+    if (t == it->second.end())
+        return false;
+    if (int32(t->second - getMSTime()) <= 0)
+    {
+        it->second.erase(t);
+        return false;
+    }
+    return true;
+}
+
 class GrindHostileUnitCheck
 {
 public:
@@ -1612,6 +1721,8 @@ public:
         if (!_me->IsWithinDistInMap(u, _range, true, false, false))
             return false;
         if (!_me->IsValidAttackTarget(u))
+            return false;
+        if (IsIgnoredTarget(_me->GetGUID(), u->GetGUID()))
             return false;
         if (u->GetLevel() > _maxLevel)
             return false;
@@ -1789,7 +1900,7 @@ bool TryProcessPendingLoot(Player* bot, uint32 /*diff*/, BotAIState& state)
 }
 
 // Out-of-combat rest behavior: sits and consumes food/drink when HP or mana are depleted between pulls
-bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& state)
+bool TryRestIfNeeded(Player* bot, uint32 diff, BotRole role, BotAIState& state)
 {
     if (bot->IsInCombat())
     {
@@ -1851,25 +1962,54 @@ bool TryRestIfNeeded(Player* bot, uint32 /*diff*/, BotRole role, BotAIState& sta
     bool usesMana = (bot->getPowerType() == POWER_MANA);
     float manaPct = usesMana ? bot->GetPowerPct(POWER_MANA) : 100.0f;
 
-    float startHpPct = 45.0f;
-    float startManaPct = 25.0f;
-    float endHpPct = 75.0f;
-    float endManaPct = 70.0f;
+    // A level-20 bot has a few hundred health and dies in a handful of hits, so it sits down well before it is low and
+    // stands up nearly full; the rest aura makes this cheap.
+    float startHpPct = 60.0f;
+    float startManaPct = 35.0f;
+    float endHpPct = 88.0f;
+    float endManaPct = 75.0f;
 
     if (role == BotRole::Healer)
     {
-        startHpPct = 60.0f;
+        startHpPct = 65.0f;
         startManaPct = 50.0f;
-        endHpPct = 80.0f;
+        endHpPct = 90.0f;
         endManaPct = 85.0f;
     }
     else if (role == BotRole::Tank)
     {
-        startHpPct = 60.0f;
-        startManaPct = 30.0f;
-        endHpPct = 85.0f;
-        endManaPct = 60.0f;
+        startHpPct = 70.0f;
+        startManaPct = 35.0f;
+        endHpPct = 92.0f;
+        endManaPct = 65.0f;
     }
+
+    if (state.recoverAfterDeath)
+    {
+        state.recoverAfterDeathMs += diff;
+        if (state.recoverAfterDeathMs > 150000 || (!state.isResting && hpPct >= 92.0f && manaPct >= 70.0f))
+            state.recoverAfterDeath = false;
+        else
+        {
+            startHpPct = std::max(startHpPct, 92.0f);
+            startManaPct = std::max(startManaPct, 70.0f);
+            endHpPct = std::max(endHpPct, 95.0f);
+            endManaPct = std::max(endManaPct, 80.0f);
+        }
+    }
+
+    // In an auto-dungeon the tank holds the pull until everybody is above AutoDungeonWaitReason's limits (health 70% to start waiting and 90% to go on,
+    // mana 60% and 80%). A bot that only sat down below its own, lower thresholds (25-50% mana) never recovered in between and held the group for the
+    // whole 150 s wait after every pull; here it rests as soon as it would make the tank wait, and until the tank is satisfied.
+    if (Group const* restGroup = bot->GetGroup())
+        if (Map const* restMap = bot->GetMap(); restMap && (restMap->IsDungeon() || restMap->IsRaid()) &&
+            sBotMgr->IsAutoDungeonModeEnabled(restGroup->GetLeaderGUID()))
+        {
+            startHpPct = std::max(startHpPct, 72.0f);
+            startManaPct = std::max(startManaPct, 62.0f);
+            endHpPct = std::max(endHpPct, 92.0f);
+            endManaPct = std::max(endManaPct, 82.0f);
+        }
 
     if (!state.isResting)
     {
@@ -2111,6 +2251,31 @@ bool RunToTankIfTargeted(Player* bot)
 // instant the committed boss stops being a candidate (cleared, or no longer present).
 std::unordered_map<ObjectGuid, uint64> _autoDungeonCommittedBoss;
 
+// Bosses a group could not get to, per group leader and spawn id: the game time (ms) until which the next-boss choice leaves them out. Without it
+// the choice went straight back to the same boss in encounter order and the group stood at the same dead end (soak test: Gnomeregan, Scholomance,
+// Shadowfang... ended "STUCK" with "no path" refusals for minutes).
+std::map<std::pair<ObjectGuid, uint64>, uint32> _autoDungeonUnreachableUntil;
+constexpr uint32 AUTO_DUNGEON_UNREACHABLE_MS = 6 * 60 * 1000;
+
+// How long the tank has been heading for the committed boss without getting 8 yards closer than ever before (only ticks that really tried to walk
+// count, so waiting for mana does not).
+struct AutoDungeonBossProgress
+{
+    uint64 spawnId = 0;
+    float bestDist = 1.0e9f;
+    uint32 lastTickMs = 0;
+    uint32 stalledMs = 0;
+};
+std::unordered_map<ObjectGuid, AutoDungeonBossProgress> _autoDungeonBossProgress;
+constexpr uint32 AUTO_DUNGEON_STALL_MS = 180 * 1000;
+
+void MarkBossUnreachable(ObjectGuid leader, uint64 spawnId)
+{
+    _autoDungeonUnreachableUntil[{ leader, spawnId }] = getMSTime() + AUTO_DUNGEON_UNREACHABLE_MS;
+    _autoDungeonCommittedBoss.erase(leader);
+    _autoDungeonBossProgress.erase(leader);
+}
+
 // The dungeon "boss checklist": true once every CREATURE_FLAG_EXTRA_DUNGEON_BOSS/world-boss spawn
 // on this map is cleared (via real DungeonEncounter data where it exists, BotMgr's _clearedBosses
 // fallback otherwise). Confirmed live (2026-09-27): without this, TryAutoPullInInstance's own boss
@@ -2316,6 +2481,21 @@ void TryAutoPullInInstance(Player* bot)
         candidates.push_back(candidate);
     }
 
+    // Leave out bosses the group could not reach lately; if that leaves nothing, try them all again rather than stand still.
+    {
+        uint32 const nowMs = getMSTime();
+        std::vector<BossCandidate> reachable;
+        for (BossCandidate const& candidate : candidates)
+        {
+            auto skip = _autoDungeonUnreachableUntil.find({ leader->GetGUID(), candidate.spawnId });
+            if (skip != _autoDungeonUnreachableUntil.end() && int32(skip->second - nowMs) > 0)
+                continue;
+            reachable.push_back(candidate);
+        }
+        if (!reachable.empty())
+            candidates.swap(reachable);
+    }
+
     BossCandidate const* chosen = nullptr;
 
     // Commit-and-hold: if the previously-committed boss is still a candidate, keep heading there
@@ -2389,7 +2569,35 @@ void TryAutoPullInInstance(Player* bot)
             // Release the commitment too -- otherwise the next tick's commit-and-hold check would
             // find this same still-uncleared boss and immediately recommit to the exact spawn that
             // was just found unreachable, defeating the point of giving up on it.
-            _autoDungeonCommittedBoss.erase(leader->GetGUID());
+            MarkBossUnreachable(leader->GetGUID(), bestBossSpawnId);
+        }
+        else
+        {
+            // The ladder is not exhausted but the group does not get any closer (Navigate keeps returning "moving" while every leg is refused):
+            // give the boss up after a while of that, the same way.
+            AutoDungeonBossProgress& progress = _autoDungeonBossProgress[leader->GetGUID()];
+            uint32 const nowMs = getMSTime();
+            float const dist = std::hypot(bestBossPos.GetPositionX() - bot->GetPositionX(), bestBossPos.GetPositionY() - bot->GetPositionY());
+            if (progress.spawnId != bestBossSpawnId)
+                progress = AutoDungeonBossProgress{ bestBossSpawnId, dist, nowMs, 0 };
+            else
+            {
+                progress.stalledMs += std::min<uint32>(nowMs - progress.lastTickMs, 1000);
+                progress.lastTickMs = nowMs;
+                if (dist < progress.bestDist - 8.0f)
+                {
+                    progress.bestDist = dist;
+                    progress.stalledMs = 0;
+                }
+                else if (progress.stalledMs > AUTO_DUNGEON_STALL_MS && !bot->IsInCombat())
+                {
+                    LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                        "AutoDungeon: bot '{}' has not got closer to boss spawn {} in {} s ({:.0f} yd away) -- leaving it for {} min.",
+                        bot->GetName(), bestBossSpawnId, progress.stalledMs / 1000, dist, AUTO_DUNGEON_UNREACHABLE_MS / 60000);
+                    BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
+                    MarkBossUnreachable(leader->GetGUID(), bestBossSpawnId);
+                }
+            }
         }
         // Arrived/Moving/Blocked: nothing else to do this tick -- Navigate() already issued
         // (or is still working through) whatever movement is needed, same as the old dist<=8.0f
@@ -3110,7 +3318,7 @@ void ResumeFollowingLeader(Player* bot, BotAIState& state)
     // Suppress follow movement while a mount attempt is pending or the bot is actively casting
     // a non-melee spell (such as a 1.5s mount cast). Issuing movement while casting immediately
     // aborts the spell cast.
-    if (BotMovement::GetPendingMountSpell(bot) || bot->IsNonMeleeSpellCast(false))
+    if (BotMovement::GetPendingMountSpell(bot) || bot->IsNonMeleeSpellCast(false, false, /*skipAutorepeat=*/true))
         return;
 
     // Stay means exactly this: don't resume following just because there's nothing to fight
@@ -3757,22 +3965,28 @@ void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
     // Persistent half-hour lean (personality + session variety); the brain uses it as a bias.
     UpdateSoloIntent(bot, diff, state);
 
-    // A trip to town to sell (BotEconomy.h) owns the tick while the bot is walking there.
-    if (BotEconomy::UpdateTrip(bot, diff))
-    {
-        WorldBrain::NotifyAmbientBusy(bot);
-        return;
-    }
-
     AmbientProfile ambientProfile = MakeAmbientProfile(bot, state);
-    AmbientTick ambient = BotWorldBehavior::UpdateBeforeSolo(bot, ambientProfile);
-    if (ambient == AmbientTick::Busy)
+
+    // While a bot is actively owned by a Dynamic Bot Encounter, do not let economy errands or
+    // ambient solo idles preempt the encounter before WorldBrain::Update dispatches UpdateBot.
+    if (!WorldEncounterDirector::IsBotInEncounter(bot->GetGUID()))
     {
-        WorldBrain::NotifyAmbientBusy(bot);
-        return;
+        // A trip to town to sell (BotEconomy.h) owns the tick while the bot is walking there.
+        if (BotEconomy::UpdateTrip(bot, diff))
+        {
+            WorldBrain::NotifyAmbientBusy(bot);
+            return;
+        }
+
+        AmbientTick ambient = BotWorldBehavior::UpdateBeforeSolo(bot, ambientProfile);
+        if (ambient == AmbientTick::Busy)
+        {
+            WorldBrain::NotifyAmbientBusy(bot);
+            return;
+        }
+        if (ambient == AmbientTick::Relocated)
+            state.hasGrindAnchor = false;
     }
-    if (ambient == AmbientTick::Relocated)
-        state.hasGrindAnchor = false;
 
     WorldDirective directive = WorldBrain::Update(bot, diff, MakeWorldPersona(bot, state));
     if (directive != WorldDirective::Fish)
@@ -3953,6 +4167,10 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         }
     }
 
+    // A creature given up on (see IgnoreTargetFor) is not fought again unless it is the one hitting us.
+    if (target && IsIgnoredTarget(bot->GetGUID(), target->GetGUID()) && target->GetVictim() != bot && !bot->getAttackers().count(target))
+        target = nullptr;
+
     if (target && !target->IsAlive())
     {
         BotAI::EnqueuePendingLoot(bot, target->GetGUID());
@@ -3977,7 +4195,11 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             if (TryRestIfNeeded(bot, diff, combatRole, state))
                 return;
 
-            if (!bot->InBattleground())
+            bool inEncounter = WorldEncounterDirector::IsBotInEncounter(bot->GetGUID());
+            bool inEncounterGroup = bot->GetGroup() &&
+                WorldEncounterDirector::IsEncounterTemporaryGroup(bot->GetGroup()->GetGUID().GetCounter());
+
+            if (!bot->InBattleground() && !inEncounter)
                 ResumeFollowingLeader(bot, state);
 
             // Ungrouped means no leader to fight alongside or follow -- ResumeFollowingLeader
@@ -3992,12 +4214,22 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
             // something to kill.
             // The leader of a temporary bot-only party (WorldParties) keeps living its own open-world
             // life while grouped; the other members are ordinary grouped bots that follow it.
+            // Bots owned by an active Dynamic Encounter (including members of a temporary encounter
+            // group) always route through UpdateSoloWorld so WorldEncounterDirector maintains ownership.
             bool worldPartyLeader = bot->GetGroup() && WorldParties::IsLeader(bot->GetGUID());
-            if ((!bot->GetGroup() || worldPartyLeader) && state.manualCommand != BotManualCommand::Stay)
+            if ((!bot->GetGroup() || worldPartyLeader || (inEncounter && inEncounterGroup)) && state.manualCommand != BotManualCommand::Stay)
             {
+                if (inEncounter)
+                {
+                    state.gatherTargetGuid = ObjectGuid::Empty;
+                    state.gatherWalkTargetGuid = ObjectGuid::Empty;
+                    state.fishingBobberGuid = ObjectGuid::Empty;
+                    state.fishingCastInProgress = false;
+                    UpdateSoloWorld(bot, diff, state);
+                }
                 // An in-flight gathering or fishing action finishes before anything else is
                 // decided; everything else goes through the open-world layer (UpdateSoloWorld).
-                if (!state.gatherTargetGuid.IsEmpty())
+                else if (!state.gatherTargetGuid.IsEmpty())
                     TryFinishGathering(bot, state);
                 else if (!state.gatherWalkTargetGuid.IsEmpty())
                     TryContinueGatherWalk(bot, diff, state);
@@ -4041,16 +4273,33 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         snap.y = bot->GetPositionY();
         snap.z = bot->GetPositionZ();
         if (state.stuckDetector.Update(snap, getMSTime()))
+        {
             LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
                 "STUCK-DETECTOR: bot '{}' made no progress against '{}' for {}ms (self {:.1f}% HP, target {:.1f}% HP, "
                 "holding spell {}) -- possible AI deadlock.",
                 bot->GetName(), target->GetName(), StuckDetectorRules{}.stallMs, snap.selfHpPct, snap.targetHpPct, snap.castSpellId);
+
+            // A mob nobody is hurting and that is not hurting us (an attacker would have changed one of the two numbers): give it up for a
+            // minute and a half instead of standing in front of it for good.
+            if (snap.targetHpPct >= 99.0f && target->GetVictim() != bot && !bot->getAttackers().count(target))
+            {
+                IgnoreTargetFor(bot->GetGUID(), target->GetGUID(), 90000);
+                bot->AttackStop();
+                BotMovement::ForceStopOwner(bot, MoveOwner::Combat);
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
+                state.lastCombatTargetGuid = ObjectGuid::Empty;
+                LOG_INFO("module.coa-playerbots", "STUCK-DETECTOR: bot '{}' gives up '{}' (entry {}) for 90 s.", bot->GetName(), target->GetName(), target->GetEntry());
+                return;
+            }
+        }
     }
 
     // Open-world flee response (BotFlee.h), new-trigger half: the "already fleeing" case was
     // handled unconditionally at the top of this function, before target acquisition, so
     // state.flee.fleeing is always false by this point -- this only evaluates fresh triggers
     // against this tick's live target and starts a new flee on one firing.
+    // Skip panic-fleeing when the bot is in a duel so duelists fight to the duel threshold.
+    if (!bot->duel)
     {
         CombatContext fleeCtx = CombatContext::Build(bot, target);
         FleeReason reason = BotFlee::Evaluate(bot, target, fleeCtx, state.flee, getMSTime());
@@ -4241,8 +4490,10 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         {
             float x, y, z;
             target->GetNearPoint(bot, x, y, z, 0.0f, preferredDist, target->GetAngle(bot));
-            BotMovement::MoveTo(bot, MoveOwner::Combat, x, y, z);
-            return; // finish repositioning before a stationary filler stops the move
+            // Finish repositioning before a stationary filler stops the move -- but only if a move was issued: a refused one (no path to the
+            // point, another movement owner) used to end the tick here every tick and a bot cornered in a dead end never cast again.
+            if (BotMovement::MoveTo(bot, MoveOwner::Combat, x, y, z).IsValid())
+                return;
         }
         // A comfortable band, not a razor-thin one -- retreats once the enemy closes past
         // ~70% of preferredDist, holds anywhere between that and preferredDist itself.
@@ -4805,6 +5056,47 @@ void UpdateSupport(Player* bot, uint32 diff, BotAIState& state)
     UpdateOffensive(bot, diff, BotRole::Dps, BotRole::Support, state);
 }
 
+// Awake hostile creatures of some weight within range of a point: what a ghost would wake up next to.
+class GhostThreatCheck
+{
+public:
+    GhostThreatCheck(Player const* me, float x, float y, float range) : _me(me), _x(x), _y(y), _range(range) { }
+    bool operator()(Creature* c) const
+    {
+        if (!c->IsAlive() || c->IsInEvadeMode() || c->IsCivilian() || c->IsTotem() || c->IsPet() || c->IsGuardian())
+            return false;
+        if (CreatureTemplate const* t = c->GetCreatureTemplate(); t && t->type == CREATURE_TYPE_CRITTER)
+            return false;
+        if (c->GetLevel() + 6 < _me->GetLevel() || !c->IsWithinDist2d(_x, _y, _range))
+            return false;
+        return c->IsHostileTo(_me);
+    }
+
+private:
+    Player const* _me;
+    float _x, _y, _range;
+};
+
+// True when a ghost coming back at `corpse` would wake up among creatures it cannot beat: one much above its level or
+// a pack. Open world only; in a dungeon the group is fighting right there and the ordinary rules apply.
+bool CorpseIsCamped(Player* bot, Corpse const* corpse, float range, bool* any = nullptr)
+{
+    if (Map const* map = bot->GetMap(); !map || map->IsDungeon() || map->IsRaid() || bot->InBattleground())
+        return false;
+    std::list<Creature*> threats;
+    GhostThreatCheck check(bot, corpse->GetPositionX(), corpse->GetPositionY(), range);
+    Acore::CreatureListSearcher<GhostThreatCheck> searcher(bot, threats, check);
+    Cell::VisitObjects(corpse, searcher, range + 5.0f);
+    if (any)
+        *any = !threats.empty();
+    if (threats.size() >= 3)
+        return true;
+    for (Creature const* c : threats)
+        if (c->GetLevel() >= bot->GetLevel() + 5)
+            return true;
+    return false;
+}
+
 // Called every tick a bot is dead, instead of the normal role update -- see BotAI::Update.
 // Mirrors what a real player does on death, in three phases:
 //  1. Body not yet released: a real player who sees a healer coming waits instead of
@@ -4834,9 +5126,9 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
 
         // Failsafe: if a ghost has been unable to reach its corpse for > 3 minutes (e.g. unreachable terrain),
         // accept spirit resurrection instead of being permanently stuck.
-        if (state.ghostDurationMs > 180000)
+        if (state.ghostDurationMs > GHOST_FAILSAFE_MS)
         {
-            bot->ResurrectPlayer(0.5f, true);
+            bot->ResurrectPlayer(0.5f, false);
             bot->SpawnCorpseBones();
             state.ghostDurationMs = 0;
             return;
@@ -4860,18 +5152,110 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
         if (corpse->GetMapId() != bot->GetMapId())
             return;
 
+        if (bot->IsBeingTeleported())
+            return;
+
         if (bot->GetDistance(corpse) > CORPSE_RECLAIM_RADIUS)
         {
-            MoveBotToPoint(bot, MoveOwner::Corpse, corpse->GetPositionX(), corpse->GetPositionY(),
-                corpse->GetPositionZ());
+            // Whatever the bot was doing when it died (a fight, a quest walk) still holds the movement slot, and
+            // a combat or quest claim outranks the corpse run: without this the ghost could not start walking.
+            MoveOwner const holder = BotMovement::CurrentOwner(bot);
+            if (holder != MoveOwner::None && holder != MoveOwner::Corpse)
+                BotMovement::ForceReleaseOwner(bot, holder);
+
+            // A body lying among creatures the bot cannot beat (a level 45 mob over a level 20 bot, a pack) is given up on
+            // while it is still a long way off: coming back there only gets the bot killed again at once, over and over.
+            if (bot->GetDistance(corpse) < GHOST_ABANDON_RANGE && CorpseIsCamped(bot, corpse, GHOST_CAMP_RANGE))
+            {
+                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: ghost '{}' gives up its body ({:.0f} yd away): creatures it cannot beat stand over it; coming back where it stands.",
+                    bot->GetName(), bot->GetDistance(corpse));
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
+                bot->ResurrectPlayer(0.5f, false);
+                bot->SpawnCorpseBones();
+                state.ghostMoveFailMs = 0;
+                state.ghostDurationMs = 0;
+                return;
+            }
+
+            // The last stretch is being walked in a straight line (see below): do not plan over it.
+            if (state.ghostStraightUntilMs && int32(getMSTime() - state.ghostStraightUntilMs) < 0)
+                return;
+            state.ghostStraightUntilMs = 0;
+
+            // Legs, not one path: a single path request fails ("no path") beyond some 250 yards, and a graveyard is
+            // often farther than that from the body.
+            NavStatus const nav = BotMovement::Navigate(bot, MoveOwner::Corpse, uint64(bot->GetGUID().GetCounter()) << 8 | 0xC0,
+                corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), CORPSE_RECLAIM_RADIUS * 0.8f, nullptr, /*allowMount=*/false);
+            if (nav == NavStatus::Moving)
+            {
+                state.ghostMoveFailMs = 0;
+            }
+            else if (state.ghostMoveFailMs += diff; state.ghostMoveFailMs > GHOST_STRAIGHT_AFTER_MS && bot->GetDistance(corpse) < GHOST_STRAIGHT_RANGE &&
+                BotMovement::MoveTo(bot, MoveOwner::Corpse, corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), /*forceDestination=*/true).IsValid())
+            {
+                // The mesh has no path to a body that lies close (in water, on a ledge, behind a fence): a ghost may as well walk there straight.
+                state.ghostStraightUntilMs = getMSTime() + uint32(bot->GetDistance(corpse) / 7.0f * 1000.0f) + 1500;
+                state.ghostMoveFailMs = 0;
+                LOG_INFO("module.coa-playerbots", "CorpseRun: ghost '{}' walks the last {:.0f} yd to its corpse in a straight line (no navigation path).",
+                    bot->GetName(), bot->GetDistance(corpse));
+            }
+            else if (state.ghostMoveFailMs > (nav == NavStatus::Stuck ? GHOST_STUCK_GIVE_UP_MS : GHOST_MOVE_GIVE_UP_MS))
+            {
+                LOG_INFO("module.coa-playerbots", "CorpseRun: ghost '{}' cannot walk to its corpse ({:.0f} yd away, map {}, navigation {}); coming back where it stands.",
+                    bot->GetName(), bot->GetDistance(corpse), bot->GetMapId(), nav == NavStatus::Stuck ? "stuck" : "refused");
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
+                bot->ResurrectPlayer(0.5f, false);
+                bot->SpawnCorpseBones();
+                state.ghostMoveFailMs = 0;
+                state.ghostDurationMs = 0;
+            }
             return;
         }
 
         // Administrative release: bot arrived in reclaim radius of corpse
         BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
 
-        // The handler itself enforces the post-release reclaim delay and the exact-range
-        // recheck -- harmless (and expected) to call this every tick until it actually lands.
+        // Hostile creatures standing at the body usually killed the bot. Ghosts cannot be attacked, so it waits for them
+        // to go (patrols, leashing) for a while instead of coming back among them at half health.
+        if (state.ghostHoldMs < GHOST_HOLD_MAX_MS)
+        {
+            bool anyThreat = false;
+            CorpseIsCamped(bot, corpse, GHOST_HOLD_RANGE, &anyThreat);
+            if (anyThreat)
+            {
+                state.ghostHoldMs += diff;
+                return;
+            }
+        }
+
+        // Still creatures it cannot beat over the body after waiting (a graveyard inside a camp, guards that attack on sight): the
+        // bot comes back and is moved to a level-appropriate hub at once, before they act. Reclaiming here killed it again, over
+        // and over, on the same spot.
+        if (CorpseIsCamped(bot, corpse, GHOST_HOLD_RANGE))
+        {
+            LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: ghost '{}' leaves its body on map {} at ({:.0f} {:.0f}): creatures it cannot beat stand over it; moving to a hub.",
+                bot->GetName(), bot->GetMapId(), corpse->GetPositionX(), corpse->GetPositionY());
+            bot->ResurrectPlayer(0.5f, false);
+            bot->SpawnCorpseBones();
+            state.ghostDurationMs = 0;
+            BotZoneProgression::RelocateBot(bot, true);
+            return;
+        }
+
+        // The reclaim delay (30, 60, then 120 seconds with every recent death) is there to keep players from
+        // spamming deaths; a bot that keeps dying in the open world stood at its body for two minutes each time.
+        // Standing on the body, it comes back at once, exactly what a reclaim does.
+        if (time_t(corpse->GetGhostTime() + bot->GetCorpseReclaimDelay(corpse->GetType() == CORPSE_RESURRECTABLE_PVP)) >
+            GameTime::GetGameTime().count())
+        {
+            bot->ResurrectPlayer(0.5f, false);
+            bot->SpawnCorpseBones();
+            state.ghostDurationMs = 0;
+            return;
+        }
+
+        // The handler itself enforces the exact-range recheck -- harmless (and expected) to call this every tick
+        // until it actually lands.
         WorldPacket reclaimPacket;
         reclaimPacket << bot->GetGUID();
         bot->GetSession()->HandleReclaimCorpseOpcode(reclaimPacket);
@@ -4956,6 +5340,28 @@ void AddSC_coa_bot_petition_script()
 
 namespace BotAI
 {
+// Training dungeon probe: how many bosses the map has and how many are down, by the rule the auto-dungeon checklist uses.
+void DungeonProgress(Map* map, Player* leader, uint32& total, uint32& done)
+{
+    total = done = 0;
+    if (!map || !leader)
+        return;
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+    {
+        if (data.mapid != map->GetId())
+            continue;
+        CreatureTemplate const* cinfo = sObjectMgr->GetCreatureTemplate(data.id);
+        if (!cinfo || !(cinfo->HasFlagsExtra(CREATURE_FLAG_EXTRA_DUNGEON_BOSS) || cinfo->rank == CREATURE_ELITE_WORLDBOSS))
+            continue;
+        ++total;
+        bool const cleared = BotDungeonEncounters::HasEncounterData(map, data.id)
+            ? BotDungeonEncounters::IsEncounterCompleted(map, data.id)
+            : sBotMgr->IsBossCleared(leader->GetGUID(), data.id);
+        if (cleared)
+            ++done;
+    }
+}
+
 // Training dungeon probe: one line of what the bot AI is currently holding on to, for stuck-bot diagnosis.
 std::string DebugState(Player* bot)
 {
@@ -5010,8 +5416,14 @@ void Update(Player* bot, uint32 diff)
     if (state.lastLevel == 0)
     {
         state.lastLevel = currentLevel;
-        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel))
+        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel) || BotZoneProgression::ExpansionBlocked(bot))
             BotZoneProgression::QueueRelocation(bot);
+        // Gear that does not suit the bot (empty slots, pieces above its level, the weapon type its spells need missing) is
+        // fixed once per login, through the same throttled queue the gear repair command uses.
+        if (BotSpawn::NeedsGearRefit(bot))
+            BotGear::Queue(bot);
+        // Bots made before potions were handed out have none; this tops the bags up once per login (it gives nothing to a bot that has them).
+        BotProgression::ProvisionPotions(bot, 5);
     }
     else if (currentLevel > state.lastLevel)
     {
@@ -5020,8 +5432,10 @@ void Update(Player* bot, uint32 diff)
         // level-up, and a talent pick can depend on an ability the book only just taught.
         BotProgression::OnLevelUp(bot, currentLevel);
         BotTalentBuilds::ApplyBuildForLevel(bot, currentLevel);
+        if (BotSpawn::NeedsGearRefit(bot))
+            BotGear::Queue(bot);
         SpellResolver::Invalidate(bot->GetGUID());
-        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel))
+        if (!BotZoneProgression::IsZoneAppropriateForLevel(bot->GetZoneId(), currentLevel) || BotZoneProgression::ExpansionBlocked(bot))
             BotZoneProgression::QueueRelocation(bot);
     }
 
@@ -5031,9 +5445,14 @@ void Update(Player* bot, uint32 diff)
         return;
     }
     state.ghostDurationMs = 0;
+    state.ghostMoveFailMs = 0;
+    state.ghostHoldMs = 0;
     if (state.wasDead)
     {
         state.wasDead = false;
+        state.recoverAfterDeath = true;
+        state.recoverAfterDeathMs = 0;
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
         Player* lead = bot->GetGroup() ? ObjectAccessor::FindPlayer(bot->GetGroup()->GetLeaderGUID()) : nullptr;
         LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: bot '{}' is alive again on map {} at ({:.0f} {:.0f} {:.0f}), {:.0f} yd from its leader.",
             bot->GetName(), bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
@@ -5127,6 +5546,8 @@ void Forget(ObjectGuid botGuid)
     SpellResolver::Invalidate(botGuid);
     ActionEvaluator::ClearThrottles(botGuid);
     CombatReservations::ForgetBot(botGuid);
+    GroupDirector::ForgetBot(botGuid);
+    BotProgression::ForgetSpellbook(botGuid);
     DamageTracker::Forget(botGuid);
     HealEvaluator::ForgetBot(botGuid);
     TargetEvaluator::ForgetBot(botGuid);
@@ -5153,6 +5574,54 @@ bool NeedsRepair(Player* bot)
 bool NeedsVendor(Player* bot)
 {
     return bot->GetFreeInventorySpace() <= BAG_CLEANUP_FREE_SLOT_THRESHOLD && HasSellableJunk(bot, GetRole(bot->GetGUID()));
+}
+
+uint32 FreeBagSlots(Player* bot, uint32 wanted)
+{
+    if (!bot)
+        return 0;
+    if (bot->GetFreeInventorySpace() >= wanted)
+        return bot->GetFreeInventorySpace();
+
+    TryMaintainEquipment(bot, GetRole(bot->GetGUID()), true);
+
+    struct Candidate
+    {
+        Item* item;
+        uint64 value;
+    };
+    std::vector<Candidate> stacks;
+    auto consider = [&](Item* item)
+    {
+        if (!item || item->IsNotEmptyBag() || item->IsRefundable() || bot->GetLootGUID() == item->GetGUID() || BotGear::Archived(item))
+            return;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || proto->Class == ITEM_CLASS_QUEST || proto->StartQuest || proto->Class == ITEM_CLASS_CONTAINER ||
+            proto->Class == ITEM_CLASS_CONSUMABLE || proto->Quality >= ITEM_QUALITY_EPIC || IsProfessionTool(proto) ||
+            bot->HasQuestForItem(proto->ItemId))
+            return;
+        stacks.push_back({ item, uint64(proto->SellPrice) * item->GetCount() });
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        if (Bag* pBag = bot->GetBagByPos(bag))
+            for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+                consider(pBag->GetItemByPos(j));
+
+    std::sort(stacks.begin(), stacks.end(), [](Candidate const& a, Candidate const& b) { return a.value < b.value; });
+    uint32 destroyed = 0;
+    for (Candidate const& stack : stacks)
+    {
+        if (bot->GetFreeInventorySpace() >= wanted)
+            break;
+        bot->DestroyItem(stack.item->GetBagSlot(), stack.item->GetSlot(), true);
+        ++destroyed;
+    }
+    if (destroyed)
+        LOG_INFO("module.coa-playerbots.quests", "BagRoom: '{}' (level {}) destroyed {} stack(s) to get {} free slots (now {}).", bot->GetName(),
+            uint32(bot->GetLevel()), destroyed, wanted, bot->GetFreeInventorySpace());
+    return bot->GetFreeInventorySpace();
 }
 
 void MaintainEquipmentNow(Player* bot)

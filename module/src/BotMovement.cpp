@@ -474,25 +474,34 @@ namespace BotMovement
     // gives no other trace, as every refusal below is a silent "return {}".
     static void NoteMoveRefusal(Player* bot, MoveOwner owner, char const* reason, float x, float y)
     {
-        if (owner != MoveOwner::AutoDungeon)
+        if (owner != MoveOwner::AutoDungeon && owner != MoveOwner::Corpse)
             return;
         static std::unordered_map<ObjectGuid, std::pair<std::string, uint32>> last;
         auto& entry = last[bot->GetGUID()];
         uint32 const now = getMSTime();
         std::string const key = Acore::StringFormat("{} {:.0f} {:.0f}", reason, x, y);
-        if (entry.first == key && now - entry.second < 5000)
+        // A corpse run tries several legs and fallbacks per second, most of which fail on the way to one that works: one line per minute and bot is
+        // enough, the outcome is logged by the ghost handler itself.
+        if (owner == MoveOwner::Corpse ? now - entry.second < 60000 : (entry.first == key && now - entry.second < 5000))
             return;
         entry = { key, now };
-        LOG_INFO("module.coa-playerbots", "AutoDungeon: movement of '{}' refused: {} (goal {:.0f} {:.0f}, now {:.0f} {:.0f} {:.0f}).",
-            bot->GetName(), reason, x, y, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        LOG_INFO("module.coa-playerbots", "{}: movement of '{}' refused: {} (goal {:.0f} {:.0f}, now {:.0f} {:.0f} {:.0f}).",
+            owner == MoveOwner::Corpse ? "CorpseRun" : "AutoDungeon", bot->GetName(), reason, x, y, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
     }
 
     LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard)
     {
-        if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+        if (!bot || !bot->IsInWorld())
             return {};
 
-        if (bot->IsNonMeleeSpellCast(false))
+        // A released ghost is not alive, but walking back to its corpse is exactly what it has to do: refusing
+        // every move of a dead bot meant no ghost ever reached its body and each came back only on the failsafe.
+        if (!bot->IsAlive() && !(owner == MoveOwner::Corpse && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST)))
+            return {};
+
+        // An active Auto Shot / Shoot (the auto-repeat slot) is not a cast in progress: it stays set for the whole fight and, counted here, kept every
+        // ranged bot from walking anywhere (retreating from a target in its dead zone, following, auto-dungeon legs) while it was on.
+        if (bot->IsNonMeleeSpellCast(false, false, /*skipAutorepeat=*/true))
         {
             NoteMoveRefusal(bot, owner, "the bot is casting a spell", x, y);
             return {};
@@ -647,7 +656,11 @@ namespace BotMovement
 
     NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius, LocomotionToken* outToken, bool allowMount)
     {
-        if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+        if (!bot || !bot->IsInWorld())
+            return NavStatus::Blocked;
+
+        // A released ghost walking back to its corpse (see MoveToInternal).
+        if (!bot->IsAlive() && !(owner == MoveOwner::Corpse && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST)))
             return NavStatus::Blocked;
 
         if (IsExternallyControlled(bot))

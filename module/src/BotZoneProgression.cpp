@@ -1,6 +1,7 @@
 #include "engine/BotDebugLog.h"
 #include "BotZoneProgression.h"
 #include "BotMovement.h"
+#include "DangerMap.h"
 #include "BotMgr.h"
 #include "BotWorldBehavior.h"
 #include "WorldBrain.h"
@@ -11,11 +12,125 @@
 #include "Map.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
+#include "Config.h"
 #include "Player.h"
+#include "World.h"
+#include "Timer.h"
 #include "Random.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
+
+
+namespace BotZoneProgression
+{
+    namespace
+    {
+        // The two corners of map 530 that belong to the starting races: Eversong Woods, Ghostlands and Silvermoon
+        // (Blood Elves), Azuremyst and Bloodmyst Isles and the Exodar (Draenei). The rest of the map is Outland proper;
+        // the Isle of Quel'Danas lies east of the first box. Checked against the starting and bracket hubs below.
+        struct Box { float minX, maxX, minY, maxY; };
+        constexpr Box STARTING_RACE_BOXES[] = {
+            { 5200.0f, 11500.0f, -8800.0f, -3000.0f },
+            { -5600.0f, -500.0f, -14500.0f, -9000.0f },
+        };
+
+        struct RestrictionState
+        {
+            bool outland = false;
+            bool northrend = false;
+            uint32 checkedAtMs = 0;
+            bool valid = false;
+        };
+
+        RestrictionState const& Restriction()
+        {
+            static RestrictionState state;
+            uint32 now = getMSTime();
+            if (state.valid && getMSTimeDiff(state.checkedAtMs, now) < 30000)
+                return state;
+
+            int32 mode = sConfigMgr->GetOption<int32>("CoaBots.RestrictExpansionZones", 2);
+            bool capLow = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL) <= 60;
+            bool scaling = sConfigMgr->GetOption<bool>("CoAContentScaling.Enable", false);
+            state.outland = mode == 1 || (mode == 2 && capLow && !(scaling && sConfigMgr->GetOption<bool>("CoATBC.Enable", false)));
+            state.northrend = mode == 1 || (mode == 2 && capLow && !(scaling && sConfigMgr->GetOption<bool>("CoAWotLK.Enable", false)));
+            state.checkedAtMs = now;
+            state.valid = true;
+            return state;
+        }
+    }
+
+    bool ExpansionRestricted(uint32 mapId)
+    {
+        if (mapId == 530)
+            return Restriction().outland;
+        if (mapId == 571)
+            return Restriction().northrend;
+        return false;
+    }
+
+    bool ExpansionBlocked(uint32 mapId, float x, float y)
+    {
+        if (!ExpansionRestricted(mapId))
+            return false;
+        if (mapId == 571)
+            return true;
+        for (Box const& box : STARTING_RACE_BOXES)
+            if (x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY)
+                return false;
+        return true;
+    }
+
+    bool ExpansionBlocked(Player const* bot)
+    {
+        return bot && ExpansionBlocked(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY());
+    }
+
+    bool ExpansionZoneBlocked(uint32 zoneId)
+    {
+        RestrictionState const& r = Restriction();
+        if (r.outland)
+        {
+            switch (zoneId)
+            {
+                case 3483: // Hellfire Peninsula
+                case 3521: // Zangarmarsh
+                case 3519: // Terokkar Forest
+                case 3703: // Shattrath City
+                case 3518: // Nagrand
+                case 3522: // Blade's Edge Mountains
+                case 3523: // Netherstorm
+                case 3520: // Shadowmoon Valley
+                case 4080: // Isle of Quel'Danas
+                    return true;
+                default:
+                    break;
+            }
+        }
+        if (r.northrend)
+        {
+            switch (zoneId)
+            {
+                case 3537: // Borean Tundra
+                case 495:  // Howling Fjord
+                case 65:   // Dragonblight
+                case 394:  // Grizzly Hills
+                case 66:   // Zul'Drak
+                case 3711: // Sholazar Basin
+                case 67:   // The Storm Peaks
+                case 210:  // Icecrown
+                case 2817: // Crystalsong Forest
+                case 4395: // Dalaran
+                case 4197: // Wintergrasp
+                    return true;
+                default:
+                    break;
+            }
+        }
+        return false;
+    }
+}
 
 namespace BotZoneProgression
 {
@@ -173,6 +288,8 @@ namespace BotZoneProgression
 
         for (ZoneHub const& hub : PROGRESSION_HUBS)
         {
+            if (ExpansionBlocked(hub.mapId, hub.x, hub.y))
+                continue;
             if (level >= hub.minLevel && level <= hub.maxLevel)
             {
                 if (hub.team == TEAM_NEUTRAL || hub.team == team)
@@ -180,10 +297,35 @@ namespace BotZoneProgression
             }
         }
 
+        // With the expansion maps closed the last bracket ends at 58: a bot above it goes to the hubs of the highest
+        // bracket that is open instead of finding nothing.
+        if (candidates.empty())
+        {
+            uint8 best = 0;
+            for (ZoneHub const& hub : PROGRESSION_HUBS)
+                if (!ExpansionBlocked(hub.mapId, hub.x, hub.y) && (hub.team == TEAM_NEUTRAL || hub.team == team) && hub.minLevel <= level)
+                    best = std::max(best, hub.maxLevel);
+            for (ZoneHub const& hub : PROGRESSION_HUBS)
+                if (best && !ExpansionBlocked(hub.mapId, hub.x, hub.y) && (hub.team == TEAM_NEUTRAL || hub.team == team) &&
+                    hub.minLevel <= level && hub.maxLevel == best)
+                    candidates.push_back(&hub);
+        }
+
+        // A hub where bots have been dying (guards that attack them, a camp beside the road) or that has creatures far
+        // above their level is left out, as long as another one is left.
+        {
+            std::vector<ZoneHub const*> safer;
+            for (ZoneHub const* hub : candidates)
+                if (DangerMap::Risk(hub->mapId, hub->x, hub->y, level, uint8(team)) < 6.0f)
+                    safer.push_back(hub);
+            if (!safer.empty())
+                candidates = std::move(safer);
+        }
+
         if (candidates.empty())
         {
             // If level > 80 or edge case, use Dalaran or high level hub
-            if (level >= 70)
+            if (level >= 70 && !ExpansionBlocked(PROGRESSION_HUBS[sizeof(PROGRESSION_HUBS)/sizeof(PROGRESSION_HUBS[0]) - 1].mapId, 0.0f, 0.0f))
                 return &PROGRESSION_HUBS[sizeof(PROGRESSION_HUBS)/sizeof(PROGRESSION_HUBS[0]) - 1]; // Dalaran
             return nullptr;
         }
@@ -217,7 +359,7 @@ namespace BotZoneProgression
 
         TeamId team = Player::TeamIdForRace(race);
         for (ZoneHub const& hub : PROGRESSION_HUBS)
-            if (hub.minLevel <= level && (hub.team == TEAM_NEUTRAL || hub.team == team))
+            if (hub.minLevel <= level && (hub.team == TEAM_NEUTRAL || hub.team == team) && !ExpansionBlocked(hub.mapId, hub.x, hub.y))
                 hubs.push_back(&hub);
         return hubs;
     }
@@ -229,6 +371,10 @@ namespace BotZoneProgression
         // being cloned off a hand-made test character -- see BuildClassTemplateRoster) never
         // got relocated regardless of level. Not a real content zone at any level.
         if (zoneId == 876)
+            return false;
+
+        // Closed expansion maps (see ExpansionBlocked) are wrong at every level.
+        if (ExpansionZoneBlocked(zoneId))
             return false;
 
         // Major faction capital cities are always permissible for all levels
@@ -406,7 +552,9 @@ namespace BotZoneProgression
         // it on to the next hub by itself (WorldPlanner::PickHub) once the work here runs out.
         // Relocation stays for bots with nothing to do here at all -- a fresh bot in the wrong
         // zone, or one that levelled past everything this map offers.
-        if (!force && WorldBrain::HasQuestWork(bot))
+        // A bot standing on a closed expansion map has no work worth keeping: it is moved out whatever it is doing.
+        bool const stranded = ExpansionBlocked(bot);
+        if (!force && !stranded && WorldBrain::HasQuestWork(bot))
             return false;
 
         uint8 level = bot->GetLevel();
@@ -424,7 +572,7 @@ namespace BotZoneProgression
         // A bot that levels into a new bracket travels there the way a player would -- walks to a
         // flight master and flies -- whenever its known flight paths reach the new hub. Teleporting
         // stays for creation (force) and as the fallback when no route exists.
-        if (!force && BotWorldBehavior::RequestTravel(bot, dest->mapId, dest->x, dest->y, dest->z))
+        if (!force && !stranded && BotWorldBehavior::RequestTravel(bot, dest->mapId, dest->x, dest->y, dest->z))
         {
             LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotZoneProgression: bot '{}' (level {}) will fly to {} instead of teleporting.",
                 bot->GetName(), level, dest->name);

@@ -8,6 +8,7 @@
 #include "engine/ActionEvaluator.h"
 #include "engine/CombatContext.h"
 #include "engine/CombatResource.h"
+#include "engine/SpellPredicates.h"
 #include "engine/SpellResolver.h"
 #include "profiles/ProfileRegistry.h"
 #include "ClassSpecRoles.h"
@@ -352,9 +353,7 @@ namespace BotAI
             return PrePullResult::Ready;
 
         // 1. Eating, drinking, or bandaging
-        if (bot->HasAuraWithMechanic(1 << MECHANIC_BANDAGE) ||
-            bot->HasAura(430) || bot->HasAura(433) || bot->HasAura(10258) || bot->HasAura(22734) ||
-            bot->HasAura(27089) || bot->HasAura(34291) || bot->HasAura(43180) || bot->HasAura(43183))
+        if (IsEatingOrDrinking(bot))
         {
             return PrePullResult::Waiting;
         }
@@ -501,9 +500,7 @@ namespace BotAI
         }
 
         // Eating, drinking, or resting
-        if (bot->HasAuraWithMechanic(1 << MECHANIC_BANDAGE) ||
-            bot->HasAura(430) || bot->HasAura(433) || bot->HasAura(10258) || bot->HasAura(22734) ||
-            bot->HasAura(27089) || bot->HasAura(34291) || bot->HasAura(43180) || bot->HasAura(43183))
+        if (IsEatingOrDrinking(bot))
         {
             info.result = PullReadinessResult::GroupMemberResting;
             info.reason = "RestingOrDrinking";
@@ -684,9 +681,7 @@ namespace BotAI
             }
 
             // Check if drinking / resting
-            if (member->HasAuraWithMechanic(1 << MECHANIC_BANDAGE) ||
-                member->HasAura(430) || member->HasAura(431) || member->HasAura(433) || member->HasAura(10258) || member->HasAura(22734) ||
-                member->HasAura(27089) || member->HasAura(34291) || member->HasAura(43180) || member->HasAura(43183))
+            if (IsEatingOrDrinking(member))
             {
                 info.result = PullReadinessResult::GroupMemberResting;
                 info.reason = "MemberDrinkingOrResting";

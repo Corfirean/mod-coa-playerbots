@@ -1,0 +1,114 @@
+[
+  {
+    "id": "mystery.whisper.1",
+    "beat": "MysteryShathYarWhisper",
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "nonCanonicalStyled": true,
+    "tags": ["mystery", "shathyar", "whisper"],
+    "locales": {
+      "enUS": "Y'knath k'th'ryh... the shadows observe all, {playerName}...",
+      "ruRU": "Y'knath k'th'ryh... тени видят всё, {playerName}...",
+      "deDE": "Y'knath k'th'ryh... die Schatten sehen alles, {playerName}...",
+      "frFR": "Y'knath k'th'ryh... les ombres voient tout, {playerName}...",
+      "esES": "Y'knath k'th'ryh... las sombras lo ven todo, {playerName}...",
+      "zhCN": "Y'knath k'th'ryh... 阴影注视着一切，{playerName}..."
+    }
+  },
+  {
+    "id": "mystery.whisper.2",
+    "beat": "MysteryShathYarWhisper",
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "nonCanonicalStyled": true,
+    "tags": ["mystery", "shathyar", "whisper"],
+    "locales": {
+      "enUS": "Shath'gral n'lyeth... your flesh is only borrowed, {playerRace}...",
+      "ruRU": "Shath'gral n'lyeth... твоя плоть лишь взаймы, {playerRace}...",
+      "deDE": "Shath'gral n'lyeth... dein Fleisch ist nur geliehen, {playerRace}...",
+      "frFR": "Shath'gral n'lyeth... ta chair n'est qu'empruntée, {playerRace}...",
+      "esES": "Shath'gral n'lyeth... tu carne es sólo prestada, {playerRace}...",
+      "zhCN": "Shath'gral n'lyeth... 你的血肉只是借来的，{playerRace}..."
+    }
+  },
+  {
+    "id": "mystery.threat.1",
+    "beat": "MysteryShathYarThreat",
+    "weight": 1.0,
+    "cooldownSec": 45,
+    "nonCanonicalStyled": true,
+    "tags": ["mystery", "shathyar", "threat"],
+    "locales": {
+      "enUS": "Ag'thu fssh n'zoth... you walk upon slumbering nightmares!",
+      "ruRU": "Ag'thu fssh n'zoth... ты ступаешь по дремлющим кошмарам!",
+      "deDE": "Ag'thu fssh n'zoth... du wandelst auf schlafenden Albträumen!",
+      "frFR": "Ag'thu fssh n'zoth... tu marches sur des cauchemars endormis!",
+      "esES": "Ag'thu fssh n'zoth... ¡caminas sobre pesadillas dormidas!",
+      "zhCN": "Ag'thu fssh n'zoth... 你正行走在沉睡的梦魇之上！"
+    }
+  },
+  {
+    "id": "mystery.threat.2",
+    "beat": "MysteryShathYarThreat",
+    "weight": 1.0,
+    "cooldownSec": 45,
+    "nonCanonicalStyled": true,
+    "tags": ["mystery", "shathyar", "threat"],
+    "locales": {
+      "enUS": "Uulwi ifis halahs gag erh'ongg... the stars will drown in black blood!",
+      "ruRU": "Uulwi ifis halahs gag erh'ongg... звёзды захлебнутся в чёрной крови!",
+      "deDE": "Uulwi ifis halahs gag erh'ongg... die Sterne ertrinken in schwarzem Blut!",
+      "frFR": "Uulwi ifis halahs gag erh'ongg... les étoiles se noieront dans le sang noir!",
+      "esES": "Uulwi ifis halahs gag erh'ongg... ¡las estrellas se ahogarán en sangre negra!",
+      "zhCN": "Uulwi ifis halahs gag erh'ongg... 群星将在黑血中沉没！"
+    }
+  },
+  {
+    "id": "mystery.incantation.1",
+    "beat": "MysteryShathYarIncantation",
+    "weight": 1.0,
+    "cooldownSec": 20,
+    "nonCanonicalStyled": true,
+    "tags": ["mystery", "shathyar", "incantation", "rune"],
+    "locales": {
+      "enUS": "Mg'en'ghft ph'nglui shogg... the seal weakens beneath our feet...",
+      "ruRU": "Mg'en'ghft ph'nglui shogg... печать трещит под нашими ногами...",
+      "deDE": "Mg'en'ghft ph'nglui shogg... das Siegel zerbricht unter unseren Füßen...",
+      "frFR": "Mg'en'ghft ph'nglui shogg... le sceau faiblit sous nos pas...",
+      "esES": "Mg'en'ghft ph'nglui shogg... el sello se debilita bajo nuestros pies...",
+      "zhCN": "Mg'en'ghft ph'nglui shogg... 封印正在我们脚下动摇..."
+    }
+  },
+  {
+    "id": "mystery.departure.1",
+    "beat": "MysteryShathYarDeparture",
+    "weight": 1.0,
+    "cooldownSec": 60,
+    "nonCanonicalStyled": true,
+    "tags": ["mystery", "shathyar", "departure"],
+    "locales": {
+      "enUS": "N'zoth... we dissolve into the deep abyss...",
+      "ruRU": "N'zoth... мы растворяемся в бездне...",
+      "deDE": "N'zoth... wir vergehen in der Tiefe...",
+      "frFR": "N'zoth... nous nous dissolvons dans l'abîme...",
+      "esES": "N'zoth... nos desvanecemos en el abismo...",
+      "zhCN": "N'zoth... 我们消散于深渊之中..."
+    }
+  },
+  {
+    "id": "mystery.departure.2",
+    "beat": "MysteryShathYarDeparture",
+    "weight": 1.0,
+    "cooldownSec": 60,
+    "nonCanonicalStyled": true,
+    "tags": ["mystery", "shathyar", "departure"],
+    "locales": {
+      "enUS": "The cycle turns, {playerName}. Remember the whispers.",
+      "ruRU": "Круговорот свершается, {playerName}. Помни этот шёпот.",
+      "deDE": "Der Zyklus dreht sich, {playerName}. Erinnere dich an das Flüstern.",
+      "frFR": "Le cycle tourne, {playerName}. Souviens-toi des murmures.",
+      "esES": "El ciclo gira, {playerName}. Recuerda los susurros.",
+      "zhCN": "轮回轮转，{playerName}。记住这些低语。"
+    }
+  }
+]

@@ -60,6 +60,13 @@ struct Session
     std::set<uint32> hazardSpells;
     uint32 interruptStartMs = 0, interruptExpectedEndMs = 0;
     bool watchingInterruptCast = false;
+    // INTERRUPT_MULTI: one entry per enemy cast started; an entry is closed when the enemy stops casting.
+    struct WatchedCast { ObjectGuid enemy; uint32 startMs = 0, expectedEndMs = 0; };
+    std::vector<WatchedCast> multiCasts;
+    // Kicks sent by any bot of the session (accepted by the game), and enemy casts that ended early within 800 ms of an accepted kick on them.
+    std::map<uint64, uint32> lastKickMs; // enemy guid counter -> session time of the last accepted kick
+    uint32 kickAttempts = 0, kicksAccepted = 0, kicksApplied = 0, interruptsByKick = 0; // applied: the enemy cast was gone when the cast returned
+    uint32 interruptCasts = 0, interruptsStopped = 0; // casts started / casts that ended before their expected finish (interrupted, or the caster died)
     std::vector<uint32> requiredBuffs, requiredDebuffs;
     std::map<uint32, uint64> buffCoverageMs, debuffUptimeMs;
     std::vector<double> batchDps;

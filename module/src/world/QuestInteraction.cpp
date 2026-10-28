@@ -14,6 +14,8 @@
 #include "QuestKnowledgeBase.h"
 #include "QuestPackets.h"
 #include "QuestPolicy.h"
+#include "StringFormat.h"
+#include "Log.h"
 #include "WorldPacket.h"
 #include "WorldPlanner.h"
 #include "WorldSession.h"
@@ -251,12 +253,20 @@ namespace QuestInteraction
             if (bot->CanCompleteQuest(questId))
                 bot->CompleteQuest(questId);
             if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+            {
+                result.why += Acore::StringFormat(" [quest {} '{}' is not complete, status {}]", questId, quest->GetTitle(), uint32(bot->GetQuestStatus(questId)));
                 continue;
+            }
 
             uint32 reward = PickRewardIndex(bot, quest);
+            // Full bags are the common reason a finished quest cannot be handed in: make room first.
+            if (!bot->CanRewardQuest(quest, reward, false) && bot->GetFreeInventorySpace() < 3)
+                BotAI::FreeBagSlots(bot, 3);
             if (!bot->CanRewardQuest(quest, reward, false))
             {
                 ++result.rewardBlocked;
+                result.why += Acore::StringFormat(" [quest {} '{}' cannot be rewarded: choice {} of {}, {} free bag slots]", questId, quest->GetTitle(),
+                    reward, quest->GetRewChoiceItemsCount(), bot->GetFreeInventorySpace());
                 continue;
             }
 
@@ -264,6 +274,9 @@ namespace QuestInteraction
             ++result.turnedIn;
             Count(state.metrics, &WorldMetrics::questsTurnedIn);
             state.questSuspensions.erase(questId);
+            LOG_INFO("module.coa-playerbots.quests", "QuestTurnIn: '{}' (level {}) handed in quest {} '{}' (quest level {}) to {} {}, reward choice {}, money {}.",
+                bot->GetName(), uint32(bot->GetLevel()), questId, quest->GetTitle(), quest->GetQuestLevel(),
+                giver->GetTypeId() == TYPEID_UNIT ? "creature" : "object", giver->GetEntry(), reward, quest->GetRewOrReqMoney());
             LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' QuestTurnedIn {} ('{}'), reward choice {}.", bot->GetName(), questId,
                 quest->GetTitle(), reward);
         }
@@ -289,6 +302,8 @@ namespace QuestInteraction
                 bot->CastSpell(bot, spell, true);
             ++result.accepted;
             Count(state.metrics, &WorldMetrics::questsAccepted);
+            LOG_INFO("module.coa-playerbots.quests", "QuestAccepted: '{}' (level {}) took quest {} '{}' (quest level {}) from {} {}.", bot->GetName(),
+                uint32(bot->GetLevel()), questId, quest->GetTitle(), quest->GetQuestLevel(), giver->GetTypeId() == TYPEID_UNIT ? "creature" : "object", giver->GetEntry());
             LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' QuestAccepted {} ('{}', level {}).", bot->GetName(), questId,
                 quest->GetTitle(), quest->GetQuestLevel());
         }
@@ -427,6 +442,20 @@ namespace QuestInteraction
 
                 if (!result.turnedIn && !result.accepted)
                 {
+                    // Why nothing was handed in: the quest asked for is not one this giver takes, is not complete, or cannot be rewarded.
+                    std::string why = result.why;
+                    if (task.type == WorldTaskType::QuestTurnIn && task.quest.questId)
+                    {
+                        QuestRelationBounds taken = InvolvedBounds(giver);
+                        bool takes = false;
+                        for (auto itr = taken.first; itr != taken.second; ++itr)
+                            takes = takes || itr->second == task.quest.questId;
+                        if (!takes)
+                            why += Acore::StringFormat(" [npc {} does not take quest {} (spawn {}, distance {:.0f})]", task.npcEntry, task.quest.questId,
+                                task.npcSpawnId, bot->GetDistance(static_cast<WorldObject*>(giver)));
+                    }
+                    LOG_INFO("module.coa-playerbots.quests", "QuestTurnInFailed: '{}' (level {}) at {} {}:{}", bot->GetName(), uint32(bot->GetLevel()),
+                        giver->GetTypeId() == TYPEID_UNIT ? "creature" : "object", giver->GetEntry(), why.empty() ? " nothing to hand in or accept" : why);
                     if (result.rewardBlocked && task.quest.questId)
                         state.failures.Remember(FailKind::TurnIn, task.quest.questId, now, 120000, uint8(FailureReason::InteractFailed));
                     return FailNpc(bot, state, FailureReason::InteractFailed);

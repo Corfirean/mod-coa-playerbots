@@ -1,6 +1,7 @@
 #include "training/TrainingArenaManager.h"
 #include "BotGear.h"
 #include "BotEconomy.h"
+#include "Map.h"
 
 #include "AuctionHouseMgr.h"
 #include "Bag.h"
@@ -46,6 +47,9 @@ namespace
     {
         bool enable = false;
         uint32 minTripCopper = 50000;      // 5 gold: below this a bot is not worth a trip to town
+        uint32 maxAuctionTripYards = 6000; // farther than this the auction house is not worth the walk: sell to the nearest vendor instead
+        uint32 bagsFullFreeSlots = 3;      // this few free slots (or fewer) is a reason for a trip even when the load is worth little
+        uint32 potionTarget = 5;           // healing and mana potions a bot buys up to
         uint32 keepConsumables = 10;       // potions / food of its own level range kept per item
         uint32 outdatedBelowLevels = 15;   // a consumable this many levels under the bot is outdated
         uint32 minAuctionQuality = 2;      // uncommon and better go to the auction, the rest to a vendor
@@ -135,6 +139,9 @@ namespace
         g_settings.enable = sConfigMgr->GetOption<bool>("CoaBots.Economy.Enable", false);
         g_settings.minTripCopper = sConfigMgr->GetOption<uint32>("CoaBots.Economy.MinTripCopper", 50000);
         g_settings.keepConsumables = sConfigMgr->GetOption<uint32>("CoaBots.Economy.KeepConsumables", 10);
+        g_settings.maxAuctionTripYards = sConfigMgr->GetOption<uint32>("CoaBots.Economy.MaxAuctionTripYards", 6000);
+        g_settings.bagsFullFreeSlots = sConfigMgr->GetOption<uint32>("CoaBots.Economy.BagsFullFreeSlots", 3);
+        g_settings.potionTarget = std::min<uint32>(20, sConfigMgr->GetOption<uint32>("CoaBots.Economy.PotionTarget", 5));
         g_settings.outdatedBelowLevels = sConfigMgr->GetOption<uint32>("CoaBots.Economy.OutdatedBelowLevels", 15);
         g_settings.minAuctionQuality = sConfigMgr->GetOption<uint32>("CoaBots.Economy.MinAuctionQuality", 2);
         g_settings.undercutPercent = std::min<uint32>(50, sConfigMgr->GetOption<uint32>("CoaBots.Economy.UndercutPercent", 5));
@@ -380,6 +387,7 @@ namespace
         uint64 goalId = 0;
         bool flightTried = false;
         bool flightRequested = false; // a flight was asked for and has not finished yet
+        bool vendorOnly = false;      // the nearest vendor, not the auction house: only what a vendor takes is sold
     };
 
     std::unordered_map<ObjectGuid, Trip> g_trips;
@@ -426,6 +434,28 @@ namespace
         for (Poi const* poi : found)
         {
             if (!poi->faction || !IsFriendly(bot, *poi) || !AuctionHouseMgr::GetAuctionHouseEntryFromFactionTemplate(poi->faction))
+                continue;
+            float const d = std::hypot(poi->x - bot->GetPositionX(), poi->y - bot->GetPositionY());
+            if (!best || d < bestDist)
+            {
+                best = poi;
+                bestDist = d;
+            }
+        }
+        return best;
+    }
+
+    // The nearest friendly vendor on the bot's map. A vendor buys anything, so junk and surplus can be sold there; most of a map's vendors are far
+    // closer than its auction house (the soak test saw trips of 17 000 yards).
+    Poi const* NearestVendor(Player* bot)
+    {
+        std::vector<Poi const*> found;
+        BotWorldPoi::Query(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), 30000.0f, PoiKind::Vendor, found);
+        Poi const* best = nullptr;
+        float bestDist = 0.0f;
+        for (Poi const* poi : found)
+        {
+            if (!IsFriendly(bot, *poi))
                 continue;
             float const d = std::hypot(poi->x - bot->GetPositionX(), poi->y - bot->GetPositionY());
             if (!best || d < bestDist)
@@ -665,6 +695,39 @@ namespace
             line.reason = food ? "supplies-food" : "supplies-drink";
             JournalDone(bot, line, want, unit, "buy", "vendor");
         }
+
+        // Healing and (for a mana user) mana potions for the fight: the best tier the level allows, up to the target count, within the same daily budget.
+        for (bool healing : { true, false })
+        {
+            if (!healing && !UsesMana(bot))
+                continue;
+            uint32 const entry = healing ? BotProgression::PickHealingPotion(bot->GetLevel()) : BotProgression::PickManaPotion(bot->GetLevel());
+            ItemTemplate const* proto = entry ? sObjectMgr->GetItemTemplate(entry) : nullptr;
+            if (!proto)
+                continue;
+            uint32 const have = bot->GetItemCount(entry);
+            if (have >= g_settings.potionTarget)
+                continue;
+            uint32 want = g_settings.potionTarget - have;
+            uint32 const unit = std::max<uint32>(1, proto->BuyPrice / std::max<uint32>(1, proto->BuyCount));
+            uint64 const money = bot->GetMoney() > g_settings.moneyReserveCopper ? bot->GetMoney() - g_settings.moneyReserveCopper : 0;
+            uint64 const budget = spent.copper < g_settings.dailyBudgetCopper ? g_settings.dailyBudgetCopper - spent.copper : 0;
+            want = uint32(std::min<uint64>(want, std::min(money, budget) / unit));
+            if (!want)
+                continue;
+            ItemPosCountVec dest;
+            if (bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, entry, want) != EQUIP_ERR_OK)
+                continue;
+            uint64 const cost = uint64(unit) * want;
+            bot->ModifyMoney(-int64(cost));
+            bot->StoreNewItem(dest, entry, true);
+            spent.copper += cost;
+            g_boughtCopper += cost;
+            BotEconomy::Line line;
+            line.entry = entry;
+            line.reason = healing ? "supplies-health-potion" : "supplies-mana-potion";
+            JournalDone(bot, line, want, unit, "buy", "vendor");
+        }
         g_needsSupplies.erase(bot->GetGUID());
     }
 
@@ -680,9 +743,10 @@ namespace
 
     // What a bot does once it has reached the auctioneers: collect what earlier auctions earned, list and sell, and
     // pay the guild its share.
-    void SellInTown(Player* bot, uint32 auctioneerFaction)
+    void SellInTown(Player* bot, uint32 auctioneerFaction, bool vendorOnly)
     {
-        uint64 gained = CollectAuctionMail(bot);
+        uint64 gained = vendorOnly ? 0 : CollectAuctionMail(bot);
+        bool const bagsFull = bot->GetFreeInventorySpace() <= g_settings.bagsFullFreeSlots;
 
         uint32 const listingsNow = g_listingCount[bot->GetGUID().GetCounter()];
         uint32 listingsLeft = g_settings.maxListings > listingsNow ? g_settings.maxListings - listingsNow : 0;
@@ -695,7 +759,11 @@ namespace
                 continue;
             uint32 remaining = line.count;
 
-            if (line.verdict == BotEconomy::Verdict::Auction)
+            // At a vendor the lines meant for the auction house wait for a later trip, unless the bags are full: then they go for the vendor price.
+            if (vendorOnly && line.verdict == BotEconomy::Verdict::Auction && !bagsFull)
+                continue;
+
+            if (line.verdict == BotEconomy::Verdict::Auction && !vendorOnly)
             {
                 std::vector<Item*> stacks;
                 ForEachBagItem(bot, [&](Item* it) { if (it->GetEntry() == line.entry) stacks.push_back(it); });
@@ -946,6 +1014,8 @@ namespace BotEconomy
             Player* bot = session->GetPlayer();
             if (!bot || CoaTraining::Owns(bot->GetGUID()) || !bot->IsInWorld() || bot->IsInCombat() || !bot->IsAlive())
                 continue;
+            if (bot->GetGroup() || bot->InBattleground() || (bot->GetMap() && bot->GetMap()->IsDungeon()))
+                continue;
 
             auto [it, isNew] = g_nextScanAt.try_emplace(bot->GetGUID(), now);
             if (!isNew && int32(now - it->second) < 0)
@@ -961,7 +1031,8 @@ namespace BotEconomy
                 total += l.TotalCopper();
             // A bot working on a gold order goes to town for a smaller load: the sooner its finds are money, the sooner they are in the bank.
             uint64 const minTrip = g_goldOrders.count(bot->GetGUID()) ? std::min<uint64>(g_settings.minTripCopper, 5000) : g_settings.minTripCopper;
-            if (total < minTrip && !(g_needsSupplies.count(bot->GetGUID()) || NeedsSupplies(bot)))
+            bool const bagsFull = total > 0 && bot->GetFreeInventorySpace() <= g_settings.bagsFullFreeSlots;
+            if (total < minTrip && !bagsFull && !(g_needsSupplies.count(bot->GetGUID()) || NeedsSupplies(bot)))
                 continue;
 
             uint64 fingerprint = 1469598103934665603ull;
@@ -1314,6 +1385,19 @@ namespace BotEconomy
         ObjectGuid const guid = bot->GetGUID();
         uint32 const now = GameTime::GetGameTimeMS().count();
 
+        // A bot in a group, a dungeon or a battleground belongs to that: it does not walk off to town (confirmed in the soak test: the
+        // members of dungeon teams were sent to the auction house in the middle of a run).
+        if (bot->GetGroup() || bot->InBattleground() || bot->InArena() || (bot->GetMap() && bot->GetMap()->IsDungeon()))
+        {
+            if (g_trips.erase(guid))
+            {
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::Travel);
+                EndStockRun(guid);
+            }
+            g_wantsTrip.erase(guid);
+            return false;
+        }
+
         auto trip = g_trips.find(guid);
         if (trip == g_trips.end())
         {
@@ -1323,7 +1407,17 @@ namespace BotEconomy
             if (cooldown != g_nextTripAt.end() && int32(now - cooldown->second) < 0)
                 return false;
             g_wantsTrip.erase(guid);
-            Poi const* poi = NearestAuctioneer(bot);
+            // The auction house only for a load worth the walk; otherwise (or when it is too far) the nearest vendor, which is usually close.
+            Poi const* auctioneer = NearestAuctioneer(bot);
+            Poi const* vendor = NearestVendor(bot);
+            uint64 auctionCopper = 0;
+            for (BotEconomy::Line const& l : BotEconomy::PlanSale(bot))
+                if (l.verdict == BotEconomy::Verdict::Auction)
+                    auctionCopper += l.TotalCopper();
+            bool const auctionWorth = auctioneer && auctionCopper >= g_settings.minTripCopper &&
+                std::hypot(auctioneer->x - bot->GetPositionX(), auctioneer->y - bot->GetPositionY()) <= g_settings.maxAuctionTripYards;
+            Poi const* poi = auctionWorth ? auctioneer : (vendor ? vendor : auctioneer);
+            bool const vendorOnly = poi && poi == vendor && !auctionWorth;
             if (!poi)
             {
                 ++g_tripTotals.noDestination;
@@ -1336,6 +1430,7 @@ namespace BotEconomy
             t.y = poi->y;
             t.z = poi->z;
             t.faction = poi->faction;
+            t.vendorOnly = vendorOnly;
             t.startedAt = now;
             t.goalId = ++g_goalSeed;
             trip = g_trips.emplace(guid, t).first;
@@ -1380,7 +1475,7 @@ namespace BotEconomy
         {
             if (bot->IsMounted())
                 BotMovement::RequestDismount(bot, MoveOwner::Travel, DismountReason::Arrival);
-            SellInTown(bot, t.faction);
+            SellInTown(bot, t.faction, t.vendorOnly);
             finish(false);
             return false;
         }

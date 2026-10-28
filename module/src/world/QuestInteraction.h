@@ -18,6 +18,7 @@
 #ifndef COA_PLAYERBOTS_QUEST_INTERACTION_H
 #define COA_PLAYERBOTS_QUEST_INTERACTION_H
 
+#include <string>
 #include "WorldBrainState.h"
 #include "WorldExecutor.h"
 
@@ -33,6 +34,7 @@ namespace QuestInteraction
         uint32 turnedIn = 0;
         uint32 accepted = 0;
         uint32 rewardBlocked = 0; // finished but not rewardable (bags full, money short)
+        std::string why;          // for the log: what kept a quest in the bot's log from being handed in here
     };
 
     // Hands in everything finished at this giver, then accepts what the bot would do.

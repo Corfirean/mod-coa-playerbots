@@ -20,6 +20,7 @@
 #include "ClassSpecRoles.h"
 #include "Config.h"
 #include "DBCStores.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "LFGMgr.h"
 #include "Log.h"
@@ -121,13 +122,13 @@ bool JoinBotToLfg(Player* bot, uint8 roleBit, lfg::LfgDungeonSet dungeons, uint6
 
     if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_QUEUED)
     {
-        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+        LOG_INFO("module.coa-playerbots.lfgfill",
             "BotLfgFill: bot '{}' (role {}) was rejected from the LFG queue (not eligible for this dungeon?).",
             bot->GetName(), roleBit);
         return false;
     }
 
-    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (role {}) joined the LFG queue (op {}).",
+    LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: bot '{}' (role {}) joined the LFG queue (op {}).",
         bot->GetName(), roleBit, opId);
     queuedBots.push_back(bot->GetGUID().GetCounter());
 
@@ -170,6 +171,7 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
         return JoinBotToLfg(bot, roleBit, dungeons, opId);
     };
 
+    LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: looking for a role {} bot among {} idle online bots of team {}.", uint32(roleBit), eligible.size(), uint32(team));
     // Pass 1: an idle bot already spec'd for this role.
     for (Player* bot : eligible)
     {
@@ -198,7 +200,7 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
                 return;
         }
 
-        LOG_DEBUG("module.coa-playerbots",
+        LOG_INFO("module.coa-playerbots.lfgfill",
             "BotLfgFill: no online {} bot available for team {} (none to respec either).",
             roleBit == lfg::PLAYER_ROLE_TANK ? "tank" : "healer", uint32(team));
         return;
@@ -310,7 +312,7 @@ void ProcessQueuedBots()
             if (proposalId)
             {
                 sLFGMgr->UpdateProposal(proposalId, guid, true);
-                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(guid), "BotLfgFill: bot '{}' accepted LFG proposal {}.",
+                LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: bot '{}' accepted LFG proposal {}.",
                     bot->GetName(), proposalId);
             }
             it = queuedBots.erase(it);
@@ -340,6 +342,58 @@ uint8 RoleBitFor(Player* bot)
     }
 }
 
+// When the dungeon finder has formed a group and put it in LFG_STATE_DUNGEON, LFGMgr teleports every member once. A bot that cannot take that
+// one teleport (in combat, falling or flying on a mount, dead, still arriving from an earlier teleport) used to stay where it was, and the
+// player waited at the dungeon door for a group that never came. Try again every few seconds until the bot is on the dungeon's map.
+struct LfgTeleportRetry
+{
+    uint32 firstSeenMs{0};
+    uint32 nextAtMs{0};
+    uint8 tries{0};
+    bool arrived{false};
+};
+std::unordered_map<ObjectGuid::LowType, LfgTeleportRetry> lfgTeleportRetry;
+
+void RetryLfgTeleport(Player* bot, Group* grp)
+{
+    constexpr uint8 MAX_TRIES = 12;
+    constexpr uint32 RETRY_MS = 4000;
+    constexpr uint32 WINDOW_MS = 60000; // after this the group is no longer "just formed": a bot that left on its own is left alone
+    ObjectGuid::LowType const low = bot->GetGUID().GetCounter();
+    lfg::LFGDungeonData const* dungeon = sLFGMgr->GetLFGDungeon(sLFGMgr->GetDungeon(grp->GetGUID()));
+    if (!dungeon)
+        return;
+
+    uint32 const now = uint32(GameTime::GetGameTimeMS().count());
+    LfgTeleportRetry& retry = lfgTeleportRetry[low];
+    if (retry.firstSeenMs == 0)
+    {
+        retry.firstSeenMs = now;
+        retry.nextAtMs = now + RETRY_MS; // the group's own teleport is still on its way
+    }
+    if (bot->GetMapId() == uint32(dungeon->map))
+    {
+        retry.arrived = true; // whatever takes it out later (following a leader, a hub trip) is not this code's business
+        return;
+    }
+    if (retry.arrived || now - retry.firstSeenMs > WINDOW_MS || retry.tries >= MAX_TRIES || bot->IsBeingTeleported() || now < retry.nextAtMs)
+        return;
+    retry.nextAtMs = now + RETRY_MS;
+    ++retry.tries;
+
+    LOG_INFO("module.coa-playerbots.lfgfill",
+        "BotLfgFill: bot '{}' is in an LFG group for dungeon {} (map {}) but on map {}; teleport retry {} (alive {}, combat {}, falling {}, flying {}, mounted {}).",
+        bot->GetName(), dungeon->id, dungeon->map, bot->GetMapId(), uint32(retry.tries), bot->IsAlive(), bot->IsInCombat(), bot->IsFalling(),
+        bot->IsFlying(), bot->IsMounted());
+    if (bot->IsMounted())
+        bot->Dismount();
+    // A bot has no client to report that it landed, so a "falling" flag left over from a flight or a knock-back stays up for good, and LFGMgr
+    // refuses to teleport a falling player (LFG_TELEPORTERROR_FALLING). The bot is about to leave this spot anyway.
+    if (bot->IsFalling())
+        bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR);
+    sLFGMgr->TeleportPlayer(bot, false);
+}
+
 void ProcessGroupRoleChecks()
 {
     for (Player* bot : sBotMgr->GetOnlineBots())
@@ -349,6 +403,11 @@ void ProcessGroupRoleChecks()
 
         if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
             sBotMgr->QueueTeleportAck(bot->GetSession());
+
+        if (Group* lfgGroup = bot->GetGroup(); lfgGroup && lfgGroup->isLFGGroup() && sLFGMgr->GetState(lfgGroup->GetGUID()) == lfg::LFG_STATE_DUNGEON)
+            RetryLfgTeleport(bot, lfgGroup);
+        else if (!lfgTeleportRetry.empty())
+            lfgTeleportRetry.erase(bot->GetGUID().GetCounter());
 
         ObjectGuid::LowType lowGuid = bot->GetGUID().GetCounter();
         lfg::LfgState state = sLFGMgr->GetState(bot->GetGUID());
@@ -362,7 +421,7 @@ void ProcessGroupRoleChecks()
             {
                 sLFGMgr->UpdateProposal(proposalId, bot->GetGUID(), true);
                 proposalAccepted.insert(lowGuid);
-                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotLfgFill: bot '{}' (grouped) accepted LFG proposal {}.",
+                LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: bot '{}' (grouped) accepted LFG proposal {}.",
                     bot->GetName(), proposalId);
             }
             continue;
@@ -463,6 +522,9 @@ public:
         // Strict intent gating: only BOT_FILL triggers bot spawning!
         if (policy.compositionMode != lfg::LfgCompositionMode::BOT_FILL)
             return true;
+
+        LOG_INFO("module.coa-playerbots.lfgfill", "BotLfgFill: '{}' queues (roles {}, {} dungeon(s), group {}), filling with bots.",
+            player->GetName(), uint32(roles), dungeons.size(), player->GetGroup() ? player->GetGroup()->GetMembersCount() : 1u);
 
         lfg::LfgDungeonSet dungeonsCopy(dungeons.begin(), dungeons.end());
         TeamId team = player->GetTeamId();
@@ -570,6 +632,20 @@ public:
     bool HasLfgAutoFillProvider() const override
     {
         return sBotMgr->BotsEnabled() && sConfigMgr->GetOption<bool>("CoaBots.LfgFill.Enable", true);
+    }
+
+    // A filler bot must queue for a real five-player match with the person it was called for. The queue policy comes from each character's
+    // saved dungeon-finder mode, and almost every bot holds the old default (matchmaking), which scaling turns into "current party": the
+    // filler then formed a one-player proposal of its own, accepted it and walked into a dungeon alone while the player kept waiting.
+    void OnResolveLfgQueuePolicy(ObjectGuid const& guid, lfg::LfgQueuePolicy& policy) override
+    {
+        if (!filling || guid.IsGroup())
+            return;
+        policy.compositionMode = lfg::LfgCompositionMode::BOT_FILL;
+        policy.bypassMatchmaking = false;
+        policy.requireStandardRoles = true;
+        policy.minPlayers = 5;
+        policy.targetPlayers = 5;
     }
 };
 }

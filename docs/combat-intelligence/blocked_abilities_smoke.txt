@@ -1,0 +1,274 @@
+== spec001-Headhunting-Dps-class12-1001  casts 17
+      270 Impaling Spear                       503092 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+        0 ?                                    802450 cast 0 failed 0  blocked by: out of max range
+        0 ?                                    504916 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    503406 cast 0 failed 0  blocked by: global cooldown
+== spec002-Brutality-Dps-class12-1001  casts 18
+        0 ?                                    572614 cast 0 failed 0  blocked by: inside min range
+        0 ?                                    504916 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    503406 cast 0 failed 0  blocked by: inside min range
+        0 ?                                    501009 cast 0 failed 0  blocked by: global cooldown
+== spec003-Ancestry-Support-class12-1001  casts 20
+        0 ?                                    802391 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    573064 cast 0 failed 8  blocked by: recent-failure backoff
+        0 ?                                    504916 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+        0 ?                                    503406 cast 0 failed 0  blocked by: inside min range
+== spec004-Shadowhunting-Dps-class13-1001  casts 22
+        0 ?                                    500961 cast 0 failed 0  blocked by: missing totem category item
+        0 ?                                    500960 cast 0 failed 0  blocked by: missing totem category item
+        0 ?                                    500957 cast 0 failed 0  blocked by: missing totem category item
+== spec005-Voodoo-Dps-class13-1001  casts 25
+      280 Healing Ward (Self Defense)          500957 cast 0 failed 0  blocked by: missing totem category item
+        0 ?                                    501181 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    501146 cast 0 failed 0  blocked by: global cooldown
+== spec006-Brewing-Healer-class13-1001  casts 16
+== spec007-Infernal-Dps-class14-1001  casts 14
+      270 Inner Demon                          804216 cast 0 failed 0  blocked by: missing spell-defined caster aura
+      215 Bane of Fire                         707901 cast 0 failed 0  blocked by: global cooldown
+      210 Demonfire Pact                       800031 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    707527 cast 0 failed 0  blocked by: global cooldown
+== spec008-Slayer-Dps-class14-1001  casts 24
+      280 Inner Demon                          804216 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    572617 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    501329 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    500423 cast 0 failed 0  blocked by: score <= 0
+== spec009-Tyrant-Tank-class14-1001  casts 23
+      320 Inner Demon                          804216 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    563268 cast 0 failed 0  blocked by: equipped item requirement
+== spec010-Boltslinger-Dps-class15-1001  casts 16
+      280 Vault                                500085 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    680269 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+        0 ?                                    520217 cast 0 failed 0  blocked by: missing spell-defined target aura state
+== spec011-Houndmaster-Dps-class15-1001  casts 19
+        0 ?                                    801343 cast 0 failed 0  blocked by: already has a pet
+        0 ?                                    500085 cast 0 failed 0  blocked by: score <= 0
+== spec012-Inquisition-Dps-class15-1001  casts 23
+      270 Vault                                500085 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    803364 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+        0 ?                                    802258 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+== spec013-Wind-Support-class16-1001  casts 18
+      320 Gale Guard (Shield)                  500923 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    570141 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    501475 cast 0 failed 0  blocked by: target condition
+        0 ?                                    501428 cast 0 failed 0  blocked by: missing spell-defined target aura state
+== spec014-Maelstrom-Dps-class16-1001  casts 20
+      320 Gale Guard                           500923 cast 0 failed 0  blocked by: score <= 0
+      240 Deluge                               807716 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    807259 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    572866 cast 0 failed 0  blocked by: missing spell-defined caster aura
+== spec015-Lightning-Dps-class16-1001  casts 21
+      320 Gale Guard (Ward/Shield)             500923 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    807585 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    503323 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    501475 cast 0 failed 0  blocked by: heal would be wasted (target needs no healing or it would mostly overheal)
+== spec016-Hellfire-Dps-class17-1001  casts 21
+      150 Juggernaut (Blood Defense)           520294 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    573448 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    501518 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+== spec017-Defiance-Tank-class17-1001  casts 20
+      455 Snarl (Taunt)                        800169 cast 0 failed 0  blocked by: score <= 0
+      260 Juggernaut (Blood Defense)           520294 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    578119 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+        0 ?                                    573448 cast 0 failed 0  blocked by: missing spell-defined caster aura
+== spec018-War-Dps-class17-1001  casts 17
+      240 Warbringer                           802586 cast 0 failed 0  blocked by: missing spell-defined caster aura
+      170 Juggernaut (Blood Defense)           520294 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    578119 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+== spec019-Gladiator-Dps-class18-1001  casts 16
+      480 Line Formation                       803130 cast 0 failed 0  blocked by: blocking caster aura present
+      320 Raise Shield                         500168 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    803936 cast 0 failed 0  blocked by: missing totem category item
+        0 ?                                    573292 cast 0 failed 0  blocked by: equipped item requirement
+== spec020-Inspiration-Support-class18-1001  casts 13
+      480 Line Formation                       803130 cast 0 failed 0  blocked by: blocking caster aura present
+      300 Raise Shield                         500168 cast 0 failed 0  blocked by: missing spell-defined caster aura
+      190 Standard of Rallying                 500263 cast 0 failed 0  blocked by: missing totem category item
+        0 ?                                    573211 cast 0 failed 0  blocked by: equipped item requirement
+== spec021-Vanguard-Tank-class18-1001  casts 18
+      340 Raise Shield                         500168 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    800317 cast 0 failed 0  blocked by: blocking caster aura present
+        0 ?                                    504182 cast 0 failed 0  blocked by: score <= 0
+== spec022-Oathkeeper-Tank-class19-1001  casts 24
+      455 Beckon (Taunt)                       804914 cast 0 failed 0  blocked by: score <= 0
+      350 Interdict                            560116 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    573049 cast 0 failed 0  blocked by: score <= 0
+== spec023-Zealot-Dps-class19-1001  casts 23
+      350 Interdict                            560116 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    806835 cast 0 failed 0  blocked by: missing spell-defined target aura state
+        0 ?                                    578276 cast 0 failed 0  blocked by: heal would be wasted (target needs no healing or it would mostly overheal)
+        0 ?                                    573049 cast 0 failed 0  blocked by: global cooldown
+== spec024-Crusader-Dps-class19-1001  casts 22
+      350 Interdict                            560116 cast 0 failed 0  blocked by: score <= 0
+      220 Gift of Fervor                       572629 cast 0 failed 0  blocked by: blocking caster aura present
+        0 ?                                    807274 cast 0 failed 0  blocked by: main-hand weapon requirement
+        0 ?                                    807268 cast 0 failed 0  blocked by: equipped item requirement
+== spec025-Fleshweaver-Support-class20-1001  casts 17
+        0 ?                                    801952 cast 0 failed 0  blocked by: target condition
+        0 ?                                    706256 cast 0 failed 0  blocked by: target condition
+        0 ?                                    578305 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+        0 ?                                    572907 cast 0 failed 0  blocked by: global cooldown
+== spec026-Sanguine-Dps-class20-1001  casts 22
+      400 Liquify                              806310 cast 0 failed 0  blocked by: score <= 0
+      320 Fleshcraft                           801952 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+      295 Malediction (Thirst 7)               800776 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+      150 Keleseth's Calamity                  561179 cast 0 failed 0  blocked by: global cooldown
+== spec027-Accursed-Dps-class20-1001  casts 23
+      500 Accursed Form                        562572 cast 0 failed 0  blocked by: spell cooldown
+      265 Bloodsurge                           553267 cast 0 failed 0  blocked by: blocked by spell-defined caster aura
+      252 Lunge                                500126 cast 0 failed 0  blocked by: inside min range
+      245 Veinburst                            504819 cast 0 failed 0  blocked by: blocked by spell-defined caster aura
+== spec028-Archery-Dps-class21-1001  casts 21
+      350 Elude (Defensive)                    801345 cast 0 failed 0  blocked by: out-of-combat ability
+      165 Searing Quiver                       500103 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    807330 cast 0 failed 0  blocked by: native stance/form requirement
+        0 ?                                    582530 cast 0 failed 0  blocked by: native stance/form requirement
+== spec029-Farstrider-Support-class21-1001  casts 25
+      350 Elude (Defensive)                    801345 cast 0 failed 0  blocked by: out-of-combat ability
+      200 Blackjack (Stun)                     520568 cast 0 failed 0  blocked by: native stance/form requirement
+      190 Dust Toss (Blind/Disorient)          807820 cast 0 failed 0  blocked by: native stance/form requirement
+      175 Horn of Endurance (Party Buff)       806359 cast 0 failed 0  blocked by: global cooldown
+== spec030-Brigand-Dps-class21-1001  casts 25
+      380 Elude (Brigand Attack Window)        801345 cast 0 failed 0  blocked by: out-of-combat ability
+      230 Blackjack (Stun)                     520568 cast 0 failed 1  blocked by: native stance/form requirement
+        0 ?                                    503103 cast 0 failed 0  blocked by: missing spell-defined target aura state
+== spec031-Time-Healer-class22-1001  casts 17
+== spec032-Infinite-Dps-class22-1001  casts 19
+      320 Infinite Shield                      520457 cast 0 failed 0  blocked by: score <= 0
+      220 Gravity Bomb                         801281 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    582760 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    501777 cast 0 failed 0  blocked by: target condition
+== spec033-Artificer-Dps-class22-1001  casts 24
+      320 Infinite Shield                      520457 cast 0 failed 0  blocked by: score <= 0
+      180 Arc Collision                        524853 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    501777 cast 0 failed 0  blocked by: global cooldown
+== spec034-Death-Dps-class23-1001  casts 21
+      200 Mass Grave                           803741 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    807941 cast 0 failed 0  blocked by: score <= 0
+== spec035-Animation-Dps-class23-1001  casts 21
+      270 Raise: Abomination                   500335 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+      190 Glacial Tap (mana)                   805369 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    807941 cast 0 failed 0  blocked by: heal would be wasted (target needs no healing or it would mostly overheal)
+        0 ?                                    573298 cast 0 failed 0  blocked by: global cooldown
+== spec036-Rime-Dps-class23-1001  casts 19
+      480 Lich Form                            500981 cast 0 failed 0  blocked by: blocking caster aura present
+        0 ?                                    807941 cast 0 failed 0  blocked by: score <= 0
+== spec037-Flameweaving-Healer-class24-1001  casts 14
+== spec038-Incineration-Dps-class24-1001  casts 18
+      270 Cataclysm                            520218 cast 0 failed 0  blocked by: score <= 0
+== spec039-Draconic-Dps-class24-1001  casts 20
+      240 Ignis Ultimatus                      680369 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    503237 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    502056 cast 0 failed 0  blocked by: global cooldown
+== spec040-Heretic-Healer-class25-1001  casts 18
+== spec041-Corruption-Dps-class25-1001  casts 15
+        0 ?                                    578115 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    572846 cast 0 failed 0  blocked by: out of max range
+        0 ?                                    502122 cast 0 failed 0  blocked by: out of max range
+== spec042-Godblade-Dps-class25-1001  casts 20
+      240 Grasp of Zek'voz                     573028 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    578263 cast 0 failed 0  blocked by: equipped item requirement
+        0 ?                                    572846 cast 0 failed 0  blocked by: missing spell-defined caster aura
+== spec043-MoonPriest-Healer-class26-1001  casts 19
+== spec044-Sentinel-Dps-class26-1001  casts 13
+        0 ?                                    805356 cast 0 failed 0  blocked by: blocking caster aura present
+        0 ?                                    800386 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    503027 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    502339 cast 0 failed 0  blocked by: missing spell-defined target aura
+== spec045-Warden-Dps-class26-1001  casts 22
+      240 Aspect of the Warden                 801128 cast 0 failed 0  blocked by: blocking caster aura present
+        0 ?                                    681565 cast 0 failed 0  blocked by: missing spell-defined target aura
+        0 ?                                    502297 cast 0 failed 0  blocked by: global cooldown
+== spec046-Piety-Dps-class27-1001  casts 18
+      245 Sunset                               804584 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+      225 Solar Concord                        301266 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    502476 cast 0 failed 0  blocked by: global cooldown
+== spec047-Valkyrie-Dps-class27-1001  casts 21
+      215 Dawnfall                             806118 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    502476 cast 0 failed 0  blocked by: global cooldown
+== spec048-Seraphim-Tank-class27-1001  casts 17
+      380 Sol Invictus (Defensive)             807732 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    807870 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    804584 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+        0 ?                                    803592 cast 0 failed 0  blocked by: out-of-combat ability
+== spec049-Demolition-Dps-class28-1001  casts 17
+      350 Kinetic Shield                       806224 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    500470 cast 0 failed 0  blocked by: internal throttle
+== spec050-Mechanics-Dps-class28-1001  casts 17
+      350 Kinetic Shield                       806224 cast 0 failed 0  blocked by: score <= 0
+      180 Gatling Gun                          500213 cast 0 failed 0  blocked by: missing required caster aura
+        0 ?                                    807291 cast 0 failed 0  blocked by: missing required caster aura
+        0 ?                                    805656 cast 0 failed 0  blocked by: out of max range
+== spec051-Invention-Healer-class28-1001  casts 8
+== spec052-Fortitude-Tank-class29-1001  casts 21
+      500 Beetle Form                          803183 cast 0 failed 0  blocked by: blocking caster aura present
+      455 Vile Sting (Taunt)                   805097 cast 0 failed 0  blocked by: score <= 0
+      350 Regrow Exoskeleton                   803197 cast 0 failed 0  blocked by: score <= 0
+      330 Lifeblood (self defensive)           804963 cast 0 failed 0  blocked by: score <= 0
+== spec053-Stalking-Dps-class29-1001  casts 27
+      480 Spider Form                          800841 cast 0 failed 0  blocked by: blocking caster aura present
+      325 Facemelter                           572901 cast 0 failed 0  blocked by: missing spell-defined caster aura
+        0 ?                                    807675 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    502895 cast 0 failed 0  blocked by: global cooldown
+== spec054-Rot-Dps-class29-1001  casts 19
+        0 ?                                    807675 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    502895 cast 0 failed 0  blocked by: missing spell-defined caster aura
+== spec055-Soul-Dps-class30-1001  casts 25
+      320 Underwalk (Defensive)                800797 cast 0 failed 0  blocked by: out-of-combat ability
+      230 Soulslam (Infusion Burst)            504014 cast 0 failed 0  blocked by: missing spell-defined caster aura
+      215 Reliquary of the Lost                500631 cast 0 failed 0  blocked by: missing spell-defined caster aura
+      200 Wraithblade (Weapon Spender)         806823 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+== spec056-Harvest-Dps-class30-1001  casts 21
+      320 Underwalk (Shadow Escape)            800797 cast 0 failed 0  blocked by: out-of-combat ability
+      210 Scythe Rush (Gap Closer)             500359 cast 0 failed 0  blocked by: inside min range
+        0 ?                                    567532 cast 0 failed 0  blocked by: equipped item requirement
+        0 ?                                    504537 cast 0 failed 0  blocked by: equipped item requirement
+== spec057-Domination-Tank-class30-1001  casts 11
+      455 Writhe (Taunt)                       801337 cast 0 failed 0  blocked by: score <= 0
+      320 Underwalk (Shadow Escape)            800797 cast 0 failed 0  blocked by: out-of-combat ability
+      280 Bolstered Form (Plate Armor Stance   680337 cast 0 failed 0  blocked by: spell cooldown
+      190 Scythe Rush (Gap Closer)             500359 cast 0 failed 0  blocked by: inside min range
+== spec058-Grovekeeper-Support-class31-1001  casts 11
+      200 Rock Barrier (Tank Shield)           503630 cast 0 failed 0  blocked by: target condition
+      120 Boon of the Wolf                     800137 cast 0 failed 0  blocked by: blocking caster aura present
+        0 ?                                    502808 cast 0 failed 0  blocked by: target condition
+== spec059-Wildwalker-Dps-class31-1001  casts 20
+      320 Rock Barrier (Shield)                503630 cast 0 failed 0  blocked by: score <= 0
+      205 Wildclaw                             520566 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+      200 Boon of the Hawk                     500939 cast 0 failed 0  blocked by: blocking caster aura present
+== spec060-MountainKing-Tank-class31-1001  casts 27
+      455 Gaze of Theradras (Taunt)            805919 cast 0 failed 0  blocked by: score <= 0
+      450 Protective Roar (Taunt)              802782 cast 0 failed 0  blocked by: score <= 0
+      320 Rock Barrier (Tank Shield)           503630 cast 0 failed 0  blocked by: score <= 0
+      220 Boon of the Turtle (Tank Stance)     500935 cast 0 failed 0  blocked by: blocking caster aura present
+== spec061-Engravement-Dps-class32-1001  casts 24
+      300 Runeshroud (Shield)                  500288 cast 0 failed 0  blocked by: out-of-combat ability
+        0 ?                                    807323 cast 0 failed 0  blocked by: missing spell-defined caster aura
+== spec062-Glyphic-Dps-class32-1001  casts 22
+      300 Runeshroud (Shield)                  500288 cast 0 failed 0  blocked by: out-of-combat ability
+        0 ?                                    502858 cast 0 failed 0  blocked by: global cooldown
+== spec063-Riftblade-Dps-class32-1001  casts 19
+      300 Runeshroud                           500288 cast 0 failed 0  blocked by: out-of-combat ability
+== spec095-Geomancy-Dps-class31-1001  casts 26
+      300 Rock Barrier                         503630 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    681114 cast 0 failed 0  blocked by: global cooldown
+        0 ?                                    503264 cast 0 failed 0  blocked by: global cooldown
+== spec096-Dreadnought-Tank-class25-1001  casts 17
+      455 Test of Pride (Taunt)                804412 cast 0 failed 0  blocked by: score <= 0
+      440 Grasp of Zek'voz                     573028 cast 0 failed 0  blocked by: score <= 0
+      300 Satiate                              804275 cast 0 failed 0  blocked by: heal would be wasted (target needs no healing or it would mostly overheal)
+        0 ?                                    804711 cast 0 failed 0  blocked by: score <= 0
+== spec097-BlackKnight-Tank-class15-1001  casts 21
+      455 Vicious Mockery (Taunt)              802013 cast 0 failed 0  blocked by: score <= 0
+      400 Gaze of the Black Knight (Shield/T   802138 cast 0 failed 0  blocked by: score <= 0
+      260 Vault                                500085 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+== spec098-Blessings-Healer-class27-1001  casts 7
+== spec099-Eternal-Tank-class20-1001  casts 22
+      500 Eternal Curse (Tank form)            800157 cast 0 failed 0  blocked by: blocking caster aura present
+      460 Bare Fangs (Taunt)                   801957 cast 0 failed 0  blocked by: score <= 0
+      420 Liquify                              806310 cast 0 failed 0  blocked by: blocked by spell-defined caster aura
+      340 Fleshcraft                           801952 cast 0 failed 0  blocked by: can't afford (see CombatResource log line above for which resource)
+== spec100-MoonGuard-Tank-class26-1001  casts 20
+      320 Astral Aegis                         806155 cast 0 failed 0  blocked by: score <= 0
+        0 ?                                    803888 cast 0 failed 0  blocked by: blocking caster aura present
+        0 ?                                    802437 cast 0 failed 0  blocked by: score <= 0
+== spec101-Vizier-Healer-class29-1001  casts 16

@@ -13,6 +13,7 @@
 #include "engine/CombatContext.h"
 #include "engine/CombatMovement.h"
 #include "engine/CombatReservations.h"
+#include "engine/HealEvaluator.h"
 #include "engine/SpecStrategyRegistry.h"
 #include "profiles/ProfileRegistry.h"
 #include "BotClassRotations.h"
@@ -99,23 +100,10 @@ namespace BotAI
         bool isHealingAction = spellInfo && HasTag(action.tags, HEALING_RESERVATION_TAGS);
         if (isHealingAction)
         {
-            uint32 expectedHeal = 0;
-            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-            {
-                SpellEffectInfo const& effect = spellInfo->Effects[i];
-                int32 base = effect.CalcValue(bot);
-                if (base <= 0)
-                    continue;
-                if (effect.Effect == SPELL_EFFECT_HEAL)
-                {
-                    uint32 amount = bot->SpellHealingBonusDone(action.target, spellInfo, uint32(base), HEAL, i);
-                    expectedHeal += action.target->SpellHealingBonusTaken(bot, spellInfo, amount, HEAL);
-                }
-                else if (effect.Effect == SPELL_EFFECT_HEAL_PCT)
-                    expectedHeal += uint32(uint64(action.target->GetMaxHealth()) * uint32(base) / 100);
-            }
-            // Pure HoTs and script-only heals have no immediate direct amount to reserve.
-            expectedHeal = std::min(expectedHeal, action.target->GetMaxHealth() - action.target->GetHealth());
+            // Pure HoTs and script-only heals have no known direct amount to reserve. What is reserved is the part that will land on health
+            // (see Decisions::ReservationAmount), not the raw spell amount and not the deficit of this instant.
+            Decisions::HealForecast forecast = HealEvaluator::ForecastHeal(bot, action.target, spellInfo);
+            uint32 expectedHeal = forecast.amountKnown ? Decisions::ReservationAmount(forecast) : 0;
             uint32 castTimeMs = spellInfo->CalcCastTime(bot);
             if (expectedHeal > 0)
                 CombatReservations::ReserveHeal(bot->GetGUID(), action.target->GetGUID(), action.spellId, expectedHeal, castTimeMs);
@@ -127,9 +115,13 @@ namespace BotAI
         FaceHostileTargetForCast(bot, action.target);
         SpellCastResult result = bot->CastSpell(action.target, action.spellId, false);
         CoaTraining::CastResult(bot, action.spellId, uint32(result), action.target);
+        if (HasTag(action.tags, AbilityTag::Interrupt))
+            CoaTraining::InterruptKick(bot, action.spellId, action.target, uint32(result), "profile interrupt");
         SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
         if (result == SPELL_CAST_OK)
         {
+            if (HasTag(action.tags, AbilityTag::DefensiveCD))
+                ActionEvaluator::NoteDefensiveCast(bot->GetGUID());
             if (action.internalThrottleMs > 0 && action.rootSpellId != 0)
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
 
