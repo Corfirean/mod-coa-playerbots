@@ -31,8 +31,54 @@ local eventsReqId = 1
 
 local activeBots = {}
 local activeEvents = {}
+local testEventData = nil
 local isQueryInFlight = false
 local pollTimer = 0
+
+local function GetCombinedEvents()
+    if not testEventData then return activeEvents end
+    local list = {}
+    for _, ev in ipairs(activeEvents) do
+        table.insert(list, ev)
+    end
+    table.insert(list, testEventData)
+    return list
+end
+
+function Map:ToggleTestEvent()
+    if testEventData then
+        testEventData = nil
+        DEFAULT_CHAT_FRAME:AddMessage("|cFFFF8000[CoA Map]|r Test encounter removed.")
+    else
+        local mapName = GetMapInfo()
+        local area = mapName and CoABotMapData and CoABotMapData.areas and CoABotMapData.areas[mapName:lower()]
+        local wx = 0
+        local wy = 0
+        if area and area.x1 and area.x2 and area.y1 and area.y2 then
+            wx = (area.x1 + area.x2) * 0.5
+            wy = (area.y1 + area.y2) * 0.5
+        elseif #activeBots > 0 and activeBots[1].worldX then
+            wx = activeBots[1].worldX + 60
+            wy = activeBots[1].worldY + 60
+        end
+
+        testEventData = {
+            eventId = 88888,
+            eventType = 1, -- Faction Skirmish
+            centerX = wx,
+            centerY = wy,
+            phase = 2, -- Active (In Combat)
+            allianceCount = 5,
+            hordeCount = 4,
+            name = "Alliance & Horde Skirmish (Test Event)"
+        }
+        DEFAULT_CHAT_FRAME:AddMessage("|cFF00FF00[CoA Map]|r Test encounter spawned on current map. Check world map (M)!")
+    end
+
+    if CoABotMapMarkers then
+        CoABotMapMarkers:Update(activeBots, GetCombinedEvents())
+    end
+end
 
 Map.lastMapViewKey = nil
 Map.mapChangeDebounce = nil
@@ -164,7 +210,7 @@ function Map:QueryMapData()
     else
         activeEvents = {}
         if CoABotMapMarkers then
-            CoABotMapMarkers:Update(activeBots, activeEvents)
+            CoABotMapMarkers:Update(activeBots, GetCombinedEvents())
         end
     end
 end
@@ -180,7 +226,7 @@ function Map:ClearBots()
     pendingQueryTx = nil
     isQueryInFlight = false
     if CoABotMapMarkers then
-        CoABotMapMarkers:Update(activeBots, activeEvents)
+        CoABotMapMarkers:Update(activeBots, GetCombinedEvents())
     end
 end
 
@@ -216,7 +262,7 @@ function Map:OnEventsToggled()
         activeEvents = {}
         pendingEventsTx = nil
         if CoABotMapMarkers then
-            CoABotMapMarkers:Update(activeBots, activeEvents)
+            CoABotMapMarkers:Update(activeBots, GetCombinedEvents())
         end
     else
         pollTimer = 0
@@ -305,7 +351,7 @@ function Map:HandleIncomingMessage(body)
             tx.state = TxState.COMPLETE
             activeBots = tx.pins
             if CoABotMapMarkers then
-                CoABotMapMarkers:Update(activeBots, activeEvents)
+                CoABotMapMarkers:Update(activeBots, GetCombinedEvents())
             end
         else
             -- Chunk loss detected! Discard incomplete snapshot to prevent corrupted display
@@ -409,7 +455,7 @@ function Map:HandleIncomingMessage(body)
             end
             activeEvents = parsedEvents
             if CoABotMapMarkers then
-                CoABotMapMarkers:Update(activeBots, activeEvents)
+                CoABotMapMarkers:Update(activeBots, GetCombinedEvents())
             end
         end
 
@@ -426,7 +472,7 @@ function Map:HandleIncomingMessage(body)
         if tx.receivedChunkCount == tx.expectedChunks and #tx.events == tx.expectedEvents then
             activeEvents = tx.events
             if CoABotMapMarkers then
-                CoABotMapMarkers:Update(activeBots, activeEvents)
+                CoABotMapMarkers:Update(activeBots, GetCombinedEvents())
             end
         end
     end
@@ -452,13 +498,13 @@ mapFrame:SetScript("OnEvent", function(self, event, arg1)
                 Map:CancelPendingQuery()
                 -- Update markers immediately with new projection
                 if CoABotMapMarkers then
-                    CoABotMapMarkers:Update(activeBots, activeEvents)
+                    CoABotMapMarkers:Update(activeBots, GetCombinedEvents())
                 end
                 -- Schedule debounced query (150ms) to avoid query storms during fast zoom/pan
                 Map.mapChangeDebounce = 0.150
             else
                 if CoABotMapMarkers then
-                    CoABotMapMarkers:Update(activeBots, activeEvents)
+                    CoABotMapMarkers:Update(activeBots, GetCombinedEvents())
                 end
             end
         end

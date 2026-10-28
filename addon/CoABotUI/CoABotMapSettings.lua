@@ -118,6 +118,12 @@ function Settings:CreateWorldMapControls()
     UIDropDownMenu_SetSelectedValue(modeDropdown, Settings:GetMode())
     UIDropDownMenu_SetText(modeDropdown, MODES[Settings:GetMode()].name)
 
+    -- DropDown Title Label (native Blizzard header style matching Zone/Continent dropdowns)
+    local dropdownLabel = modeDropdown:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    dropdownLabel:SetPoint("BOTTOMLEFT", modeDropdown, "TOPLEFT", 20, 2)
+    local isRu = (GetLocale and GetLocale() == "ruRU")
+    dropdownLabel:SetText(isRu and "Союзные боты" or "Allied Bots")
+
     -- Events Checkbox
     eventsCheckbox = CreateFrame("CheckButton", "CoABotMapEventsCheck", settingsPanel, "UICheckButtonTemplate")
     eventsCheckbox:SetPoint("LEFT", modeDropdown, "RIGHT", -10, 0)
@@ -219,6 +225,10 @@ function Settings:HandleSlashCommand(argStr)
             Settings:SetEventsEnabled(not Settings:GetEventsEnabled())
             DEFAULT_CHAT_FRAME:AddMessage("|cFFFFD100[CoABot Map Intelligence]|r World Events display toggled " .. (Settings:GetEventsEnabled() and "|cFF00FF00ON|r" or "|cFFFF0000OFF|r") .. ".")
         end
+    elseif sub == "testevent" then
+        if CoABotWorldMap and CoABotWorldMap.ToggleTestEvent then
+            CoABotWorldMap:ToggleTestEvent()
+        end
     else
         DEFAULT_CHAT_FRAME:AddMessage("|cFFFFD100CoABot Map Commands:|r")
         DEFAULT_CHAT_FRAME:AddMessage("  /coabot map - Show current map intelligence status")
@@ -228,5 +238,6 @@ function Settings:HandleSlashCommand(argStr)
         DEFAULT_CHAT_FRAME:AddMessage("  /coabot map guild - Show all guild companion bots")
         DEFAULT_CHAT_FRAME:AddMessage("  /coabot map all - Show all allied bots on map")
         DEFAULT_CHAT_FRAME:AddMessage("  /coabot map events [on|off] - Toggle dynamic world events")
+        DEFAULT_CHAT_FRAME:AddMessage("  /coabot map testevent - Spawn or remove test event on current map")
     end
 end

@@ -381,6 +381,48 @@ def run_tests():
     CoABotWorldMap:Clear()
     assert_true(WorldMapTooltip.shown == false, "Tooltip hidden after Clear()")
 
+    -- 15. Zone Map vs Continent Map Clustering (No clusters on zone maps)
+    GetMapInfo = function() return "Elwynn" end
+    GetCurrentMapZone = function() return 1 end -- Simulating inside a specific zone map (e.g. Elwynn)
+    local sampleBots = {
+        { guidLow = 801, mapId = 0, worldX = -9400, worldY = -100, level = 20, classId = 1, role = 0, flags = 0, activity = 0 },
+        { guidLow = 802, mapId = 0, worldX = -9401, worldY = -101, level = 20, classId = 2, role = 0, flags = 0, activity = 0 },
+    }
+    CoABotMapMarkers:Update(sampleBots, nil)
+    -- On zone map: 0 clusters, 2 individual singletons
+    local activeClustersCount = 0
+    local activePinsCount = 0
+    for i = 1, 10 do
+        local cl = _G["CoABotMapCluster" .. i]
+        if cl and cl:IsShown() then activeClustersCount = activeClustersCount + 1 end
+        local p = _G["CoABotMapPin" .. i]
+        if p and p:IsShown() then activePinsCount = activePinsCount + 1 end
+    end
+    assert_true(activeClustersCount == 0, "No clusters on zone map (clusters count = 0)")
+    assert_true(activePinsCount == 2, "Individual bot pins on zone map (pins count = 2)")
+
+    -- On continent map: nearby bots must cluster
+    GetMapInfo = function() return "Azeroth" end
+    GetCurrentMapZone = function() return 0 end -- Simulating continent view
+    CoABotMapMarkers:Update(sampleBots, nil)
+    local contClustersCount = 0
+    for i = 1, 10 do
+        local cl = _G["CoABotMapCluster" .. i]
+        if cl and cl:IsShown() then contClustersCount = contClustersCount + 1 end
+    end
+    assert_true(contClustersCount == 1, "Clusters active on continent map (clusters count = 1)")
+
+    -- Restore zone map
+    GetMapInfo = function() return "Elwynn" end
+    GetCurrentMapZone = function() return 1 end
+
+    -- 16. Test Event Toggle
+    CoABotWorldMap:ToggleTestEvent()
+    local evPin = _G["CoABotMapEventPin1"]
+    assert_true(evPin and evPin:IsShown(), "Test event pin displayed after ToggleTestEvent()")
+    CoABotWorldMap:ToggleTestEvent()
+    assert_true(evPin and not evPin:IsShown(), "Test event pin hidden after second ToggleTestEvent()")
+
     return failed
     '''
     failed_count = runtime.execute(test_script)
