@@ -66,11 +66,11 @@ def run_tests():
                 return {
                     SetAllPoints = function() end,
                     SetPoint = function() end,
-                    SetWidth = function() end,
-                    SetHeight = function() end,
-                    SetTexture = function() end,
+                    SetWidth = function(self, w) self.width = w end,
+                    SetHeight = function(self, h) self.height = h end,
+                    SetTexture = function(self, tex) self.texture = tex end,
                     SetTexCoord = function() end,
-                    SetVertexColor = function() end,
+                    SetVertexColor = function(self, r, g, b, a) self.r = r self.g = g self.b = b self.a = a end,
                     Show = function() end,
                     Hide = function() end,
                 }
@@ -464,6 +464,119 @@ def run_tests():
     CoABotMapMarkers:Update(cityBots, nil)
     local clPin = _G["CoABotMapCluster1"]
     assert_true(clPin and clPin.offX == 14 and clPin.offY == 12, "Cluster badge offsets away from overlapping city POI landmark")
+
+    -- 19. InCombat vs HasTask vs Guild vs Ghost flag priorities
+    GetMapInfo = function() return "Elwynn" end
+    GetCurrentMapZone = function() return 1 end
+    GetNumMapLandmarks = function() return 0 end
+    local flagTestBots = {
+        { guidLow = 101, mapId = 0, worldX = -9410, worldY = -100, level = 20, classId = 1, role = 0, flags = 2, activity = 0 }, -- HasTask only (flags=2)
+        { guidLow = 102, mapId = 0, worldX = -9420, worldY = -100, level = 20, classId = 1, role = 0, flags = 4, activity = 0 }, -- InCombat only (flags=4)
+        { guidLow = 103, mapId = 0, worldX = -9430, worldY = -100, level = 20, classId = 1, role = 0, flags = 6, activity = 0 }, -- HasTask + InCombat (flags=6)
+        { guidLow = 104, mapId = 0, worldX = -9440, worldY = -100, level = 20, classId = 1, role = 0, flags = 5, activity = 0 }, -- Guild + InCombat (flags=5)
+        { guidLow = 105, mapId = 0, worldX = -9450, worldY = -100, level = 20, classId = 1, role = 0, flags = 0, activity = 0 }, -- No flags (flags=0)
+    }
+    CoABotMapMarkers:Update(flagTestBots, nil)
+
+    local p1 = _G["CoABotMapPin1"] -- HasTask only
+    assert_true(p1 and p1.hasTask == true and p1.inCombat == false, "Pin 1 hasTask=true, inCombat=false")
+    assert_true(p1 and p1.border.r ~= 1.0 or p1.border.g ~= 0.25, "Pin 1 does NOT show red combat alert")
+
+    local p2 = _G["CoABotMapPin2"] -- InCombat only
+    assert_true(p2 and p2.inCombat == true and p2.hasTask == false, "Pin 2 inCombat=true, hasTask=false")
+    assert_true(p2 and p2.border.r == 1.0 and p2.border.g == 0.25, "Pin 2 shows fiery red combat ring")
+
+    local p3 = _G["CoABotMapPin3"] -- HasTask + InCombat
+    assert_true(p3 and p3.inCombat == true and p3.hasTask == true, "Pin 3 inCombat=true, hasTask=true")
+    assert_true(p3 and p3.border.r == 1.0 and p3.border.g == 0.25, "Pin 3 shows fiery red combat ring despite having task")
+
+    local p4 = _G["CoABotMapPin4"] -- Guild + InCombat
+    assert_true(p4 and p4.isGuild == true and p4.inCombat == true, "Pin 4 isGuild=true, inCombat=true")
+    assert_true(p4 and p4.border.width == 16, "Pin 4 keeps guild dimensions (width=16)")
+    assert_true(p4 and p4.border.r == 1.0 and p4.border.g == 0.25, "Pin 4 alerts combat with fiery red color")
+
+    local p5 = _G["CoABotMapPin5"] -- No flags
+    assert_true(p5 and p5.isGuild == false and p5.inCombat == false and p5.hasTask == false, "Pin 5 clean state")
+    assert_true(p5 and p5.border.width == 14, "Pin 5 default width=14")
+
+    -- 20. Current Zone semantics across viewports
+    sentMessages = {}
+    CoABotMapSettings:SetMode(2) -- Mode 2: Current Zone
+    CoABotWorldMap:QueryMapData()
+    local queryMsg = nil
+    for _, msg in ipairs(sentMessages) do
+        if msg.body:find("MAPQUERY") then
+            queryMsg = msg.body
+        end
+    end
+    assert_true(queryMsg and queryMsg:find(":2:0:0"), "Current Zone query strictly sends param1=0, param2=0 (server authority)")
+
+    -- Test client projection: Elwynn bots on Elwynn map vs Westfall map vs Continent map
+    local elwynnBots = {
+        { guidLow = 501, mapId = 0, worldX = -9000, worldY = -300, level = 20, classId = 1, role = 0, flags = 0, activity = 0 },
+    }
+    -- Case A: On Elwynn map -> visible
+    GetMapInfo = function() return "Elwynn" end
+    GetCurrentMapZone = function() return 1 end
+    CoABotMapMarkers:Update(elwynnBots, nil)
+    local ep = _G["CoABotMapPin1"]
+    assert_true(ep and ep:IsShown(), "Current zone bot visible on Elwynn map")
+
+    -- Case B: On Westfall map -> clipped (out of bounds)
+    GetMapInfo = function() return "Westfall" end
+    GetCurrentMapZone = function() return 2 end
+    CoABotMapMarkers:RepositionAll()
+    local wp = _G["CoABotMapPin1"]
+    assert_true(wp == nil or not wp:IsShown(), "Elwynn bot not shown inside Westfall map viewport")
+
+    -- Case C: On Eastern Kingdoms continent map -> visible in Elwynn territory
+    GetMapInfo = function() return "Azeroth" end
+    GetCurrentMapZone = function() return 0 end
+    CoABotMapMarkers:RepositionAll()
+    local cp = _G["CoABotMapPin1"]
+    assert_true(cp and cp:IsShown(), "Current zone bot visible on Eastern Kingdoms continent map")
+
+    -- 21. 3000 Bots & 425 Chunks Full Client Transaction Cycle
+    sentMessages = {}
+    CoABotWorldMap:QueryMapData()
+    local reqId = CoABotWorldMap:GetQueryReqId()
+    local totalBots = 3000
+    local totalChunks = 425
+
+    -- Send MAPBEGIN
+    CoABotWorldMap:HandleIncomingMessage("MAPBEGIN:" .. reqId .. ":" .. totalBots .. ":" .. totalChunks .. ":1")
+
+    -- Send 424 chunks
+    local generatedBots = 0
+    for chunkIdx = 1, totalChunks - 1 do
+        local chunkPayload = {}
+        for b = 1, 7 do
+            generatedBots = generatedBots + 1
+            table.insert(chunkPayload, string.format("%d,0,-9400,-100,80,1,0,0,0", 10000 + generatedBots))
+        end
+        local chunkMsg = "MAPBOTS:" .. reqId .. ":" .. chunkIdx .. ":" .. table.concat(chunkPayload, "|")
+        CoABotWorldMap:HandleIncomingMessage(chunkMsg)
+    end
+
+    -- Verify atomic isolation: before MAPEND, activeBots has NOT been updated with partial data
+    local activeCountBefore = #(CoABotWorldMap:GetActiveBots())
+    assert_true(activeCountBefore ~= generatedBots, "Atomic transaction: partial chunks not applied prematurely")
+
+    -- Send final chunk 425 with remaining bots
+    local remaining = totalBots - generatedBots
+    local finalChunkPayload = {}
+    for b = 1, remaining do
+        generatedBots = generatedBots + 1
+        table.insert(finalChunkPayload, string.format("%d,0,-9400,-100,80,1,0,0,0", 10000 + generatedBots))
+    end
+    CoABotWorldMap:HandleIncomingMessage("MAPBOTS:" .. reqId .. ":" .. totalChunks .. ":" .. table.concat(finalChunkPayload, "|"))
+
+    -- Send MAPEND
+    CoABotWorldMap:HandleIncomingMessage("MAPEND:" .. reqId)
+
+    -- Verify full atomic application of all 3000 bots
+    local activeCountAfter = #(CoABotWorldMap:GetActiveBots())
+    assert_true(activeCountAfter == 3000, "Full client transaction cycle: 425 chunks committed all 3000 bots atomically (count=3000)")
 
     return failed
     '''

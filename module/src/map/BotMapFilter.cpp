@@ -9,6 +9,39 @@
 
 namespace BotMapFilter
 {
+    static inline bool IsInSameZone(BotMapCommanderView const& cmd, BotMapFilterTarget const& bot)
+    {
+        if (bot.mapId != cmd.mapId)
+            return false;
+
+        // 1. Direct zone match (e.g. both zoneId == 12)
+        if (cmd.zoneId != 0 && bot.zoneId == cmd.zoneId)
+            return true;
+
+        // 2. Commander in subzone whose parent matches bot's zone or parent
+        if (cmd.parentZoneId != 0)
+        {
+            if (bot.zoneId == cmd.parentZoneId || bot.areaId == cmd.parentZoneId ||
+                (bot.parentZoneId != 0 && bot.parentZoneId == cmd.parentZoneId))
+                return true;
+        }
+
+        // 3. Bot in subzone whose parent matches commander's zone or parent
+        if (bot.parentZoneId != 0)
+        {
+            if (bot.parentZoneId == cmd.zoneId || (cmd.areaId != 0 && bot.parentZoneId == cmd.areaId))
+                return true;
+        }
+
+        // 4. Direct area match
+        if (cmd.areaId != 0 && (bot.areaId == cmd.areaId || bot.zoneId == cmd.areaId))
+            return true;
+        if (cmd.zoneId != 0 && bot.areaId == cmd.zoneId)
+            return true;
+
+        return false;
+    }
+
     bool FilterBot(
         BotMapCommanderView const& commander,
         BotMapMode mode,
@@ -54,12 +87,9 @@ namespace BotMapFilter
         }
         else if (mode == BotMapMode::CurrentZone)
         {
-            if (bot.mapId != commander.mapId)
-                return false;
-
-            uint32 targetZone = (filterAreaId > 0) ? static_cast<uint32>(filterAreaId) :
-                                (filterMapId > 0 ? static_cast<uint32>(filterMapId) : commander.zoneId);
-            if (bot.zoneId != targetZone && bot.areaId != targetZone && bot.parentZoneId != targetZone)
+            // Current Zone: strictly uses commander's actual in-game zone as authority.
+            // Client viewport (filterAreaId / filterMapId) does not alter the search area.
+            if (!IsInSameZone(commander, bot))
                 return false;
         }
         else if (mode == BotMapMode::GuildOnly)

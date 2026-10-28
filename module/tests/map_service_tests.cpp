@@ -599,10 +599,42 @@ static void TestScenarioK_ViewportAreaFiltering()
     std::vector<BotMapPinSnapshot> allEasternKingdoms = BotMapFilter::FilterBots(cmd, BotMapMode::AllAllied, 0, 0, 0, bots);
     CHECK(allEasternKingdoms.size() == 4); // 201, 202, 203, 204
 
-    // 3. CurrentZone with filterAreaId = 40 (Explicit Westfall viewport)
-    std::vector<BotMapPinSnapshot> westfall = BotMapFilter::FilterBots(cmd, BotMapMode::CurrentZone, 0, 40, 0, bots);
-    CHECK(westfall.size() == 1);
-    CHECK(westfall[0].guidLow == 203);
+    // 3. CurrentZone strictly uses commander's in-game zone (Elwynn zone 12), ignoring client viewport (40)
+    std::vector<BotMapPinSnapshot> currentZoneElwynn = BotMapFilter::FilterBots(cmd, BotMapMode::CurrentZone, 0, 40, 0, bots);
+    CHECK(currentZoneElwynn.size() == 2);
+    CHECK(currentZoneElwynn[0].guidLow == 201);
+    CHECK(currentZoneElwynn[1].guidLow == 202);
+
+    // 4. Commander physically moves to Westfall (zoneId = 40)
+    cmd.zoneId = 40;
+    std::vector<BotMapPinSnapshot> currentZoneWestfall = BotMapFilter::FilterBots(cmd, BotMapMode::CurrentZone, 0, 0, 0, bots);
+    CHECK(currentZoneWestfall.size() == 1);
+    CHECK(currentZoneWestfall[0].guidLow == 203);
+
+    // 5. Subzone and parentZoneId resolution
+    cmd.zoneId = 12; // Back to Elwynn
+    cmd.areaId = 12;
+    cmd.parentZoneId = 0;
+    BotMapFilterTarget subzoneBot = MakeTarget(206, 0, 0, 12); // Bot in Goldshire subzone
+    subzoneBot.areaId = 87; // Goldshire
+    subzoneBot.parentZoneId = 12; // Parent is Elwynn Forest
+    bots.push_back(subzoneBot);
+
+    std::vector<BotMapPinSnapshot> elwynnWithSubzone = BotMapFilter::FilterBots(cmd, BotMapMode::CurrentZone, 0, 0, 0, bots);
+    CHECK(elwynnWithSubzone.size() == 3); // 201, 202, 206
+
+    // 6. Commander inside subzone (e.g. Goldshire)
+    cmd.zoneId = 87;
+    cmd.areaId = 87;
+    cmd.parentZoneId = 12;
+    std::vector<BotMapPinSnapshot> cmdInSubzone = BotMapFilter::FilterBots(cmd, BotMapMode::CurrentZone, 0, 0, 0, bots);
+    CHECK(cmdInSubzone.size() == 3); // Sees Elwynn bots 201, 202 and fellow subzone bot 206
+
+    // 7. Bot in different mapId (Kalimdor mapId 1) rejected even if zone numbers match
+    BotMapFilterTarget kalimdorBot = MakeTarget(207, 0, 1, 12);
+    bots.push_back(kalimdorBot);
+    std::vector<BotMapPinSnapshot> mapIsolation = BotMapFilter::FilterBots(cmd, BotMapMode::CurrentZone, 0, 0, 0, bots);
+    CHECK(mapIsolation.size() == 3); // kalimdorBot excluded
 }
 
 // -----------------------------------------------------------------------------

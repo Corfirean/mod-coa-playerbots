@@ -492,17 +492,39 @@ function Markers:Update(botList, eventList)
         pin.icon:SetVertexColor(r, g, b, 1.0)
 
         local isGuild = bit.band(item.bot.flags or 0, 1) ~= 0
-        local inCombat = bit.band(item.bot.flags or 0, 2) ~= 0
-        if isGuild then
+        local hasTask = bit.band(item.bot.flags or 0, 2) ~= 0
+        local inCombat = bit.band(item.bot.flags or 0, 4) ~= 0
+        local isGhost = bit.band(item.bot.flags or 0, 8) ~= 0
+
+        pin.isGuild = isGuild
+        pin.hasTask = hasTask
+        pin.inCombat = inCombat
+        pin.isGhost = isGhost
+
+        if inCombat then
+            if isGuild then
+                pin.border:SetWidth(16)
+                pin.border:SetHeight(16)
+                pin.border:SetVertexColor(1.0, 0.25, 0.15, 1.0) -- Alert fiery red ring (guild size)
+                pin.icon:SetWidth(11)
+                pin.icon:SetHeight(11)
+            else
+                pin.border:SetWidth(15)
+                pin.border:SetHeight(15)
+                pin.border:SetVertexColor(1.0, 0.25, 0.15, 1.0) -- Alert fiery red ring
+                pin.icon:SetWidth(10)
+                pin.icon:SetHeight(10)
+            end
+        elseif isGuild then
             pin.border:SetWidth(16)
             pin.border:SetHeight(16)
             pin.border:SetVertexColor(1.0, 0.85, 0.15, 1.0) -- Radiant gold ring
             pin.icon:SetWidth(11)
             pin.icon:SetHeight(11)
-        elseif inCombat then
-            pin.border:SetWidth(15)
-            pin.border:SetHeight(15)
-            pin.border:SetVertexColor(1.0, 0.25, 0.15, 1.0) -- Alert fiery red ring
+        elseif isGhost then
+            pin.border:SetWidth(14)
+            pin.border:SetHeight(14)
+            pin.border:SetVertexColor(0.6, 0.6, 0.6, 0.8) -- Ghostly translucent grey ring
             pin.icon:SetWidth(10)
             pin.icon:SetHeight(10)
         else

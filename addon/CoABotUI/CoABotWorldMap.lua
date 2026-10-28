@@ -35,6 +35,14 @@ local testEventData = nil
 local isQueryInFlight = false
 local pollTimer = 0
 
+function Map:GetActiveBots()
+    return activeBots
+end
+
+function Map:GetQueryReqId()
+    return queryReqId
+end
+
 local function GetCombinedEvents()
     if not testEventData then return activeEvents end
     local list = {}
@@ -180,9 +188,9 @@ function Map:QueryMapData()
             param1 = CoABotMapSettings:GetRadius()
             param2 = 0
         elseif mode == 2 then
-            -- Server auto-detects zoneId when 0/-1 or uses param2 if given
+            -- Current Zone: strictly uses player's actual in-game zone (server authority)
             param1 = 0
-            param2 = filterAreaId
+            param2 = 0
         elseif mode == 3 then
             -- Guild members worldwide (or viewport area if inside a zone)
             param1 = -1

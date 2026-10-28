@@ -15,6 +15,7 @@
 #include "GameTime.h"
 #include "Log.h"
 #include "SharedDefines.h"
+#include "DBCStores.h"
 #include <cmath>
 #include <algorithm>
 
@@ -249,6 +250,12 @@ std::vector<std::string> BotMapService::HandleMapQuery(Player* commander, std::v
     view.teamId = commander->GetTeamId();
     view.mapId = commander->GetMapId();
     view.zoneId = commander->GetZoneId();
+    view.areaId = commander->GetAreaId();
+    if (AreaTableEntry const* a = sAreaTableStore.LookupEntry(view.areaId))
+    {
+        if (a->zone)
+            view.parentZoneId = a->zone;
+    }
     view.guildId = commander->GetGuildId();
     view.groupLeaderGuid = commander->GetGroup() ? commander->GetGroup()->GetLeaderGUID().GetCounter() : 0;
     view.x = commander->GetPositionX();
@@ -271,6 +278,11 @@ std::vector<std::string> BotMapService::HandleMapQuery(Player* commander, std::v
         target.mapId = bot->GetMapId();
         target.zoneId = bot->GetZoneId();
         target.areaId = bot->GetAreaId();
+        if (AreaTableEntry const* a = sAreaTableStore.LookupEntry(target.areaId))
+        {
+            if (a->zone)
+                target.parentZoneId = a->zone;
+        }
         target.guildId = bot->GetGuildId();
         target.groupLeaderGuid = bot->GetGroup() ? bot->GetGroup()->GetLeaderGUID().GetCounter() : 0;
         target.x = bot->GetPositionX();
