@@ -10,5 +10,10 @@ Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
 Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
 Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 
+CoABotWorldMapData.lua
+CoABotMapTooltip.lua
+CoABotMapMarkers.lua
+CoABotMapSettings.lua
+CoABotWorldMap.lua
 CoABotUI.lua
 CoAContentScaling.lua

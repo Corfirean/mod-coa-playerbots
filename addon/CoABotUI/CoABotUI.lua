@@ -51,6 +51,9 @@ local dbDefaults = {
     roles = {}, -- [botGuidLow] = "tank"
     autoDungeon = false,
     minimap = { hide = false },
+    mapMode = 0,
+    mapRadius = 1000,
+    mapEvents = true,
 }
 
 -- Forward declarations
@@ -2507,7 +2510,11 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
     elseif event == "CHAT_MSG_ADDON" and arg1 == PROTOCOL_PREFIX then
         DebugLog("Recv <- " .. tostring(arg2) .. " from " .. tostring(arg4))
         if arg2 then
-            HandleIncomingMessage(arg2)
+            if arg2:match("^MAP") and CoABotWorldMap then
+                CoABotWorldMap:HandleIncomingMessage(arg2)
+            else
+                HandleIncomingMessage(arg2)
+            end
         end
 
     elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
@@ -2558,9 +2565,15 @@ SlashCmdList["COABOT"] = function(msg)
     elseif cmd == "debug" then
         CoABotUIDB.debug = not CoABotUIDB.debug
         Log("Wire debug logging " .. (CoABotUIDB.debug and "|cFF00FF00Enabled|r" or "|cFFFF4444Disabled|r"))
+    elseif cmd == "map" then
+        if CoABotMapSettings then
+            local rest = (msg or ""):match("^%s*%S+%s*(.*)$") or ""
+            CoABotMapSettings:HandleSlashCommand(rest)
+        end
     else
         Log("Commands:")
         Log("  |cFFFFD100/coabot|r - Toggle bot control panel")
+        Log("  |cFFFFD100/coabot map|r - World Map intelligence settings")
         Log("  |cFFFFD100/coabot reset|r - Reset panel to screen center")
         Log("  |cFFFFD100/coabot debug|r - Toggle wire message debug logging")
     end
