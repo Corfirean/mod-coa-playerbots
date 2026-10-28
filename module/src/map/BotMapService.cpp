@@ -53,6 +53,26 @@ void BotMapService::SetEventProvider(std::shared_ptr<IWorldEventProvider> provid
         _eventProvider = std::make_shared<DefaultEventProvider>();
 }
 
+void BotMapService::CleanStaleRateLimits(uint32 nowMs)
+{
+    auto pruneMap = [nowMs](std::unordered_map<uint64, uint32>& m) {
+        if (m.size() > 1024)
+        {
+            for (auto it = m.begin(); it != m.end(); )
+            {
+                if ((nowMs - it->second) > 60000)
+                    it = m.erase(it);
+                else
+                    ++it;
+            }
+        }
+    };
+
+    pruneMap(_lastQueryTimes);
+    pruneMap(_lastDetailTimes);
+    pruneMap(_lastEventsTimes);
+}
+
 BotMapActivity BotMapService::ResolveBotActivity(Player* bot) const
 {
     if (!bot)
@@ -149,6 +169,7 @@ bool BotMapService::BuildPinSnapshot(Player* bot, Player* commander, BotMapPinSn
         return false;
 
     outPin.guidLow = bot->GetGUID().GetCounter();
+    outPin.mapId = bot->GetMapId();
     outPin.worldX = static_cast<int32>(std::round(bot->GetPositionX()));
     outPin.worldY = static_cast<int32>(std::round(bot->GetPositionY()));
     outPin.level = static_cast<uint8>(bot->GetLevel());
@@ -192,7 +213,7 @@ std::vector<std::string> BotMapService::HandleMapQuery(Player* commander, std::v
 
     uint32 reqId = 0;
     BotMapMode mode = BotMapMode::Off;
-    uint32 arg1 = 0;
+    int32 arg1 = -1;
     uint32 arg2 = 0;
 
     if (!BotMapProtocol::ParseQuery(parts, reqId, mode, arg1, arg2))
@@ -204,6 +225,8 @@ std::vector<std::string> BotMapService::HandleMapQuery(Player* commander, std::v
     // Rate-limiting: minimum 250ms between queries from same player
     uint32 const nowMs = static_cast<uint32>(GameTime::GetGameTimeMS().count());
     uint64 const playerGuid = commander->GetGUID().GetRawValue();
+    CleanStaleRateLimits(nowMs);
+
     auto itQuery = _lastQueryTimes.find(playerGuid);
     if (itQuery != _lastQueryTimes.end() && (nowMs - itQuery->second) < 250)
     {
@@ -220,68 +243,58 @@ std::vector<std::string> BotMapService::HandleMapQuery(Player* commander, std::v
         return replies;
     }
 
+    BotMapCommanderView view;
+    view.guidLow = commander->GetGUID().GetCounter();
+    view.teamId = commander->GetTeamId();
+    view.mapId = commander->GetMapId();
+    view.zoneId = commander->GetZoneId();
+    view.guildId = commander->GetGuildId();
+    view.groupLeaderGuid = commander->GetGroup() ? commander->GetGroup()->GetLeaderGUID().GetCounter() : 0;
+    view.x = commander->GetPositionX();
+    view.y = commander->GetPositionY();
+    view.z = commander->GetPositionZ();
+
+    uint32 radius = (mode == BotMapMode::Nearby && arg1 > 0) ? static_cast<uint32>(arg1) : 1000;
+    int32 filterMap = (mode == BotMapMode::AllAllied || mode == BotMapMode::GuildOnly) ? arg1 : -1;
+
     std::vector<BotMapPinSnapshot> matchedPins;
-    uint32 const commanderMapId = commander->GetMapId();
-    uint32 const commanderZoneId = commander->GetZoneId();
-    uint32 const commanderGuildId = commander->GetGuildId();
-    float const cX = commander->GetPositionX();
-    float const cY = commander->GetPositionY();
-    float const cZ = commander->GetPositionZ();
-
-    // Mode 1: NEARBY radius
-    float maxDistSq = 1000.0f * 1000.0f;
-    if (mode == BotMapMode::Nearby)
-    {
-        uint32 radius = arg1 ? arg1 : 1000;
-        radius = std::clamp(radius, 100u, 5000u);
-        maxDistSq = static_cast<float>(radius) * static_cast<float>(radius);
-    }
-
     for (Player* bot : sBotMgr->GetOnlineBots())
     {
         if (!bot || !bot->IsInWorld())
             continue;
 
-        // Common filter checks
-        if (bot == commander)
-            continue;
-        if (bot->GetTeamId() != commander->GetTeamId())
-            continue;
-        if (bot->GetGroup() && bot->GetGroup() == commander->GetGroup())
-            continue;
+        BotMapFilterTarget target;
+        target.guidLow = bot->GetGUID().GetCounter();
+        target.teamId = bot->GetTeamId();
+        target.mapId = bot->GetMapId();
+        target.zoneId = bot->GetZoneId();
+        target.guildId = bot->GetGuildId();
+        target.groupLeaderGuid = bot->GetGroup() ? bot->GetGroup()->GetLeaderGUID().GetCounter() : 0;
+        target.x = bot->GetPositionX();
+        target.y = bot->GetPositionY();
+        target.z = bot->GetPositionZ();
+        target.level = static_cast<uint8>(bot->GetLevel());
+        target.classId = static_cast<uint8>(bot->getClass());
 
-        // Mode-specific filtering
-        if (mode == BotMapMode::Nearby)
+        BotRole role = BotAI::GetRole(bot->GetGUID());
+        target.role = (role == BotRole::Tank ? 1 : role == BotRole::Healer ? 2 : role == BotRole::Support ? 3 : 0);
+        target.inCombat = bot->IsInCombat();
+        target.isGhost = bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
+        target.isAlive = bot->IsAlive();
+        target.isInWorld = bot->IsInWorld();
+        target.activity = ResolveBotActivity(bot);
+
+        if (sBotMgr->GetGuildGatherOrder(bot->GetGUID()) || sBotMgr->GetCraftOrder(bot->GetGUID()))
+            target.hasTask = true;
+        else
         {
-            if (bot->GetMapId() != commanderMapId)
-                continue;
-            float dx = bot->GetPositionX() - cX;
-            float dy = bot->GetPositionY() - cY;
-            float dz = bot->GetPositionZ() - cZ;
-            if ((dx * dx + dy * dy + dz * dz) > maxDistSq)
-                continue;
-        }
-        else if (mode == BotMapMode::CurrentZone)
-        {
-            if (bot->GetMapId() != commanderMapId)
-                continue;
-            if (bot->GetZoneId() != commanderZoneId)
-                continue;
-        }
-        else if (mode == BotMapMode::GuildOnly)
-        {
-            if (!commanderGuildId || bot->GetGuildId() != commanderGuildId)
-                continue;
-        }
-        else if (mode == BotMapMode::AllAllied)
-        {
-            // If mapId specified, filter by that map
-            if (arg1 != 0 && arg1 != 0xFFFFFFFF && bot->GetMapId() != arg1)
-                continue;
+            uint64 targetC = 0, depC = 0;
+            if (BotEconomy::GetGoldOrderInfo(bot, targetC, depC) && targetC > 0)
+                target.hasTask = true;
         }
 
         BotMapPinSnapshot pin;
-        if (BuildPinSnapshot(bot, commander, pin))
+        if (BotMapFilter::FilterBot(view, mode, filterMap, radius, target, pin))
             matchedPins.push_back(pin);
     }
 
@@ -304,10 +317,24 @@ std::vector<std::string> BotMapService::HandleMapDetail(Player* commander, std::
     if (!commander || parts.size() < 3)
         return replies;
 
-    uint32 reqId = static_cast<uint32>(std::strtoul(parts[1].c_str(), nullptr, 10));
-    uint32 botGuidLow = static_cast<uint32>(std::strtoul(parts[2].c_str(), nullptr, 10));
-    if (!botGuidLow)
+    char* endPtr = nullptr;
+    uint32 reqId = static_cast<uint32>(std::strtoul(parts[1].c_str(), &endPtr, 10));
+    if (endPtr == parts[1].c_str())
         return replies;
+
+    uint32 botGuidLow = static_cast<uint32>(std::strtoul(parts[2].c_str(), &endPtr, 10));
+    if (endPtr == parts[2].c_str() || !botGuidLow)
+        return replies;
+
+    // Rate-limiting for detail queries (100ms per player)
+    uint32 const nowMs = static_cast<uint32>(GameTime::GetGameTimeMS().count());
+    uint64 const playerGuid = commander->GetGUID().GetRawValue();
+    auto itDetail = _lastDetailTimes.find(playerGuid);
+    if (itDetail != _lastDetailTimes.end() && (nowMs - itDetail->second) < 100)
+    {
+        return replies;
+    }
+    _lastDetailTimes[playerGuid] = nowMs;
 
     Player* bot = sBotMgr->FindBotPlayer(botGuidLow);
     if (!bot || !bot->IsInWorld())
@@ -319,6 +346,7 @@ std::vector<std::string> BotMapService::HandleMapDetail(Player* commander, std::
 
     BotMapDetailSnapshot detail;
     detail.guidLow = botGuidLow;
+    detail.name = bot->GetName();
     detail.specId = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
     char const* specName = BotAI::GetSpecName(bot->getClass(), detail.specId);
     detail.specName = specName ? specName : "Unknown";
@@ -327,35 +355,56 @@ std::vector<std::string> BotMapService::HandleMapDetail(Player* commander, std::
     BotMapActivity activity = ResolveBotActivity(bot);
     detail.activityName = BotMapProtocol::ActivityToString(activity);
 
-    // Guild Assignment check
-    if (auto const* gather = sBotMgr->GetGuildGatherOrder(bot->GetGUID()))
+    // Privacy Gate: guild tasks are exclusively disclosed to members of the bot's guild!
+    bool const isSameGuild = (commander->GetGuildId() != 0 && bot->GetGuildId() == commander->GetGuildId());
+    if (isSameGuild)
     {
-        detail.taskType = BotMapTaskType::Gather;
-        detail.taskItemEntry = gather->itemEntry;
-        detail.taskTargetCount = gather->targetCount;
-        detail.taskCompletedCount = gather->gatheredCount;
-        detail.taskStatus = "In Progress";
-    }
-    else if (auto const* craft = sBotMgr->GetCraftOrder(bot->GetGUID()))
-    {
-        detail.taskType = BotMapTaskType::Craft;
-        detail.taskItemEntry = craft->itemEntry;
-        detail.taskTargetCount = craft->remainingCount; // Remaining items to craft
-        detail.taskCompletedCount = 0;
-        detail.taskStatus = craft->awaitingCastResult ? "Crafting" : "Gathering Reagents";
+        if (auto const* gather = sBotMgr->GetGuildGatherOrder(bot->GetGUID()))
+        {
+            detail.taskType = BotMapTaskType::Gather;
+            detail.taskItemEntry = gather->itemEntry;
+            detail.taskTargetCount = gather->targetCount;
+            detail.taskCompletedCount = gather->gatheredCount;
+            detail.taskStatus = "In Progress";
+        }
+        else if (auto const* craft = sBotMgr->GetCraftOrder(bot->GetGUID()))
+        {
+            detail.taskType = BotMapTaskType::Craft;
+            detail.taskItemEntry = craft->itemEntry;
+            detail.taskTargetCount = craft->remainingCount;
+            detail.taskCompletedCount = 0;
+            detail.taskStatus = craft->awaitingCastResult ? "Crafting" : "Gathering Reagents";
+        }
+        else
+        {
+            uint64 targetCopper = 0;
+            uint64 depositedCopper = 0;
+            if (BotEconomy::GetGoldOrderInfo(bot, targetCopper, depositedCopper) && targetCopper > 0)
+            {
+                detail.taskType = BotMapTaskType::Gold;
+                detail.taskItemEntry = 0;
+                detail.taskTargetCount = static_cast<uint32>(targetCopper / 10000);
+                detail.taskCompletedCount = static_cast<uint32>(depositedCopper / 10000);
+                detail.taskStatus = "Earning Gold";
+            }
+            else
+            {
+                detail.taskType = BotMapTaskType::None;
+                detail.taskItemEntry = 0;
+                detail.taskTargetCount = 0;
+                detail.taskCompletedCount = 0;
+                detail.taskStatus = "";
+            }
+        }
     }
     else
     {
-        uint64 targetCopper = 0;
-        uint64 depositedCopper = 0;
-        if (BotEconomy::GetGoldOrderInfo(bot, targetCopper, depositedCopper) && targetCopper > 0)
-        {
-            detail.taskType = BotMapTaskType::Gold;
-            detail.taskItemEntry = 0;
-            detail.taskTargetCount = static_cast<uint32>(targetCopper / 10000); // in gold
-            detail.taskCompletedCount = static_cast<uint32>(depositedCopper / 10000); // in gold
-            detail.taskStatus = "Earning Gold";
-        }
+        // Non-guild commander gets zeroed task fields
+        detail.taskType = BotMapTaskType::None;
+        detail.taskItemEntry = 0;
+        detail.taskTargetCount = 0;
+        detail.taskCompletedCount = 0;
+        detail.taskStatus = "";
     }
 
     replies.push_back(BotMapProtocol::FormatDetail(reqId, detail));
@@ -368,16 +417,36 @@ std::vector<std::string> BotMapService::HandleMapEvents(Player* commander, std::
     if (!commander || parts.size() < 2)
         return replies;
 
-    uint32 reqId = static_cast<uint32>(std::strtoul(parts[1].c_str(), nullptr, 10));
-    uint32 mapId = parts.size() > 2 ? static_cast<uint32>(std::strtoul(parts[2].c_str(), nullptr, 10)) : commander->GetMapId();
+    char* endPtr = nullptr;
+    uint32 reqId = static_cast<uint32>(std::strtoul(parts[1].c_str(), &endPtr, 10));
+    if (endPtr == parts[1].c_str())
+        return replies;
+
+    int32 requestedMap = -1;
+    if (parts.size() > 2 && !parts[2].empty())
+    {
+        long long val = std::strtoll(parts[2].c_str(), &endPtr, 10);
+        if (endPtr != parts[2].c_str() && *endPtr == '\0')
+        {
+            if (val >= 0 && val <= 0x7FFFFFFF)
+                requestedMap = static_cast<int32>(val);
+        }
+    }
+    uint32 mapId = (requestedMap >= 0) ? static_cast<uint32>(requestedMap) : commander->GetMapId();
+
+    // Rate limiting: 500ms between event queries
+    uint32 const nowMs = static_cast<uint32>(GameTime::GetGameTimeMS().count());
+    uint64 const playerGuid = commander->GetGUID().GetRawValue();
+    auto itEvents = _lastEventsTimes.find(playerGuid);
+    if (itEvents != _lastEventsTimes.end() && (nowMs - itEvents->second) < 500)
+    {
+        return replies;
+    }
+    _lastEventsTimes[playerGuid] = nowMs;
 
     if (!_eventProvider)
         return replies;
 
     std::vector<WorldMapEventSnapshot> activeEvents = _eventProvider->GetActiveEvents(mapId);
-    std::vector<std::string> chunks = BotMapProtocol::FormatEvents(reqId, activeEvents);
-    for (auto& chunk : chunks)
-        replies.push_back(std::move(chunk));
-
-    return replies;
+    return BotMapProtocol::FormatEvents(reqId, activeEvents);
 }

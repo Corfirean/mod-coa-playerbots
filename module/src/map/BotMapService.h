@@ -7,6 +7,7 @@
 #define COA_PLAYERBOTS_BOT_MAP_SERVICE_H
 
 #include "BotMapProtocol.h"
+#include "BotMapFilter.h"
 #include "WorldMapEventSnapshot.h"
 #include <memory>
 #include <unordered_map>
@@ -34,14 +35,40 @@ public:
     // Build pin snapshot for a single bot
     bool BuildPinSnapshot(Player* bot, Player* commander, BotMapPinSnapshot& outPin) const;
 
+    // Production Filtering Logic forwarding (decoupled for direct unit testing)
+    static bool FilterBot(
+        BotMapCommanderView const& commander,
+        BotMapMode mode,
+        int32 filterMapId,
+        uint32 radius,
+        BotMapFilterTarget const& bot,
+        BotMapPinSnapshot& outPin)
+    {
+        return BotMapFilter::FilterBot(commander, mode, filterMapId, radius, bot, outPin);
+    }
+
+    static std::vector<BotMapPinSnapshot> FilterBots(
+        BotMapCommanderView const& commander,
+        BotMapMode mode,
+        int32 filterMapId,
+        uint32 radius,
+        std::vector<BotMapFilterTarget> const& bots)
+    {
+        return BotMapFilter::FilterBots(commander, mode, filterMapId, radius, bots);
+    }
+
 private:
     BotMapService();
+
+    void CleanStaleRateLimits(uint32 nowMs);
 
     std::shared_ptr<IWorldEventProvider> _eventProvider;
     uint32 _revision = 1;
 
     // Per-player rate limit state: playerGuid -> lastQueryGameMs
     std::unordered_map<uint64, uint32> _lastQueryTimes;
+    std::unordered_map<uint64, uint32> _lastDetailTimes;
+    std::unordered_map<uint64, uint32> _lastEventsTimes;
 };
 
 #define sBotMapService BotMapService::instance()
