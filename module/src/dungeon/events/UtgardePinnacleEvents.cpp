@@ -120,7 +120,17 @@ namespace
     // that waited for combat would arm the driver only after the party had
     // already been dragged into the add stream.
     bool UpGraufFlying(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        if (!bot || bot->GetMapId() != MAP_ID)
+            return false;
+
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst || inst->GetData(DATA_SKADI) != IN_PROGRESS)
+            return false;
+
+        Creature* grauf = inst->GetCreature(DATA_GRAUF);
+        return grauf && grauf->IsAlive();
+    }
 
     // --- event 5's gate: Svala is 20 yards in the air ----------------------
     //
@@ -139,7 +149,17 @@ namespace
     // GetLiveBoss rather than a spawn lookup: she is the live creature whose
     // entry became 26668 at runtime, and her position is the whole question.
     bool UpSvalaRitualUp(Player* bot, AiObjectContext* context)
-    { return false; }
+    {
+        if (!bot || bot->GetMapId() != MAP_ID)
+            return false;
+
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst || inst->GetData(DATA_SVALA) != IN_PROGRESS)
+            return false;
+
+        Creature* svala = DcTargeting::GetLiveBoss(bot, context, NPC_SVALA);
+        return svala && svala->IsAlive() && svala->GetPositionZ() - SVALA_Z >= RITUAL_LIFT_Z;
+    }
 }
 
 void RegisterUtgardePinnacleEvents(std::vector<DungeonEvent>& out)

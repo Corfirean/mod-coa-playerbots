@@ -218,7 +218,10 @@ namespace
     // "acolytes still up" window and never re-fires — the instance state is the
     // latch, no ConditionalLatchKey needed.
     bool ZigguratAcolytes(Player* bot, uint32 dataType)
-    { return false; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        return inst && inst->GetData(dataType) == 1;
+    }
 
     bool StrZig1(Player* bot, AiObjectContext* /*context*/)
     {
@@ -240,7 +243,31 @@ namespace
     // death); Done once the state is past 1.
     ObjectiveArriveResult ZigguratCleared(Player* bot, uint32 dataType,
                                           float cx, float cy, float cz)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!bot || !inst || inst->GetData(dataType) != 1)
+            return ObjectiveArriveResult::Done;
+
+        std::list<Creature*> acolytes;
+        bot->GetCreatureListWithEntryInGrid(acolytes, STR_ACOLYTE, STR_ZIG_SCAN);
+        for (Creature* c : acolytes)
+            if (c->IsAlive() && c->GetExactDist2d(cx, cy) <= STR_ZIG_RADIUS &&
+                std::fabs(c->GetPositionZ() - cz) <= STR_ZIG_ZBAND)
+                return ObjectiveArriveResult::Running;
+
+        std::list<Creature*> crystals;
+        bot->GetCreatureListWithEntryInGrid(crystals, STR_ASHARI_CRYSTAL, STR_ZIG_SCAN);
+        for (Creature* c : crystals)
+            if (c->IsAlive() && c->GetExactDist2d(cx, cy) <= STR_CRYSTAL_XY)
+                return ObjectiveArriveResult::Running;
+
+        LOG_WARN("playerbots.dungeonclear",
+                 "[DC:{}] Stratholme ziggurat {} stuck at state 1 with its chamber clear "
+                 "and its Ash'ari Crystal already spent -> SetData({}, 2)",
+                 bot->GetName(), dataType, dataType);
+        inst->SetData(dataType, 2);
+        return ObjectiveArriveResult::Done;
+    }
 
     // --- Timmy the Cruel (live side, Crusaders' Square) ------------------
     // Timmy (10808) is a STATIC spawn his SmartAI keeps INVISIBLE + passive
@@ -282,7 +309,17 @@ namespace
     // activates), he's gone, or the tank is not yet in his corner — so the event
     // fires exactly in the "at Timmy, pack still up" window and latches on clear.
     bool StrTimmyGated(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        if (!bot ||
+            bot->GetDistance(STR_TIMMY_X, STR_TIMMY_Y, STR_TIMMY_Z) > STR_TIMMY_NEAR)
+            return false;  // not in Timmy's corner yet — don't arm from afar
+        Creature* timmy = DcTargeting::FindLiveCreatureOnMap(bot, STR_TIMMY);
+        if (!timmy)
+            return false;  // grid not streamed in yet, or Timmy already dead
+        return timmy->FindNearestCreature(STR_CRIMSON_GUARDSMAN, STR_TIMMY_TEST_RADIUS, /*alive*/ true) ||
+               timmy->FindNearestCreature(STR_CRIMSON_CONJUROR, STR_TIMMY_TEST_RADIUS, /*alive*/ true) ||
+               timmy->FindNearestCreature(STR_CRIMSON_GALLANT, STR_TIMMY_TEST_RADIUS, /*alive*/ true);
+    }
 }
 
 namespace
@@ -297,7 +334,10 @@ namespace
     { return false; }
 
     bool StrTrapAlleyPitDue(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        return bot && bot->GetMapId() == DcStratTrapAlley::MAP_STRATHOLME && bot->IsAlive() &&
+               StrInTrapAlleyPit(bot);
+    }
 
     // One tick: already out (a rez, a stranded-recovery teleport) is Done;
     // otherwise relocate the whole party to the landing. Combat needs no gate:
@@ -468,6 +508,21 @@ void RegisterStratholmeEvents(std::vector<DungeonEvent>& out)
                       .PanelAfterBoss(DcStratTrapAlley::NPC_THE_UNFORGIVEN)
                       .Custom(DcStratTrapAlley::HOOK_PIT_RESCUE)
                       .Build());
+}
+
+
+void RegisterStratholmeHooks(ObjectiveHookRegistry::HookTable& out)
+{
+    ObjectiveHookRegistry::AddHook(out, STR_HOOK_ZIG1_CLEARED,
+        [](Player* bot, AiObjectContext*, DungeonBossInfo const&)
+        { return ZigguratCleared(bot, STR_TYPE_ZIGGURAT1, STR_ZIG1_X, STR_ZIG1_Y, STR_ZIG1_Z); });
+    ObjectiveHookRegistry::AddHook(out, STR_HOOK_ZIG2_CLEARED,
+        [](Player* bot, AiObjectContext*, DungeonBossInfo const&)
+        { return ZigguratCleared(bot, STR_TYPE_ZIGGURAT2, STR_ZIG2_X, STR_ZIG2_Y, STR_ZIG2_Z); });
+    ObjectiveHookRegistry::AddHook(out, STR_HOOK_ZIG3_CLEARED,
+        [](Player* bot, AiObjectContext*, DungeonBossInfo const&)
+        { return ZigguratCleared(bot, STR_TYPE_ZIGGURAT3, STR_ZIG3_X, STR_ZIG3_Y, STR_ZIG3_Z); });
+    ObjectiveHookRegistry::AddHook(out, DcStratTrapAlley::HOOK_PIT_RESCUE, &RescueFromTrapAlleyPit);
 }
 
 // --- roster patch (relocated from BossRosterRegistry) --------------------

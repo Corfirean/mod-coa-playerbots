@@ -248,7 +248,39 @@ namespace
     constexpr float SFK_SCAN = 200.0f;
 
     bool SfkCourtyard(Player* bot, TeamId team, uint32 prisonerEntry, char const* who)
-    { return false; }
+    {
+        if (bot->GetTeamId() != team)
+            return false;
+
+        GameObject* door = bot->FindNearestGameObject(SFK_COURTYARD_DOOR, SFK_SCAN);
+        Creature* prisoner = bot->FindNearestCreature(prisonerEntry, SFK_SCAN, /*alive*/ true);
+        bool const firstBossDead =
+            DcTargeting::FindLiveCreatureOnMap(bot, SFK_FIRST_BOSS_RETHILGORE) == nullptr;
+
+        // Throttled diagnostic: one line / 5s per faction so a live run shows WHY
+        // the event is or isn't due (door missing/open, no prisoner, first boss
+        // still up). Lands in DungeonClear.log. atomic because bot AI ticks run on
+        // the MapUpdate.Threads pool — the throttle stamp is read/written from
+        // multiple map threads (the check-then-set race is benign: at worst two
+        // lines in a window).
+        static std::atomic<uint32> lastLog{0};
+        uint32 const now = getMSTime();
+        if (getMSTimeDiff(lastLog, now) >= 5000)
+        {
+            lastLog = now;
+            LOG_DEBUG("playerbots.dungeonclear",
+                      "[DC:{}] SFK courtyard cond ({}): door={} state={} prisoner={} rethilgore={}",
+                      bot->GetName(), who, door ? "found" : "MISSING",
+                      door ? static_cast<int>(door->GetGoState()) : -1,
+                      prisoner ? "alive" : "no", firstBossDead ? "dead" : "ALIVE");
+        }
+
+        if (!firstBossDead)
+            return false;  // wait until the first boss (Rethilgore) is down
+        if (!door || door->GetGoState() != GO_STATE_READY)
+            return false;  // no door found, or already open
+        return prisoner != nullptr;
+    }
 
     bool SfkCourtyardAlliance(Player* bot, AiObjectContext* /*context*/)
     {
@@ -274,5 +306,10 @@ namespace
     // false and the event latches done — which is also how a saved instance
     // whose gate is already open never re-runs it.
     bool SfkSorcererGate(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        GameObject* gate = bot->FindNearestGameObject(SFK_SORCERER_GATE, SFK_VOIDWALKER_SCAN);
+        if (!gate || gate->GetGoState() != GO_STATE_READY)
+            return false;  // not in the room yet, or the gate is already open
+        return DcTargeting::FindLiveCreatureOnMap(bot, SFK_FENRUS) == nullptr;
+    }
 }

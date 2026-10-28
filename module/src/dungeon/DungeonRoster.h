@@ -37,6 +37,9 @@ namespace DungeonRoster
     // Returns false when nothing is left.
     bool PickTarget(Map* map, Player* ref, ObjectGuid groupKey, DungeonBossInfo& out);
 
+    // The anchor PickTarget would return, without committing the group to it.
+    bool Peek(Map* map, Player* ref, ObjectGuid groupKey, DungeonBossInfo& out);
+
     // The position to walk to for an anchor: for a boss that may stand at one of several spawn points, the one where it is alive now.
     void ResolvePosition(Map* map, DungeonBossInfo const& anchor, float& x, float& y, float& z);
 

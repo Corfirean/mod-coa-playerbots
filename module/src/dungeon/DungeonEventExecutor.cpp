@@ -395,13 +395,24 @@ namespace
             {
                 if (tank->GetExactDist(s.x, s.y, s.z) <= radius)
                     return StepResult::Done;
-                if (!run.used || getMSTime() - run.stageAtMs > 4000)
+                // While the arc is in flight the bot reads as moving: never re-issue it (the jump would restart and never land).
+                if (tank->isMoving())
+                    return StepResult::Running;
+                uint32 const now = getMSTime();
+                if (run.used && now - run.stageAtMs < 1500)
+                    return StepResult::Running;  // settling after the landing
+                if (run.used && ++run.stage >= 4)
                 {
-                    float const speed = tank->GetSpeed(MOVE_RUN);
-                    tank->GetMotionMaster()->MoveJump(s.x, s.y, s.z, speed, s.jumpSpeedZ > 0.0f ? s.jumpSpeedZ : speed);
-                    run.used = true;
-                    run.stageAtMs = getMSTime();
+                    LOG_WARN("module.coa-playerbots.dungeon", "Event '{}': the jump to ({:.1f}, {:.1f}, {:.1f}) ended {:.1f} yd short, 4 times.", ev.name, s.x, s.y,
+                        s.z, tank->GetExactDist(s.x, s.y, s.z));
+                    return StepResult::Blocked;
                 }
+                BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
+                float const speed = tank->GetSpeed(MOVE_RUN);
+                tank->GetMotionMaster()->Clear();
+                tank->GetMotionMaster()->MoveJump(s.x, s.y, s.z, speed, s.jumpSpeedZ > 0.0f ? s.jumpSpeedZ : speed, 1);
+                run.used = true;
+                run.stageAtMs = now;
                 return StepResult::Running;
             }
 
@@ -467,7 +478,7 @@ namespace
 
             case EventStepKind::Custom:
             {
-                ObjectiveArriveResult const r = DungeonHooks::Run(s.hookId, tank);
+                ObjectiveArriveResult const r = DungeonHooks::Run(s.hookId, tank, nullptr);
                 switch (r)
                 {
                     case ObjectiveArriveResult::Done: return StepResult::Done;
@@ -553,6 +564,19 @@ namespace DungeonEventExecutor
         std::lock_guard<std::mutex> lock(g_mutex);
         auto it = g_runs.find(groupKey);
         return it != g_runs.end() && it->second.mapId == mapId && it->second.eventId == eventId && getMSTime() - it->second.lastDriveMs < 15000;
+    }
+
+    bool Progress(ObjectGuid groupKey, DungeonEventProgress& out)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_runs.find(groupKey);
+        if (it == g_runs.end())
+            return false;
+        out.eventId = it->second.eventId;
+        out.stepIndex = uint32(it->second.step);
+        out.stepStartMs = it->second.stepStartedMs;
+        out.lastDriveMs = it->second.lastDriveMs;
+        return true;
     }
 
     int32 CurrentStep(ObjectGuid groupKey)

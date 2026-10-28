@@ -25,6 +25,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
+// Appenders defined in the imported dungeon files.
+#define DC_HOOK_APPENDER(name) void name(ObjectiveHookRegistry::HookTable& out);
+#include "dungeon/HookRegistrations.inc"
+#undef DC_HOOK_APPENDER
+
 namespace
 {
     InstanceScript* InstanceOf(Player* bot)
@@ -297,6 +302,20 @@ namespace
         return ObjectiveArriveResult::Running;
     }
 
+    // The hooks that live in the imported dungeon files (Register<Dungeon>Hooks appenders, declared above the anonymous namespace).
+    ObjectiveHookRegistry::HookTable const& ImportedTable()
+    {
+        static ObjectiveHookRegistry::HookTable const table = []
+        {
+            ObjectiveHookRegistry::HookTable t;
+#define DC_HOOK_APPENDER(name) name(t);
+#include "dungeon/HookRegistrations.inc"
+#undef DC_HOOK_APPENDER
+            return t;
+        }();
+        return table;
+    }
+
     using HookFn = ObjectiveArriveResult (*)(Player*);
     std::unordered_map<uint32, HookFn> const& Table()
     {
@@ -321,14 +340,21 @@ namespace DungeonHooks
 {
     bool Has(uint32 hookId)
     {
-        return Table().count(hookId) != 0;
+        return Table().count(hookId) != 0 || ImportedTable().count(hookId) != 0;
     }
 
-    ObjectiveArriveResult Run(uint32 hookId, Player* tank)
+    ObjectiveArriveResult Run(uint32 hookId, Player* tank, DungeonBossInfo const* info)
     {
         auto it = Table().find(hookId);
         if (it == Table().end())
         {
+            auto const& imported = ImportedTable();
+            if (auto row = imported.find(hookId); row != imported.end())
+            {
+                static DungeonBossInfo const none;
+                AiObjectContext context(tank);
+                return row->second(tank, &context, info ? *info : none);
+            }
             static std::unordered_set<uint32> warned;
             if (warned.insert(hookId).second)
                 LOG_WARN("module.coa-playerbots.dungeon", "Dungeon event hook {} has no implementation here: the step is blocked.", hookId);

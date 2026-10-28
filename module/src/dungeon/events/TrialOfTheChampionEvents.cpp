@@ -45,7 +45,13 @@ namespace
     // the driver deals with stands inside it, and the driver owns its own
     // movement — there is no "far from the anchor" on this map to fire from.
     bool TocDriverDue(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        if (!bot || bot->GetMapId() != MAP_ID)
+            return false;
+
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        return inst && inst->GetData(DATA_INSTANCE_PROGRESS) < PROGRESS_FINISHED;
+    }
 }
 
 bool TocFollowerMountsItself(Player* bot)

@@ -108,7 +108,50 @@ namespace
     // present (always spawned, just sealed). Latches DONE on completion, and also
     // reads false the instant the seal opens, so it fires exactly once.
     bool UldamanIronayaSeal(Player* bot, AiObjectContext* context)
-    { return false; }
+    {
+        // Ordering guard. The seal antechamber's ClearRadius must not fire until
+        // Ironaya is the NEXT boss: the still-shut seal sits within ULD_SCAN
+        // (120yd) of the earlier Revelosh / Lost-Dwarves approaches, so the
+        // proximity scan alone flickers true and the antechamber seek drags the
+        // tank at trash it can't reach cleanly (the witnessed early-Ironaya fire).
+        // The DB encounter order puts Ironaya at slot 3 (after Revelosh and the
+        // Lost Dwarves), so gate on her being current. (This event stays
+        // CONDITIONAL — unlike the keeper/Archaedas altars it has LIVE Stonevault
+        // trash whose ClearRadius seek walks the tank in; see the altar note below
+        // for why those two are anchored objectives instead.)
+        std::optional<DungeonBossInfo> const next =
+            context->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)->Get();
+        bool const ironayaIsNext = next.has_value() && next->entry == ULD_IRONAYA;
+
+        GameObject* seal = bot->FindNearestGameObject(ULD_SEAL_DOOR, ULD_SCAN);
+        Creature* ironaya = bot->FindNearestCreature(ULD_IRONAYA, ULD_SCAN, /*alive*/ true);
+
+        // Throttled diagnostic: one line / 5s so a live run shows WHY the event
+        // is/isn't due. Lands in DungeonClear.log. atomic because bot AI ticks run
+        // on the MapUpdate.Threads pool — the throttle stamp is read/written from
+        // multiple map threads (the check-then-set race is benign).
+        static std::atomic<uint32> lastLog{0};
+        uint32 const now = getMSTime();
+        if (getMSTimeDiff(lastLog, now) >= 5000)
+        {
+            lastLog = now;
+            LOG_DEBUG("playerbots.dungeonclear",
+                      "[DC:{}] Uldaman Ironaya seal cond: seal={} state={} ironaya={} nextBoss={} ({})",
+                      bot->GetName(), seal ? "found" : "MISSING",
+                      seal ? static_cast<int>(seal->GetGoState()) : -1,
+                      ironaya ? "present" : "no",
+                      next.has_value() ? next->entry : 0,
+                      ironayaIsNext ? "her turn" : "not yet");
+        }
+
+        if (!ironayaIsNext)
+            return false;                            // earlier bosses still up
+        if (!seal)
+            return false;                            // not near the chamber yet
+        if (seal->GetGoState() != GO_STATE_READY)
+            return false;                            // already open -> done
+        return ironaya != nullptr;
+    }
 
     // --- Why the two altars below are ANCHORED, not CONDITIONAL --------------
     // The Hall of the Keepers and the Temple of the Stars are FAR from where a

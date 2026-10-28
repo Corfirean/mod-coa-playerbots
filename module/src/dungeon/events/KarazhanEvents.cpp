@@ -228,7 +228,9 @@ namespace
     { return false; }
 
     bool LibraryPitDue(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        return bot && bot->GetMapId() == DcKaraLibraryPit::MAP_KARAZHAN && bot->IsAlive() && InLibraryPit(bot);
+    }
 
     // One tick: already out (a rez, a stranded-recovery teleport) is Done; otherwise
     // relocate the whole party to the landing. The event engine is dormant while the
@@ -251,6 +253,11 @@ void RegisterKarazhanEvents(std::vector<DungeonEvent>& out)
     out.push_back(NightbaneUrn());
     out.push_back(Chess());
     out.push_back(LibraryPitRescue());
+}
+
+void RegisterKarazhanHooks(ObjectiveHookRegistry::HookTable& out)
+{
+    ObjectiveHookRegistry::AddHook(out, DcKaraLibraryPit::HOOK_PIT_RESCUE, &RescueFromLibraryPit);
 }
 
 void RegisterKarazhanRoster(std::vector<BossRosterPatch>& t)

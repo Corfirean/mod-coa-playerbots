@@ -4,6 +4,7 @@
 
 #include "dungeon/DungeonRuntime.h"
 #include "dungeon/DcDifficulty.h"
+#include "dungeon/DungeonClearRouteRegistry.h"
 #include "dungeon/DungeonEventExecutor.h"
 #include "dungeon/DungeonEventRegistry.h"
 #include "dungeon/DungeonHooks.h"
@@ -16,6 +17,7 @@
 #include "Group.h"
 #include "Log.h"
 #include "Map.h"
+#include "MotionMaster.h"
 #include "Player.h"
 #include "StringFormat.h"
 #include "Timer.h"
@@ -43,6 +45,39 @@ namespace
 
     // Since when the tank waits for the group to gather before a sealed room (per group).
     std::map<ObjectGuid, uint32> g_musterSince;
+
+    // Per group and boss: how many of the boss's authored route hints the tank has passed.
+    std::map<std::pair<ObjectGuid, uint32>, size_t> g_hintCursor;
+
+    // Walks the authored hops (intermediate points, jumps over navmesh gaps) to a boss. Returns true while a hop is being worked on, false when
+    // the route is exhausted or there is none and the ordinary approach should take over.
+    bool FollowRouteHints(Player* tank, ObjectGuid key, uint32 bossEntry)
+    {
+        Map* map = tank->GetMap();
+        std::vector<WaypointHint> const* hints = DungeonClearRouteRegistry::Get(map->GetId(), map->GetDifficulty(), bossEntry);
+        if (!hints || hints->empty())
+            return false;
+        std::lock_guard<std::mutex> lock(g_mutex);
+        size_t& cursor = g_hintCursor[{ key, bossEntry }];
+        while (cursor < hints->size() && tank->GetExactDist((*hints)[cursor].x, (*hints)[cursor].y, (*hints)[cursor].z) <= (*hints)[cursor].arriveRadius)
+            ++cursor;
+        if (cursor >= hints->size())
+            return false;
+        WaypointHint const& hop = (*hints)[cursor];
+        bool const jump = HasFlag(hop.flags, AnchorFlag::JUMP_DOWN) || HasFlag(hop.flags, AnchorFlag::JUMP_GAP);
+        if (jump && cursor > 0 && tank->GetExactDist((*hints)[cursor - 1].x, (*hints)[cursor - 1].y, (*hints)[cursor - 1].z) < 12.0f)
+        {
+            // At the lip of the gap: take the jump to this hop.
+            if (!tank->isMoving() || tank->GetMotionMaster()->GetCurrentMovementGeneratorType() != EFFECT_MOTION_TYPE)
+            {
+                float const speed = tank->GetSpeed(MOVE_RUN);
+                tank->GetMotionMaster()->MoveJump(hop.x, hop.y, hop.z, speed, speed);
+            }
+            return true;
+        }
+        BotMovement::Navigate(tank, MoveOwner::AutoDungeon, uint64(bossEntry) << 12 | 0x500 | (cursor & 0xFF), hop.x, hop.y, hop.z, std::max(2.0f, hop.arriveRadius * 0.7f));
+        return true;
+    }
 
     // Whether the tank is not getting any closer to the anchor; true once it has been so for a long time.
     bool Stalled(ObjectGuid key, uint32 entry, float dist)
@@ -127,7 +162,8 @@ namespace
             if (!ev->repeatable && DungeonEventExecutor::IsLatched(map->GetInstanceId(), ev->mapId, ev->id))
                 continue;
             bool const active = DungeonEventExecutor::Active(key, ev->mapId, ev->id);
-            if (!active && !(ev->condition && ev->condition(tank, nullptr)))
+            AiObjectContext context(tank);
+            if (!active && !(ev->condition && ev->condition(tank, &context)))
                 continue;
             switch (DungeonEventExecutor::Drive(tank, group, *ev))
             {
@@ -249,7 +285,7 @@ namespace DungeonRuntime
                 result = DungeonEventExecutor::Drive(tank, group, *ev);
             else if (target.onArriveHook)
             {
-                ObjectiveArriveResult const r = DungeonHooks::Run(target.onArriveHook, tank);
+                ObjectiveArriveResult const r = DungeonHooks::Run(target.onArriveHook, tank, &target);
                 result = r == ObjectiveArriveResult::Done ? EventResult::Done : r == ObjectiveArriveResult::Blocked ? EventResult::Blocked : EventResult::Running;
             }
             switch (result)
@@ -314,6 +350,8 @@ namespace DungeonRuntime
         }
 
         note("heading for the next boss");
+        if (FollowRouteHints(tank, key, target.entry))
+            return true;
         float const dist = tank->GetExactDist(x, y, z);
         NavStatus const status = BotMovement::Navigate(tank, MoveOwner::AutoDungeon, uint64(target.entry) << 8 | 0xA0, x, y, z, 8.0f);
         if (status == NavStatus::Stuck)

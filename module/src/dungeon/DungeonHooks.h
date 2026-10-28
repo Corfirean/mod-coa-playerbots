@@ -12,13 +12,14 @@
 #define COA_PLAYERBOTS_DUNGEON_HOOKS_H
 
 #include "dungeon/DcCompat.h"
+#include "dungeon/DungeonBossInfo.h"
 
 class Player;
 
 namespace DungeonHooks
 {
     // Runs hook `hookId` for the group's tank. An id without an implementation reads Blocked (and is logged once).
-    ObjectiveArriveResult Run(uint32 hookId, Player* tank);
+    ObjectiveArriveResult Run(uint32 hookId, Player* tank, DungeonBossInfo const* info);
 
     // Whether the id has an implementation.
     bool Has(uint32 hookId);

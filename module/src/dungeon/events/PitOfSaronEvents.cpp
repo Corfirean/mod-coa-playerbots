@@ -140,7 +140,23 @@ namespace
     // predicate that waited for combat would arm the driver only after the clear
     // had already walked the party into the ambush trigger.
     bool PosGauntletDue(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        if (!bot || bot->GetMapId() != MAP_ID)
+            return false;
+
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return false;
+
+        if (inst->GetData(DATA_GARFROST) != DONE || inst->GetData(DATA_ICK) != DONE)
+            return false;
+
+        uint32 const progress = inst->GetData(DATA_INSTANCE_PROGRESS);
+        if (progress < PROGRESS_FINISHED_KRICK_SCENE || progress > PROGRESS_AFTER_WARN_2)
+            return false;
+
+        return inst->GetData(DATA_TYRANNUS) != DONE;
+    }
 }
 
 void RegisterPitOfSaronEvents(std::vector<DungeonEvent>& out)

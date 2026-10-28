@@ -71,7 +71,11 @@ namespace
     using namespace DcBlackrockSpire;
 
     uint32 StepElapsedMs(AiObjectContext* context)
-    { return 0; }
+    {
+        DungeonEventProgress const& prog =
+            context->GetValue<DungeonEventProgress&>(DcKey::EventProgress)->Get();
+        return getMSTimeDiff(prog.stepStartMs, getMSTime());
+    }
 
     // True if `slot` was stamped within the last `withinMs` (without stamping it).
     bool StampedWithin(DcRunState const& run, DcThrottle slot, uint32 withinMs)
@@ -175,7 +179,11 @@ namespace
     // a rewind into a live room does not wait on a party that is fighting.
     ObjectiveArriveResult MusterInHallOfBinding(Player* bot, AiObjectContext* context,
                                                 DungeonBossInfo const& /*info*/)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        if (BossState(DcTargeting::GetInstanceScript(bot), DATA_PYROGUARD_EMBERSEER) != STATE_NOT_STARTED)
+            return ObjectiveArriveResult::Done;
+        return Muster(bot, context, HALL_OF_BINDING, "Hall of Binding");
+    }
 
     // --- UseBlackrockAltar (hook 62) ---------------------------------------
     // The plan had a bare UseGO here. The altar is a one-participant summoning
@@ -211,7 +219,12 @@ namespace
     // if the stadium is already running or over.
     ObjectiveArriveResult MusterInStadium(Player* bot, AiObjectContext* context,
                                           DungeonBossInfo const& /*info*/)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        uint32 const state = BossState(DcTargeting::GetInstanceScript(bot), DATA_WARCHIEF_REND_BLACKHAND);
+        if (state == STATE_IN_PROGRESS || state == STATE_DONE)
+            return ObjectiveArriveResult::Done;
+        return Muster(bot, context, STADIUM_ARENA, "Blackrock Stadium");
+    }
 
     // --- EnsureStadiumStarted (hook 61) ------------------------------------
     // On the arena stand, inside AT 2026. A client crossing the trigger runs
@@ -223,6 +236,17 @@ namespace
     ObjectiveArriveResult EnsureStadiumStarted(Player* bot, AiObjectContext* context,
                                                DungeonBossInfo const& /*info*/)
     { return ObjectiveArriveResult::Blocked; }
+}
+
+void RegisterBlackrockSpireHooks(ObjectiveHookRegistry::HookTable& out)
+{
+    ObjectiveHookRegistry::AddHook(out, HOOK_OPEN_DRAGONSPINE_DOOR, &OpenDragonspineDoor);
+    ObjectiveHookRegistry::AddHook(out, HOOK_HALL_RUNES_SWEEP, &HallRunesSweep);
+    ObjectiveHookRegistry::AddHook(out, HOOK_MUSTER_HALL_OF_BINDING, &MusterInHallOfBinding);
+    ObjectiveHookRegistry::AddHook(out, HOOK_USE_BLACKROCK_ALTAR, &UseBlackrockAltar);
+    ObjectiveHookRegistry::AddHook(out, HOOK_EMBERSEER_FREED, &EmberseerFreed);
+    ObjectiveHookRegistry::AddHook(out, HOOK_MUSTER_IN_STADIUM, &MusterInStadium);
+    ObjectiveHookRegistry::AddHook(out, HOOK_ENSURE_STADIUM_STARTED, &EnsureStadiumStarted);
 }
 
 void RegisterBlackrockSpireEvents(std::vector<DungeonEvent>& out)

@@ -105,7 +105,18 @@ namespace
     // then never again — and would stop arming altogether the moment the party
     // fell behind, which is exactly when it is needed.
     bool CosWavesDue(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        if (!bot || bot->GetMapId() != MAP_ID)
+            return false;
+
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return false;
+
+        uint32 const progress = inst->GetData(DATA_ARTHAS_EVENT);
+        return progress == PROGRESS_FINISHED_CITY_INTRO ||
+               progress == PROGRESS_KILLED_MEATHOOK;
+    }
 }
 
 std::vector<uint32> const& CosWaveEntries()

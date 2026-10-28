@@ -111,7 +111,14 @@ namespace
 }
 
 bool OculusDriverDue(Player* bot)
-{ return false; }
+{
+    if (!bot || bot->GetMapId() != MAP_ID)
+        return false;
+    InstanceScript* const inst = DcTargeting::GetInstanceScript(bot);
+    if (!inst || inst->GetData(DATA_DRAKOS) != STATE_DONE)
+        return false;
+    return inst->GetData(DATA_EREGOS) != STATE_DONE || AnyMemberMounted(bot);
+}
 
 void RegisterOculusEvents(std::vector<DungeonEvent>& out)
 {

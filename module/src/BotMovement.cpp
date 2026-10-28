@@ -1,4 +1,5 @@
 #include "BotMovement.h"
+#include "dungeon/DcNavPenaltyRegistry.h"
 #include "AscensionCollectibleSpellData.h"
 #include "Optional.h"
 #include "GridTerrainData.h"
@@ -240,7 +241,35 @@ namespace
     // dungeon with stacked levels (a corridor at -37 became -52 below it) and the point would be off the mesh.
     thread_local bool g_trustGivenZ = false;
 
-    bool RouteWaypoint(Player* bot, float gx, float gy, float gz, float& ox, float& oy, float& oz)
+    // Detour query filter that makes the no-go volumes of dungeon/DcNavPenaltyRegistry expensive (a ledge face the mesh generator stitched into a
+    // "ramp" that a player cannot climb). Never a hard rejection: if the boxed edge is the only way, the route still takes it. A route that
+    // begins inside a volume ignores the volumes, so a party standing in one is never caged.
+    class PenaltyFilter : public dtQueryFilter
+    {
+    public:
+        PenaltyFilter(uint32 mapId, float x, float y, float z)
+            : _mapId(mapId), _active(DcNavPenaltyRegistry::HasVolumes(mapId) && !DcNavPenaltyRegistry::IsInsideRegion(mapId, x, y, z))
+        {
+        }
+
+        float getCost(float const* pa, float const* pb, dtPolyRef prevRef, dtMeshTile const* prevTile, dtPoly const* prevPoly, dtPolyRef curRef,
+            dtMeshTile const* curTile, dtPoly const* curPoly, dtPolyRef nextRef, dtMeshTile const* nextTile, dtPoly const* nextPoly) const override
+        {
+            float const base = dtQueryFilter::getCost(pa, pb, prevRef, prevTile, prevPoly, curRef, curTile, curPoly, nextRef, nextTile, nextPoly);
+            if (!_active)
+                return base;
+            // Edge midpoint back in world space (Detour's vertex order is y, z, x).
+            return base * DcNavPenaltyRegistry::PenaltyAt(_mapId, (pa[2] + pb[2]) * 0.5f, (pa[0] + pb[0]) * 0.5f, (pa[1] + pb[1]) * 0.5f);
+        }
+
+        bool Active() const { return _active; }
+
+    private:
+        uint32 _mapId;
+        bool _active;
+    };
+
+    bool RouteWaypoint(Player* bot, float gx, float gy, float gz, float& ox, float& oy, float& oz, float stepYards = ROUTE_STEP_YARDS)
     {
         Map* map = bot->GetMap();
         if (!map || bot->CanFly())
@@ -249,7 +278,7 @@ namespace
         if (!query)
             return false;
 
-        dtQueryFilter filter;
+        PenaltyFilter filter(map->GetId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
         filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
         filter.setExcludeFlags(0);
 
@@ -287,9 +316,9 @@ namespace
         {
             float const dx = points[i * 3] - lastX, dy = points[i * 3 + 1] - lastY, dz = points[i * 3 + 2] - lastZ;
             float const seg = std::sqrt(dx * dx + dy * dy + dz * dz);
-            if (walked + seg >= ROUTE_STEP_YARDS)
+            if (walked + seg >= stepYards)
             {
-                float const t = seg > 0.0f ? (ROUTE_STEP_YARDS - walked) / seg : 0.0f;
+                float const t = seg > 0.0f ? (stepYards - walked) / seg : 0.0f;
                 // back to world coordinates: x = detour z, y = detour x, z = detour y
                 ox = lastZ + dz * t;
                 oy = lastX + dx * t;
@@ -343,7 +372,27 @@ namespace
 
         // Token-safe: Issue leg under explicit Navigate MoveMode and carry request generation guard.
         MovementDispatchGuard guard{req.requestGeneration, req.goalId};
-        LocomotionToken token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+        // On a map with no-go volumes (dungeon/DcNavPenaltyRegistry) the short legs follow the penalty-aware corridor: the engine's own path
+        // generator does not know the volumes and would take the ledge shortcut again.
+        LocomotionToken token;
+        if (req.recoveryMode == RecoveryMode::None && bot->GetMap() && DcNavPenaltyRegistry::HasVolumes(bot->GetMapId()))
+        {
+            float wx = 0.0f, wy = 0.0f, wz = 0.0f;
+            if (RouteWaypoint(bot, req.x, req.y, req.z, wx, wy, wz, 45.0f) && Dist2d(bx, by, wx, wy) > SAME_POINT_YARDS)
+            {
+                g_trustGivenZ = true;
+                token = BotMovement::MoveToInternal(bot, req.owner, wx, wy, wz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+                g_trustGivenZ = false;
+                if (token.IsValid())
+                {
+                    tx = wx;
+                    ty = wy;
+                    tz = wz;
+                }
+            }
+        }
+        if (!token.IsValid())
+            token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
         if (!token.IsValid() && req.recoveryMode == RecoveryMode::None && (tx != req.x || ty != req.y))
         {
             // The leg point is a straight-line guess towards the goal. In a cave or a corridor it lies inside rock, has no path, and the first leg

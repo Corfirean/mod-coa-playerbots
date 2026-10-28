@@ -11,6 +11,7 @@
 #define COA_PLAYERBOTS_DUNGEON_EVENT_EXECUTOR_H
 
 #include "ObjectGuid.h"
+#include "dungeon/DcCompat.h"
 #include "dungeon/DungeonEventRegistry.h"
 
 class Group;
@@ -31,6 +32,9 @@ namespace DungeonEventExecutor
 
     // Whether the group is in the middle of this event (driven within the last few seconds).
     bool Active(ObjectGuid groupKey, uint32 mapId, uint32 eventId);
+
+    // Fills in where the group's run stands (for hooks that read the step's start time). False when there is none.
+    bool Progress(ObjectGuid groupKey, DungeonEventProgress& out);
 
     // The current step index of the group's run (for logs), or -1 when none.
     int32 CurrentStep(ObjectGuid groupKey);

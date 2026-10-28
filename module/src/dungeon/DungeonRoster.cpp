@@ -199,6 +199,23 @@ namespace DungeonRoster
         return true;
     }
 
+    bool Peek(Map* map, Player* ref, ObjectGuid groupKey, DungeonBossInfo& out)
+    {
+        std::vector<DungeonBossInfo> todo = Remaining(map, ref, groupKey);
+        if (todo.empty())
+            return false;
+        Commitment c;
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            c = g_commitment[groupKey];
+        }
+        auto picked = DcBossOrdering::PickTarget(todo, c.entry, c.orderKey, c.haveKey);
+        if (!picked)
+            return false;
+        out = *picked;
+        return true;
+    }
+
     void ResolvePosition(Map* /*map*/, DungeonBossInfo const& a, float& x, float& y, float& z)
     {
         x = a.x;

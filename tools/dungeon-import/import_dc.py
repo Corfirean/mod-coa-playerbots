@@ -22,10 +22,12 @@ DST = Path(sys.argv[2])
 HEADER_NOTE = ('// Imported from jrad7/mod-dungeon-clear (AGPL-3.0-or-later) by tools/dungeon-import/import_dc.py; engine-bound helpers are stubbed.\n'
                '// Do not edit by hand: re-run the importer. Implementations of the stubs live in dungeon/DungeonConditions.cpp and DungeonHooks.cpp.\n')
 
-FORBIDDEN = re.compile(r'PlayerbotAI|GET_PLAYERBOT_AI|AiObjectContext\s*\*\s*\w+\)|ctx->|context->|DcMovement|DcKey::|DcRun|DcTargeting|DcStatus|'
-                       r'DcLeader|botAI|ObjectiveArriveResult::|DcRaidMuster|DcBreath|DcFlight|DcRawPath|DcEngage|DcCombat|DcDoor|DcPull|'
-                       r'DcPoolExit|DcUbrs|DcToc|DcStrat|DcKara|LongRangePathfinder|DungeonPathFollower|DungeonEventExecutor|Playerbots\.h|'
-                       r'AI_VALUE|GetAiObjectContext|DcAnchor|DcSuppression|DcPoolExit')
+FORBIDDEN = re.compile(r'PlayerbotAI|GET_PLAYERBOT_AI|DcMovement|DcStatus|DcLeader|botAI|DcRaidMuster|DcBreath|DcFlight|DcRawPath|DcEngage|DcCombat|'
+                       r'DcDoor|DcPull|DcPoolExit|DcUbrs|DcToc|DcKara(?!LibraryPit::(MAP|HOOK))|LongRangePathfinder|DungeonPathFollower|DungeonEventExecutor|'
+                       r'Playerbots\.h|AI_VALUE|GetAiObjectContext|DcAnchor|DcSuppression|DcRaidMusterDecision|DcFormGate|DcPlayerbotCompat')
+
+# helpers that still reach into engine internals the compat layer does not model
+FORCE_STUB = {('BlackrockSpireEvents.cpp', 'StampedWithin'), ('StratholmeEvents.cpp', 'StrInTrapAlleyPit')}
 
 INCLUDE_MAP = {
     'DcDifficulty.h': 'dungeon/DcDifficulty.h',
@@ -127,7 +129,8 @@ def match_close(s: str, i: int, open_c: str, close_c: str) -> int:
     return len(s) - 1
 
 
-def process_scope(s: str, stubs: list, file_name: str) -> str:
+def process_scope(s: str, stubs: list, file_name: str, hooks: list = None) -> str:
+    hooks = hooks if hooks is not None else []
     """Walks one scope (file level or the inside of a namespace) and returns the rewritten text."""
     out = []
     i = 0
@@ -164,17 +167,17 @@ def process_scope(s: str, stubs: list, file_name: str) -> str:
             is_func = '(' in head_code and ')' in head_code and not is_type and not ns and not re.search(r'=\s*(\[|\{)?\s*$', head_code) \
                 and not re.match(r'(if|for|while|switch|else|do|try|catch)\b', head_code)
             if ns:
-                inner = process_scope(s[i + 1:end], stubs, file_name)
+                inner = process_scope(s[i + 1:end], stubs, file_name, hooks)
                 out.append(s[seg_start:i + 1] + inner + '}')
             elif is_func:
                 name_m = re.search(r'([A-Za-z_]\w*)\s*\([^()]*(\([^()]*\)[^()]*)*\)\s*(const)?\s*(noexcept)?\s*$', head_code, re.S)
                 name = name_m.group(1) if name_m else '?'
                 keep = bool(re.match(r'Register\w*(Events|Roster|Wings|Route|Routes)$', name)) or not FORBIDDEN.search(head + body)
                 if re.match(r'Register\w*Hooks$', name):
-                    i = end + 1
-                    seg_start = i
-                    stubs.append(f'{file_name}: {name}  (dropped)')
-                    continue
+                    hooks.append(name)
+                    keep = True
+                if (file_name, name) in FORCE_STUB:
+                    keep = False
                 if not keep and '&' in head_code.split(name)[0]:
                     i = end + 1  # a function returning a reference to an engine type cannot be stubbed: drop it
                     seg_start = i
@@ -208,13 +211,13 @@ def process_scope(s: str, stubs: list, file_name: str) -> str:
     return ''.join(out)
 
 
-def convert_events(path: Path, stubs: list) -> str:
+def convert_events(path: Path, stubs: list, hooks: list = None) -> str:
     text = path.read_text(encoding='utf-8')
     text = rewrite_includes(text)
     # keep the leading comment block and includes, then process everything after the last include
     last_inc = max((m.end() for m in re.finditer(r'#include [^\n]*\n', text)), default=0)
     head, rest = text[:last_inc], text[last_inc:]
-    rest = process_scope(rest, stubs, path.name)
+    rest = process_scope(rest, stubs, path.name, hooks)
     return head.replace('#include', '#include', 1) + rest
 
 
@@ -268,12 +271,14 @@ def main():
         copy_plain(rel, name)
 
     stubs: list = []
+    hooks: list = []
     for f in sorted((SRC / 'Data/Events').glob('*Events.cpp')):
-        text = convert_events(f, stubs)
+        text = convert_events(f, stubs, hooks)
         if '#include "dungeon/DcCompat.h"' not in text:
             k = text.find('#include')
             text = text[:k] + '#include "dungeon/DcCompat.h"\n' + text[k:]
         (DST / 'events' / f.name).write_text(HEADER_NOTE + text, encoding='utf-8', newline='\n')
+    (DST / 'HookRegistrations.inc').write_text(''.join('DC_HOOK_APPENDER(' + h + ')' + chr(10) for h in sorted(set(hooks))), encoding='utf-8', newline=chr(10))
     tables = convert_events(SRC / 'Data/Events/DungeonEventTables.h', stubs)
     (DST / 'DungeonEventTables.h').write_text(HEADER_NOTE + tables, encoding='utf-8', newline='\n')
     (DST / 'stubs.txt').write_text('\n'.join(stubs) + '\n', encoding='utf-8')

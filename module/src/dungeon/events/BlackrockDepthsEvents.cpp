@@ -205,7 +205,32 @@ namespace
     // so each tick reaches for the next one; Hurley's visibility ends it.
     ObjectiveArriveResult WakeHurley(Player* bot, AiObjectContext* context,
                                      DungeonBossInfo const& /*info*/)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        Creature* hurley = bot->FindNearestCreature(NPC_HURLEY, BRD_BAR_SCAN, /*alive*/ true);
+        if (!hurley)
+            return ObjectiveArriveResult::Done;
+        if (hurley->IsVisible())
+            return hurley->IsImmuneToPC() ? ObjectiveArriveResult::Running
+                                          : ObjectiveArriveResult::Done;
+
+        if (DcRun::Of(context).Throttled(DcThrottle::BrdKegUse, BRD_KEG_FLOOR_MS))
+            return ObjectiveArriveResult::Running;
+
+        std::list<GameObject*> kegs;
+        bot->GetGameObjectListWithEntryInGrid(kegs, GO_THUNDERBREW_KEG, BRD_KEG_SCAN);
+        for (GameObject* keg : kegs)
+        {
+            if (!keg->isSpawned() || keg->getLootState() != GO_READY)
+                continue;
+            keg->Use(bot);
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] Blackrock Depths — used Thunderbrew Lager Keg {} to bring "
+                     "Hurley Blackbreath in (he spawns invisible until a keg is used)",
+                     bot->GetName(), keg->GetGUID().ToString());
+            return ObjectiveArriveResult::Running;
+        }
+        return ObjectiveArriveResult::Running;  // none in reach yet / all spent: the timeout surfaces it
+    }
 
     // --- the Grim Guzzler's ale (hooks 54 and 47) --------------------------
     // The Bar Door (170571) and Phalanx (9502, faction 35 — unattackable) are
@@ -248,7 +273,76 @@ namespace
     // shortfall means).
     ObjectiveArriveResult BuyRocknotAle(Player* bot, AiObjectContext* context,
                                         DungeonBossInfo const& /*info*/)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return ObjectiveArriveResult::Running;
+        uint32 const bar = inst->GetData(TYPE_BAR);
+        if (bar == STATE_DONE || bar == STATE_SPECIAL)
+            return ObjectiveArriveResult::Done;
+
+        uint32 const have = bot->GetItemCount(ITEM_DARK_IRON_ALE_MUG);
+        if (have >= AleMugsNeeded())
+            return ObjectiveArriveResult::Done;
+
+        Creature* plugger = bot->FindNearestCreature(NPC_PLUGGER, BRD_BAR_SCAN, /*alive*/ true);
+        if (!plugger || plugger->IsInCombat() || !plugger->HasNpcFlag(UNIT_NPC_FLAG_VENDOR))
+        {
+            LOG_WARN("playerbots.dungeonclear",
+                     "[DC:{}] Blackrock Depths — Plugger Spazzring is {}; no Dark Iron Ale to buy",
+                     bot->GetName(), !plugger ? "gone" : "not trading");
+            return ObjectiveArriveResult::Done;
+        }
+
+        // Wait at the counter's end for his patrol to bring him past (see
+        // PLUGGER_STAND_*): chasing him puts the leader across the counter from a
+        // bartender who is out of reach for most of his loop.
+        if (!bot->IsWithinDistInMap(plugger, BRD_BAR_NPC_REACH))
+        {
+            if (bot->GetExactDist2d(PLUGGER_STAND_X, PLUGGER_STAND_Y) > BRD_PLUGGER_STAND_RADIUS)
+                HopToward(bot, PLUGGER_STAND_X, PLUGGER_STAND_Y, PLUGGER_STAND_Z);
+            if (!DcRun::Of(context).Throttled(DcThrottle::BrdEventLog, 10000))
+                LOG_INFO("playerbots.dungeonclear",
+                         "[DC:{}] Grim Guzzler — at the bar for Dark Iron Ale; Plugger Spazzring is "
+                         "{:.1f}yd away", bot->GetName(), bot->GetExactDist(plugger));
+            return ObjectiveArriveResult::Running;
+        }
+
+        VendorItemData const* stock = plugger->GetVendorItems();
+        uint32 slot = 0;
+        bool found = false;
+        for (uint32 i = 0; stock && i < stock->GetItemCount(); ++i)
+            if (VendorItem const* vi = stock->GetItem(i); vi && vi->item == ITEM_DARK_IRON_ALE_MUG)
+            {
+                slot = i;
+                found = true;
+                break;
+            }
+        if (!found)
+        {
+            LOG_WARN("playerbots.dungeonclear",
+                     "[DC:{}] Blackrock Depths — Plugger Spazzring does not sell item {}",
+                     bot->GetName(), ITEM_DARK_IRON_ALE_MUG);
+            return ObjectiveArriveResult::Done;
+        }
+
+        // BuyItemFromVendorSlot reads the session's open vendor list first; a bot
+        // that last traded elsewhere would index someone else's stock.
+        bot->GetSession()->SetCurrentVendor(plugger->GetEntry());
+        uint32 const want = AleMugsNeeded() - have;
+        bool const bought = bot->BuyItemFromVendorSlot(plugger->GetGUID(), slot, ITEM_DARK_IRON_ALE_MUG,
+                                                       static_cast<uint8>(want), NULL_BAG, NULL_SLOT);
+        bot->GetSession()->SetCurrentVendor(0);
+        if (bought)
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] Grim Guzzler — bought {} Dark Iron Ale Mug(s) from Plugger Spazzring "
+                     "(now carrying {})", bot->GetName(), want, bot->GetItemCount(ITEM_DARK_IRON_ALE_MUG));
+        else
+            LOG_WARN("playerbots.dungeonclear",
+                     "[DC:{}] Blackrock Depths — could not buy {} Dark Iron Ale Mug(s) from Plugger "
+                     "(stock, gold or bag space)", bot->GetName(), want);
+        return ObjectiveArriveResult::Done;
+    }
 
     // --- StartRocknotAleRun (hook 47) --------------------------------------
     // Hand "Rocknot's Ale" in, one turn-in per BRD_ALE_TURN_IN_FLOOR_MS, until
@@ -264,7 +358,80 @@ namespace
     // a no-op, and the door wait after it times out visibly.
     ObjectiveArriveResult StartRocknotAleRun(Player* bot, AiObjectContext* context,
                                              DungeonBossInfo const& /*info*/)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return ObjectiveArriveResult::Running;
+
+        uint32 const bar = inst->GetData(TYPE_BAR);
+        if (bar == STATE_DONE || bar == STATE_SPECIAL)
+            return ObjectiveArriveResult::Done;
+
+        Creature* rocknot = bot->FindNearestCreature(NPC_ROCKNOT, BRD_BAR_SCAN, /*alive*/ true);
+        if (!rocknot || !rocknot->AI())
+            return ObjectiveArriveResult::Running;
+
+        Quest const* ale = sObjectMgr->GetQuestTemplate(QUEST_ALE);
+        if (!ale)
+        {
+            LOG_ERROR("playerbots.dungeonclear",
+                      "[DC:{}] Blackrock Depths — quest {} missing from the world DB; "
+                      "Rocknot's ale run cannot be started", bot->GetName(), QUEST_ALE);
+            return ObjectiveArriveResult::Blocked;
+        }
+
+        if (!bot->IsWithinDistInMap(rocknot, BRD_BAR_NPC_REACH))
+        {
+            HopToward(bot, rocknot->GetPositionX(), rocknot->GetPositionY(), rocknot->GetPositionZ());
+            return ObjectiveArriveResult::Running;
+        }
+
+        if (DcRun::Of(context).Throttled(DcThrottle::BrdAleTurnIn, BRD_ALE_TURN_IN_FLOOR_MS))
+            return ObjectiveArriveResult::Running;
+
+        bot->StopMoving();
+        bot->SetFacingToObject(rocknot);
+
+        bool handedIn = false;
+        if (bot->GetItemCount(ITEM_DARK_IRON_ALE_MUG) >= ALE_MUGS_PER_TURN_IN)
+        {
+            if (bot->GetQuestStatus(QUEST_ALE) == QUEST_STATUS_NONE && bot->CanTakeQuest(ale, false) &&
+                bot->CanAddQuest(ale, false))
+                bot->AddQuestAndCheckCompletion(ale, rocknot);
+            if (bot->CanRewardQuest(ale, 0, false))
+            {
+                bot->RewardQuest(ale, 0, rocknot);
+                if (!sScriptMgr->OnQuestReward(bot, rocknot, ale, 0))
+                    rocknot->AI()->sQuestReward(bot, ale, 0);
+                handedIn = true;
+            }
+        }
+
+        if (handedIn)
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] Grim Guzzler — handed Rocknot's Ale (quest {}) to Private Rocknot; "
+                     "{} mug(s) left", bot->GetName(), QUEST_ALE, bot->GetItemCount(ITEM_DARK_IRON_ALE_MUG));
+        else
+        {
+            // The player's route is closed (see the header): count this hand-in
+            // the script's own way so the bar still opens.
+            if (bot->GetQuestStatus(QUEST_ALE) == QUEST_STATUS_INCOMPLETE)
+                bot->RemoveActiveQuest(QUEST_ALE);
+            LOG_WARN("playerbots.dungeonclear",
+                     "[DC:{}] Blackrock Depths — no Dark Iron Ale to hand in ({} mug(s), quest status {}); "
+                     "counting the turn-in through npc_rocknot::sQuestReward", bot->GetName(),
+                     bot->GetItemCount(ITEM_DARK_IRON_ALE_MUG), static_cast<uint32>(bot->GetQuestStatus(QUEST_ALE)));
+            rocknot->AI()->sQuestReward(bot, ale, 0);
+        }
+
+        uint32 const now = inst->GetData(TYPE_BAR);
+        if (now == STATE_SPECIAL)
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] Blackrock Depths — Private Rocknot has his three ales and is off to the "
+                     "kegs; the Bar Door and Phalanx follow when he breaks the last one", bot->GetName());
+        return (now == STATE_SPECIAL || now == STATE_DONE) ? ObjectiveArriveResult::Done
+                                                           : ObjectiveArriveResult::Running;
+    }
 
     // --- PhalanxAtDoor (hook 55) -------------------------------------------
     // The door breaking is NOT the moment Phalanx can be fought: he is woken 7s
@@ -276,7 +443,16 @@ namespace
     // to the leader — or is already dead.
     ObjectiveArriveResult PhalanxAtDoor(Player* bot, AiObjectContext* context,
                                         DungeonBossInfo const& /*info*/)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        Creature* phalanx = bot->FindNearestCreature(NPC_PHALANX, BRD_BAR_SCAN, /*alive*/ true);
+        if (!phalanx || phalanx->IsHostileTo(bot))
+            return ObjectiveArriveResult::Done;
+        if (!DcRun::Of(context).Throttled(DcThrottle::BrdEventLog, 10000))
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] Grim Guzzler — Bar Door is broken; waiting for Phalanx to take the "
+                     "doorway ({:.1f}yd from it)", bot->GetName(), phalanx->GetExactDist2d(PHALANX_DOOR_X, PHALANX_DOOR_Y));
+        return ObjectiveArriveResult::Running;
+    }
 
     // --- the Tomb of the Seven (event 6) -----------------------------------
     // Talking to Doom'rel (9039; menu 1947 opt 0 -> 1950 opt 0) is the start:
@@ -300,7 +476,38 @@ namespace
     // so a rewind into a live tomb does not wait on a party that is fighting.
     ObjectiveArriveResult TombMuster(Player* bot, AiObjectContext* context,
                                      DungeonBossInfo const& /*info*/)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return ObjectiveArriveResult::Running;
+        uint32 const state = inst->GetData(TYPE_TOMB_OF_SEVEN);
+        if (state == STATE_IN_PROGRESS || state == STATE_DONE)
+            return ObjectiveArriveResult::Done;
+
+        Group* group = bot->GetGroup();
+        if (!group)
+            return ObjectiveArriveResult::Done;
+
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || !member->IsInWorld() || !member->IsAlive() ||
+                member->GetMapId() != bot->GetMapId())
+                continue;
+            bool const inside =
+                member->GetExactDist2d(TOMB_HOLD_X, TOMB_HOLD_Y) <= TOMB_MUSTER_RADIUS &&
+                std::fabs(member->GetPositionZ() - TOMB_HOLD_Z) <= TOMB_MUSTER_ZBAND;
+            if (inside)
+                continue;
+            if (!DcRun::Of(context).Throttled(DcThrottle::BrdEventLog, 10000))
+                LOG_INFO("playerbots.dungeonclear",
+                         "[DC:{}] Tomb of the Seven — mustering before Doom'rel seals the "
+                         "doors: {} is {:.1f}yd out", bot->GetName(), member->GetName(),
+                         member->GetExactDist2d(TOMB_HOLD_X, TOMB_HOLD_Y));
+            return ObjectiveArriveResult::Running;
+        }
+        return ObjectiveArriveResult::Done;
+    }
 
     // --- TombResetWatch (hook 53) ------------------------------------------
     // Runs every tick of the garrison (.WhileHolding). NOT_STARTED there means
@@ -311,7 +518,16 @@ namespace
     // ignored: the garrison's own DONE gate ends the hold.
     ObjectiveArriveResult TombResetWatch(Player* bot, AiObjectContext* /*context*/,
                                          DungeonBossInfo const& /*info*/)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst || inst->GetData(TYPE_TOMB_OF_SEVEN) != STATE_NOT_STARTED)
+            return ObjectiveArriveResult::Done;
+        LOG_INFO("playerbots.dungeonclear",
+                 "[DC:{}] Tomb of the Seven reads NOT_STARTED under the garrison (the "
+                 "15s out-of-combat reset, or the challenge never started) — restarting "
+                 "the challenge", bot->GetName());
+        return ObjectiveArriveResult::Restart;
+    }
 
     // --- the Lyceum (events 7 and 8) ---------------------------------------
     // Two braziers, S (174744) and N (174745), lock 799: the Shadowforge Torch.
@@ -358,7 +574,10 @@ namespace
     constexpr uint32 BRD_OLDEST_TORCH_WAIT_MS = 8000;
 
     bool LyceumDone(Player* bot)
-    { return false; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        return inst && inst->GetData(TYPE_LYCEUM) == STATE_DONE;
+    }
 
     // Living party members on the bot's map (the bot itself included).
     template <typename Fn>
@@ -437,7 +656,17 @@ namespace
     // Torches the party still has a use for: one per unlit brazier. The first
     // lit brazier moves TYPE_LYCEUM to IN_PROGRESS, the second to DONE.
     uint32 TorchesStillNeeded(Player* bot)
-    { return 0; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return 1;
+        switch (inst->GetData(TYPE_LYCEUM))
+        {
+            case STATE_DONE:        return 0;
+            case STATE_IN_PROGRESS: return 1;
+            default:                return 2;
+        }
+    }
 
     // The nearest keeper corpse in `scan` of the bot that still holds its torch.
     Creature* NearestTorchCorpse(Player* bot, float scan)
@@ -496,7 +725,56 @@ namespace
     //      stalls it visibly if no keeper ever comes back.
     ObjectiveArriveResult GatherShadowforgeTorch(Player* bot, AiObjectContext* context,
                                                  DungeonBossInfo const& /*info*/)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        if (LyceumDone(bot))
+            return ObjectiveArriveResult::Done;
+
+        Creature* corpse = PartyTorchCount(bot) < TorchesStillNeeded(bot)
+                               ? NearestTorchCorpse(bot, LYCEUM_KEEPER_SCAN)
+                               : nullptr;
+        if (corpse)
+        {
+            Player* looter = MemberAtCorpse(bot, corpse);
+            if (!looter)
+            {
+                if (!bot->isMoving())
+                    bot->GetMotionMaster()->MovePoint(0, corpse->GetPositionX(), corpse->GetPositionY(),
+                                                      corpse->GetPositionZ(), FORCED_MOVEMENT_NONE,
+                                                      0.0f, 0.0f, /*generatePath*/ true, false);
+                return ObjectiveArriveResult::Running;
+            }
+            LootTorch(bot, looter, corpse, "between fights");
+            return ObjectiveArriveResult::Running;  // re-decide with the new count
+        }
+
+        if (PartyTorchCount(bot) >= 1)
+            return ObjectiveArriveResult::Done;
+
+        if (bot->FindNearestCreature(NPC_FLAME_KEEPER, LYCEUM_KEEPER_SCAN, /*alive*/ true))
+        {
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] Lyceum — no Shadowforge Torch in the party and a Flame Keeper "
+                     "is up: back to the hunt", bot->GetName());
+            return ObjectiveArriveResult::Restart;
+        }
+
+        // Waiting on pool 1550. Say so every 10s, and once — loudly — when the
+        // wait has outlived a respawn, which is the step's timeout firing next.
+        DcRunState& run = DcRun::Of(context);
+        DungeonEventProgress const& prog =
+            context->GetValue<DungeonEventProgress&>(DcKey::EventProgress)->Get();
+        if (getMSTimeDiff(prog.stepStartMs, getMSTime()) + 1000 >= TORCH_WAIT_MS &&
+            !run.Throttled(DcThrottle::BrdTorchWarn, TORCH_WAIT_MS))
+            LOG_WARN("playerbots.dungeonclear",
+                     "[DC:{}] LYCEUM no Flame Keeper respawned in {}s (pool 1550, 300s respawn) — "
+                     "if this repeats, the pooled-respawn fix (AC PR #25826) is not in this core",
+                     bot->GetName(), TORCH_WAIT_MS / 1000);
+        else if (!run.Throttled(DcThrottle::BrdEventLog, 10000))
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] Lyceum — out of torches and no Flame Keeper alive; waiting for "
+                     "pool 1550 to respawn one", bot->GetName());
+        return ObjectiveArriveResult::Running;
+    }
 
     // --- LightBrazier (hooks 49 S / 50 N) ----------------------------------
     // The last step of each brazier event. Spend ONE torch from a holder at the
@@ -510,7 +788,82 @@ namespace
     //   * no torch left anywhere (expired, or the holder died and released) ->
     //     Restart: back to the hunt
     ObjectiveArriveResult LightBrazier(Player* bot, AiObjectContext* context, uint32 brazierEntry)
-    { return ObjectiveArriveResult::Blocked; }
+    {
+        if (LyceumDone(bot))
+            return ObjectiveArriveResult::Done;
+
+        GameObject* brazier = bot->FindNearestGameObject(brazierEntry, LYCEUM_ROOM_SCAN);
+        if (!brazier)
+            return ObjectiveArriveResult::Running;
+        if (brazier->GetGoState() != GO_STATE_READY)
+            return ObjectiveArriveResult::Done;
+        if (brazier->HasGameObjectFlag(GO_FLAG_NOT_SELECTABLE))
+            return ObjectiveArriveResult::Running;  // Use() would swallow it — and the torch
+
+        // SPEND THE TORCH THAT DIES FIRST. Each one runs its own 300s clock, so
+        // which torch lights the south brazier decides whether the other survives
+        // to the north one. tr-20261018-211242-1 held a 3m30s-old torch and a
+        // fresh one, the tank lit the south brazier with its own fresh one, and
+        // the old torch expired on the walk north: back to the hunt, seven minutes
+        // on the north brazier. With a torch still to keep, the oldest one is
+        // spent, its holder walked in for up to BRD_OLDEST_TORCH_WAIT_MS; with
+        // none to keep (the last brazier), the oldest one already in reach.
+        std::vector<HeldTorch> const torches = PartyTorches(bot);
+        HeldTorch const* oldest = nullptr;
+        HeldTorch const* oldestInReach = nullptr;
+        for (HeldTorch const& t : torches)
+        {
+            if (!oldest || t.leftMs < oldest->leftMs)
+                oldest = &t;
+            if (t.holder->IsWithinDistInMap(brazier, BRD_BRAZIER_REACH) &&
+                (!oldestInReach || t.leftMs < oldestInReach->leftMs))
+                oldestInReach = &t;
+        }
+
+        HeldTorch const* spend = nullptr;
+        if (oldest && oldest->holder->IsWithinDistInMap(brazier, BRD_BRAZIER_REACH))
+            spend = oldest;
+        else if (oldestInReach)
+        {
+            DungeonEventProgress const& prog =
+                context->GetValue<DungeonEventProgress&>(DcKey::EventProgress)->Get();
+            if (TorchesStillNeeded(bot) <= 1 ||
+                getMSTimeDiff(prog.stepStartMs, getMSTime()) >= BRD_OLDEST_TORCH_WAIT_MS)
+                spend = oldestInReach;
+        }
+
+        if (!spend)
+        {
+            if (!oldest)
+            {
+                LOG_INFO("playerbots.dungeonclear",
+                         "[DC:{}] Lyceum — at the {} brazier with no Shadowforge Torch left "
+                         "(expired or lost): back to the hunt", bot->GetName(),
+                         brazierEntry == GO_BRAZIER_S ? "south" : "north");
+                return ObjectiveArriveResult::Restart;
+            }
+            if (!DcRun::Of(context).Throttled(DcThrottle::BrdTorchNudge, BRD_TORCH_NUDGE_MS))
+                oldest->holder->GetMotionMaster()->MovePoint(0, brazier->GetPositionX(),
+                                                             brazier->GetPositionY(), brazier->GetPositionZ(),
+                                                             FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
+                                                             /*generatePath*/ true, false);
+            return ObjectiveArriveResult::Running;
+        }
+
+        Player* holder = spend->holder;
+        uint32 const leftS = spend->leftMs / IN_MILLISECONDS;
+        uint32 one = 1;
+        holder->DestroyItemCount(spend->item, one, /*update*/ true);
+        brazier->Use(holder);
+        LOG_INFO("playerbots.dungeonclear",
+                 "[DC:{}] Lyceum — {} spent a Shadowforge Torch ({}s left of 300) on the {} brazier: "
+                 "state {} (TYPE_LYCEUM now {})", bot->GetName(), holder->GetName(), leftS,
+                 brazierEntry == GO_BRAZIER_S ? "south" : "north",
+                 static_cast<uint32>(brazier->GetGoState()),
+                 DcTargeting::GetInstanceScript(bot)
+                     ? DcTargeting::GetInstanceScript(bot)->GetData(TYPE_LYCEUM) : 0u);
+        return ObjectiveArriveResult::Running;  // the lit-state check above latches it
+    }
 }
 
 namespace DcLyceum
@@ -591,6 +944,23 @@ namespace DcLyceum
 
     void Tick(uint32 diff, bool moduleEnabled)
     { }
+}
+
+void RegisterBlackrockDepthsHooks(ObjectiveHookRegistry::HookTable& out)
+{
+    ObjectiveHookRegistry::AddHook(out, HOOK_GATHER_TORCH, &GatherShadowforgeTorch);
+    ObjectiveHookRegistry::AddHook(out, HOOK_LIGHT_BRAZIER_S,
+        [](Player* bot, AiObjectContext* context, DungeonBossInfo const&)
+        { return LightBrazier(bot, context, GO_BRAZIER_S); });
+    ObjectiveHookRegistry::AddHook(out, HOOK_LIGHT_BRAZIER_N,
+        [](Player* bot, AiObjectContext* context, DungeonBossInfo const&)
+        { return LightBrazier(bot, context, GO_BRAZIER_N); });
+    ObjectiveHookRegistry::AddHook(out, HOOK_TOMB_MUSTER, &TombMuster);
+    ObjectiveHookRegistry::AddHook(out, HOOK_TOMB_RESET_WATCH, &TombResetWatch);
+    ObjectiveHookRegistry::AddHook(out, HOOK_START_ROCKNOT_ALE_RUN, &StartRocknotAleRun);
+    ObjectiveHookRegistry::AddHook(out, HOOK_WAKE_HURLEY, &WakeHurley);
+    ObjectiveHookRegistry::AddHook(out, HOOK_BUY_ROCKNOT_ALE, &BuyRocknotAle);
+    ObjectiveHookRegistry::AddHook(out, HOOK_PHALANX_AT_DOOR, &PhalanxAtDoor);
 }
 
 void RegisterBlackrockDepthsEvents(std::vector<DungeonEvent>& out)

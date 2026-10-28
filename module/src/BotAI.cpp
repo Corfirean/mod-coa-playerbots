@@ -2028,9 +2028,9 @@ bool TryRestIfNeeded(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         state.isResting = true;
 
-        if (needsHp && !bot->HasAura(433))
+        if (needsHp && !BotEconomy::HasRestAura(bot, true))
             BotEconomy::StartRestAura(bot, true);
-        if (needsMana && !bot->HasAura(431))
+        if (needsMana && !BotEconomy::HasRestAura(bot, false))
             BotEconomy::StartRestAura(bot, false);
 
         return true;
@@ -2042,15 +2042,14 @@ bool TryRestIfNeeded(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     if (doneHp && doneMana)
     {
         bot->SetStandState(UNIT_STAND_STATE_STAND);
-        bot->RemoveAurasDueToSpell(433);
-        bot->RemoveAurasDueToSpell(431);
+        BotEconomy::StopRestAuras(bot);
         state.isResting = false;
         return false;
     }
 
-    if (hpPct < endHpPct && !bot->HasAura(433))
+    if (hpPct < endHpPct && !BotEconomy::HasRestAura(bot, true))
         BotEconomy::StartRestAura(bot, true);
-    if (usesMana && manaPct < endManaPct && !bot->HasAura(431))
+    if (usesMana && manaPct < endManaPct && !BotEconomy::HasRestAura(bot, false))
         BotEconomy::StartRestAura(bot, false);
 
     return true;

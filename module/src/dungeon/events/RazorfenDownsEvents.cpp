@@ -132,7 +132,32 @@ namespace
     constexpr float RFD_TUTENKASH_SCAN = 100.0f;
 
     bool RfdGong(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        // Done for good once Tuten'kash is up (the 3rd ring summoned him — let
+        // the boss flow take him) or already killed (his encounter bit is set).
+        if (DcTargeting::FindLiveCreatureOnMap(bot, RFD_TUTENKASH))
+            return false;
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (inst && (inst->GetCompletedEncounterMask() & (1u << RFD_TUTENKASH_BIT)))
+            return false;
+
+        // The gong must exist, be selectable (the previous wave is dead and its
+        // SmartAI re-armed it) and shut. A NOT_SELECTABLE / already-activated
+        // gong means a wave is still up — let combat finish before the next ring.
+        GameObject* gong = bot->FindNearestGameObject(RFD_GONG, 200.0f);
+        if (!gong)
+            return false;
+        if (gong->HasGameObjectFlag(GO_FLAG_NOT_SELECTABLE) ||
+            gong->GetGoState() != GO_STATE_READY)
+            return false;
+
+        // Only ring once boss-nav has parked the tank at the gong — otherwise the
+        // event would preempt the boss travel partway and try to drive it itself.
+        if (!bot->IsWithinDist(gong, RFD_GONG_RING_RANGE))
+            return false;
+
+        return true;
+    }
 
     // --- the approach gate (condition 11, repeatable) ---------------------
     // DUE while Tuten'kash has been summoned (the 3rd ring is rung) but is not
@@ -142,7 +167,21 @@ namespace
     // (gong selectable vs boss present) are mutually exclusive, so the gong and
     // approach events never both fire.
     bool RfdApproach(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        // Done for good once he is killed — his kill flips encounter bit 0, the
+        // signal that survives even after his corpse despawns.
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (inst && (inst->GetCompletedEncounterMask() & (1u << RFD_TUTENKASH_BIT)))
+            return false;
+
+        // Fire only once the 3rd ring has SUMMONED him. He is a
+        // creature_summon_groups TempSummon (no spawnId), invisible to the
+        // map-wide spawn-store scan (FindLiveCreatureOnMap) — but a grid
+        // FindNearestCreature DOES see a summon, which is all we need to know
+        // he is up. Until then the gong event owns the ring phase; stand down.
+        return bot->FindNearestCreature(RFD_TUTENKASH, RFD_TUTENKASH_SCAN,
+                                        /*alive*/ true) != nullptr;
+    }
 }
 
 // --- roster patch (relocated from BossRosterRegistry) --------------------

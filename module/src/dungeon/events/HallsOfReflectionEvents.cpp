@@ -144,7 +144,19 @@ namespace
     // predicate that waited for combat to drop would get its ticks in those five
     // seconds and nowhere else.
     bool HorWavesDue(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        if (!bot || bot->GetMapId() != MAP_ID)
+            return false;
+
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return false;
+
+        if (!inst->GetPersistentData(PERSISTENT_DATA_INTRO))
+            return false;
+
+        return inst->GetBossState(DATA_MARWYN) != DONE;
+    }
 
     // --- event 5's gate: the escape is running -----------------------------
     //
@@ -160,7 +172,16 @@ namespace
     // four walls down) and on FAIL (the full instance reset that happens when the
     // last player leaves the map), so a wipe-and-retry re-arms cleanly.
     bool HorEscapeDue(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        if (!bot || bot->GetMapId() != MAP_ID)
+            return false;
+
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return false;
+
+        return inst->GetBossState(DATA_LICH_KING) == IN_PROGRESS;
+    }
 }
 
 void RegisterHallsOfReflectionEvents(std::vector<DungeonEvent>& out)

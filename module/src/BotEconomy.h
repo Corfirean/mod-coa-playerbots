@@ -77,6 +77,12 @@ namespace BotEconomy
     // With the setting off this simply casts the aura, as bots always did.
     void StartRestAura(Player* bot, bool food);
 
+    // The spell a resting bot is under: the use spell of the best food / drink item of its level (so a level 60 bot recovers at the rate of the
+    // real drinks, not at the rate of the level 1 "Drink" 431 spell, which took minutes to fill a mana bar), 433 / 431 when there is none.
+    uint32 RestSpell(Player* bot, bool food);
+    bool HasRestAura(Player* bot, bool food);
+    void StopRestAuras(Player* bot);
+
     // Guild resource limits ("Stock" tab of the task board). The guild's officers say how many of a resource the guild bank
     // should keep; a free guild-mate bot takes the surplus out, carries it to a city with an auction house and sells it
     // (the money goes to the bank by the usual trip share). Only resources already in the bank are listed.

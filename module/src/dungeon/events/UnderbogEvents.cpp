@@ -97,7 +97,13 @@ namespace
     // order as the Nethekurse and Zum'rah predicates on their maps, and only on
     // map 546.
     bool UbGhazanStillInTheLake(Player* bot, AiObjectContext* context)
-    { return false; }
+    {
+        Creature* ghazan = DcTargeting::GetLiveBoss(bot, context, UB_GHAZAN);
+        if (!ghazan || !ghazan->IsAlive())
+            return false;
+
+        return ghazan->GetPositionZ() < UB_GHAZAN_WATER_Z;
+    }
 }
 
 void RegisterUnderbogEvents(std::vector<DungeonEvent>& out)

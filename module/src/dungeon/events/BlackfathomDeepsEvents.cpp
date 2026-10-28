@@ -319,6 +319,11 @@ void RegisterBlackfathomDeepsEvents(std::vector<DungeonEvent>& out)
             .Build());
 }
 
+void RegisterBlackfathomDeepsHooks(ObjectiveHookRegistry::HookTable& out)
+{
+    ObjectiveHookRegistry::AddHook(out, DcBlackfathomDeeps::HOOK_POOL_EXIT, &DriveForgottenPoolExit);
+}
+
 // --- roster patch ----------------------------------------------------------
 // Four travel OBJECTIVES, each sharing its ordering key with the boss it
 // precedes (the objective-before-boss tie-break runs it first); every kept

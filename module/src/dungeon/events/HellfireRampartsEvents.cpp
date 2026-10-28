@@ -110,7 +110,29 @@ namespace
     constexpr float HFR_PLATFORM_MIN_Z = DcHellfireRamparts::FINAL_APPROACH_MIN_Z;
 
     bool HfrApproach(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        // Done for good once Vazruden is killed — bit 2 is set.
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (inst && (inst->GetCompletedEncounterMask() & (1u << HFR_VAZRUDEN_BIT)))
+            return false;
+
+        // Never from the lower level. The final platform is across the chasm from
+        // the zone-in room, so "near a Sentry" on its own does not mean "on the
+        // approach" — see the constants above.
+        if (bot->GetPositionZ() < HFR_PLATFORM_MIN_Z)
+            return false;
+
+        // Fire only once the party has reached the platform: either a Hellfire
+        // Sentry (present from instance load, the trigger to kill) or the
+        // summoned Vazruden is within grid range. A grid FindNearestCreature
+        // DOES see a TempSummon, unlike the map-wide spawn-store scan, so this
+        // also covers the post-Sentry phase when Vazruden is up.
+        if (bot->FindNearestCreature(HFR_HELLFIRE_SENTRY, HFR_PLATFORM_SCAN,
+                                     /*alive*/ true))
+            return true;
+        return bot->FindNearestCreature(HFR_VAZRUDEN, HFR_PLATFORM_SCAN,
+                                        /*alive*/ true) != nullptr;
+    }
 }
 
 

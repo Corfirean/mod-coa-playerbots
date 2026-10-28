@@ -70,7 +70,25 @@ namespace
     // IN_PROGRESS the instant the lever is used, so this reads false for the rest
     // of the run — one pull, never a re-pull.
     bool BfPullLever(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return false;
+        if (inst->GetBossState(BF_DATA_BROGGOK) != NOT_STARTED)
+            return false;
+
+        // The lever must exist, be shut (GO_STATE_READY) and selectable.
+        GameObject* lever = bot->FindNearestGameObject(BF_LEVER, 200.0f);
+        if (!lever)
+            return false;
+        if (lever->HasGameObjectFlag(GO_FLAG_NOT_SELECTABLE) ||
+            lever->GetGoState() != GO_STATE_READY)
+            return false;
+
+        // Only once boss-nav has parked the tank at the lever — otherwise the
+        // event would preempt the boss approach partway and try to drive it.
+        return bot->IsWithinDist(lever, BF_LEVER_RANGE);
+    }
 
     // --- condition 18: hold through the waves ------------------------------
     // DUE during the wave phase: the lever has been pulled (IN_PROGRESS) and the
@@ -81,7 +99,21 @@ namespace
     // through to engage Broggok. Reads false before the lever is pulled (the pull
     // event owns that phase) and once Broggok is killed (state DONE).
     bool BfHoldCellDoor(Player* bot, AiObjectContext* /*context*/)
-    { return false; }
+    {
+        InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        if (!inst)
+            return false;
+        if (inst->GetBossState(BF_DATA_BROGGOK) != IN_PROGRESS)
+            return false;
+
+        // Hold only while the rear gate is still closed. Out of range / gone =>
+        // let boss-nav take over (the gate is ~20yd from the held tank, so the
+        // scan never legitimately misses it during the wave phase).
+        GameObject* gate = bot->FindNearestGameObject(BF_REAR_GATE, BF_GATE_SCAN);
+        if (!gate)
+            return false;
+        return gate->GetGoState() == GO_STATE_READY;
+    }
 }
 
 namespace
