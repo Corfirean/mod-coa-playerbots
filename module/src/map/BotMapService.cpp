@@ -6,6 +6,7 @@
 #include "BotMapService.h"
 #include "BotMgr.h"
 #include "BotAI.h"
+#include "ClassSpecRoles.h"
 #include "BotEconomy.h"
 #include "world/WorldBrain.h"
 #include "world/WorldTask.h"
