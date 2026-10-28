@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NormalizedMechanicRegistry",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["key", "spellId", "mechanicType", "priority", "source", "confidence"],
+    "properties": {
+      "key": { "type": "string" },
+      "encounterId": { "type": "integer" },
+      "mapId": { "type": "integer" },
+      "bossEntry": { "type": "integer" },
+      "spellId": { "type": "integer" },
+      "spellName": { "type": "string" },
+      "mechanicType": {
+        "type": "string",
+        "enum": [
+          "Interrupt",
+          "Dispel",
+          "MoveFromGround",
+          "SpreadOut",
+          "StackTogether",
+          "TankInDanger",
+          "KillAdds",
+          "TargetSwitch",
+          "Defensive",
+          "RunAway",
+          "PhaseChange",
+          "IncomingAoE",
+          "EnemyCaster",
+          "Soak",
+          "AvoidFront",
+          "AvoidBehind",
+          "StopDamage",
+          "BurstNow",
+          "GroupDamage",
+          "TankSwap"
+        ]
+      },
+      "dialogueBeat": { "type": "string" },
+      "roleMask": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["Tank", "Healer", "Dps"]
+        }
+      },
+      "priority": {
+        "type": "string",
+        "enum": ["Low", "Normal", "High", "Critical"]
+      },
+      "source": {
+        "type": "string",
+        "enum": ["DBM", "Core", "Manual"]
+      },
+      "confidence": {
+        "type": "string",
+        "enum": ["Heuristic", "Imported", "Verified", "Authoritative", "Conflict"]
+      },
+      "phase": { "type": "integer" },
+      "estimatedTimerMs": { "type": "integer" },
+      "triggerEvent": { "type": "string" },
+      "disabled": { "type": "boolean" },
+      "replacementMechanicId": { "type": "string" },
+      "provenance": {
+        "type": "object",
+        "properties": {
+          "package": { "type": "string" },
+          "module": { "type": "string" },
+          "line": { "type": "integer" },
+          "construct": { "type": "string" }
+        }
+      },
+      "notes": { "type": "string" }
+    }
+  }
+}
