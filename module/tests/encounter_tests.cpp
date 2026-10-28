@@ -39,6 +39,8 @@
 #include "dialogue/EncounterVisualResolver.cpp"
 #include "dialogue/EncounterPresentation.h"
 #include "dialogue/EncounterPresentation.cpp"
+#include "dialogue/MechanicRegistry.h"
+#include "dialogue/MechanicRegistry.cpp"
 
 #include <chrono>
 #include <cmath>
@@ -2187,6 +2189,72 @@ static void TestEncounterPresentationAndMysteryIsolation()
     CHECK(!part.morphApplied);
 }
 
+// ============================================================================
+// 24. Tactical Mechanic Registry & Runtime Triggers (DBM Offline Import & Overrides)
+// ============================================================================
+static void TestMechanicRegistryAndRuntimeTriggers()
+{
+    sMechanicRegistry.Initialize("module/data/mechanics");
+    MechanicRegistryStats stats = sMechanicRegistry.GetStats();
+    CHECK(stats.totalRecords > 0);
+    CHECK(stats.verifiedCount > 0);
+    CHECK(stats.uniqueSpells > 0);
+
+    // 1. DBM-Imported & Verified Boss Lookup: Lord Marrowgar Bone Storm 69076
+    auto const* marrowgar = sMechanicRegistry.FindMechanic(69076, 36612);
+    CHECK(marrowgar != nullptr);
+    if (marrowgar)
+    {
+        CHECK(marrowgar->mechanicType == "RunAway");
+        CHECK(marrowgar->dialogueBeat == DialogueBeat::RunAway);
+        CHECK(marrowgar->confidence == MechanicConfidence::Verified || marrowgar->confidence == MechanicConfidence::Authoritative);
+    }
+
+    // 2. DBM-Imported & Verified Boss Lookup: Lady Deathwhisper Frostbolt 72007 (Interrupt)
+    auto const* dw = sMechanicRegistry.FindMechanic(72007, 36855);
+    CHECK(dw != nullptr);
+    if (dw)
+    {
+        CHECK(dw->mechanicType == "Interrupt");
+        CHECK(dw->dialogueBeat == DialogueBeat::Interrupt);
+    }
+
+    // 3. Manual CoA Override Precedence & Disabled Mechanic
+    auto const* disabledRec = sMechanicRegistry.FindMechanic(999999);
+    CHECK(disabledRec != nullptr);
+    if (disabledRec)
+    {
+        CHECK(disabledRec->disabled == true);
+        CHECK(disabledRec->source == MechanicSource::Manual);
+        CHECK(disabledRec->confidence == MechanicConfidence::Authoritative);
+    }
+
+    // 4. Runtime Trigger Invariant:
+    // Without live event: NO callout is emitted.
+    // When live event occurs: exactly ONE callout is emitted.
+    sTacticalCalloutMgr.Reset();
+    uint32 nowMs = 10000;
+    bool triggered1 = sTacticalCalloutMgr.OnMechanicTrigger(nullptr, 69076, 888001, 36612, 845, 1, nowMs);
+    CHECK(triggered1);
+
+    // Duplicate live event within TTL window (same spell, same caster, same castId): SUPPRESSED!
+    bool dupSuppressed = sTacticalCalloutMgr.OnMechanicTrigger(nullptr, 69076, 888001, 36612, 845, 1, nowMs + 500);
+    CHECK(!dupSuppressed);
+
+    // New castId after cooldown: allowed!
+    bool nextCast = sTacticalCalloutMgr.OnMechanicTrigger(nullptr, 69076, 888001, 36612, 845, 2, nowMs + 7000);
+    CHECK(nextCast);
+
+    // Disabled mechanic: SUPPRESSED even with live event!
+    bool disabledTriggered = sTacticalCalloutMgr.OnMechanicTrigger(nullptr, 999999, 888002, 0, 0, 1, nowMs);
+    CHECK(!disabledTriggered);
+
+    // 5. Fail-Safe: non-existent spell ID returns nullptr, no crash
+    CHECK(sMechanicRegistry.FindMechanic(987654321) == nullptr);
+    std::string err;
+    CHECK(!sMechanicRegistry.LoadFromDirectory("non_existent_dir_xyz", err));
+}
+
 int main()
 {
     TestEncounterEligibility();
@@ -2212,6 +2280,7 @@ int main()
     TestDialogueGroupDowntimeConversations();
     TestTacticalCalloutMechanicsAndDeduplication();
     TestEncounterPresentationAndMysteryIsolation();
+    TestMechanicRegistryAndRuntimeTriggers();
 
     std::printf("encounter_tests: %d checks, %d failures.\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;
