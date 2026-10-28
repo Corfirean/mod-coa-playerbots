@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <cctype>
 #include <algorithm>
+#include <vector>
+#include <system_error>
 
 namespace fs = std::filesystem;
 
@@ -41,9 +43,38 @@ void MechanicRegistry::Initialize(std::string const& dataDir)
 void MechanicRegistry::Reload()
 {
     Clear();
-    if (_dataDir.empty())
+
+    std::vector<std::string> candidates;
+    if (!_dataDir.empty())
+        candidates.push_back(_dataDir);
+
+    candidates.push_back("data/mechanics");
+    candidates.push_back("../data/mechanics");
+    candidates.push_back("modules/mod-coa-playerbots/data/mechanics");
+    candidates.push_back("module/data/mechanics");
+
+    std::string targetDir;
+    for (auto const& candidate : candidates)
+    {
+        if (candidate.empty())
+            continue;
+
+        std::error_code ec;
+        if (fs::exists(candidate, ec) && fs::is_directory(candidate, ec))
+        {
+            std::string testFile = candidate + "/mechanic_registry.generated.json";
+            if (fs::exists(testFile, ec))
+            {
+                targetDir = candidate;
+                break;
+            }
+        }
+    }
+
+    if (targetDir.empty())
         return;
 
+    _dataDir = targetDir;
     std::string err;
     LoadFromDirectory(_dataDir, err);
 }

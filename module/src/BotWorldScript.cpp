@@ -5,6 +5,8 @@
 #include "BotWorldBehavior.h"
 #include "WorldBrain.h"
 #include "world/encounters/WorldEncounterDirector.h"
+#include "dialogue/BotDialogueManager.h"
+#include "dialogue/MechanicRegistry.h"
 #include "Config.h"
 #include "Creature.h"
 #include "KillRewarder.h"
@@ -56,6 +58,8 @@ public:
         // Quest knowledge base, objective handlers' config: built once, after the world loaded.
         WorldBrain::Initialize();
         WorldEncounterDirector::LoadConfig();
+        sBotDialogueMgr.Initialize("data/dialogue");
+        sMechanicRegistry.Initialize("data/mechanics");
 
         if (sConfigMgr->GetOption<bool>("CoaBots.AutoLoginOnStartup", false))
             sBotMgr->QueueAllBotsForAutoLogin();

@@ -49,9 +49,6 @@ void EncounterVisualResolver::ApplyAppearancePreset(Player* bot, EncounterPartic
 #ifndef PLAYERBOT_TEST_HARNESS
     if (!part.morphApplied)
     {
-        if (part.originalDisplayId == 0)
-            part.originalDisplayId = bot->GetDisplayId();
-
         uint32 displayId = 0;
         if (preset == AppearancePresetType::Watcher)
             displayId = DISPLAY_ID_WATCHER_HOOD;
@@ -60,6 +57,9 @@ void EncounterVisualResolver::ApplyAppearancePreset(Player* bot, EncounterPartic
 
         if (displayId != 0)
         {
+            if (part.originalDisplayId == 0)
+                part.originalDisplayId = bot->GetDisplayId();
+
             bot->SetDisplayId(displayId);
             part.morphApplied = true;
         }

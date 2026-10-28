@@ -42,9 +42,9 @@ public:
     static constexpr uint32 SPELL_VISUAL_RUNE_GROUND   = 5106;  // Scrying arcane/shadow rune ground visual
     static constexpr uint32 SPELL_VISUAL_MYSTERY_PULSE = 67556; // Dark void pulse
 
-    // Safe display IDs for presets (available on standard 3.3.5a client & Ascension)
-    static constexpr uint32 DISPLAY_ID_WATCHER_HOOD   = 23883; // Dark hooded rogue / stalker
-    static constexpr uint32 DISPLAY_ID_MYSTERY_CULTIST = 21137; // Dark hooded acolyte / shadow cultist
+    // Display IDs for presets (0 = preserve natural bot player character model and gear)
+    static constexpr uint32 DISPLAY_ID_WATCHER_HOOD   = 0;
+    static constexpr uint32 DISPLAY_ID_MYSTERY_CULTIST = 0;
 
 private:
     EncounterVisualResolver() = default;
