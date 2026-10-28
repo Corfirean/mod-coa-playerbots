@@ -24,6 +24,7 @@
 #define COA_PLAYERBOTS_COMBAT_UTILITY_H
 
 #include "Define.h"
+#include <vector>
 
 class Player;
 
@@ -41,6 +42,9 @@ namespace BotAI
         // do, already on the shared reaction gate, or mid-cast) -- the caller's own RoleEngine
         // gate remains the sole owner of decrementing it in that case.
         static bool Execute(Player* bot, CombatContext const& ctx, uint32 diff, uint32& nextCastAllowedMs);
+
+        // The spells in the bot's spellbook that CombatUtility treats as mana restoration (for `.botcmd manaspells` and audits).
+        static std::vector<uint32> ListManaRestoreSpells(Player* bot);
     };
 }
 

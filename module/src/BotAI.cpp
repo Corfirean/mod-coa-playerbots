@@ -28,6 +28,8 @@
  */
 
 #include "BotAI.h"
+#include "dungeon/DcNeverTargetRegistry.h"
+#include "dungeon/DungeonRuntime.h"
 #include "BotSpecStats.h"
 #include "AscensionCollectibleSpellData.h"
 #include "BotClassRotations.h"
@@ -1724,6 +1726,9 @@ public:
             return false;
         if (IsIgnoredTarget(_me->GetGUID(), u->GetGUID()))
             return false;
+        // Creatures a dungeon run must never go after (scripted never to die, encounter staging, endless respawns): dungeon/DcNeverTargetRegistry.h.
+        if (u->GetMap() && u->GetMap()->IsDungeon() && DcNeverTargetRegistry::IsNeverTarget(u->GetMapId(), u->GetEntry(), u->GetPositionX(), u->GetPositionY()))
+            return false;
         if (u->GetLevel() > _maxLevel)
             return false;
         // Training/practice dummies -- every creature using the `npc_training_dummy` AI script
@@ -2350,7 +2355,8 @@ void TryAutoPullInInstance(Player* bot)
     if (!isPointRunner)
         return;
 
-    if (IsDungeonFullyCleared(map, leader))
+    bool const rosterDriven = DungeonRuntime::Enabled() && DungeonRuntime::HasRoster(map, bot);
+    if (rosterDriven ? DungeonRuntime::IsCleared(map, bot) : IsDungeonFullyCleared(map, leader))
     {
         note("every boss on this map counts as cleared");
         if (sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID()))
@@ -2434,7 +2440,14 @@ void TryAutoPullInInstance(Player* bot)
         return;
     }
 
-    // 2. Head toward the next uncleared dungeon encounter boss, in real encounter order where
+    // 2. The roster-driven path: scripted events, objectives, wings, room clears (dungeon/DungeonRuntime.cpp).
+    if (rosterDriven)
+    {
+        DungeonRuntime::Advance(bot, group, note);
+        return;
+    }
+
+    // 2b. Fallback for a map without a roster: head toward the next uncleared dungeon encounter boss, in real encounter order where
     // that data exists (BotDungeonEncounters, backed by the same DungeonEncounter/DBC data the
     // client tracks), falling back to nearest-distance only for a boss with no encounter row at
     // all (a plain CREATURE_FLAG_EXTRA_DUNGEON_BOSS flag with nothing formally tracked).

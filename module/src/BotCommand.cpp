@@ -14,6 +14,11 @@
 #include "dialogue/BotDialogueManager.h"
 #include "dialogue/EncounterPresentation.h"
 #include "BotSpawnRandom.h"
+#include "engine/CombatUtility.h"
+#include "dungeon/DungeonEventRegistry.h"
+#include "dungeon/DungeonRoster.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "BotTalentBuilds.h"
 #include "Chat.h"
 #include "CommandScript.h"
@@ -81,6 +86,8 @@ public:
             { "resume",       HandleBotResumeCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "manaspells",   HandleBotManaSpellsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "roster",       HandleBotRosterCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "quickfill",    HandleBotQuickFillCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "invitebot",    HandleBotInviteRoleCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "botlist",      HandleBotListCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -199,6 +206,44 @@ public:
             return true;
         }
         BotBGFill::JoinBotToBattlegroundQueue(bot, bgTypeId, handler);
+        return true;
+    }
+
+    // The dungeon roster the bot's group works through on its map: bosses and objectives in clear order, what is done, the events of the map.
+    static bool HandleBotRosterCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot || !bot->GetMap())
+        {
+            handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        Map* map = bot->GetMap();
+        handler->PSendSysMessage("ROSTER map {} difficulty {}: {}", map->GetId(), uint32(map->GetDifficulty()), DungeonRoster::Describe(map, bot));
+        std::string events;
+        for (DungeonEvent const& ev : DungeonEventRegistry::AllEvents())
+            if (ev.mapId == map->GetId())
+                events += Acore::StringFormat("[{} #{} {} steps{}] ", ev.name, ev.id, ev.steps.size(), ev.activation == EventActivation::Conditional ? " cond" : "");
+        handler->PSendSysMessage("EVENTS: {}", events.empty() ? "none" : events);
+        return true;
+    }
+
+    // Lists the spells of an online bot that the combat layer treats as mana restoration, and the potions it carries.
+    static bool HandleBotManaSpellsCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        std::string line;
+        for (uint32 id : BotAI::CombatUtility::ListManaRestoreSpells(bot))
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+            line += Acore::StringFormat(" {}({})", id, info ? info->SpellName[0] : "?");
+        }
+        handler->PSendSysMessage("MANASPELLS class {} power {}: {}", uint32(bot->getClass()), uint32(bot->getPowerType()), line.empty() ? " none" : line);
         return true;
     }
 
