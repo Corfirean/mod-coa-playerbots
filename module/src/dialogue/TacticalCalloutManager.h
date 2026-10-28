@@ -54,6 +54,9 @@ public:
     bool OnTankInDanger(Player* callerBot, uint64 tankGuid, std::string const& tankName, uint8 healthPct, uint32 nowMs);
     bool OnTargetSwitchRequired(Player* callerBot, uint64 targetGuid, std::string const& targetName, uint32 nowMs);
 
+    // DBM-imported & verified mechanic integration
+    bool OnMechanicTrigger(Player* callerBot, uint32 spellId, uint64 casterGuid, uint32 creatureEntry, uint32 encounterId, uint32 castId, uint32 nowMs);
+
     void Reset();
     void CleanExpired(uint32 nowMs);
 

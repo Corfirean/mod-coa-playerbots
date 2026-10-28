@@ -11,6 +11,7 @@
 #include "world/encounters/WorldEncounterDirector.h"
 #include "dialogue/BotDialogueManager.h"
 #include "dialogue/EncounterPresentation.h"
+#include "dialogue/MechanicRegistry.h"
 #include "BotSpawnRandom.h"
 #include "BotTalentBuilds.h"
 #include "Chat.h"
@@ -69,6 +70,7 @@ public:
             { "worldstats",   HandleBotWorldStatsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "encounter",    HandleBotEncounterCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "dialogue",     HandleBotDialogueCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "mechanics",    HandleBotMechanicsCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "learnspec",    HandleBotLearnSpecCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "itemfit",      HandleBotItemFitCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "follow",       HandleBotFollowCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -1108,6 +1110,95 @@ public:
 
         if (handler)
             handler->SendSysMessage("Usage: .botcmd dialogue <reload|debug on/off|say <beat>|status>");
+        return true;
+    }
+
+    static bool HandleBotMechanicsCommand(ChatHandler* handler, Tail args)
+    {
+        std::string text(args);
+        std::istringstream iss(text);
+        std::string subcmd;
+        iss >> subcmd;
+
+        if (subcmd.empty() || subcmd == "status")
+        {
+            MechanicRegistryStats stats = sMechanicRegistry.GetStats();
+            if (handler)
+            {
+                handler->PSendSysMessage("MechanicRegistry: records={}, verified={}, imported={}, overrides={}, disabled={}, conflicts={}, spells={}, encounters={}",
+                    stats.totalRecords, stats.verifiedCount, stats.importedCount, stats.manualOverrideCount,
+                    stats.disabledCount, stats.conflictCount, stats.uniqueSpells, stats.uniqueEncounters);
+                handler->SendSysMessage("Usage: .botcmd mechanics <reload|status|spell <id>|encounter <id>>");
+            }
+            return true;
+        }
+
+        if (subcmd == "reload")
+        {
+            sMechanicRegistry.Reload();
+            MechanicRegistryStats stats = sMechanicRegistry.GetStats();
+            if (handler)
+            {
+                handler->PSendSysMessage("MechanicRegistry: reloaded. Loaded records={}, verified={}, overrides={}",
+                    stats.totalRecords, stats.verifiedCount, stats.manualOverrideCount);
+            }
+            return true;
+        }
+
+        if (subcmd == "spell")
+        {
+            uint32 spellId = 0;
+            iss >> spellId;
+            auto records = sMechanicRegistry.FindMechanicsBySpell(spellId);
+            if (handler)
+            {
+                if (records.empty())
+                {
+                    handler->PSendSysMessage("MechanicRegistry: no mechanics registered for spell {}.", spellId);
+                }
+                else
+                {
+                    handler->PSendSysMessage("MechanicRegistry: found {} record(s) for spell {}:", records.size(), spellId);
+                    for (auto const* r : records)
+                    {
+                        handler->PSendSysMessage("  [{}] type={}, priority={}, source={}, conf={}, disabled={}",
+                            r->key, r->mechanicType, DialogueUtils::BeatToString(r->dialogueBeat),
+                            r->source == MechanicSource::Manual ? "Manual" : "DBM",
+                            r->confidence == MechanicConfidence::Verified ? "Verified" : (r->confidence == MechanicConfidence::Authoritative ? "Authoritative" : "Imported"),
+                            r->disabled ? "YES" : "NO");
+                    }
+                }
+            }
+            return true;
+        }
+
+        if (subcmd == "encounter")
+        {
+            uint32 encounterId = 0;
+            iss >> encounterId;
+            auto records = sMechanicRegistry.FindMechanicsByEncounter(encounterId);
+            if (handler)
+            {
+                if (records.empty())
+                {
+                    handler->PSendSysMessage("MechanicRegistry: no mechanics registered for encounter {}.", encounterId);
+                }
+                else
+                {
+                    handler->PSendSysMessage("MechanicRegistry: found {} record(s) for encounter {}:", records.size(), encounterId);
+                    for (auto const* r : records)
+                    {
+                        handler->PSendSysMessage("  [{}] spell={}, type={}, beat={}, conf={}",
+                            r->key, r->spellId, r->mechanicType, DialogueUtils::BeatToString(r->dialogueBeat),
+                            r->confidence == MechanicConfidence::Verified ? "Verified" : "Imported");
+                    }
+                }
+            }
+            return true;
+        }
+
+        if (handler)
+            handler->SendSysMessage("Usage: .botcmd mechanics <reload|status|spell <id>|encounter <id>>");
         return true;
     }
 };

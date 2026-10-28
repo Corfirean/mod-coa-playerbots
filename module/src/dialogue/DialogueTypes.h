@@ -125,6 +125,14 @@ enum class DialogueBeat : uint32
     CrowdControl,
     BurstNow,
     RetreatCombat,
+    PhaseChange,
+    IncomingAoE,
+    StopDamage,
+    TankSwap,
+    Soak,
+    AvoidFront,
+    AvoidBehind,
+    GroupDamage,
 
     // Encounter-Specific (§2)
     WatcherObserved,
@@ -266,6 +274,14 @@ namespace DialogueUtils
             case DialogueBeat::CrowdControl: return "CrowdControl";
             case DialogueBeat::BurstNow: return "BurstNow";
             case DialogueBeat::RetreatCombat: return "RetreatCombat";
+            case DialogueBeat::PhaseChange: return "PhaseChange";
+            case DialogueBeat::IncomingAoE: return "IncomingAoE";
+            case DialogueBeat::StopDamage: return "StopDamage";
+            case DialogueBeat::TankSwap: return "TankSwap";
+            case DialogueBeat::Soak: return "Soak";
+            case DialogueBeat::AvoidFront: return "AvoidFront";
+            case DialogueBeat::AvoidBehind: return "AvoidBehind";
+            case DialogueBeat::GroupDamage: return "GroupDamage";
 
             case DialogueBeat::WatcherObserved: return "WatcherObserved";
             case DialogueBeat::WatcherSpotted: return "WatcherSpotted";
@@ -357,6 +373,14 @@ namespace DialogueUtils
         if (str == "CrowdControl") return DialogueBeat::CrowdControl;
         if (str == "BurstNow") return DialogueBeat::BurstNow;
         if (str == "RetreatCombat") return DialogueBeat::RetreatCombat;
+        if (str == "PhaseChange") return DialogueBeat::PhaseChange;
+        if (str == "IncomingAoE") return DialogueBeat::IncomingAoE;
+        if (str == "StopDamage") return DialogueBeat::StopDamage;
+        if (str == "TankSwap") return DialogueBeat::TankSwap;
+        if (str == "Soak") return DialogueBeat::Soak;
+        if (str == "AvoidFront") return DialogueBeat::AvoidFront;
+        if (str == "AvoidBehind") return DialogueBeat::AvoidBehind;
+        if (str == "GroupDamage") return DialogueBeat::GroupDamage;
 
         if (str == "WatcherObserved") return DialogueBeat::WatcherObserved;
         if (str == "WatcherSpotted") return DialogueBeat::WatcherSpotted;

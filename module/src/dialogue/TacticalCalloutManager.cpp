@@ -1,5 +1,6 @@
 #include "TacticalCalloutManager.h"
 #include "BotDialogueManager.h"
+#include "MechanicRegistry.h"
 
 TacticalCalloutManager& TacticalCalloutManager::Instance()
 {
@@ -173,4 +174,39 @@ bool TacticalCalloutManager::OnTargetSwitchRequired(Player* callerBot, uint64 ta
     sig.priority = DialoguePriority::Normal;
     sig.deduplicationTtlMs = 8000;
     return TryEmitTacticalCallout(callerBot, sig, nowMs);
+}
+
+bool TacticalCalloutManager::OnMechanicTrigger(Player* callerBot, uint32 spellId, uint64 casterGuid, uint32 creatureEntry, uint32 encounterId, uint32 castId, uint32 nowMs)
+{
+    if (!sMechanicRegistry.IsEnabled())
+        return false;
+
+    MechanicRecord const* rec = sMechanicRegistry.FindMechanic(spellId, creatureEntry, encounterId);
+    if (!rec || rec->disabled)
+        return false;
+
+    // Suppress conflicting mechanics until resolved by override
+    if (rec->confidence == MechanicConfidence::Conflict)
+        return false;
+
+    // Deduplication key: mechanicType + spellId + casterGuid + castId
+    std::string key = rec->mechanicType + "_" + std::to_string(spellId) + "_" + std::to_string(casterGuid) + "_" + std::to_string(castId);
+    CleanExpired(nowMs);
+    auto it = _activeCallouts.find(key);
+    if (it != _activeCallouts.end() && nowMs < it->second)
+        return false;
+
+    DialogueContext ctx;
+    ctx.speaker = callerBot;
+    ctx.channel = DialogueChannel::Party;
+    ctx.priority = rec->priority;
+    ctx.spellName = rec->spellName;
+    ctx.mechanicKey = key;
+
+    bool emitted = sBotDialogueMgr.Emit(rec->dialogueBeat, ctx, nowMs);
+    if (emitted)
+    {
+        _activeCallouts[key] = nowMs + 6000;
+    }
+    return emitted;
 }

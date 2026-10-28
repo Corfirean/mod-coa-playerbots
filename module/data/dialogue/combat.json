@@ -178,5 +178,80 @@
       "esES": "¡A por todas! ¡Todos los recursos!",
       "zhCN": "开大爆发！全部技能交！"
     }
+  },
+  {
+    "id": "tactical.phase_change.001",
+    "beat": "PhaseChange",
+    "tags": ["combat", "tactical"],
+    "weight": 1.0,
+    "cooldownSec": 20,
+    "locales": {
+      "enUS": "Phase change! Watch out!",
+      "ruRU": "Смена фазы боя! Будьте начеку!",
+      "deDE": "Phasenwechsel! Passt auf!",
+      "frFR": "Changement de phase ! Attention !",
+      "esES": "¡Cambio de fase! ¡Cuidado!",
+      "zhCN": "阶段转换！注意站位！"
+    }
+  },
+  {
+    "id": "tactical.incoming_aoe.001",
+    "beat": "IncomingAoE",
+    "tags": ["combat", "tactical", "defensive"],
+    "weight": 1.0,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Incoming AoE damage! Defensives up!",
+      "ruRU": "Массовый урон! Защитные способности!",
+      "deDE": "Flächenschaden kommt! Defensivfähigkeiten bereit!",
+      "frFR": "Gros dégâts de zone ! Utilisez vos défenses !",
+      "esES": "¡Daño en área entrante! ¡Habilidades defensivas!",
+      "zhCN": "全团范围伤害！开减伤保命！"
+    }
+  },
+  {
+    "id": "tactical.stop_damage.001",
+    "beat": "StopDamage",
+    "tags": ["combat", "tactical"],
+    "weight": 1.0,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Stop damage! Don't hit the boss!",
+      "ruRU": "Стоп урон! Не бейте босса!",
+      "deDE": "Schadensstopp! Greift den Boss nicht an!",
+      "frFR": "Arrêtez les attaques ! Ne frappez pas le boss !",
+      "esES": "¡Paren el daño! ¡No golpeéis al jefe!",
+      "zhCN": "停手！所有人停手别打！"
+    }
+  },
+  {
+    "id": "tactical.tank_swap.001",
+    "beat": "TankSwap",
+    "tags": ["combat", "tactical", "tank"],
+    "weight": 1.0,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Tank swap! Taunt off me!",
+      "ruRU": "Смена танков! Забирай босса!",
+      "deDE": "Tankwechsel! Spotte ab!",
+      "frFR": "Changement de tank ! Reprends l'aggro !",
+      "esES": "¡Cambio de tanque! ¡Provoca al jefe!",
+      "zhCN": "换坦！快嘲讽接怪！"
+    }
+  },
+  {
+    "id": "tactical.run_away.001",
+    "beat": "RunAway",
+    "tags": ["combat", "tactical", "movement"],
+    "weight": 1.0,
+    "cooldownSec": 15,
+    "locales": {
+      "enUS": "Run away! Get out of there!",
+      "ruRU": "Бегите! Уходите оттуда!",
+      "deDE": "Lauft weg! Bringt euch in Sicherheit!",
+      "frFR": "Fuyez ! Sortez de là !",
+      "esES": "¡Corred! ¡Salid de ahí!",
+      "zhCN": "快跑！离开那里！"
+    }
   }
 ]

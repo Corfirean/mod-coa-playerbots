@@ -557,6 +557,81 @@ void DialoguePool::LoadDefaults()
         l.locales[DialogueLocale::ZhCN] = "立即集火 {targetName}！";
         std::string err; AddLine(l, err);
     }
+    {
+        DialogueLine l;
+        l.id = "tactical.phase_change.001";
+        l.beat = DialogueBeat::PhaseChange;
+        l.tags = {"combat", "tactical"};
+        l.weight = 1.0f;
+        l.cooldownSec = 20;
+        l.locales[DialogueLocale::EnUS] = "Phase change! Watch out!";
+        l.locales[DialogueLocale::RuRU] = "Смена фазы боя! Будьте начеку!";
+        l.locales[DialogueLocale::DeDE] = "Phasenwechsel! Passt auf!";
+        l.locales[DialogueLocale::FrFR] = "Changement de phase ! Attention !";
+        l.locales[DialogueLocale::EsES] = "¡Cambio de fase! ¡Cuidado!";
+        l.locales[DialogueLocale::ZhCN] = "阶段转换！注意站位！";
+        std::string err; AddLine(l, err);
+    }
+    {
+        DialogueLine l;
+        l.id = "tactical.incoming_aoe.001";
+        l.beat = DialogueBeat::IncomingAoE;
+        l.tags = {"combat", "tactical", "defensive"};
+        l.weight = 1.0f;
+        l.cooldownSec = 15;
+        l.locales[DialogueLocale::EnUS] = "Incoming AoE damage! Defensives up!";
+        l.locales[DialogueLocale::RuRU] = "Массовый урон! Защитные способности!";
+        l.locales[DialogueLocale::DeDE] = "Flächenschaden kommt! Defensivfähigkeiten bereit!";
+        l.locales[DialogueLocale::FrFR] = "Gros dégâts de zone ! Utilisez vos défenses !";
+        l.locales[DialogueLocale::EsES] = "¡Daño en área entrante! ¡Habilidades defensivas!";
+        l.locales[DialogueLocale::ZhCN] = "全团范围伤害！开减伤保命！";
+        std::string err; AddLine(l, err);
+    }
+    {
+        DialogueLine l;
+        l.id = "tactical.stop_damage.001";
+        l.beat = DialogueBeat::StopDamage;
+        l.tags = {"combat", "tactical"};
+        l.weight = 1.0f;
+        l.cooldownSec = 15;
+        l.locales[DialogueLocale::EnUS] = "Stop damage! Don't hit the boss!";
+        l.locales[DialogueLocale::RuRU] = "Стоп урон! Не бейте босса!";
+        l.locales[DialogueLocale::DeDE] = "Schadensstopp! Greift den Boss nicht an!";
+        l.locales[DialogueLocale::FrFR] = "Arrêtez les attaques ! Ne frappez pas le boss !";
+        l.locales[DialogueLocale::EsES] = "¡Paren el daño! ¡No golpeéis al jefe!";
+        l.locales[DialogueLocale::ZhCN] = "停手！所有人停手别打！";
+        std::string err; AddLine(l, err);
+    }
+    {
+        DialogueLine l;
+        l.id = "tactical.tank_swap.001";
+        l.beat = DialogueBeat::TankSwap;
+        l.tags = {"combat", "tactical", "tank"};
+        l.weight = 1.0f;
+        l.cooldownSec = 15;
+        l.locales[DialogueLocale::EnUS] = "Tank swap! Taunt off me!";
+        l.locales[DialogueLocale::RuRU] = "Смена танков! Забирай босса!";
+        l.locales[DialogueLocale::DeDE] = "Tankwechsel! Spotte ab!";
+        l.locales[DialogueLocale::FrFR] = "Changement de tank ! Reprends l'aggro !";
+        l.locales[DialogueLocale::EsES] = "¡Cambio de tanque! ¡Provoca al jefe!";
+        l.locales[DialogueLocale::ZhCN] = "换坦！快嘲讽接怪！";
+        std::string err; AddLine(l, err);
+    }
+    {
+        DialogueLine l;
+        l.id = "tactical.run_away.001";
+        l.beat = DialogueBeat::RunAway;
+        l.tags = {"combat", "tactical", "movement"};
+        l.weight = 1.0f;
+        l.cooldownSec = 15;
+        l.locales[DialogueLocale::EnUS] = "Run away! Get out of there!";
+        l.locales[DialogueLocale::RuRU] = "Бегите! Уходите оттуда!";
+        l.locales[DialogueLocale::DeDE] = "Lauft weg! Bringt euch in Sicherheit!";
+        l.locales[DialogueLocale::FrFR] = "Fuyez ! Sortez de là !";
+        l.locales[DialogueLocale::EsES] = "¡Corred! ¡Salid de ahí!";
+        l.locales[DialogueLocale::ZhCN] = "快跑！离开那里！";
+        std::string err; AddLine(l, err);
+    }
 
     // ------------------------------------------------------------------------
     // Player-Specific & Nemesis Memory
