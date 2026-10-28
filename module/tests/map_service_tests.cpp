@@ -569,6 +569,43 @@ static void TestScenarioJ_MapIdZero()
 }
 
 // -----------------------------------------------------------------------------
+// Section 3.11: Scenario K / F11 -- Server-Side Viewport Area Filtering
+// -----------------------------------------------------------------------------
+static void TestScenarioK_ViewportAreaFiltering()
+{
+    std::cout << "[Test] Scenario K / F11: Server-side Viewport Area Filtering (filterAreaId)..." << std::endl;
+
+    BotMapCommanderView cmd;
+    cmd.guidLow = 9999;
+    cmd.teamId = 0; // Alliance
+    cmd.mapId = 0;  // Eastern Kingdoms
+    cmd.zoneId = 12; // Elwynn Forest
+
+    std::vector<BotMapFilterTarget> bots = {
+        MakeTarget(201, 0, 0, 12), // Elwynn Forest
+        MakeTarget(202, 0, 0, 12), // Elwynn Forest
+        MakeTarget(203, 0, 0, 40), // Westfall (same map 0, different zone 40)
+        MakeTarget(204, 0, 0, 10), // Duskwood (same map 0, different zone 10)
+        MakeTarget(205, 0, 1, 14)  // Kalimdor (map 1)
+    };
+
+    // 1. AllAllied with filterMapId = 0 and filterAreaId = 12 (Elwynn Forest zone view)
+    std::vector<BotMapPinSnapshot> elwynnOnly = BotMapFilter::FilterBots(cmd, BotMapMode::AllAllied, 0, 12, 0, bots);
+    CHECK(elwynnOnly.size() == 2);
+    CHECK(elwynnOnly[0].guidLow == 201);
+    CHECK(elwynnOnly[1].guidLow == 202);
+
+    // 2. AllAllied with filterMapId = 0 and filterAreaId = 0 (Continent view)
+    std::vector<BotMapPinSnapshot> allEasternKingdoms = BotMapFilter::FilterBots(cmd, BotMapMode::AllAllied, 0, 0, 0, bots);
+    CHECK(allEasternKingdoms.size() == 4); // 201, 202, 203, 204
+
+    // 3. CurrentZone with filterAreaId = 40 (Explicit Westfall viewport)
+    std::vector<BotMapPinSnapshot> westfall = BotMapFilter::FilterBots(cmd, BotMapMode::CurrentZone, 0, 40, 0, bots);
+    CHECK(westfall.size() == 1);
+    CHECK(westfall[0].guidLow == 203);
+}
+
+// -----------------------------------------------------------------------------
 // Section 4: Performance Benchmarks & Stress Tests
 // -----------------------------------------------------------------------------
 static void TestPerformanceBenchmarks()
@@ -632,6 +669,7 @@ int main()
     TestScenarioH_HiddenEncounter();
     TestScenarioI_OffWithEvents();
     TestScenarioJ_MapIdZero();
+    TestScenarioK_ViewportAreaFiltering();
     TestPerformanceBenchmarks();
 
     std::cout << "============================================================" << std::endl;
