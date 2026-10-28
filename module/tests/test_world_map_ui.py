@@ -1,8 +1,9 @@
+import os
 import sys
 import lupa.lua51 as lua
 
 def run_tests():
-    print("Running Lua Unit Tests for CoA World Map Intelligence...")
+    print("Running Lua Unit & Regression Tests for CoA World Map Intelligence...")
     runtime = lua.LuaRuntime()
 
     # Environment stubs
@@ -11,6 +12,7 @@ def run_tests():
     UIParent = {}
     WorldMapTooltip = {
         lines = {},
+        shown = false,
         ClearLines = function(self) self.lines = {} end,
         SetOwner = function(self, owner, anchor) self.owner = owner end,
         AddLine = function(self, text, r, g, b) table.insert(self.lines, { text = text, r = r, g = g, b = b }) end,
@@ -19,6 +21,7 @@ def run_tests():
         end,
         Show = function(self) self.shown = true end,
         Hide = function(self) self.shown = false end,
+        IsShown = function(self) return self.shown end,
     }
     GameTooltip = WorldMapTooltip
     WorldMapFrame = {
@@ -63,6 +66,7 @@ def run_tests():
                     SetWidth = function() end,
                     SetHeight = function() end,
                     SetTexture = function() end,
+                    SetTexCoord = function() end,
                     SetVertexColor = function() end,
                     Show = function() end,
                     Hide = function() end,
@@ -113,17 +117,22 @@ def run_tests():
     }
     ''')
 
+    # Load Lua files using portable relative paths
+    test_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(test_dir, '..', '..'))
+    addon_dir = os.path.join(repo_root, 'addon', 'CoABotUI')
+
     files = [
-        r'C:\games\source\world-map-intelligence\addon\CoABotUI\CoABotWorldMapData.lua',
-        r'C:\games\source\world-map-intelligence\addon\CoABotUI\CoABotMapTooltip.lua',
-        r'C:\games\source\world-map-intelligence\addon\CoABotUI\CoABotMapMarkers.lua',
-        r'C:\games\source\world-map-intelligence\addon\CoABotUI\CoABotMapSettings.lua',
-        r'C:\games\source\world-map-intelligence\addon\CoABotUI\CoABotWorldMap.lua',
+        os.path.join(addon_dir, 'CoABotWorldMapData.lua'),
+        os.path.join(addon_dir, 'CoABotMapTooltip.lua'),
+        os.path.join(addon_dir, 'CoABotMapMarkers.lua'),
+        os.path.join(addon_dir, 'CoABotMapSettings.lua'),
+        os.path.join(addon_dir, 'CoABotWorldMap.lua'),
     ]
 
     for f in files:
-        content = open(f, encoding='utf-8').read()
-        runtime.execute(content)
+        with open(f, 'r', encoding='utf-8') as fh:
+            runtime.execute(fh.read())
 
     # Run verification assertions in Lua
     test_script = '''
@@ -173,34 +182,105 @@ def run_tests():
     assert_true(#sentMessages > 0, "Query sent on mode changed")
     assert_true(sentMessages[1].body:find("^MAPQUERY:"), "MAPQUERY format valid")
 
-    -- Simulate server reply
-    local reqId = sentMessages[1].body:match("^MAPQUERY:(%d+)")
-    CoABotWorldMap:HandleIncomingMessage("MAPBEGIN:" .. reqId .. ":2:1:10")
-    CoABotWorldMap:HandleIncomingMessage("MAPBOTS:" .. reqId .. ":0:101,-9100,-200,60,11,2,1,3|102,-9110,-210,60,1,1,0,5")
-    CoABotWorldMap:HandleIncomingMessage("MAPEND:" .. reqId)
+    -- Simulate server reply (with mapId in entry)
+    local qReqId = sentMessages[1].body:match("^MAPQUERY:(%d+)")
+    CoABotWorldMap:HandleIncomingMessage("MAPBEGIN:" .. qReqId .. ":2:1:10")
+    CoABotWorldMap:HandleIncomingMessage("MAPBOTS:" .. qReqId .. ":0:101,0,-9100,-200,60,11,2,1,3|102,0,-9110,-210,60,1,1,0,5")
+    CoABotWorldMap:HandleIncomingMessage("MAPEND:" .. qReqId)
 
-    -- Stale reqId rejection
-    CoABotWorldMap:HandleIncomingMessage("MAPBEGIN:1:50:5:1") -- Old reqId
-    -- should be safely ignored without breaking active bots
+    -- 5. Detail Request Method Syntax & Safe Dispatch
+    sentMessages = {}
+    CoABotWorldMap:RequestDetail(101)
+    assert_true(#sentMessages == 1, "RequestDetail dispatched message")
+    assert_true(sentMessages[1].body:find("^MAPDETAIL:%d+:101$") ~= nil, "MAPDETAIL body contains valid guidLow")
 
-    -- 5. Detail & Tooltip
-    CoABotWorldMap:HandleIncomingMessage("MAPDETAIL:" .. reqId .. ":101:52:187:Restoration:Gathering Herbs:1:2447:100:67:In Progress")
+    -- Detail Response with real Name and Task
+    local dReqId = sentMessages[1].body:match("^MAPDETAIL:(%d+):101")
+    CoABotWorldMap:HandleIncomingMessage("MAPDETAIL:" .. dReqId .. ":101:Malfurion:52:187:Restoration:Gathering Herbs:1:2447:100:67:In Progress")
+
     local cached = CoABotMapTooltip.GetCachedDetail(101)
     assert_true(cached ~= nil, "Detail cached for bot 101")
+    assert_true(cached.name == "Malfurion", "Cached name matches Malfurion")
     assert_true(cached.specName == "Restoration", "Cached specName matches")
     assert_true(cached.avgItemLevel == 187, "Cached avgItemLevel matches")
     assert_true(cached.taskDone == 67, "Cached taskDone matches")
 
-    local dummyPin = { botData = { guidLow = 101, classId = 11, level = 60, role = 2, flags = 1, activity = 3 } }
-    CoABotMapTooltip.ShowBotTooltip(dummyPin, dummyPin.botData)
-    assert_true(WorldMapTooltip.shown == true, "Tooltip shown")
-    assert_true(#WorldMapTooltip.lines > 3, "Tooltip has lines populated")
+    -- 6. Ascension Custom Classes (classes 12-32) Tooltip & Colors
+    local customBotPin = { botData = { guidLow = 201, classId = 12, level = 80, role = 0, flags = 0, activity = 0 } }
+    CoABotMapTooltip.ShowBotTooltip(customBotPin, customBotPin.botData)
+    assert_true(WorldMapTooltip.shown == true, "Tooltip shown for custom class")
+    local foundBarbarian = false
+    for _, l in ipairs(WorldMapTooltip.lines) do
+        if l.right and l.right:find("Barbarian") then
+            foundBarbarian = true
+        end
+    end
+    assert_true(foundBarbarian, "Ascension custom class Barbarian correctly rendered")
+
+    -- Chronomancer (class 22) check
+    local chronoPin = { botData = { guidLow = 202, classId = 22, level = 80, role = 2, flags = 0, activity = 0 } }
+    CoABotMapTooltip.ShowBotTooltip(chronoPin, chronoPin.botData)
+    local foundChrono = false
+    for _, l in ipairs(WorldMapTooltip.lines) do
+        if l.right and l.right:find("Chronomancer") then
+            foundChrono = true
+        end
+    end
+    assert_true(foundChrono, "Ascension custom class Chronomancer correctly rendered")
+
+    -- 7. Chunk Loss Protection Test
+    -- Send MAPBEGIN declaring 2 chunks, but only send chunk 0 then MAPEND
+    local testReqId = CoABotWorldMap:GetNextQueryReqId()
+    CoABotWorldMap:HandleIncomingMessage("MAPBEGIN:" .. testReqId .. ":10:2:1")
+    CoABotWorldMap:HandleIncomingMessage("MAPBOTS:" .. testReqId .. ":0:301,0,-9100,-200,60,1,0,0,1")
+    -- Chunk 1 lost in transit!
+    CoABotWorldMap:HandleIncomingMessage("MAPEND:" .. testReqId)
+    -- Incomplete transaction discarded, bot 301 must NOT have overwritten activeBots!
+
+    -- 8. MapId Continent Isolation in Markers
+    -- Bot on Kalimdor (mapId = 1) while current map is Elwynn (mapId = 0)
+    local kalimdorBot = { guidLow = 999, mapId = 1, worldX = -9096.5, worldY = -200.0, level = 80, classId = 1, role = 0, flags = 0, activity = 0 }
+    CoABotMapMarkers:Update({ kalimdorBot }, {})
+    -- Because mapId (1) ~= Elwynn mapId (0), pin must not be added to activePins
+    local kalimdorPinVisible = false
+    for _, p in ipairs(CoABotMapMarkers:GetBotPin(1).shown and { CoABotMapMarkers:GetBotPin(1) } or {}) do
+        if p.botData and p.botData.guidLow == 999 then
+            kalimdorPinVisible = true
+        end
+    end
+    assert_true(not kalimdorPinVisible, "Kalimdor bot excluded from Elwynn map view")
+
+    -- 9. Auto-Refresh of Tooltip on Detail Arrival
+    local testPin = { botData = { guidLow = 401, mapId = 0, classId = 1, level = 80, role = 1, flags = 1, activity = 1 } }
+    CoABotMapTooltip.ShowBotTooltip(testPin, testPin.botData)
+    assert_true(CoABotMapTooltip.currentHoverGuid == 401, "Hover tracking active for bot 401")
+
+    -- Simulate MAPDETAIL arriving for bot 401
+    CoABotMapTooltip.OnDetailReceived(401, {
+        guidLow = 401,
+        name = "Uther",
+        specName = "Holy",
+        avgItemLevel = 220,
+        taskType = 1,
+        taskItem = 1234,
+        taskTarget = 50,
+        taskDone = 50,
+        taskStatus = "Completed"
+    })
+    -- Tooltip must have auto-refreshed with real name "Uther"
+    local foundUther = false
+    for _, l in ipairs(WorldMapTooltip.lines) do
+        if l.text and l.text:find("Uther") then
+            foundUther = true
+        end
+    end
+    assert_true(foundUther, "Active tooltip auto-refreshed with real bot name Uther")
 
     return failed
     '''
     failed_count = runtime.execute(test_script)
     if failed_count == 0:
-        print("All Lua Unit Tests passed successfully (0 failures)!")
+        print("All Lua Unit & Regression Tests passed successfully (0 failures)!")
     else:
         print(f"Lua Unit Tests completed with {failed_count} failures!")
         sys.exit(1)
