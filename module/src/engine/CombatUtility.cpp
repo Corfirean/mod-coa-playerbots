@@ -21,7 +21,9 @@
 #include "BotClassRotations.h"
 #include "Config.h"
 #include "Group.h"
+#include "Item.h"
 #include "Log.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "SharedDefines.h"
 #include "SpellAuras.h"
@@ -30,6 +32,7 @@
 #include "SpellMgr.h"
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 #include "engine/ActionEvaluator.h"
@@ -287,6 +290,208 @@ namespace BotAI
             considerAlly(bot);
             return plan;
         }
+
+        // ---- Sustain: potions and mana-restoring abilities in combat -------------------------------------------------
+
+        // Per bot: when the next attempt of each kind is allowed, so a failed or unavailable try is not repeated every tick.
+        struct SustainTimers
+        {
+            uint32 nextHealthPotionMs = 0;
+            uint32 nextManaPotionMs = 0;
+            uint32 nextManaSpellMs = 0;
+        };
+        std::unordered_map<ObjectGuid, SustainTimers> s_sustain;
+
+        // Whether a spell gives its caster mana: an energize effect on the caster (or an aura that does it over time, or raises mana regeneration).
+        // Derived from the spell data itself, so every class and every custom Ascension ability is covered without a list.
+        bool IsSelfManaRestore(SpellInfo const* info)
+        {
+            static std::unordered_map<uint32, bool> cache;
+            if (!info)
+                return false;
+            auto cached = cache.find(info->Id);
+            if (cached != cache.end())
+                return cached->second;
+
+            bool restores = false;
+            if (!info->IsPassive() && info->IsPositive())
+            {
+                for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                {
+                    auto const& e = info->Effects[i];
+                    if (!e.IsEffect() || e.MiscValue != POWER_MANA)
+                        continue;
+                    bool const self = e.TargetA.GetTarget() == TARGET_UNIT_CASTER || e.TargetA.GetTarget() == TARGET_UNIT_CASTER_AREA_PARTY ||
+                        e.TargetA.GetTarget() == TARGET_UNIT_CASTER_AREA_RAID;
+                    if (!self || e.CalcValue() <= 0)
+                        continue;
+                    if (e.Effect == SPELL_EFFECT_ENERGIZE || e.Effect == SPELL_EFFECT_ENERGIZE_PCT)
+                        restores = true;
+                    else if (e.Effect == SPELL_EFFECT_APPLY_AURA &&
+                        (e.ApplyAuraName == SPELL_AURA_PERIODIC_ENERGIZE || e.ApplyAuraName == SPELL_AURA_MOD_POWER_REGEN ||
+                         e.ApplyAuraName == SPELL_AURA_MOD_POWER_REGEN_PERCENT))
+                    {
+                        // A short aura is a restore ability; an hour-long "+mana per 5 seconds" is a consumable-style buff, not something to cast when
+                        // the mana is gone (the first soak run re-cast such buffs again and again).
+                        int32 const duration = info->GetDuration();
+                        if (duration > 0 && duration <= 60000)
+                            restores = true;
+                    }
+                }
+            }
+            cache[info->Id] = restores;
+            return restores;
+        }
+
+        // The best mana-restoring spell the bot knows and can cast now (the largest single gain wins), or 0.
+        uint32 SelectManaRestoreSpell(Player* bot, CombatContext const& ctx)
+        {
+            uint32 best = 0;
+            int32 bestGain = 0;
+            for (auto const& [spellId, learned] : bot->GetSpellMap())
+            {
+                if (!learned || learned->State == PLAYERSPELL_REMOVED || !learned->Active)
+                    continue;
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+                if (!info || !IsSelfManaRestore(info) || bot->HasSpellCooldown(spellId) || bot->HasAura(spellId))
+                    continue;
+                uint32 const root = sSpellMgr->GetFirstSpellInChain(spellId);
+                if (SpellResolver::ResolveSpell(bot, root ? root : spellId) != spellId)
+                    continue; // a lower rank of a spell the bot knows better
+                // An ability paid for with health (Life Tap) only while the bot can spare it.
+                if (info->PowerType == POWER_HEALTH && ctx.botHpPct < 70.0f)
+                    continue;
+                if (bot->IsInCombat() && !info->CanBeUsedInCombat())
+                    continue;
+                int32 gain = 0;
+                for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                    if (info->Effects[i].MiscValue == POWER_MANA)
+                        gain = std::max(gain, info->Effects[i].CalcValue());
+                if (gain > bestGain)
+                {
+                    best = spellId;
+                    bestGain = gain;
+                }
+            }
+            return best;
+        }
+
+        enum class PotionKind : uint8 { Health, Mana };
+
+        // What a potion does, from its use spell: a heal effect, or an energize effect on mana.
+        bool PotionIsOfKind(ItemTemplate const* proto, PotionKind kind)
+        {
+            if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || proto->SubClass != ITEM_SUBCLASS_POTION)
+                return false;
+            if (!proto->Spells[0].SpellId || proto->Spells[0].SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+                return false;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId);
+            if (!info)
+                return false;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                auto const& e = info->Effects[i];
+                if (kind == PotionKind::Health && (e.Effect == SPELL_EFFECT_HEAL || e.Effect == SPELL_EFFECT_HEAL_PCT) && e.CalcValue() > 0)
+                    return true;
+                if (kind == PotionKind::Mana && (e.Effect == SPELL_EFFECT_ENERGIZE || e.Effect == SPELL_EFFECT_ENERGIZE_PCT) && e.MiscValue == POWER_MANA)
+                    return true;
+            }
+            return false;
+        }
+
+        // The strongest potion of this kind in the bags that the bot's level allows (the one with the highest required level), or null.
+        Item* FindPotion(Player* bot, PotionKind kind)
+        {
+            Item* best = nullptr;
+            uint32 bestLevel = 0;
+            auto consider = [&](Item* item)
+            {
+                ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+                if (!proto || proto->RequiredLevel > bot->GetLevel() || !PotionIsOfKind(proto, kind))
+                    return;
+                if (bot->HasSpellCooldown(proto->Spells[0].SpellId))
+                    return;
+                if (!best || proto->RequiredLevel > bestLevel)
+                {
+                    best = item;
+                    bestLevel = proto->RequiredLevel;
+                }
+            };
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+            for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+                if (Bag* bag = bot->GetBagByPos(bagSlot))
+                    for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                        consider(bag->GetItemByPos(j));
+            return best;
+        }
+
+        // Uses the item as a client would (the cooldown, the use spell and the stack are handled by the core).
+        bool UsePotion(Player* bot, Item* item)
+        {
+            if (!item || bot->CanUseItem(item) != EQUIP_ERR_OK)
+                return false;
+            uint32 const entry = item->GetEntry();
+            uint32 const before = bot->GetItemCount(entry);
+            uint32 const useSpell = item->GetTemplate()->Spells[0].SpellId;
+            SpellCastTargets targets;
+            targets.SetUnitTarget(bot);
+            bot->CastItemUseSpell(item, targets, 1, 0);
+            return bot->GetItemCount(entry) < before || bot->HasSpellCooldown(useSpell);
+        }
+
+        // Called from CombatUtility::Execute in combat. Health potion when low, mana-restoring ability and then a mana potion when the mana is
+        // nearly gone. A healer restores earlier than the others: a healer that goes dry is the end of the group.
+        bool TrySustain(Player* bot, CombatContext const& ctx, uint32& nextCastAllowedMs)
+        {
+            if (!bot->IsInCombat() || !ctx.victim)
+                return false;
+            uint32 const now = getMSTime();
+            SustainTimers& t = s_sustain[bot->GetGUID()];
+
+            float const hpLimit = ctx.role == BotRole::Tank ? 40.0f : 33.0f;
+            if (ctx.botHpPct < hpLimit && now >= t.nextHealthPotionMs)
+            {
+                t.nextHealthPotionMs = now + 3000;
+                if (Item* potion = FindPotion(bot, PotionKind::Health); potion && UsePotion(bot, potion))
+                {
+                    t.nextHealthPotionMs = now + 120000;
+                    nextCastAllowedMs = UTILITY_REACTION_GATE_MS;
+                    LOG_INFO("module.coa-playerbots.sustain", "Sustain: '{}' drank a health potion at {:.0f}% health.", bot->GetName(), ctx.botHpPct);
+                    return true;
+                }
+            }
+
+            if (bot->getPowerType() != POWER_MANA || bot->GetMaxPower(POWER_MANA) == 0)
+                return false;
+            float const manaPct = bot->GetPowerPct(POWER_MANA);
+            bool const healer = ctx.role == BotRole::Healer;
+            if (manaPct >= (healer ? 30.0f : 20.0f))
+                return false;
+
+            if (now >= t.nextManaSpellMs)
+            {
+                t.nextManaSpellMs = now + 2000;
+                if (uint32 spellId = SelectManaRestoreSpell(bot, ctx))
+                    if (TryCast(bot, ctx, spellId, bot, "restored mana with an ability", nextCastAllowedMs))
+                    {
+                        LOG_INFO("module.coa-playerbots.sustain", "Sustain: '{}' restored mana with spell {} at {:.0f}% mana.", bot->GetName(), spellId, manaPct);
+                        return true;
+                    }
+            }
+            if (manaPct < (healer ? 20.0f : 12.0f) && now >= t.nextManaPotionMs)
+            {
+                t.nextManaPotionMs = now + 3000;
+                if (Item* potion = FindPotion(bot, PotionKind::Mana); potion && UsePotion(bot, potion))
+                {
+                    t.nextManaPotionMs = now + 120000;
+                    nextCastAllowedMs = UTILITY_REACTION_GATE_MS;
+                    LOG_INFO("module.coa-playerbots.sustain", "Sustain: '{}' drank a mana potion at {:.0f}% mana.", bot->GetName(), manaPct);
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     bool CombatUtility::Execute(Player* bot, CombatContext const& ctx, uint32 diff, uint32& nextCastAllowedMs)
@@ -370,6 +575,11 @@ namespace BotAI
                 }
             }
         }
+
+        // 2b. Sustain -- a health potion when low, a mana ability or potion when the mana is nearly gone. A bot that runs dry mid-fight used to
+        // stand there and the group waited minutes for it to drink (measured in the soak test: tank "waiting: ... is low on mana").
+        if (TrySustain(bot, ctx, nextCastAllowedMs))
+            return true;
 
         // 3. Cleanse -- any role with a known dispel-shaped spell whose DispelType actually
         // matches a debuff present on some ally (item 4, Phase 2 fixup). FindCleansePlan only

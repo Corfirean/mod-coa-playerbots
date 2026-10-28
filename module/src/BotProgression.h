@@ -59,6 +59,14 @@ namespace BotProgression
     uint32 PickFood(uint8 level);
     uint32 PickDrink(uint8 level);
 
+    // The plain healing / mana potion of the highest tier a bot of this level may use, 0 when none.
+    uint32 PickHealingPotion(uint8 level);
+    uint32 PickManaPotion(uint8 level);
+
+    // Tops the bags up to `count` potions of each kind for the bot's level (mana potions only for a mana user). Like the food, handed out free
+    // when a bot is made and when it levels; the economy buys them afterwards.
+    void ProvisionPotions(Player* bot, uint32 count);
+
     // Raises profession caps to the new level, then relearns abilities, recipes, tools and food.
     // Talents are applied separately by BotTalentBuilds.
     void OnLevelUp(Player* bot, uint8 newLevel);

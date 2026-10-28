@@ -1210,6 +1210,7 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
     BotProgression::GrantMounts(bot);
     BotTaxi::GrantNodesForLevel(bot);
     BotProgression::ProvisionFood(bot, 20);
+    BotProgression::ProvisionPotions(bot, 5);
 
     GearUpFreshBotForLevel(bot, level);
 

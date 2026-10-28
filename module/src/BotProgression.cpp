@@ -395,6 +395,50 @@ namespace BotProgression
         return PickConsumable(Consumables().drink, level);
     }
 
+    namespace
+    {
+        // The ordinary healing and mana potion of each tier (required level, item). The world database holds dozens of look-alikes (injectors,
+        // battleground and "contraband" versions); these are the plain ones every tier has.
+        struct PotionTier { uint8 level; uint32 entry; };
+        constexpr PotionTier HEALING_TIERS[] = { {1, 118}, {3, 858}, {12, 929}, {21, 1710}, {35, 3928}, {45, 13446}, {55, 22829} };
+        constexpr PotionTier MANA_TIERS[] = { {5, 2455}, {14, 3385}, {20, 3827}, {31, 6149}, {41, 13443}, {49, 13444}, {55, 22832} };
+
+        template <size_t N>
+        uint32 PickPotionTier(PotionTier const (&tiers)[N], uint8 level)
+        {
+            uint32 best = 0;
+            for (PotionTier const& tier : tiers)
+                if (tier.level <= level && sObjectMgr->GetItemTemplate(tier.entry))
+                    best = tier.entry;
+            return best;
+        }
+    }
+
+    uint32 PickHealingPotion(uint8 level)
+    {
+        return PickPotionTier(HEALING_TIERS, level);
+    }
+
+    uint32 PickManaPotion(uint8 level)
+    {
+        return PickPotionTier(MANA_TIERS, level);
+    }
+
+    void ProvisionPotions(Player* bot, uint32 count)
+    {
+        if (!bot || !count)
+            return;
+        auto give = [&](uint32 entry)
+        {
+            if (!entry || bot->GetItemCount(entry) >= count)
+                return;
+            bot->StoreNewItemInBestSlots(entry, count - bot->GetItemCount(entry));
+        };
+        give(PickHealingPotion(bot->GetLevel()));
+        if (bot->getPowerType() == POWER_MANA)
+            give(PickManaPotion(bot->GetLevel()));
+    }
+
     void ProvisionFood(Player* bot, uint32 stackSize)
     {
         ConsumableTable const& table = Consumables();
@@ -425,6 +469,7 @@ namespace BotProgression
         LearnRecipesFromBook(bot);
         GrantProfessionTools(bot);
         ProvisionFood(bot, 20);
+        ProvisionPotions(bot, 5);
     }
 }
 

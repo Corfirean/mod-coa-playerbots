@@ -480,7 +480,9 @@ namespace BotMovement
         auto& entry = last[bot->GetGUID()];
         uint32 const now = getMSTime();
         std::string const key = Acore::StringFormat("{} {:.0f} {:.0f}", reason, x, y);
-        if (entry.first == key && now - entry.second < 5000)
+        // A corpse run tries several legs and fallbacks per second, most of which fail on the way to one that works: one line per minute and bot is
+        // enough, the outcome is logged by the ghost handler itself.
+        if (owner == MoveOwner::Corpse ? now - entry.second < 60000 : (entry.first == key && now - entry.second < 5000))
             return;
         entry = { key, now };
         LOG_INFO("module.coa-playerbots", "{}: movement of '{}' refused: {} (goal {:.0f} {:.0f}, now {:.0f} {:.0f} {:.0f}).",

@@ -122,6 +122,7 @@
 #include "WorldSession.h"
 #include <algorithm>
 #include <list>
+#include <map>
 #include <atomic>
 #include <array>
 #include <cmath>
@@ -322,6 +323,8 @@ struct BotAIState
     uint32 ghostDurationMs = 0;
     // How long the corpse run has been refused by the movement layer in a row (no path, held by another owner).
     uint32 ghostMoveFailMs = 0;
+    // Game time (ms) until which the ghost is walking the last stretch to its body in a straight line (the navigation mesh has no path there).
+    uint32 ghostStraightUntilMs = 0;
     // How long the ghost has stood at its body waiting for the creatures around it to leave.
     uint32 ghostHoldMs = 0;
     // Set when a dead bot comes back (a corpse reclaim restores half its health): it rests to near full before it goes
@@ -348,6 +351,11 @@ constexpr uint32 DEATH_REZ_GRACE_MS = 15000;
 // the movement layer refuses the corpse run for GHOST_MOVE_GIVE_UP_MS in a row (no path to the corpse).
 constexpr uint32 GHOST_FAILSAFE_MS = 240000;
 constexpr uint32 GHOST_MOVE_GIVE_UP_MS = 20000;
+// Navigate() reports Stuck only after its whole recovery ladder (leg, detour, route waypoint, backtrack) has failed: no point waiting out the rest of the 20 s.
+constexpr uint32 GHOST_STUCK_GIVE_UP_MS = 4000;
+// A ghost whose path is refused this long, and whose body is nearer than the range, walks the rest in a straight line.
+constexpr uint32 GHOST_STRAIGHT_AFTER_MS = 3000;
+constexpr float GHOST_STRAIGHT_RANGE = 350.0f;
 // A ghost at its body waits this long for hostile creatures standing next to it to wander off before it comes back
 // anyway; they usually killed it, and coming back at half health among them killed it again within seconds.
 constexpr uint32 GHOST_HOLD_MAX_MS = 45000;
@@ -2243,6 +2251,31 @@ bool RunToTankIfTargeted(Player* bot)
 // instant the committed boss stops being a candidate (cleared, or no longer present).
 std::unordered_map<ObjectGuid, uint64> _autoDungeonCommittedBoss;
 
+// Bosses a group could not get to, per group leader and spawn id: the game time (ms) until which the next-boss choice leaves them out. Without it
+// the choice went straight back to the same boss in encounter order and the group stood at the same dead end (soak test: Gnomeregan, Scholomance,
+// Shadowfang... ended "STUCK" with "no path" refusals for minutes).
+std::map<std::pair<ObjectGuid, uint64>, uint32> _autoDungeonUnreachableUntil;
+constexpr uint32 AUTO_DUNGEON_UNREACHABLE_MS = 6 * 60 * 1000;
+
+// How long the tank has been heading for the committed boss without getting 8 yards closer than ever before (only ticks that really tried to walk
+// count, so waiting for mana does not).
+struct AutoDungeonBossProgress
+{
+    uint64 spawnId = 0;
+    float bestDist = 1.0e9f;
+    uint32 lastTickMs = 0;
+    uint32 stalledMs = 0;
+};
+std::unordered_map<ObjectGuid, AutoDungeonBossProgress> _autoDungeonBossProgress;
+constexpr uint32 AUTO_DUNGEON_STALL_MS = 180 * 1000;
+
+void MarkBossUnreachable(ObjectGuid leader, uint64 spawnId)
+{
+    _autoDungeonUnreachableUntil[{ leader, spawnId }] = getMSTime() + AUTO_DUNGEON_UNREACHABLE_MS;
+    _autoDungeonCommittedBoss.erase(leader);
+    _autoDungeonBossProgress.erase(leader);
+}
+
 // The dungeon "boss checklist": true once every CREATURE_FLAG_EXTRA_DUNGEON_BOSS/world-boss spawn
 // on this map is cleared (via real DungeonEncounter data where it exists, BotMgr's _clearedBosses
 // fallback otherwise). Confirmed live (2026-09-27): without this, TryAutoPullInInstance's own boss
@@ -2448,6 +2481,21 @@ void TryAutoPullInInstance(Player* bot)
         candidates.push_back(candidate);
     }
 
+    // Leave out bosses the group could not reach lately; if that leaves nothing, try them all again rather than stand still.
+    {
+        uint32 const nowMs = getMSTime();
+        std::vector<BossCandidate> reachable;
+        for (BossCandidate const& candidate : candidates)
+        {
+            auto skip = _autoDungeonUnreachableUntil.find({ leader->GetGUID(), candidate.spawnId });
+            if (skip != _autoDungeonUnreachableUntil.end() && int32(skip->second - nowMs) > 0)
+                continue;
+            reachable.push_back(candidate);
+        }
+        if (!reachable.empty())
+            candidates.swap(reachable);
+    }
+
     BossCandidate const* chosen = nullptr;
 
     // Commit-and-hold: if the previously-committed boss is still a candidate, keep heading there
@@ -2521,7 +2569,35 @@ void TryAutoPullInInstance(Player* bot)
             // Release the commitment too -- otherwise the next tick's commit-and-hold check would
             // find this same still-uncleared boss and immediately recommit to the exact spawn that
             // was just found unreachable, defeating the point of giving up on it.
-            _autoDungeonCommittedBoss.erase(leader->GetGUID());
+            MarkBossUnreachable(leader->GetGUID(), bestBossSpawnId);
+        }
+        else
+        {
+            // The ladder is not exhausted but the group does not get any closer (Navigate keeps returning "moving" while every leg is refused):
+            // give the boss up after a while of that, the same way.
+            AutoDungeonBossProgress& progress = _autoDungeonBossProgress[leader->GetGUID()];
+            uint32 const nowMs = getMSTime();
+            float const dist = std::hypot(bestBossPos.GetPositionX() - bot->GetPositionX(), bestBossPos.GetPositionY() - bot->GetPositionY());
+            if (progress.spawnId != bestBossSpawnId)
+                progress = AutoDungeonBossProgress{ bestBossSpawnId, dist, nowMs, 0 };
+            else
+            {
+                progress.stalledMs += std::min<uint32>(nowMs - progress.lastTickMs, 1000);
+                progress.lastTickMs = nowMs;
+                if (dist < progress.bestDist - 8.0f)
+                {
+                    progress.bestDist = dist;
+                    progress.stalledMs = 0;
+                }
+                else if (progress.stalledMs > AUTO_DUNGEON_STALL_MS && !bot->IsInCombat())
+                {
+                    LOG_ERROR(BotAI::BotDebugLog::LoggerName(bot->GetGUID()),
+                        "AutoDungeon: bot '{}' has not got closer to boss spawn {} in {} s ({:.0f} yd away) -- leaving it for {} min.",
+                        bot->GetName(), bestBossSpawnId, progress.stalledMs / 1000, dist, AUTO_DUNGEON_UNREACHABLE_MS / 60000);
+                    BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
+                    MarkBossUnreachable(leader->GetGUID(), bestBossSpawnId);
+                }
+            }
         }
         // Arrived/Moving/Blocked: nothing else to do this tick -- Navigate() already issued
         // (or is still working through) whatever movement is needed, same as the old dist<=8.0f
@@ -5101,6 +5177,11 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
                 return;
             }
 
+            // The last stretch is being walked in a straight line (see below): do not plan over it.
+            if (state.ghostStraightUntilMs && int32(getMSTime() - state.ghostStraightUntilMs) < 0)
+                return;
+            state.ghostStraightUntilMs = 0;
+
             // Legs, not one path: a single path request fails ("no path") beyond some 250 yards, and a graveyard is
             // often farther than that from the body.
             NavStatus const nav = BotMovement::Navigate(bot, MoveOwner::Corpse, uint64(bot->GetGUID().GetCounter()) << 8 | 0xC0,
@@ -5109,10 +5190,19 @@ void UpdateDeathHandling(Player* bot, uint32 diff, BotAIState& state)
             {
                 state.ghostMoveFailMs = 0;
             }
-            else if ((state.ghostMoveFailMs += diff) > GHOST_MOVE_GIVE_UP_MS)
+            else if (state.ghostMoveFailMs += diff; state.ghostMoveFailMs > GHOST_STRAIGHT_AFTER_MS && bot->GetDistance(corpse) < GHOST_STRAIGHT_RANGE &&
+                BotMovement::MoveTo(bot, MoveOwner::Corpse, corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), /*forceDestination=*/true).IsValid())
             {
-                LOG_INFO(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotAI: ghost '{}' cannot walk to its corpse ({:.0f} yd away); coming back where it stands.",
+                // The mesh has no path to a body that lies close (in water, on a ledge, behind a fence): a ghost may as well walk there straight.
+                state.ghostStraightUntilMs = getMSTime() + uint32(bot->GetDistance(corpse) / 7.0f * 1000.0f) + 1500;
+                state.ghostMoveFailMs = 0;
+                LOG_INFO("module.coa-playerbots", "CorpseRun: ghost '{}' walks the last {:.0f} yd to its corpse in a straight line (no navigation path).",
                     bot->GetName(), bot->GetDistance(corpse));
+            }
+            else if (state.ghostMoveFailMs > (nav == NavStatus::Stuck ? GHOST_STUCK_GIVE_UP_MS : GHOST_MOVE_GIVE_UP_MS))
+            {
+                LOG_INFO("module.coa-playerbots", "CorpseRun: ghost '{}' cannot walk to its corpse ({:.0f} yd away, map {}, navigation {}); coming back where it stands.",
+                    bot->GetName(), bot->GetDistance(corpse), bot->GetMapId(), nav == NavStatus::Stuck ? "stuck" : "refused");
                 BotMovement::ForceReleaseOwner(bot, MoveOwner::Corpse);
                 bot->ResurrectPlayer(0.5f, false);
                 bot->SpawnCorpseBones();
@@ -5332,6 +5422,8 @@ void Update(Player* bot, uint32 diff)
         // fixed once per login, through the same throttled queue the gear repair command uses.
         if (BotSpawn::NeedsGearRefit(bot))
             BotGear::Queue(bot);
+        // Bots made before potions were handed out have none; this tops the bags up once per login (it gives nothing to a bot that has them).
+        BotProgression::ProvisionPotions(bot, 5);
     }
     else if (currentLevel > state.lastLevel)
     {
