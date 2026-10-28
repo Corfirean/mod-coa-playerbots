@@ -494,6 +494,18 @@ namespace BotAI
         }
     }
 
+    std::vector<uint32> CombatUtility::ListManaRestoreSpells(Player* bot)
+    {
+        std::vector<uint32> out;
+        if (!bot)
+            return out;
+        for (auto const& [spellId, learned] : bot->GetSpellMap())
+            if (learned && learned->State != PLAYERSPELL_REMOVED && learned->Active && IsSelfManaRestore(sSpellMgr->GetSpellInfo(spellId)))
+                out.push_back(spellId);
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
     bool CombatUtility::Execute(Player* bot, CombatContext const& ctx, uint32 diff, uint32& nextCastAllowedMs)
     {
         if (!bot || !bot->IsAlive() || !bot->IsInWorld())

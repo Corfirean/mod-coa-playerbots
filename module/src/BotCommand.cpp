@@ -14,6 +14,9 @@
 #include "dialogue/BotDialogueManager.h"
 #include "dialogue/EncounterPresentation.h"
 #include "BotSpawnRandom.h"
+#include "engine/CombatUtility.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "BotTalentBuilds.h"
 #include "Chat.h"
 #include "CommandScript.h"
@@ -81,6 +84,7 @@ public:
             { "resume",       HandleBotResumeCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinbg",       HandleBotJoinBGCommand,       rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "joinlfg",      HandleBotJoinLfgCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "manaspells",   HandleBotManaSpellsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "quickfill",    HandleBotQuickFillCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "invitebot",    HandleBotInviteRoleCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "botlist",      HandleBotListCommand,         rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -199,6 +203,25 @@ public:
             return true;
         }
         BotBGFill::JoinBotToBattlegroundQueue(bot, bgTypeId, handler);
+        return true;
+    }
+
+    // Lists the spells of an online bot that the combat layer treats as mana restoration.
+    static bool HandleBotManaSpellsCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        std::string line;
+        for (uint32 id : BotAI::CombatUtility::ListManaRestoreSpells(bot))
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+            line += Acore::StringFormat(" {}({})", id, info ? info->SpellName[0] : "?");
+        }
+        handler->PSendSysMessage("MANASPELLS class {} power {}: {}", uint32(bot->getClass()), uint32(bot->getPowerType()), line.empty() ? " none" : line);
         return true;
     }
 
