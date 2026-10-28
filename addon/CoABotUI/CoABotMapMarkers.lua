@@ -14,11 +14,31 @@ local activePins = {}
 local activeClusters = {}
 local activeEvents = {}
 
--- Identity-bound interpolation state: [guidLow] = { currNx, currNy, targetNx, targetNy, mapId, lastUpdate }
+-- Identity-bound interpolation state: [guidLow] = { currNx, currNy, targetNx, targetNy, mapId, projectionKey, lastUpdate, lastGeneration }
 local botPositionState = {}
+local currentGeneration = 0
+Markers.lastProjectionKey = nil
 
 local CLUSTER_RADIUS_PIXELS = 22
 local INTERPOLATION_SPEED = 3.0 -- fraction per second
+
+-- Projection Identity: unambiguously identifies the coordinate frame
+function Markers:GetCurrentProjectionKey()
+    local mapName = GetMapInfo()
+    local area = mapName and CoABotMapData and CoABotMapData.areas and CoABotMapData.areas[mapName:lower()]
+    local mapId = area and area.mapId or 0
+    local areaId = area and area.areaId or 0
+    local contId = GetCurrentMapContinent and GetCurrentMapContinent() or 0
+    local zoneId = GetCurrentMapZone and GetCurrentMapZone() or 0
+
+    if zoneId > 0 and area then
+        return string.format("zone:%d:%d:%s", mapId, areaId, mapName:lower())
+    elseif contId > 0 then
+        return string.format("continent:%d:%d:%s", mapId, contId, mapName and mapName:lower() or "continent")
+    else
+        return string.format("view:%d:%d:%s", mapId, areaId, mapName and mapName:lower() or "world")
+    end
+end
 
 -- World-to-Map coordinate transform
 function Markers:WorldToMap(worldX, worldY)
@@ -203,6 +223,9 @@ function Markers:ClearAll()
     activePins = {}
     activeClusters = {}
     activeEvents = {}
+    if CoABotMapTooltip and CoABotMapTooltip.HideTooltip then
+        CoABotMapTooltip.HideTooltip()
+    end
 end
 
 -- Spatial Grid Clustering: O(N) spatial hash
@@ -300,6 +323,11 @@ function Markers:Update(botList, eventList)
     local area = mapName and CoABotMapData and CoABotMapData.areas and CoABotMapData.areas[mapName:lower()]
     local currentMapId = area and area.mapId
 
+    currentGeneration = currentGeneration + 1
+    local currentProjKey = Markers:GetCurrentProjectionKey()
+    local projectionChanged = (Markers.lastProjectionKey ~= currentProjKey)
+    Markers.lastProjectionKey = currentProjKey
+
     -- 1. Project valid bots to screen space with mapId continent validation
     local projected = {}
     if botList then
@@ -351,20 +379,23 @@ function Markers:Update(botList, eventList)
         -- Bind interpolation state to character identity (guidLow), decoupled from recycled frame
         local guidLow = item.bot.guidLow
         local st = botPositionState[guidLow]
-        if not st or st.mapId ~= item.bot.mapId then
+        if not st or st.mapId ~= item.bot.mapId or st.projectionKey ~= currentProjKey or projectionChanged then
             st = {
                 currNx = item.nx,
                 currNy = item.ny,
                 targetNx = item.nx,
                 targetNy = item.ny,
                 mapId = item.bot.mapId,
-                lastUpdate = now
+                projectionKey = currentProjKey,
+                lastUpdate = now,
+                lastGeneration = currentGeneration
             }
             botPositionState[guidLow] = st
         else
             st.targetNx = item.nx
             st.targetNy = item.ny
             st.lastUpdate = now
+            st.lastGeneration = currentGeneration
 
             -- Snap immediately if jumped across map (> 0.2 fraction) or teleported
             local dist = math.sqrt((st.currNx - item.nx)^2 + (st.currNy - item.ny)^2)
@@ -412,6 +443,13 @@ function Markers:Update(botList, eventList)
             end
         end
     end
+
+    -- 6. Prune stale interpolation states (TTL 30s or > 2 generations missed)
+    for g, st in pairs(botPositionState) do
+        if (now - (st.lastUpdate or 0)) > 30.0 or (currentGeneration - (st.lastGeneration or 0)) > 2 then
+            botPositionState[g] = nil
+        end
+    end
 end
 
 -- Interpolation updater
@@ -434,6 +472,13 @@ interpolator:SetScript("OnUpdate", function(self, elapsed)
                 pin:ClearAllPoints()
                 pin:SetPoint("CENTER", parent, "TOPLEFT", st.currNx * mapWidth, -st.currNy * mapHeight)
             end
+        end
+    end
+
+    -- 6. Prune stale interpolation states (TTL 30s or > 2 generations missed)
+    for g, st in pairs(botPositionState) do
+        if (now - (st.lastUpdate or 0)) > 30.0 or (currentGeneration - (st.lastGeneration or 0)) > 2 then
+            botPositionState[g] = nil
         end
     end
 end)

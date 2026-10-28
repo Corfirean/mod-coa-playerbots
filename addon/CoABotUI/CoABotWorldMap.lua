@@ -9,6 +9,21 @@ local PROTOCOL_PREFIX = "COABOT"
 CoABotWorldMap = {}
 local Map = CoABotWorldMap
 
+-- Transaction states
+local TxState = {
+    IDLE = 0,
+    REQUESTED = 1,
+    RECEIVING = 2,
+    COMPLETE = 3,
+    TIMED_OUT = 4,
+    CANCELLED = 5
+}
+Map.TxState = TxState
+
+local function GetTxTimeout(expectedChunks)
+    return math.min(30.0, math.max(4.0, 3.0 + (expectedChunks or 0) * 0.05))
+end
+
 -- Isolated Request IDs to prevent cross-channel invalidation
 local queryReqId = 1
 local detailReqId = 1
@@ -19,9 +34,30 @@ local activeEvents = {}
 local isQueryInFlight = false
 local pollTimer = 0
 
+Map.lastMapViewKey = nil
+Map.mapChangeDebounce = nil
+
 -- Transactional buffers
 local pendingQueryTx = nil
 local pendingEventsTx = nil
+
+function Map:GetCurrentMapViewKey()
+    local mapName = GetMapInfo()
+    local contId = GetCurrentMapContinent and GetCurrentMapContinent() or 0
+    local zoneId = GetCurrentMapZone and GetCurrentMapZone() or 0
+    local area = mapName and CoABotMapData and CoABotMapData.areas and CoABotMapData.areas[mapName:lower()]
+    local areaId = area and area.areaId or 0
+    local mapId = area and area.mapId or 0
+    return string.format("%d:%d:%d:%s", mapId, contId, zoneId, mapName and mapName:lower() or "")
+end
+
+function Map:CancelPendingQuery()
+    if pendingQueryTx then
+        pendingQueryTx.state = TxState.CANCELLED
+        pendingQueryTx = nil
+    end
+    isQueryInFlight = false
+end
 
 -- Cadence intervals per mode (seconds)
 local MODE_CADENCE = {
@@ -71,27 +107,44 @@ function Map:QueryMapData()
         return
     end
 
+    local mapName = GetMapInfo()
+    local area = mapName and CoABotMapData and CoABotMapData.areas and CoABotMapData.areas[mapName:lower()]
+    local zoneId = GetCurrentMapZone and GetCurrentMapZone() or 0
+    local filterAreaId = (zoneId > 0 and area and area.areaId) or 0
+
     -- 1. Query Bots if mode > 0
     if mode > 0 then
         local reqId = Map:GetNextQueryReqId()
         isQueryInFlight = true
-        pendingQueryTx = nil
+        pendingQueryTx = {
+            reqId = reqId,
+            state = TxState.REQUESTED,
+            startedAt = GetTime(),
+            lastActivityAt = GetTime(),
+            expectedBots = 0,
+            expectedChunks = 0,
+            receivedChunks = {},
+            receivedChunkCount = 0,
+            pins = {}
+        }
 
         local param1 = -1
-        local param2 = 0
+        local param2 = filterAreaId
         if mode == 1 then
             param1 = CoABotMapSettings:GetRadius()
+            param2 = 0
         elseif mode == 2 then
-            -- Server auto-detects zoneId when 0/-1
+            -- Server auto-detects zoneId when 0/-1 or uses param2 if given
             param1 = 0
+            param2 = filterAreaId
         elseif mode == 3 then
-            -- Guild members worldwide
+            -- Guild members worldwide (or viewport area if inside a zone)
             param1 = -1
+            param2 = filterAreaId
         elseif mode == 4 then
-            local mapName = GetMapInfo()
-            local area = mapName and CoABotMapData and CoABotMapData.areas and CoABotMapData.areas[mapName:lower()]
-            -- Pass exact mapId (e.g. 0 for Eastern Kingdoms, 1 for Kalimdor, etc.)
+            -- Pass exact mapId (e.g. 0 for Eastern Kingdoms, 1 for Kalimdor, etc.) and filterAreaId
             param1 = area and area.mapId or 0
+            param2 = filterAreaId
         end
 
         SendMessage("MAPQUERY:" .. reqId .. ":" .. mode .. ":" .. param1 .. ":" .. param2)
@@ -184,14 +237,17 @@ function Map:HandleIncomingMessage(body)
             return -- Stale or mismatched query
         end
 
+        local now = GetTime()
         pendingQueryTx = {
             reqId = reqId,
+            state = TxState.RECEIVING,
             expectedBots = tonumber(totalBots) or 0,
             expectedChunks = tonumber(totalChunks) or 0,
             receivedChunks = {},
             receivedChunkCount = 0,
             pins = {},
-            startedAt = GetTime(),
+            startedAt = now,
+            lastActivityAt = now,
             revision = tonumber(revision) or 0
         }
 
@@ -203,6 +259,8 @@ function Map:HandleIncomingMessage(body)
         if not pendingQueryTx or pendingQueryTx.reqId ~= reqId then
             return -- Stale or no active transaction
         end
+
+        pendingQueryTx.lastActivityAt = GetTime()
 
         if pendingQueryTx.receivedChunks[chunkIdx] then
             return -- Duplicate chunk ignored
@@ -244,12 +302,14 @@ function Map:HandleIncomingMessage(body)
 
         -- Strict transactional integrity check
         if tx.receivedChunkCount == tx.expectedChunks and #tx.pins == tx.expectedBots then
+            tx.state = TxState.COMPLETE
             activeBots = tx.pins
             if CoABotMapMarkers then
                 CoABotMapMarkers:Update(activeBots, activeEvents)
             end
         else
             -- Chunk loss detected! Discard incomplete snapshot to prevent corrupted display
+            tx.state = TxState.TIMED_OUT
         end
 
     elseif verb == "MAPDETAIL" then
@@ -385,8 +445,21 @@ mapFrame:SetScript("OnEvent", function(self, event, arg1)
         end
     elseif event == "WORLD_MAP_UPDATE" or event == "ZONE_CHANGED_NEW_AREA" then
         if WorldMapFrame and WorldMapFrame:IsVisible() then
-            if CoABotMapMarkers then
-                CoABotMapMarkers:Update(activeBots, activeEvents)
+            local newKey = Map:GetCurrentMapViewKey()
+            if newKey ~= Map.lastMapViewKey then
+                Map.lastMapViewKey = newKey
+                -- View changed! Cancel stale query immediately
+                Map:CancelPendingQuery()
+                -- Update markers immediately with new projection
+                if CoABotMapMarkers then
+                    CoABotMapMarkers:Update(activeBots, activeEvents)
+                end
+                -- Schedule debounced query (150ms) to avoid query storms during fast zoom/pan
+                Map.mapChangeDebounce = 0.150
+            else
+                if CoABotMapMarkers then
+                    CoABotMapMarkers:Update(activeBots, activeEvents)
+                end
             end
         end
     end
@@ -400,13 +473,29 @@ ticker:SetScript("OnUpdate", function(self, elapsed)
     end
 
     local now = GetTime()
-    -- Transaction timeout cleanup (5 seconds)
-    if pendingQueryTx and (now - pendingQueryTx.startedAt > 5.0) then
-        pendingQueryTx = nil
-        isQueryInFlight = false
+
+    -- Sliding-window dynamic transaction timeout
+    if pendingQueryTx then
+        local timeout = GetTxTimeout(pendingQueryTx.expectedChunks)
+        if (now - (pendingQueryTx.lastActivityAt or pendingQueryTx.startedAt)) > timeout then
+            pendingQueryTx.state = TxState.TIMED_OUT
+            pendingQueryTx = nil
+            isQueryInFlight = false
+        end
     end
-    if pendingEventsTx and (now - pendingEventsTx.startedAt > 5.0) then
+    if pendingEventsTx and (now - (pendingEventsTx.startedAt or now) > 8.0) then
         pendingEventsTx = nil
+    end
+
+    -- Handle debounced map change query
+    if Map.mapChangeDebounce and Map.mapChangeDebounce > 0 then
+        Map.mapChangeDebounce = Map.mapChangeDebounce - elapsed
+        if Map.mapChangeDebounce <= 0 then
+            Map.mapChangeDebounce = nil
+            pollTimer = 0
+            Map:QueryMapData()
+            return
+        end
     end
 
     local mode = CoABotMapSettings and CoABotMapSettings:GetMode() or 0
@@ -422,8 +511,13 @@ ticker:SetScript("OnUpdate", function(self, elapsed)
     if interval > 0 then
         pollTimer = pollTimer + elapsed
         if pollTimer >= interval then
-            pollTimer = 0
-            Map:QueryMapData()
+            -- Backpressure: Do not interrupt active multi-chunk receipt with a new query
+            if pendingQueryTx and pendingQueryTx.state == TxState.RECEIVING then
+                pollTimer = interval - 1.0
+            else
+                pollTimer = 0
+                Map:QueryMapData()
+            end
         end
     end
 end)
@@ -434,12 +528,16 @@ if WorldMapFrame then
         if CoABotMapSettings and CoABotMapSettings.CreateWorldMapControls then
             CoABotMapSettings:CreateWorldMapControls()
         end
+        Map.lastMapViewKey = Map:GetCurrentMapViewKey()
+        Map.mapChangeDebounce = nil
         pollTimer = 0
         Map:QueryMapData()
     end)
 
     WorldMapFrame:HookScript("OnHide", function()
         pollTimer = 0
+        Map.mapChangeDebounce = nil
+        Map:CancelPendingQuery()
         if CoABotMapMarkers then
             CoABotMapMarkers:ClearAll()
         end
