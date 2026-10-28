@@ -1,0 +1,32 @@
+[
+  {
+    "key": "LordMarrowgar_69076_RunAway",
+    "spellId": 69076,
+    "mechanicType": "RunAway",
+    "priority": "Critical",
+    "roleMask": ["Tank", "Healer", "Dps"],
+    "dialogueBeat": "RunAway",
+    "disabled": false,
+    "notes": "CoA tuning: ensure all raid members run away from Bone Storm"
+  },
+  {
+    "key": "Deathwhisper_72007_Interrupt",
+    "spellId": 72007,
+    "mechanicType": "Interrupt",
+    "priority": "Critical",
+    "roleMask": ["Tank", "Dps"],
+    "dialogueBeat": "Interrupt",
+    "disabled": false,
+    "notes": "CoA tuning: Frostbolt priority kick in phase 2"
+  },
+  {
+    "key": "SampleDisabledMechanic_999999_MoveFromGround",
+    "spellId": 999999,
+    "mechanicType": "MoveFromGround",
+    "priority": "Normal",
+    "roleMask": ["Tank", "Healer", "Dps"],
+    "dialogueBeat": "MoveFromGround",
+    "disabled": true,
+    "notes": "CoA Adaptation: mechanic replaced by custom encounter script"
+  }
+]
