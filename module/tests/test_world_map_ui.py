@@ -449,6 +449,22 @@ def run_tests():
     CoABotMapSettings:UpdateLayout()
     assert_true(CoABotMapSettings.dropdownLabel and (CoABotMapSettings.dropdownLabel.text == "Allied Bots" or CoABotMapSettings.dropdownLabel.text == "Союзные боты"), "Settings label adapts to fullscreen mode")
 
+    -- 18. POI Landmark Avoidance and FrameLevel validation
+    GetMapInfo = function() return "Azeroth" end
+    GetCurrentMapZone = function() return 0 end
+    GetNumMapLandmarks = function() return 1 end
+    -- Mock landmark at same normalized position as cluster
+    GetMapLandmarkInfo = function(idx)
+        return "Stormwind City", "City", 1, 0.4583, 0.7431
+    end
+    local cityBots = {
+        { guidLow = 901, mapId = 0, worldX = -9000, worldY = -500, level = 20, classId = 1, role = 0, flags = 0, activity = 0 },
+        { guidLow = 902, mapId = 0, worldX = -9001, worldY = -501, level = 20, classId = 2, role = 0, flags = 0, activity = 0 },
+    }
+    CoABotMapMarkers:Update(cityBots, nil)
+    local clPin = _G["CoABotMapCluster1"]
+    assert_true(clPin and clPin.offX == 14 and clPin.offY == 12, "Cluster badge offsets away from overlapping city POI landmark")
+
     return failed
     '''
     failed_count = runtime.execute(test_script)

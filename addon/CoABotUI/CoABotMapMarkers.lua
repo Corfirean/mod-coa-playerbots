@@ -84,6 +84,43 @@ function Markers:WorldToMap(worldX, worldY)
     return normX, normY
 end
 
+-- Detect proximity to map landmarks (cities, towns, towers) to avoid overlapping
+local function GetPOIOffset(px, py, mapWidth, mapHeight)
+    -- 1. Check native Blizzard Map Landmarks
+    if GetNumMapLandmarks and GetMapLandmarkInfo then
+        local num = GetNumMapLandmarks() or 0
+        for i = 1, num do
+            local _, _, _, lx, ly = GetMapLandmarkInfo(i)
+            if lx and ly then
+                local lpx = lx * mapWidth
+                local lpy = ly * mapHeight
+                local dx = px - lpx
+                local dy = py - lpy
+                if (dx * dx + dy * dy) < (24 * 24) then
+                    return 14, 12
+                end
+            end
+        end
+    end
+
+    -- 2. Check active WorldMapFrameAreaPOI frames if present
+    for i = 1, 40 do
+        local poi = _G["WorldMapFrameAreaPOI" .. i] or _G["WorldMapFramePOI" .. i]
+        if poi and poi.IsShown and poi:IsShown() and poi.GetPoint then
+            local _, _, _, poiX, poiY = poi:GetPoint()
+            if poiX and poiY then
+                local dx = px - poiX
+                local dy = py - math.abs(poiY)
+                if (dx * dx + dy * dy) < (24 * 24) then
+                    return 14, 12
+                end
+            end
+        end
+    end
+
+    return 0, 0
+end
+
 -- Pin creation / pooling
 local function CreateBotPin(index)
     local parent = WorldMapDetailFrame or WorldMapButton or UIParent
@@ -91,7 +128,7 @@ local function CreateBotPin(index)
     pin:SetWidth(16)
     pin:SetHeight(16)
     pin:EnableMouse(true)
-    pin:SetFrameLevel(parent:GetFrameLevel() + 5)
+    pin:SetFrameLevel(parent:GetFrameLevel() + 20)
 
     -- Outer bezel / ring
     local border = pin:CreateTexture(nil, "BACKGROUND")
@@ -130,7 +167,7 @@ local function CreateClusterPin(index)
     cluster:SetWidth(26)
     cluster:SetHeight(26)
     cluster:EnableMouse(true)
-    cluster:SetFrameLevel(parent:GetFrameLevel() + 6)
+    cluster:SetFrameLevel(parent:GetFrameLevel() + 25)
     if cluster.RegisterForClicks then
         cluster:RegisterForClicks("LeftButtonUp")
     end
@@ -172,7 +209,7 @@ local function CreateEventPin(index)
     pin:SetWidth(28)
     pin:SetHeight(28)
     pin:EnableMouse(true)
-    pin:SetFrameLevel(parent:GetFrameLevel() + 7)
+    pin:SetFrameLevel(parent:GetFrameLevel() + 30)
 
     -- Rich fiery crimson battle badge
     local bg = pin:CreateTexture(nil, "BACKGROUND")
@@ -400,8 +437,13 @@ function Markers:Update(botList, eventList)
             pin.bg:SetTexture("Interface\\AddOns\\CoABotUI\\Textures\\cluster_badge.tga")
             pin.countText:SetTextColor(1.0, 1.0, 1.0, 1.0)
         end
+        local offX, offY = GetPOIOffset(cl.nx * mapWidth, cl.ny * mapHeight, mapWidth, mapHeight)
+        pin.offX = offX
+        pin.offY = offY
+
+        pin:SetFrameLevel(parent:GetFrameLevel() + 25)
         pin:ClearAllPoints()
-        pin:SetPoint("CENTER", parent, "TOPLEFT", cl.nx * mapWidth, -cl.ny * mapHeight)
+        pin:SetPoint("CENTER", parent, "TOPLEFT", cl.nx * mapWidth + offX, -cl.ny * mapHeight + offY)
         pin:Show()
         table.insert(activeClusters, pin)
     end
@@ -472,8 +514,13 @@ function Markers:Update(botList, eventList)
         end
         pin.border:Show()
 
+        local offX, offY = GetPOIOffset(st.currNx * mapWidth, st.currNy * mapHeight, mapWidth, mapHeight)
+        st.offX = offX
+        st.offY = offY
+
+        pin:SetFrameLevel(parent:GetFrameLevel() + 20)
         pin:ClearAllPoints()
-        pin:SetPoint("CENTER", parent, "TOPLEFT", st.currNx * mapWidth, -st.currNy * mapHeight)
+        pin:SetPoint("CENTER", parent, "TOPLEFT", st.currNx * mapWidth + offX, -st.currNy * mapHeight + offY)
         pin:Show()
         table.insert(activePins, pin)
     end
@@ -540,8 +587,10 @@ interpolator:SetScript("OnUpdate", function(self, elapsed)
             if math.abs(st.currNx - st.targetNx) > 0.0005 or math.abs(st.currNy - st.targetNy) > 0.0005 then
                 st.currNx = st.currNx + (st.targetNx - st.currNx) * math.min(1, step)
                 st.currNy = st.currNy + (st.targetNy - st.currNy) * math.min(1, step)
+                local offX = st.offX or 0
+                local offY = st.offY or 0
                 pin:ClearAllPoints()
-                pin:SetPoint("CENTER", parent, "TOPLEFT", st.currNx * mapWidth, -st.currNy * mapHeight)
+                pin:SetPoint("CENTER", parent, "TOPLEFT", st.currNx * mapWidth + offX, -st.currNy * mapHeight + offY)
             end
         end
     end
