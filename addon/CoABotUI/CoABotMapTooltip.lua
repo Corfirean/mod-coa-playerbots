@@ -8,8 +8,14 @@ local ADDON_NAME = "CoABotUI"
 CoABotMapTooltip = {}
 local Tooltip = CoABotMapTooltip
 
--- Cache for on-demand details: [botGuidLow] = { specId, avgIlvl, specName, activityName, taskType, taskItem, taskTarget, taskDone, taskStatus, cachedAt }
+-- Cache for on-demand details: [botGuidLow] = { name, specId, avgIlvl, specName, activityName, taskType, taskItem, taskTarget, taskDone, taskStatus, cachedAt }
 Tooltip.detailCache = {}
+Tooltip.pendingRequests = {} -- [botGuidLow] = timestamp
+Tooltip.DETAIL_TTL = 30      -- seconds
+Tooltip.PENDING_TIMEOUT = 5.0 -- seconds
+
+Tooltip.currentHoverPin = nil
+Tooltip.currentHoverGuid = nil
 
 function Tooltip.GetCachedDetail(botGuidLow)
     return Tooltip.detailCache[botGuidLow]
@@ -25,13 +31,56 @@ local CLASS_FILE_NAMES = {
     [6] = "DEATHKNIGHT", [7] = "SHAMAN", [8] = "MAGE", [9] = "WARLOCK", [11] = "DRUID",
 }
 
-local function GetClassColorHex(classId)
+local CLASS_NAMES = {
+    [1] = "Warrior", [2] = "Paladin", [3] = "Hunter", [4] = "Rogue", [5] = "Priest",
+    [6] = "Death Knight", [7] = "Shaman", [8] = "Mage", [9] = "Warlock", [11] = "Druid",
+    [12] = "Barbarian", [13] = "Witch Doctor", [14] = "Felsworn", [15] = "Witch Hunter",
+    [16] = "Stormbringer", [17] = "Knight of Xoroth", [18] = "Guardian", [19] = "Templar",
+    [20] = "Bloodmage", [21] = "Ranger", [22] = "Chronomancer", [23] = "Necromancer",
+    [24] = "Pyromancer", [25] = "Cultist", [26] = "Starcaller", [27] = "Sun Cleric",
+    [28] = "Tinker", [29] = "Venomancer", [30] = "Reaper", [31] = "Primalist", [32] = "Runemaster",
+}
+
+local CUSTOM_CLASS_COLORS = {
+    [12] = { r = 0.85, g = 0.40, b = 0.20 }, -- Barbarian: Copper
+    [13] = { r = 0.20, g = 0.75, b = 0.50 }, -- Witch Doctor: Voodoo teal
+    [14] = { r = 0.40, g = 0.85, b = 0.10 }, -- Felsworn: Fel green
+    [15] = { r = 0.70, g = 0.55, b = 0.35 }, -- Witch Hunter: Leather
+    [16] = { r = 0.10, g = 0.65, b = 0.95 }, -- Stormbringer: Lightning cyan
+    [17] = { r = 0.60, g = 0.15, b = 0.15 }, -- Knight of Xoroth: Dark crimson
+    [18] = { r = 0.75, g = 0.75, b = 0.60 }, -- Guardian: Iron shield
+    [19] = { r = 0.95, g = 0.85, b = 0.40 }, -- Templar: Radiant holy gold
+    [20] = { r = 0.85, g = 0.10, b = 0.20 }, -- Bloodmage: Sanguine red
+    [21] = { r = 0.45, g = 0.75, b = 0.30 }, -- Ranger: Forest green
+    [22] = { r = 0.85, g = 0.70, b = 0.20 }, -- Chronomancer: Bronze time
+    [23] = { r = 0.30, g = 0.70, b = 0.45 }, -- Necromancer: Unholy pestilence
+    [24] = { r = 0.95, g = 0.40, b = 0.05 }, -- Pyromancer: Fire orange
+    [25] = { r = 0.55, g = 0.25, b = 0.70 }, -- Cultist: Void shadow
+    [26] = { r = 0.40, g = 0.60, b = 0.95 }, -- Starcaller: Astral blue
+    [27] = { r = 1.00, g = 0.80, b = 0.30 }, -- Sun Cleric: Solar gold
+    [28] = { r = 0.80, g = 0.65, b = 0.45 }, -- Tinker: Copper gear
+    [29] = { r = 0.40, g = 0.85, b = 0.30 }, -- Venomancer: Toxic acid
+    [30] = { r = 0.50, g = 0.50, b = 0.60 }, -- Reaper: Grim slate
+    [31] = { r = 0.80, g = 0.55, b = 0.20 }, -- Primalist: Earth amber
+    [32] = { r = 0.25, g = 0.80, b = 0.80 }, -- Runemaster: Runic turquoise
+}
+
+function Tooltip.GetClassColor(classId)
     local fn = CLASS_FILE_NAMES[classId]
     local c = fn and RAID_CLASS_COLORS and RAID_CLASS_COLORS[fn]
     if c then
-        return string.format("|cFF%02x%02x%02x", c.r * 255, c.g * 255, c.b * 255)
+        return c.r, c.g, c.b
     end
-    return "|cFFFFFFFF"
+    local custom = CUSTOM_CLASS_COLORS[classId]
+    if custom then
+        return custom.r, custom.g, custom.b
+    end
+    return 1.0, 1.0, 1.0
+end
+
+local function GetClassColorHex(classId)
+    local r, g, b = Tooltip.GetClassColor(classId)
+    return string.format("|cFF%02x%02x%02x", math.floor(r * 255), math.floor(g * 255), math.floor(b * 255))
 end
 
 local ACTIVITY_NAMES = {
@@ -51,21 +100,26 @@ local ACTIVITY_NAMES = {
 function Tooltip.ShowBotTooltip(pinFrame, botData)
     if not botData then return end
 
+    Tooltip.currentHoverPin = pinFrame
+    Tooltip.currentHoverGuid = botData.guidLow
+
     local tt = WorldMapTooltip or GameTooltip
     tt:SetOwner(pinFrame, "ANCHOR_RIGHT")
     tt:ClearLines()
 
+    local detail = Tooltip.GetCachedDetail(botData.guidLow)
+
     local nameColor = GetClassColorHex(botData.classId)
-    local nameStr = botData.name or ("Bot-" .. tostring(botData.guidLow))
+    local realName = (detail and detail.name and detail.name ~= "" and detail.name) or botData.name
+    local nameStr = realName or ("Bot-" .. tostring(botData.guidLow))
     tt:AddLine(nameColor .. nameStr .. "|r — Level " .. tostring(botData.level), 1, 1, 1)
 
     -- Class & Role
     local roleStr = (botData.role == 1 and "Tank") or (botData.role == 2 and "Healer") or (botData.role == 3 and "Support") or "DPS"
-    local classEntry = CLASS_FILE_NAMES[botData.classId] or "Unknown"
+    local classEntry = CLASS_NAMES[botData.classId] or CLASS_FILE_NAMES[botData.classId] or "Unknown"
     tt:AddDoubleLine("Class:", classEntry .. " (" .. roleStr .. ")", 0.8, 0.8, 0.8, 1, 1, 1)
 
-    -- Check detail cache
-    local detail = Tooltip.GetCachedDetail(botData.guidLow)
+    -- Specialization & iLvl from cache
     if detail then
         if detail.specName and detail.specName ~= "" and detail.specName ~= "Unknown" then
             tt:AddDoubleLine("Specialization:", detail.specName, 0.8, 0.8, 0.8, 1, 1, 1)
@@ -76,7 +130,7 @@ function Tooltip.ShowBotTooltip(pinFrame, botData)
     end
 
     -- Current Activity
-    local actStr = (detail and detail.activityName) or ACTIVITY_NAMES[botData.activity] or "Idle"
+    local actStr = (detail and detail.activityName and detail.activityName ~= "" and detail.activityName) or ACTIVITY_NAMES[botData.activity] or "Idle"
     tt:AddDoubleLine("Activity:", actStr, 0.8, 0.8, 0.8, 1, 0.82, 0)
 
     -- Guild Companion section
@@ -110,16 +164,41 @@ function Tooltip.ShowBotTooltip(pinFrame, botData)
 
     tt:Show()
 
-    -- Request detail refresh if missing or older than 30s
-    if not detail or (GetTime() - detail.cachedAt > 30) then
-        if CoABotWorldMap and CoABotWorldMap.RequestDetail then
-            CoABotWorldMap.RequestDetail(botData.guidLow)
+    -- Request detail refresh if missing or older than TTL
+    local now = GetTime()
+    local isExpired = (not detail) or ((now - detail.cachedAt) > Tooltip.DETAIL_TTL)
+    if isExpired then
+        local pendingTime = Tooltip.pendingRequests[botData.guidLow]
+        if not pendingTime or ((now - pendingTime) > Tooltip.PENDING_TIMEOUT) then
+            Tooltip.pendingRequests[botData.guidLow] = now
+            if CoABotWorldMap and CoABotWorldMap.RequestDetail then
+                CoABotWorldMap:RequestDetail(botData.guidLow)
+            end
+        end
+    end
+end
+
+function Tooltip.OnDetailReceived(guidLow, detail)
+    if not guidLow or not detail then return end
+
+    Tooltip.pendingRequests[guidLow] = nil
+    Tooltip.SetCachedDetail(guidLow, detail)
+
+    -- Auto-refresh active tooltip if the user is still hovering over this specific bot!
+    local tt = WorldMapTooltip or GameTooltip
+    if tt and tt:IsShown() and Tooltip.currentHoverGuid == guidLow and Tooltip.currentHoverPin then
+        local pin = Tooltip.currentHoverPin
+        if pin.botData and pin.botData.guidLow == guidLow then
+            Tooltip.ShowBotTooltip(pin, pin.botData)
         end
     end
 end
 
 function Tooltip.ShowClusterTooltip(clusterFrame, botList)
     if not botList or #botList == 0 then return end
+
+    Tooltip.currentHoverPin = clusterFrame
+    Tooltip.currentHoverGuid = nil
 
     local tt = WorldMapTooltip or GameTooltip
     tt:SetOwner(clusterFrame, "ANCHOR_RIGHT")
@@ -148,7 +227,9 @@ function Tooltip.ShowClusterTooltip(clusterFrame, botList)
         local isGuild = bit.band(b.flags or 0, 1) ~= 0
         local guildMarker = isGuild and " |cFFFFD100*|r" or ""
 
-        tt:AddDoubleLine(nameColor .. roleLetter .. " " .. (b.name or ("Bot-" .. b.guidLow)) .. guildMarker .. "|r", "Lvl " .. b.level .. " (" .. actStr .. ")", 1, 1, 1, 0.7, 0.7, 0.7)
+        local d = Tooltip.GetCachedDetail(b.guidLow)
+        local bName = (d and d.name and d.name ~= "" and d.name) or b.name or ("Bot-" .. b.guidLow)
+        tt:AddDoubleLine(nameColor .. roleLetter .. " " .. bName .. guildMarker .. "|r", "Lvl " .. b.level .. " (" .. actStr .. ")", 1, 1, 1, 0.7, 0.7, 0.7)
     end
 
     if #botList > maxShow then
@@ -162,6 +243,9 @@ end
 
 function Tooltip.ShowEventTooltip(eventFrame, eventData)
     if not eventData then return end
+
+    Tooltip.currentHoverPin = eventFrame
+    Tooltip.currentHoverGuid = nil
 
     local tt = WorldMapTooltip or GameTooltip
     tt:SetOwner(eventFrame, "ANCHOR_RIGHT")
@@ -181,6 +265,8 @@ function Tooltip.ShowEventTooltip(eventFrame, eventData)
 end
 
 function Tooltip.HideTooltip()
+    Tooltip.currentHoverPin = nil
+    Tooltip.currentHoverGuid = nil
     local tt = WorldMapTooltip or GameTooltip
     if tt then
         tt:Hide()
