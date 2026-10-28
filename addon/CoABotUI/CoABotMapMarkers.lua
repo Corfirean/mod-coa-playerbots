@@ -14,6 +14,9 @@ local activePins = {}
 local activeClusters = {}
 local activeEvents = {}
 
+local cachedBotList = nil
+local cachedEventList = nil
+
 -- Identity-bound interpolation state: [guidLow] = { currNx, currNy, targetNx, targetNy, mapId, projectionKey, lastUpdate, lastGeneration }
 local botPositionState = {}
 local currentGeneration = 0
@@ -90,21 +93,21 @@ local function CreateBotPin(index)
     pin:EnableMouse(true)
     pin:SetFrameLevel(parent:GetFrameLevel() + 5)
 
-    -- Outer circle border (dark outline or gold ring for guild)
+    -- Outer bezel / ring
     local border = pin:CreateTexture(nil, "BACKGROUND")
     border:SetPoint("CENTER", pin, "CENTER", 0, 0)
-    border:SetWidth(11)
-    border:SetHeight(11)
-    border:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-    border:SetVertexColor(0.08, 0.08, 0.08, 0.95)
+    border:SetWidth(14)
+    border:SetHeight(14)
+    border:SetTexture("Interface\\AddOns\\CoABotUI\\Textures\\bot_ring.tga")
+    border:SetVertexColor(0.92, 0.92, 0.98, 0.95)
     pin.border = border
 
-    -- Inner circle dot (colored with class color)
+    -- Inner bright circular class dot
     local icon = pin:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("CENTER", pin, "CENTER", 0, 0)
-    icon:SetWidth(7)
-    icon:SetHeight(7)
-    icon:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    icon:SetWidth(10)
+    icon:SetHeight(10)
+    icon:SetTexture("Interface\\AddOns\\CoABotUI\\Textures\\bot_dot.tga")
     pin.icon = icon
 
     pin:SetScript("OnEnter", function(self)
@@ -124,34 +127,23 @@ end
 local function CreateClusterPin(index)
     local parent = WorldMapDetailFrame or WorldMapButton or UIParent
     local cluster = CreateFrame("Button", "CoABotMapCluster" .. index, parent)
-    cluster:SetWidth(24)
-    cluster:SetHeight(24)
+    cluster:SetWidth(26)
+    cluster:SetHeight(26)
     cluster:EnableMouse(true)
     cluster:SetFrameLevel(parent:GetFrameLevel() + 6)
     if cluster.RegisterForClicks then
         cluster:RegisterForClicks("LeftButtonUp")
     end
 
-    -- Concentric outer circular border
-    local border = cluster:CreateTexture(nil, "BACKGROUND")
-    border:SetPoint("CENTER", cluster, "CENTER", 0, 0)
-    border:SetWidth(24)
-    border:SetHeight(24)
-    border:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-    border:SetVertexColor(0.85, 0.85, 0.9, 0.95)
-    cluster.border = border
-
-    -- Concentric inner dark disk
-    local bg = cluster:CreateTexture(nil, "BORDER")
-    bg:SetPoint("CENTER", cluster, "CENTER", 0, 0)
-    bg:SetWidth(18)
-    bg:SetHeight(18)
-    bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-    bg:SetVertexColor(0.08, 0.08, 0.14, 0.95)
+    -- Rich beveled medallion (royal blue or imperial ruby)
+    local bg = cluster:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetTexture("Interface\\AddOns\\CoABotUI\\Textures\\cluster_badge.tga")
     cluster.bg = bg
 
     local countText = cluster:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     countText:SetPoint("CENTER", cluster, "CENTER", 0, 0)
+    countText:SetTextColor(1, 1, 1, 1)
     cluster.countText = countText
 
     cluster:SetScript("OnClick", function(self, button)
@@ -177,27 +169,15 @@ end
 local function CreateEventPin(index)
     local parent = WorldMapDetailFrame or WorldMapButton or UIParent
     local pin = CreateFrame("Button", "CoABotMapEventPin" .. index, parent)
-    pin:SetWidth(26)
-    pin:SetHeight(26)
+    pin:SetWidth(28)
+    pin:SetHeight(28)
     pin:EnableMouse(true)
     pin:SetFrameLevel(parent:GetFrameLevel() + 7)
 
-    -- Outer glow ring
-    local border = pin:CreateTexture(nil, "BACKGROUND")
-    border:SetPoint("CENTER", pin, "CENTER", 0, 0)
-    border:SetWidth(26)
-    border:SetHeight(26)
-    border:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-    border:SetVertexColor(1.0, 0.2, 0.2, 0.95)
-    pin.border = border
-
-    -- Inner background backing for icon
-    local bg = pin:CreateTexture(nil, "BORDER")
-    bg:SetPoint("CENTER", pin, "CENTER", 0, 0)
-    bg:SetWidth(20)
-    bg:SetHeight(20)
-    bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-    bg:SetVertexColor(0.1, 0.05, 0.05, 0.95)
+    -- Rich fiery crimson battle badge
+    local bg = pin:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetTexture("Interface\\AddOns\\CoABotUI\\Textures\\event_badge.tga")
     pin.bg = bg
 
     local icon = pin:CreateTexture(nil, "ARTWORK")
@@ -243,6 +223,8 @@ function Markers:GetEventPin(index)
 end
 
 function Markers:ClearAll()
+    cachedBotList = nil
+    cachedEventList = nil
     for _, pin in ipairs(pinPool) do pin:Hide() end
     for _, cl in ipairs(clusterPool) do cl:Hide() end
     for _, ev in ipairs(eventPool) do ev:Hide() end
@@ -251,6 +233,12 @@ function Markers:ClearAll()
     activeEvents = {}
     if CoABotMapTooltip and CoABotMapTooltip.HideTooltip then
         CoABotMapTooltip.HideTooltip()
+    end
+end
+
+function Markers:RepositionAll()
+    if cachedBotList or cachedEventList then
+        Markers:Update(cachedBotList, cachedEventList)
     end
 end
 
@@ -331,7 +319,17 @@ end
 
 -- Clustering & Rendering update
 function Markers:Update(botList, eventList)
-    Markers:ClearAll()
+    if botList then cachedBotList = botList end
+    if eventList then cachedEventList = eventList end
+    botList = botList or cachedBotList
+    eventList = eventList or cachedEventList
+
+    for _, pin in ipairs(pinPool) do pin:Hide() end
+    for _, cl in ipairs(clusterPool) do cl:Hide() end
+    for _, ev in ipairs(eventPool) do ev:Hide() end
+    activePins = {}
+    activeClusters = {}
+    activeEvents = {}
 
     local parent = WorldMapDetailFrame or WorldMapButton
     if not parent or not parent:IsVisible() then
@@ -388,17 +386,19 @@ function Markers:Update(botList, eventList)
         clusters, singletons = ClusterPointsSpatial(projected, CLUSTER_RADIUS_PIXELS)
     end
 
-    -- 3. Position Cluster Pins (Concentric circular badge)
+    -- 3. Position Cluster Pins (Rich Warcraft-styled Medallions)
     for idx, cl in ipairs(clusters) do
         local pin = Markers:GetClusterPin(idx)
         pin.botList = cl.bots
+        pin.clusterNx = cl.nx
+        pin.clusterNy = cl.ny
         pin.countText:SetText(tostring(#cl.bots))
         if cl.hasGuild then
-            pin.border:SetVertexColor(1.0, 0.82, 0.0, 1.0) -- Gold circular border
-            pin.bg:SetVertexColor(0.18, 0.13, 0.04, 0.95)
+            pin.bg:SetTexture("Interface\\AddOns\\CoABotUI\\Textures\\cluster_guild.tga")
+            pin.countText:SetTextColor(1.0, 0.95, 0.65, 1.0)
         else
-            pin.border:SetVertexColor(0.85, 0.85, 0.9, 0.95) -- Crisp silver circular border
-            pin.bg:SetVertexColor(0.08, 0.08, 0.14, 0.95)
+            pin.bg:SetTexture("Interface\\AddOns\\CoABotUI\\Textures\\cluster_badge.tga")
+            pin.countText:SetTextColor(1.0, 1.0, 1.0, 1.0)
         end
         pin:ClearAllPoints()
         pin:SetPoint("CENTER", parent, "TOPLEFT", cl.nx * mapWidth, -cl.ny * mapHeight)
@@ -452,23 +452,23 @@ function Markers:Update(botList, eventList)
         local isGuild = bit.band(item.bot.flags or 0, 1) ~= 0
         local inCombat = bit.band(item.bot.flags or 0, 2) ~= 0
         if isGuild then
+            pin.border:SetWidth(16)
+            pin.border:SetHeight(16)
+            pin.border:SetVertexColor(1.0, 0.85, 0.15, 1.0) -- Radiant gold ring
+            pin.icon:SetWidth(11)
+            pin.icon:SetHeight(11)
+        elseif inCombat then
+            pin.border:SetWidth(15)
+            pin.border:SetHeight(15)
+            pin.border:SetVertexColor(1.0, 0.25, 0.15, 1.0) -- Alert fiery red ring
+            pin.icon:SetWidth(10)
+            pin.icon:SetHeight(10)
+        else
             pin.border:SetWidth(14)
             pin.border:SetHeight(14)
-            pin.border:SetVertexColor(1.0, 0.82, 0.0, 1.0) -- Gold ring for guild bots
-            pin.icon:SetWidth(8)
-            pin.icon:SetHeight(8)
-        elseif inCombat then
-            pin.border:SetWidth(13)
-            pin.border:SetHeight(13)
-            pin.border:SetVertexColor(1.0, 0.2, 0.2, 1.0) -- Red alert ring for combat
-            pin.icon:SetWidth(7)
-            pin.icon:SetHeight(7)
-        else
-            pin.border:SetWidth(11)
-            pin.border:SetHeight(11)
-            pin.border:SetVertexColor(0.08, 0.08, 0.08, 0.95) -- Clean dark border
-            pin.icon:SetWidth(7)
-            pin.icon:SetHeight(7)
+            pin.border:SetVertexColor(0.92, 0.92, 0.98, 0.95) -- Crisp silver/white metallic ring
+            pin.icon:SetWidth(10)
+            pin.icon:SetHeight(10)
         end
         pin.border:Show()
 
@@ -486,6 +486,8 @@ function Markers:Update(botList, eventList)
             if enx and eny then
                 local pin = Markers:GetEventPin(evIdx)
                 pin.eventData = ev
+                pin.eventNx = enx
+                pin.eventNy = eny
 
                 -- Choose contextual icon by event type
                 local tex = "Interface\\Icons\\Ability_DualWield"
@@ -541,13 +543,6 @@ interpolator:SetScript("OnUpdate", function(self, elapsed)
                 pin:ClearAllPoints()
                 pin:SetPoint("CENTER", parent, "TOPLEFT", st.currNx * mapWidth, -st.currNy * mapHeight)
             end
-        end
-    end
-
-    -- 6. Prune stale interpolation states (TTL 30s or > 2 generations missed)
-    for g, st in pairs(botPositionState) do
-        if (now - (st.lastUpdate or 0)) > 30.0 or (currentGeneration - (st.lastGeneration or 0)) > 2 then
-            botPositionState[g] = nil
         end
     end
 end)

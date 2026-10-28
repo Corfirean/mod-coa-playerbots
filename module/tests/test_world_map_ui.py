@@ -27,6 +27,8 @@ def run_tests():
     WorldMapFrame = {
         shown = true,
         GetFrameLevel = function() return 1 end,
+        GetWidth = function() return 1024 end,
+        GetHeight = function() return 768 end,
         IsVisible = function(self) return self.shown end,
         HookScript = function() end,
     }
@@ -44,6 +46,7 @@ def run_tests():
             scripts = {},
             width = 16,
             height = 16,
+            GetName = function(self) return self.name end,
             Show = function(self) self.shown = true end,
             Hide = function(self) self.shown = false end,
             IsShown = function(self) return self.shown end,
@@ -77,6 +80,7 @@ def run_tests():
                     SetPoint = function() end,
                     SetText = function(self, t) self.text = t end,
                     SetFontObject = function() end,
+                    SetTextColor = function() end,
                 }
             end,
             RegisterEvent = function() end,
@@ -422,6 +426,28 @@ def run_tests():
     assert_true(evPin and evPin:IsShown(), "Test event pin displayed after ToggleTestEvent()")
     CoABotWorldMap:ToggleTestEvent()
     assert_true(evPin and not evPin:IsShown(), "Test event pin hidden after second ToggleTestEvent()")
+
+    -- 17. Compact Map Reposition & Layout Adaptation
+    CoABotMapMarkers:Update(sampleBots, nil)
+    local pin1 = _G["CoABotMapPin1"]
+    local origX = pin1 and pin1.x
+    -- Switch WorldMapDetailFrame to compact mode (592x395)
+    WorldMapDetailFrame.GetWidth = function() return 592 end
+    WorldMapDetailFrame.GetHeight = function() return 395 end
+    CoABotMapMarkers:RepositionAll()
+    local compactX = pin1 and pin1.x
+    assert_true(compactX ~= origX, "Pins instantly reposition on compact map size transition")
+
+    -- Settings panel layout adaptation
+    CoABotMapSettings:CreateWorldMapControls()
+    WorldMapFrame.GetWidth = function() return 592 end
+    CoABotMapSettings:UpdateLayout()
+    assert_true(CoABotMapSettings.dropdownLabel and (CoABotMapSettings.dropdownLabel.text == "Bots" or CoABotMapSettings.dropdownLabel.text == "Боты"), "Settings label adapts to compact mode")
+
+    WorldMapFrame.GetWidth = function() return 1024 end
+    WorldMapDetailFrame.GetWidth = function() return 1002 end
+    CoABotMapSettings:UpdateLayout()
+    assert_true(CoABotMapSettings.dropdownLabel and (CoABotMapSettings.dropdownLabel.text == "Allied Bots" or CoABotMapSettings.dropdownLabel.text == "Союзные боты"), "Settings label adapts to fullscreen mode")
 
     return failed
     '''

@@ -574,6 +574,9 @@ if WorldMapFrame then
         if CoABotMapSettings and CoABotMapSettings.CreateWorldMapControls then
             CoABotMapSettings:CreateWorldMapControls()
         end
+        if CoABotMapSettings and CoABotMapSettings.UpdateLayout then
+            CoABotMapSettings:UpdateLayout()
+        end
         Map.lastMapViewKey = Map:GetCurrentMapViewKey()
         Map.mapChangeDebounce = nil
         pollTimer = 0
@@ -591,4 +594,28 @@ if WorldMapFrame then
             CoABotMapTooltip.HideTooltip()
         end
     end)
+
+    if WorldMapDetailFrame and WorldMapDetailFrame.HookScript then
+        WorldMapDetailFrame:HookScript("OnSizeChanged", function(self, width, height)
+            if CoABotMapMarkers and CoABotMapMarkers.RepositionAll then
+                CoABotMapMarkers:RepositionAll()
+            end
+            if CoABotMapSettings and CoABotMapSettings.UpdateLayout then
+                CoABotMapSettings:UpdateLayout()
+            end
+        end)
+    end
+
+    if hooksecurefunc then
+        pcall(function()
+            hooksecurefunc("ToggleWorldMapSize", function()
+                if CoABotMapMarkers and CoABotMapMarkers.RepositionAll then
+                    CoABotMapMarkers:RepositionAll()
+                end
+                if CoABotMapSettings and CoABotMapSettings.UpdateLayout then
+                    CoABotMapSettings:UpdateLayout()
+                end
+            end)
+        end)
+    end
 end

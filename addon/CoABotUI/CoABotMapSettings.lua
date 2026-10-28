@@ -123,6 +123,9 @@ function Settings:CreateWorldMapControls()
     dropdownLabel:SetPoint("BOTTOMLEFT", modeDropdown, "TOPLEFT", 20, 2)
     local isRu = (GetLocale and GetLocale() == "ruRU")
     dropdownLabel:SetText(isRu and "Союзные боты" or "Allied Bots")
+    Settings.dropdownLabel = dropdownLabel
+    Settings.settingsPanel = settingsPanel
+    Settings.modeDropdown = modeDropdown
 
     -- Events Checkbox
     eventsCheckbox = CreateFrame("CheckButton", "CoABotMapEventsCheck", settingsPanel, "UICheckButtonTemplate")
@@ -184,6 +187,46 @@ function Settings:CreateWorldMapControls()
             end
         end
     end)
+
+    Settings:UpdateLayout()
+end
+
+function Settings:UpdateLayout()
+    if not settingsPanel or not WorldMapFrame then return end
+
+    local isCompact = false
+    local w = WorldMapFrame.GetWidth and WorldMapFrame:GetWidth()
+    if w and w < 800 and w > 0 then
+        isCompact = true
+    else
+        local dw = WorldMapDetailFrame and WorldMapDetailFrame.GetWidth and WorldMapDetailFrame:GetWidth()
+        if dw and dw < 800 and dw > 0 then
+            isCompact = true
+        end
+    end
+
+    local isRu = (GetLocale and GetLocale() == "ruRU")
+
+    settingsPanel:ClearAllPoints()
+    if isCompact then
+        -- Compact/Windowed map: narrower dropdown, snug top-right anchor so it doesn't collide with zone title
+        settingsPanel:SetPoint("TOPRIGHT", WorldMapFrame, "TOPRIGHT", -20, -34)
+        if modeDropdown then
+            UIDropDownMenu_SetWidth(modeDropdown, 80)
+        end
+        if Settings.dropdownLabel then
+            Settings.dropdownLabel:SetText(isRu and "Боты" or "Bots")
+        end
+    else
+        -- Fullscreen map: standard Blizzard spacing
+        settingsPanel:SetPoint("TOPRIGHT", WorldMapFrame, "TOPRIGHT", -50, -36)
+        if modeDropdown then
+            UIDropDownMenu_SetWidth(modeDropdown, 110)
+        end
+        if Settings.dropdownLabel then
+            Settings.dropdownLabel:SetText(isRu and "Союзные боты" or "Allied Bots")
+        end
+    end
 end
 
 -- Slash command handler extension

@@ -47,22 +47,22 @@ local CUSTOM_CLASS_COLORS = {
     [14] = { r = 0.40, g = 0.85, b = 0.10 }, -- Felsworn: Fel green
     [15] = { r = 0.70, g = 0.55, b = 0.35 }, -- Witch Hunter: Leather
     [16] = { r = 0.10, g = 0.65, b = 0.95 }, -- Stormbringer: Lightning cyan
-    [17] = { r = 0.60, g = 0.15, b = 0.15 }, -- Knight of Xoroth: Dark crimson
+    [17] = { r = 0.85, g = 0.20, b = 0.20 }, -- Knight of Xoroth: Searing crimson
     [18] = { r = 0.75, g = 0.75, b = 0.60 }, -- Guardian: Iron shield
     [19] = { r = 0.95, g = 0.85, b = 0.40 }, -- Templar: Radiant holy gold
-    [20] = { r = 0.85, g = 0.10, b = 0.20 }, -- Bloodmage: Sanguine red
-    [21] = { r = 0.45, g = 0.75, b = 0.30 }, -- Ranger: Forest green
-    [22] = { r = 0.85, g = 0.70, b = 0.20 }, -- Chronomancer: Bronze time
-    [23] = { r = 0.30, g = 0.70, b = 0.45 }, -- Necromancer: Unholy pestilence
-    [24] = { r = 0.95, g = 0.40, b = 0.05 }, -- Pyromancer: Fire orange
-    [25] = { r = 0.55, g = 0.25, b = 0.70 }, -- Cultist: Void shadow
-    [26] = { r = 0.40, g = 0.60, b = 0.95 }, -- Starcaller: Astral blue
-    [27] = { r = 1.00, g = 0.80, b = 0.30 }, -- Sun Cleric: Solar gold
-    [28] = { r = 0.80, g = 0.65, b = 0.45 }, -- Tinker: Copper gear
-    [29] = { r = 0.40, g = 0.85, b = 0.30 }, -- Venomancer: Toxic acid
-    [30] = { r = 0.50, g = 0.50, b = 0.60 }, -- Reaper: Grim slate
-    [31] = { r = 0.80, g = 0.55, b = 0.20 }, -- Primalist: Earth amber
-    [32] = { r = 0.25, g = 0.80, b = 0.80 }, -- Runemaster: Runic turquoise
+    [20] = { r = 0.90, g = 0.15, b = 0.25 }, -- Bloodmage: Sanguine red
+    [21] = { r = 0.45, g = 0.80, b = 0.30 }, -- Ranger: Forest green
+    [22] = { r = 0.90, g = 0.75, b = 0.20 }, -- Chronomancer: Bronze time
+    [23] = { r = 0.30, g = 0.80, b = 0.50 }, -- Necromancer: Unholy pestilence
+    [24] = { r = 1.00, g = 0.45, b = 0.05 }, -- Pyromancer: Fire orange
+    [25] = { r = 0.70, g = 0.30, b = 0.85 }, -- Cultist: Void shadow
+    [26] = { r = 0.40, g = 0.65, b = 1.00 }, -- Starcaller: Astral blue
+    [27] = { r = 1.00, g = 0.85, b = 0.30 }, -- Sun Cleric: Solar gold
+    [28] = { r = 0.85, g = 0.65, b = 0.40 }, -- Tinker: Copper gear
+    [29] = { r = 0.40, g = 0.90, b = 0.30 }, -- Venomancer: Toxic acid
+    [30] = { r = 0.65, g = 0.35, b = 0.85 }, -- Reaper: Spectral violet
+    [31] = { r = 0.85, g = 0.55, b = 0.20 }, -- Primalist: Earth amber
+    [32] = { r = 0.25, g = 0.85, b = 0.85 }, -- Runemaster: Runic turquoise
 }
 
 function Tooltip.GetClassColor(classId)
