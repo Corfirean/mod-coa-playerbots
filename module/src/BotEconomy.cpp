@@ -1270,6 +1270,18 @@ namespace BotEconomy
         return Acore::StringFormat("earning gold for the guild ({}/{} g - {}%)", o.depositedCopper / 10000, target / 10000, std::min<uint64>(100, o.depositedCopper * 100 / target));
     }
 
+    bool GetGoldOrderInfo(Player* bot, uint64& outTargetCopper, uint64& outDepositedCopper)
+    {
+        if (!bot)
+            return false;
+        auto it = g_goldOrders.find(bot->GetGUID());
+        if (it == g_goldOrders.end())
+            return false;
+        outTargetCopper = it->second.targetCopper;
+        outDepositedCopper = it->second.depositedCopper;
+        return true;
+    }
+
     void StartRestAura(Player* bot, bool food)
     {
         uint32 const spell = food ? 433 : 431;

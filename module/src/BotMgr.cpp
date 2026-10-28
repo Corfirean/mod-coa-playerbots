@@ -1468,6 +1468,12 @@ BotMgr::GuildGatherOrder const* BotMgr::GetGuildGatherOrder(ObjectGuid const& gu
     return it != _guildGatherOrders.end() ? &it->second : nullptr;
 }
 
+BotMgr::CraftOrderState const* BotMgr::GetCraftOrder(ObjectGuid const& guid) const
+{
+    auto it = _craftOrders.find(guid);
+    return it != _craftOrders.end() ? &it->second : nullptr;
+}
+
 void BotMgr::RetryGuildGatherLocation(ObjectGuid const& guid)
 {
     auto it = _guildGatherOrders.find(guid);
