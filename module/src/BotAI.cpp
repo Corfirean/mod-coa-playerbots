@@ -29,6 +29,7 @@
 
 #include "BotAI.h"
 #include "dungeon/DcNeverTargetRegistry.h"
+#include "dungeon/DungeonRoster.h"
 #include "dungeon/DungeonRuntime.h"
 #include "BotSpecStats.h"
 #include "AscensionCollectibleSpellData.h"
@@ -2313,6 +2314,94 @@ bool IsDungeonFullyCleared(Map* map, Player* leader)
     return true;
 }
 
+// A fight that goes nowhere: the same creatures keep a group in combat, their health does not move and nobody of the group is hurt (a pack
+// that cannot be reached across water or a ledge, creatures that keep evading). Soak test: a group stood in such a fight in Blackfathom Deeps
+// for 42 minutes. After a long time without any change the group gives those creatures up for five minutes and drops the combat.
+struct StalemateWatch
+{
+    uint32 lastTickMs = 0;
+    uint32 lastProgressMs = 0;
+    float lastMobHp = -1.0f;
+    float lastMemberHp = -1.0f;
+};
+std::unordered_map<ObjectGuid, StalemateWatch> s_stalemate;
+constexpr uint32 STALEMATE_MS = 150 * 1000;
+constexpr uint32 STALEMATE_BOSS_MS = 420 * 1000;
+
+void BreakGroupStalemate(Player* tank, Group* group)
+{
+    uint32 const now = getMSTime();
+    StalemateWatch& w = s_stalemate[group->GetGUID()];
+    if (!w.lastProgressMs || now - w.lastTickMs > 8000)
+    {
+        w = StalemateWatch{};
+        w.lastProgressMs = now;
+    }
+    w.lastTickMs = now;
+
+    std::vector<Unit*> mobs;
+    float memberHp = 0.0f;
+    bool boss = false;
+    auto addMob = [&](Unit* u)
+    {
+        if (!u || !u->IsAlive() || u->GetTypeId() != TYPEID_UNIT || std::find(mobs.begin(), mobs.end(), u) != mobs.end())
+            return;
+        mobs.push_back(u);
+        if (Creature* c = u->ToCreature(); c && (c->IsDungeonBoss() || c->isWorldBoss()))
+            boss = true;
+    };
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || !member->IsAlive() || member->GetMapId() != tank->GetMapId())
+            continue;
+        memberHp += float(member->GetHealth());
+        for (Unit* attacker : member->getAttackers())
+            addMob(attacker);
+        addMob(member->GetVictim());
+    }
+    if (mobs.empty())
+    {
+        w.lastProgressMs = now;
+        w.lastMobHp = -1.0f;
+        return;
+    }
+    float mobHp = 0.0f;
+    for (Unit* m : mobs)
+        mobHp += float(m->GetHealth());
+
+    bool const moved = w.lastMobHp < 0.0f || std::fabs(mobHp - w.lastMobHp) > 0.01f * w.lastMobHp || memberHp < w.lastMemberHp * 0.97f;
+    if (moved)
+    {
+        w.lastProgressMs = now;
+        w.lastMobHp = mobHp;
+        w.lastMemberHp = memberHp;
+        return;
+    }
+    if (now - w.lastProgressMs < (boss ? STALEMATE_BOSS_MS : STALEMATE_MS))
+        return;
+
+    LOG_WARN("module.coa-playerbots.dungeon", "Group of '{}': a fight with {} creature(s) made no progress for {} s; breaking it off.", tank->GetName(), mobs.size(),
+        (now - w.lastProgressMs) / 1000);
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member)
+            continue;
+        for (Unit* m : mobs)
+            IgnoreTargetFor(member->GetGUID(), m->GetGUID(), 300000);
+        member->AttackStop();
+        BotMovement::ForceStopOwner(member, MoveOwner::Combat);
+    }
+    for (Unit* m : mobs)
+    {
+        m->CombatStop(true);
+        if (Creature* c = m->ToCreature(); c && c->AI())
+            c->AI()->EnterEvadeMode();
+    }
+    w = StalemateWatch{};
+}
+
 // Opt-in "Auto Dungeon Mode" (BotMgr::SetAutoDungeonMode, toggled via .botcmd autodungeon on/off
 // or the addon's AUTODUNGEON verb) lets a Tank bot run point through an instance on its own.
 // It engages nearby hostile packs and pathfinds sequentially to uncleared bosses using real
@@ -2335,12 +2424,17 @@ void TryAutoPullInInstance(Player* bot)
     Group* group = bot->GetGroup();
     if (!group)
         return;
+    bool const isPointRunnerTank = BotAI::GetRole(bot->GetGUID()) == BotRole::Tank;
 
     Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
     if (!leader)
         return note("group leader not found");
     if (leader->IsInCombat())
+    {
+        if (isPointRunnerTank && DungeonRuntime::Enabled())
+            BreakGroupStalemate(bot, group);
         return note("leader is in combat, waiting");
+    }
 
     Map* map = bot->GetMap();
     if (!map || (!map->IsDungeon() && !map->IsRaid()))
@@ -5358,6 +5452,20 @@ void DungeonProgress(Map* map, Player* leader, uint32& total, uint32& done)
     total = done = 0;
     if (!map || !leader)
         return;
+    if (DungeonRuntime::Enabled())
+    {
+        // The roster knows the wing the group is in and the objectives; count its bosses only.
+        for (DungeonBossInfo const& anchor : DungeonRoster::Full(map, leader))
+        {
+            if (anchor.kind != DungeonAnchorKind::Boss)
+                continue;
+            ++total;
+            if (DungeonRoster::IsDone(map, anchor))
+                ++done;
+        }
+        if (total)
+            return;
+    }
     for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
     {
         if (data.mapid != map->GetId())
