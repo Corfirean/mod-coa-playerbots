@@ -1,6 +1,7 @@
 --[[
     CoA World Map Intelligence -- Map Markers & Clustering
-    Marker pools, Blizzard native pins, coordinate projection, smooth interpolation, and clustering.
+    Marker pools, Blizzard native pins, coordinate projection, identity-bound smooth interpolation,
+    spatial-hash clustering, and mapId continent validation.
 --]]
 
 CoABotMapMarkers = {}
@@ -13,8 +14,11 @@ local activePins = {}
 local activeClusters = {}
 local activeEvents = {}
 
+-- Identity-bound interpolation state: [guidLow] = { currNx, currNy, targetNx, targetNy, mapId, lastUpdate }
+local botPositionState = {}
+
 local CLUSTER_RADIUS_PIXELS = 22
-local INTERPOLATION_SPEED = 2.5 -- fraction per second
+local INTERPOLATION_SPEED = 3.0 -- fraction per second
 
 -- World-to-Map coordinate transform
 function Markers:WorldToMap(worldX, worldY)
@@ -66,10 +70,11 @@ local function CreateBotPin(index)
     pin:EnableMouse(true)
     pin:SetFrameLevel(parent:GetFrameLevel() + 5)
 
-    -- Background icon
+    -- Background icon (Blizzard native PartyRaidBlips)
     local icon = pin:CreateTexture(nil, "BACKGROUND")
     icon:SetAllPoints()
     icon:SetTexture("Interface\\Minimap\\PartyRaidBlips")
+    icon:SetTexCoord(0.0, 0.125, 0.0, 0.125)
     pin.icon = icon
 
     -- Highlight glow / Guild ring
@@ -200,70 +205,63 @@ function Markers:ClearAll()
     activeEvents = {}
 end
 
--- Clustering & Rendering update
-function Markers:Update(botList, eventList)
-    Markers:ClearAll()
-
-    local parent = WorldMapDetailFrame or WorldMapButton
-    if not parent or not parent:IsVisible() then
-        return
-    end
-
-    local mapWidth = parent:GetWidth() or 1002
-    local mapHeight = parent:GetHeight() or 668
-    if mapWidth <= 0 or mapHeight <= 0 then
-        return
-    end
-
-    -- 1. Project valid bots to screen space
-    local projected = {}
-    if botList then
-        for _, b in ipairs(botList) do
-            local nx, ny = Markers:WorldToMap(b.worldX, b.worldY)
-            if nx and ny then
-                table.insert(projected, {
-                    bot = b,
-                    nx = nx,
-                    ny = ny,
-                    px = nx * mapWidth,
-                    py = ny * mapHeight,
-                    clustered = false
-                })
-            end
-        end
-    end
-
-    -- 2. Cluster dense bots (O(N^2) over matching on-map bots, typically N < 200)
+-- Spatial Grid Clustering: O(N) spatial hash
+local function ClusterPointsSpatial(projectedList, clusterRadius)
     local clusters = {}
     local singletons = {}
 
-    for i = 1, #projected do
-        local p1 = projected[i]
+    local cellSize = clusterRadius
+    local grid = {} -- [cellKey] = { item1, item2, ... }
+
+    local function MakeKey(cx, cy)
+        return cx .. ":" .. cy
+    end
+
+    for _, p in ipairs(projectedList) do
+        local cx = math.floor(p.px / cellSize)
+        local cy = math.floor(p.py / cellSize)
+        local key = MakeKey(cx, cy)
+        if not grid[key] then grid[key] = {} end
+        table.insert(grid[key], p)
+    end
+
+    local radiusSq = clusterRadius * clusterRadius
+
+    for _, p1 in ipairs(projectedList) do
         if not p1.clustered then
             local group = { p1 }
-            for j = i + 1, #projected do
-                local p2 = projected[j]
-                if not p2.clustered then
-                    local dx = p1.px - p2.px
-                    local dy = p1.py - p2.py
-                    if (dx * dx + dy * dy) <= (CLUSTER_RADIUS_PIXELS * CLUSTER_RADIUS_PIXELS) then
-                        p2.clustered = true
-                        table.insert(group, p2)
+            local cx = math.floor(p1.px / cellSize)
+            local cy = math.floor(p1.py / cellSize)
+
+            -- Search 3x3 neighboring cells
+            for dx = -1, 1 do
+                for dy = -1, 1 do
+                    local nkey = MakeKey(cx + dx, cy + dy)
+                    local cell = grid[nkey]
+                    if cell then
+                        for _, p2 in ipairs(cell) do
+                            if p2 ~= p1 and not p2.clustered then
+                                local distSq = (p1.px - p2.px)^2 + (p1.py - p2.py)^2
+                                if distSq <= radiusSq then
+                                    p2.clustered = true
+                                    table.insert(group, p2)
+                                end
+                            end
+                        end
                     end
                 end
             end
 
             if #group > 1 then
                 p1.clustered = true
-                -- Center of cluster
                 local avgNx, avgNy = 0, 0
                 local botObjects = {}
                 local hasGuild = false
-                for _, member in ipairs(group) do
-                    avgNx = avgNx + member.nx
-                    avgNy = avgNy + member.ny
-                    table.insert(botObjects, member.bot)
-                    if bit.band(member.bot.flags or 0, 1) ~= 0 then
+                for _, m in ipairs(group) do
+                    avgNx = avgNx + m.nx
+                    avgNy = avgNy + m.ny
+                    table.insert(botObjects, m.bot)
+                    if bit.band(m.bot.flags or 0, 1) ~= 0 then
                         hasGuild = true
                     end
                 end
@@ -279,13 +277,60 @@ function Markers:Update(botList, eventList)
         end
     end
 
+    return clusters, singletons
+end
+
+-- Clustering & Rendering update
+function Markers:Update(botList, eventList)
+    Markers:ClearAll()
+
+    local parent = WorldMapDetailFrame or WorldMapButton
+    if not parent or not parent:IsVisible() then
+        return
+    end
+
+    local mapWidth = parent:GetWidth() or 1002
+    local mapHeight = parent:GetHeight() or 668
+    if mapWidth <= 0 or mapHeight <= 0 then
+        return
+    end
+
+    -- Identify current map area and mapId
+    local mapName = GetMapInfo()
+    local area = mapName and CoABotMapData and CoABotMapData.areas and CoABotMapData.areas[mapName:lower()]
+    local currentMapId = area and area.mapId
+
+    -- 1. Project valid bots to screen space with mapId continent validation
+    local projected = {}
+    if botList then
+        for _, b in ipairs(botList) do
+            -- Strict Map ID Validation: if bot is on a different map/continent, do not render on this map!
+            if currentMapId == nil or b.mapId == nil or b.mapId == currentMapId then
+                local nx, ny = Markers:WorldToMap(b.worldX, b.worldY)
+                if nx and ny then
+                    table.insert(projected, {
+                        bot = b,
+                        nx = nx,
+                        ny = ny,
+                        px = nx * mapWidth,
+                        py = ny * mapHeight,
+                        clustered = false
+                    })
+                end
+            end
+        end
+    end
+
+    -- 2. Cluster dense bots via Spatial Grid
+    local clusters, singletons = ClusterPointsSpatial(projected, CLUSTER_RADIUS_PIXELS)
+
     -- 3. Position Cluster Pins
     for idx, cl in ipairs(clusters) do
         local pin = Markers:GetClusterPin(idx)
         pin.botList = cl.bots
         pin.countText:SetText(tostring(#cl.bots))
         if cl.hasGuild then
-            pin.border:SetVertexColor(1.0, 0.82, 0.0, 1) -- Gold border
+            pin.border:SetVertexColor(1.0, 0.82, 0.0, 1.0) -- Gold border
             pin.bg:SetVertexColor(0.2, 0.15, 0.05, 0.95)
         else
             pin.border:SetVertexColor(0.8, 0.8, 0.8, 0.8)
@@ -297,38 +342,56 @@ function Markers:Update(botList, eventList)
         table.insert(activeClusters, pin)
     end
 
-    -- 4. Position Singleton Pins
-    local CLASS_COORDS = {
-        -- Texture coordinates in PartyRaidBlips if used, or color vertices
-    }
-
+    -- 4. Position Singleton Pins with identity-bound interpolation
+    local now = GetTime()
     for idx, item in ipairs(singletons) do
         local pin = Markers:GetBotPin(idx)
         pin.botData = item.bot
-        pin.targetNx = item.nx
-        pin.targetNy = item.ny
 
-        -- Smooth interpolation support
-        pin.currNx = pin.currNx or item.nx
-        pin.currNy = pin.currNy or item.ny
+        -- Bind interpolation state to character identity (guidLow), decoupled from recycled frame
+        local guidLow = item.bot.guidLow
+        local st = botPositionState[guidLow]
+        if not st or st.mapId ~= item.bot.mapId then
+            st = {
+                currNx = item.nx,
+                currNy = item.ny,
+                targetNx = item.nx,
+                targetNy = item.ny,
+                mapId = item.bot.mapId,
+                lastUpdate = now
+            }
+            botPositionState[guidLow] = st
+        else
+            st.targetNx = item.nx
+            st.targetNy = item.ny
+            st.lastUpdate = now
 
-        -- If jumped too far (> 0.2 map fraction), snap immediately
-        local dist = math.hypot and math.hypot(pin.currNx - item.nx, pin.currNy - item.ny) or math.sqrt((pin.currNx - item.nx)^2 + (pin.currNy - item.ny)^2)
-        if dist > 0.2 then
-            pin.currNx = item.nx
-            pin.currNy = item.ny
+            -- Snap immediately if jumped across map (> 0.2 fraction) or teleported
+            local dist = math.sqrt((st.currNx - item.nx)^2 + (st.currNy - item.ny)^2)
+            if dist > 0.2 then
+                st.currNx = item.nx
+                st.currNy = item.ny
+            end
         end
+        pin.botState = st
+
+        -- Blizzard native color styling
+        local r, g, b = 1.0, 1.0, 1.0
+        if CoABotMapTooltip and CoABotMapTooltip.GetClassColor then
+            r, g, b = CoABotMapTooltip.GetClassColor(item.bot.classId)
+        end
+        pin.icon:SetVertexColor(r, g, b, 1.0)
 
         local isGuild = bit.band(item.bot.flags or 0, 1) ~= 0
         if isGuild then
-            pin.border:SetVertexColor(1.0, 0.82, 0.0, 1) -- Gold ring
+            pin.border:SetVertexColor(1.0, 0.82, 0.0, 1.0) -- Gold ring
             pin.border:Show()
         else
             pin.border:Hide()
         end
 
         pin:ClearAllPoints()
-        pin:SetPoint("CENTER", parent, "TOPLEFT", pin.currNx * mapWidth, -pin.currNy * mapHeight)
+        pin:SetPoint("CENTER", parent, "TOPLEFT", st.currNx * mapWidth, -st.currNy * mapHeight)
         pin:Show()
         table.insert(activePins, pin)
     end
@@ -363,12 +426,13 @@ interpolator:SetScript("OnUpdate", function(self, elapsed)
     local step = elapsed * INTERPOLATION_SPEED
 
     for _, pin in ipairs(activePins) do
-        if pin.targetNx and pin.currNx then
-            if math.abs(pin.currNx - pin.targetNx) > 0.0005 or math.abs(pin.currNy - pin.targetNy) > 0.0005 then
-                pin.currNx = pin.currNx + (pin.targetNx - pin.currNx) * math.min(1, step)
-                pin.currNy = pin.currNy + (pin.targetNy - pin.currNy) * math.min(1, step)
+        local st = pin.botState
+        if st and st.targetNx and st.currNx then
+            if math.abs(st.currNx - st.targetNx) > 0.0005 or math.abs(st.currNy - st.targetNy) > 0.0005 then
+                st.currNx = st.currNx + (st.targetNx - st.currNx) * math.min(1, step)
+                st.currNy = st.currNy + (st.targetNy - st.currNy) * math.min(1, step)
                 pin:ClearAllPoints()
-                pin:SetPoint("CENTER", parent, "TOPLEFT", pin.currNx * mapWidth, -pin.currNy * mapHeight)
+                pin:SetPoint("CENTER", parent, "TOPLEFT", st.currNx * mapWidth, -st.currNy * mapHeight)
             end
         end
     end
