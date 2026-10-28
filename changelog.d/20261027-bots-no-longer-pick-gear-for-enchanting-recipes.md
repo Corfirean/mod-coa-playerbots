@@ -4,4 +4,4 @@ type: fixed
 audience: players
 title: Bots pick weapons and shields for their combat spells, not for enchanting recipes
 ---
-Every bot knows all professions, and the enchanting recipes for shields and two-handed weapons were counted as combat abilities that need those items. Every bot was pushed towards a shield and away from two-handers, so a Crusader kept one-handed maces and could not cast Argent Blade or Righteous Tempest. Bots now choose weapons by their real abilities.
+Bots choose weapons and shields from their combat abilities instead of enchanting recipes. Recipes no longer push every bot toward shields and away from two-handed weapons, allowing Crusaders to equip weapons needed for Argent Blade and Righteous Tempest.
