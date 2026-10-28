@@ -27,9 +27,10 @@ MAPQUERY:<reqId>:<mode>[:<param1>[:<param2>]]
 - `mode`:
   - `0`: `OFF` (returns empty result, server clears state)
   - `1`: `NEARBY` (`param1` = radius in yards, clamped to [100, 5000], default 1000)
-  - `2`: `CURRENT_ZONE` (`param1` = zoneId or 0/-1 for server auto-detect)
-  - `3`: `GUILD_ONLY` (`param1` = mapId or -1 for worldwide guild query)
-  - `4`: `ALL_ALLIED` (`param1` = mapId; explicitly supports Eastern Kingdoms `0`, Kalimdor `1`, Outland `530`, Northrend `571`, or `-1` for all maps)
+  - `2`: `CURRENT_ZONE` (`param1` = zoneId or 0/-1 for server auto-detect; `param2` = optional viewport `filterAreaId`)
+  - `3`: `GUILD_ONLY` (`param1` = mapId or -1 for worldwide guild query; `param2` = optional viewport `filterAreaId`)
+  - `4`: `ALL_ALLIED` (`param1` = mapId; explicitly supports Eastern Kingdoms `0`, Kalimdor `1`, Outland `530`, Northrend `571`, or `-1` for all maps; `param2` = viewport `filterAreaId` from client DBC area table, `0` for continent overview)
+- `param2`: `filterAreaId` (integer, optional): When client views a specific zone map (e.g. Elwynn Forest = 12), specifies the DBC AreaTable ID. Server filters bots strictly by `bot.zoneId == filterAreaId`, eliminating >90% unnecessary traffic for zone views. When viewing continent overview, `param2 = 0`.
 
 ---
 
