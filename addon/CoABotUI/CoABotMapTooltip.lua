@@ -83,6 +83,28 @@ local function GetClassColorHex(classId)
     return string.format("|cFF%02x%02x%02x", math.floor(r * 255), math.floor(g * 255), math.floor(b * 255))
 end
 
+local function FormatItemDisplay(itemId)
+    if not itemId or itemId <= 0 then
+        return "Item #" .. tostring(itemId)
+    end
+    local itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType, itemSubType, itemStackCount, itemEquipLoc, itemTexture
+    if GetItemInfo then
+        itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType, itemSubType, itemStackCount, itemEquipLoc, itemTexture = GetItemInfo(itemId)
+    end
+    local icon = itemTexture or (GetItemIcon and GetItemIcon(itemId))
+    local iconStr = icon and string.format("|T%s:14:14:0:0|t ", icon) or ""
+    if itemName then
+        local colorHex = "|cffffffff"
+        if itemRarity and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[itemRarity] then
+            colorHex = ITEM_QUALITY_COLORS[itemRarity].hex or "|cffffffff"
+        end
+        return iconStr .. colorHex .. itemName .. "|r"
+    else
+        return iconStr .. "Item #" .. tostring(itemId)
+    end
+end
+Tooltip.FormatItemDisplay = FormatItemDisplay
+
 local ACTIVITY_NAMES = {
     [0] = "Idle",
     [1] = "Questing",
@@ -141,22 +163,31 @@ function Tooltip.ShowBotTooltip(pinFrame, botData)
 
         if detail and detail.taskType and detail.taskType > 0 then
             local taskTitle = "Assignment:"
-            local taskDesc = ""
             if detail.taskType == 1 then
-                taskDesc = "Collect Item #" .. tostring(detail.taskItem)
+                -- Collect Item
+                tt:AddDoubleLine(taskTitle, "Collect " .. FormatItemDisplay(detail.taskItem), 0.9, 0.9, 0.9, 1, 1, 1)
+                local pct = 0
+                if detail.taskTarget > 0 then
+                    pct = math.min(100, math.floor((detail.taskDone * 100) / detail.taskTarget))
+                end
+                tt:AddDoubleLine("Progress:", string.format("%d / %d (%d%%)", detail.taskDone, detail.taskTarget, pct), 0.8, 0.8, 0.8, 0.2, 1.0, 0.2)
+                tt:AddDoubleLine("Status:", detail.taskStatus or "In Progress", 0.8, 0.8, 0.8, 1, 1, 1)
             elseif detail.taskType == 2 then
-                taskDesc = "Craft Item #" .. tostring(detail.taskItem)
+                -- Craft Item order: Display remaining to craft without false percentage
+                local remaining = math.max(0, detail.taskTarget - detail.taskDone)
+                tt:AddDoubleLine(taskTitle, "Craft " .. FormatItemDisplay(detail.taskItem), 0.9, 0.9, 0.9, 1, 1, 1)
+                tt:AddDoubleLine("Remaining to Craft:", tostring(remaining) .. " / " .. tostring(detail.taskTarget), 0.8, 0.8, 0.8, 1, 0.82, 0)
+                tt:AddDoubleLine("Status:", detail.taskStatus or "In Progress", 0.8, 0.8, 0.8, 1, 1, 1)
             elseif detail.taskType == 3 then
-                taskDesc = "Earn Gold for Guild"
+                -- Earn Gold
+                tt:AddDoubleLine(taskTitle, "Earn Gold for Guild", 0.9, 0.9, 0.9, 1, 1, 1)
+                local pct = 0
+                if detail.taskTarget > 0 then
+                    pct = math.min(100, math.floor((detail.taskDone * 100) / detail.taskTarget))
+                end
+                tt:AddDoubleLine("Progress:", string.format("%d / %d (%d%%)", detail.taskDone, detail.taskTarget, pct), 0.8, 0.8, 0.8, 0.2, 1.0, 0.2)
+                tt:AddDoubleLine("Status:", detail.taskStatus or "In Progress", 0.8, 0.8, 0.8, 1, 1, 1)
             end
-            tt:AddDoubleLine(taskTitle, taskDesc, 0.9, 0.9, 0.9, 1, 1, 1)
-
-            local pct = 0
-            if detail.taskTarget > 0 then
-                pct = math.min(100, math.floor((detail.taskDone * 100) / detail.taskTarget))
-            end
-            tt:AddDoubleLine("Progress:", string.format("%d / %d (%d%%)", detail.taskDone, detail.taskTarget, pct), 0.8, 0.8, 0.8, 0.2, 1.0, 0.2)
-            tt:AddDoubleLine("Status:", detail.taskStatus or "In Progress", 0.8, 0.8, 0.8, 1, 1, 1)
         else
             tt:AddLine("No current assignment", 0.6, 0.6, 0.6)
         end
@@ -272,3 +303,18 @@ function Tooltip.HideTooltip()
         tt:Hide()
     end
 end
+
+-- Asynchronous item cache fill watcher
+local itemInfoWatcher = CreateFrame("Frame")
+itemInfoWatcher:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+itemInfoWatcher:SetScript("OnEvent", function(self, event, itemId)
+    if Tooltip.currentHoverPin and Tooltip.currentHoverGuid then
+        local pin = Tooltip.currentHoverPin
+        if pin.botData and pin.botData.guidLow == Tooltip.currentHoverGuid then
+            local detail = Tooltip.GetCachedDetail(Tooltip.currentHoverGuid)
+            if detail and detail.taskItem == itemId then
+                Tooltip.ShowBotTooltip(pin, pin.botData)
+            end
+        end
+    end
+end)
