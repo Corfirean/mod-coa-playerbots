@@ -59,7 +59,7 @@ namespace BotMapFilter
 
             uint32 targetZone = (filterAreaId > 0) ? static_cast<uint32>(filterAreaId) :
                                 (filterMapId > 0 ? static_cast<uint32>(filterMapId) : commander.zoneId);
-            if (bot.zoneId != targetZone)
+            if (bot.zoneId != targetZone && bot.areaId != targetZone && bot.parentZoneId != targetZone)
                 return false;
         }
         else if (mode == BotMapMode::GuildOnly)
@@ -72,8 +72,12 @@ namespace BotMapFilter
                 return false;
 
             // Viewport/zone filtering: if viewing a specific zone (filterAreaId > 0), only send bots in that zone
-            if (filterAreaId > 0 && bot.zoneId != static_cast<uint32>(filterAreaId))
-                return false;
+            if (filterAreaId > 0)
+            {
+                uint32 targetZone = static_cast<uint32>(filterAreaId);
+                if (bot.zoneId != targetZone && bot.areaId != targetZone && bot.parentZoneId != targetZone)
+                    return false;
+            }
         }
         else if (mode == BotMapMode::AllAllied)
         {
@@ -84,8 +88,12 @@ namespace BotMapFilter
 
             // Viewport/zone filtering: when viewing a specific zone (filterAreaId > 0), only send bots in that zone!
             // When viewing continent (filterAreaId == 0), include all bots on that continent.
-            if (filterAreaId > 0 && bot.zoneId != static_cast<uint32>(filterAreaId))
-                return false;
+            if (filterAreaId > 0)
+            {
+                uint32 targetZone = static_cast<uint32>(filterAreaId);
+                if (bot.zoneId != targetZone && bot.areaId != targetZone && bot.parentZoneId != targetZone)
+                    return false;
+            }
         }
 
         outPin.guidLow = bot.guidLow;

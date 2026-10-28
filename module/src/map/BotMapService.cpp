@@ -270,6 +270,7 @@ std::vector<std::string> BotMapService::HandleMapQuery(Player* commander, std::v
         target.teamId = bot->GetTeamId();
         target.mapId = bot->GetMapId();
         target.zoneId = bot->GetZoneId();
+        target.areaId = bot->GetAreaId();
         target.guildId = bot->GetGuildId();
         target.groupLeaderGuid = bot->GetGroup() ? bot->GetGroup()->GetLeaderGUID().GetCounter() : 0;
         target.x = bot->GetPositionX();

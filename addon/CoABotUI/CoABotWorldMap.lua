@@ -188,9 +188,10 @@ function Map:QueryMapData()
             param1 = -1
             param2 = filterAreaId
         elseif mode == 4 then
-            -- Pass exact mapId (e.g. 0 for Eastern Kingdoms, 1 for Kalimdor, etc.) and filterAreaId
+            -- All Allied: query all allied bots on the current continent/map;
+            -- client coordinates projection (WorldToMap) precisely clips to visible zone
             param1 = area and area.mapId or 0
-            param2 = filterAreaId
+            param2 = 0
         end
 
         SendMessage("MAPQUERY:" .. reqId .. ":" .. mode .. ":" .. param1 .. ":" .. param2)

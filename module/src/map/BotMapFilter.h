@@ -15,6 +15,8 @@ struct BotMapFilterTarget
     uint8 teamId = 0;
     uint32 mapId = 0;
     uint32 zoneId = 0;
+    uint32 areaId = 0;
+    uint32 parentZoneId = 0;
     uint32 guildId = 0;
     uint64 groupLeaderGuid = 0;
     float x = 0.0f;
@@ -37,6 +39,8 @@ struct BotMapCommanderView
     uint8 teamId = 0;
     uint32 mapId = 0;
     uint32 zoneId = 0;
+    uint32 areaId = 0;
+    uint32 parentZoneId = 0;
     uint32 guildId = 0;
     uint64 groupLeaderGuid = 0;
     float x = 0.0f;
