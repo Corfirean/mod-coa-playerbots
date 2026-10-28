@@ -50,6 +50,7 @@ namespace BotMapFilter
         BotMapCommanderView const& commander,
         BotMapMode mode,
         int32 filterMapId,
+        int32 filterAreaId,
         uint32 radius,
         BotMapFilterTarget const& bot,
         BotMapPinSnapshot& outPin);
@@ -58,8 +59,31 @@ namespace BotMapFilter
         BotMapCommanderView const& commander,
         BotMapMode mode,
         int32 filterMapId,
+        int32 filterAreaId,
         uint32 radius,
         std::vector<BotMapFilterTarget> const& bots);
+
+    // Overloads for backwards compatibility
+    inline bool FilterBot(
+        BotMapCommanderView const& commander,
+        BotMapMode mode,
+        int32 filterMapId,
+        uint32 radius,
+        BotMapFilterTarget const& bot,
+        BotMapPinSnapshot& outPin)
+    {
+        return FilterBot(commander, mode, filterMapId, 0, radius, bot, outPin);
+    }
+
+    inline std::vector<BotMapPinSnapshot> FilterBots(
+        BotMapCommanderView const& commander,
+        BotMapMode mode,
+        int32 filterMapId,
+        uint32 radius,
+        std::vector<BotMapFilterTarget> const& bots)
+    {
+        return FilterBots(commander, mode, filterMapId, 0, radius, bots);
+    }
 }
 
 #endif // COA_PLAYERBOTS_BOT_MAP_FILTER_H

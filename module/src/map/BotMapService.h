@@ -40,11 +40,35 @@ public:
         BotMapCommanderView const& commander,
         BotMapMode mode,
         int32 filterMapId,
+        int32 filterAreaId,
         uint32 radius,
         BotMapFilterTarget const& bot,
         BotMapPinSnapshot& outPin)
     {
-        return BotMapFilter::FilterBot(commander, mode, filterMapId, radius, bot, outPin);
+        return BotMapFilter::FilterBot(commander, mode, filterMapId, filterAreaId, radius, bot, outPin);
+    }
+
+    static std::vector<BotMapPinSnapshot> FilterBots(
+        BotMapCommanderView const& commander,
+        BotMapMode mode,
+        int32 filterMapId,
+        int32 filterAreaId,
+        uint32 radius,
+        std::vector<BotMapFilterTarget> const& bots)
+    {
+        return BotMapFilter::FilterBots(commander, mode, filterMapId, filterAreaId, radius, bots);
+    }
+
+    // Overloads for backwards compatibility
+    static bool FilterBot(
+        BotMapCommanderView const& commander,
+        BotMapMode mode,
+        int32 filterMapId,
+        uint32 radius,
+        BotMapFilterTarget const& bot,
+        BotMapPinSnapshot& outPin)
+    {
+        return BotMapFilter::FilterBot(commander, mode, filterMapId, 0, radius, bot, outPin);
     }
 
     static std::vector<BotMapPinSnapshot> FilterBots(
@@ -54,7 +78,7 @@ public:
         uint32 radius,
         std::vector<BotMapFilterTarget> const& bots)
     {
-        return BotMapFilter::FilterBots(commander, mode, filterMapId, radius, bots);
+        return BotMapFilter::FilterBots(commander, mode, filterMapId, 0, radius, bots);
     }
 
 private:

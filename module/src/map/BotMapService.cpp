@@ -256,6 +256,7 @@ std::vector<std::string> BotMapService::HandleMapQuery(Player* commander, std::v
 
     uint32 radius = (mode == BotMapMode::Nearby && arg1 > 0) ? static_cast<uint32>(arg1) : 1000;
     int32 filterMap = (mode == BotMapMode::AllAllied || mode == BotMapMode::GuildOnly) ? arg1 : -1;
+    int32 filterArea = (arg2 > 0) ? static_cast<int32>(arg2) : 0;
 
     std::vector<BotMapPinSnapshot> matchedPins;
     for (Player* bot : sBotMgr->GetOnlineBots())
@@ -294,7 +295,7 @@ std::vector<std::string> BotMapService::HandleMapQuery(Player* commander, std::v
         }
 
         BotMapPinSnapshot pin;
-        if (BotMapFilter::FilterBot(view, mode, filterMap, radius, target, pin))
+        if (BotMapFilter::FilterBot(view, mode, filterMap, filterArea, radius, target, pin))
             matchedPins.push_back(pin);
     }
 

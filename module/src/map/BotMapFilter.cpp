@@ -13,6 +13,7 @@ namespace BotMapFilter
         BotMapCommanderView const& commander,
         BotMapMode mode,
         int32 filterMapId,
+        int32 filterAreaId,
         uint32 radius,
         BotMapFilterTarget const& bot,
         BotMapPinSnapshot& outPin)
@@ -56,7 +57,8 @@ namespace BotMapFilter
             if (bot.mapId != commander.mapId)
                 return false;
 
-            uint32 targetZone = (filterMapId > 0) ? static_cast<uint32>(filterMapId) : commander.zoneId;
+            uint32 targetZone = (filterAreaId > 0) ? static_cast<uint32>(filterAreaId) :
+                                (filterMapId > 0 ? static_cast<uint32>(filterMapId) : commander.zoneId);
             if (bot.zoneId != targetZone)
                 return false;
         }
@@ -68,12 +70,21 @@ namespace BotMapFilter
             // If client specifically requested a map (and not wildcard -1), filter by map
             if (filterMapId >= 0 && bot.mapId != static_cast<uint32>(filterMapId))
                 return false;
+
+            // Viewport/zone filtering: if viewing a specific zone (filterAreaId > 0), only send bots in that zone
+            if (filterAreaId > 0 && bot.zoneId != static_cast<uint32>(filterAreaId))
+                return false;
         }
         else if (mode == BotMapMode::AllAllied)
         {
             // When filterMapId is >= 0, filter specifically by that map (e.g. 0 for Eastern Kingdoms)
             // If filterMapId is -1 (wildcard), allow all maps
             if (filterMapId >= 0 && bot.mapId != static_cast<uint32>(filterMapId))
+                return false;
+
+            // Viewport/zone filtering: when viewing a specific zone (filterAreaId > 0), only send bots in that zone!
+            // When viewing continent (filterAreaId == 0), include all bots on that continent.
+            if (filterAreaId > 0 && bot.zoneId != static_cast<uint32>(filterAreaId))
                 return false;
         }
 
@@ -104,6 +115,7 @@ namespace BotMapFilter
         BotMapCommanderView const& commander,
         BotMapMode mode,
         int32 filterMapId,
+        int32 filterAreaId,
         uint32 radius,
         std::vector<BotMapFilterTarget> const& bots)
     {
@@ -114,7 +126,7 @@ namespace BotMapFilter
         for (auto const& bot : bots)
         {
             BotMapPinSnapshot pin;
-            if (FilterBot(commander, mode, filterMapId, radius, bot, pin))
+            if (FilterBot(commander, mode, filterMapId, filterAreaId, radius, bot, pin))
                 results.push_back(pin);
         }
         return results;
