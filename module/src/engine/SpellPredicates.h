@@ -70,6 +70,21 @@ namespace BotAI
     // long-cooldown burst/defensive button," see CombatContext's fight-value fields.
     bool IsBossOrEliteTarget(Unit const* target);
 
+    // True while the unit sits eating, drinking or bandaging: any positive aura that breaks when the unit stands up (the real food and
+    // drink auras, whatever their spell id), or a bandage mechanic. Replaces three hand-written id lists that disagreed with each other
+    // (the drink aura bots actually use, 431, was missing from two of them).
+    bool IsEatingOrDrinking(Unit const* unit);
+
+    // Is a cast worth spending an interrupt on? A hostile spell (damage, control, debuff) or one that heals, summons or buffs another
+    // enemy. A cast whose only effect is a harmless self-buff is not: the kick is a cooldown the next real cast may need.
+    bool IsInterruptWorthwhile(SpellInfo const* spellInfo);
+
+    // A damaging cast of `enemy` aimed at `target` that has not finished yet: the damage it would do to `target` after the caster's
+    // damage bonuses and the target's damage-taken modifiers (not armor/resist/absorb rolls), and how long until it lands. Looks at
+    // the enemy's current generic and channeled spell only - what a player sees as a cast bar. False when there is none.
+    // `outSchoolMask` (optional) receives the school mask of the cast, for matching against school-limited absorbs.
+    bool GetDamagingCastOn(Unit* enemy, Unit* target, float& outDamage, uint32& outRemainingMs, uint32* outSchoolMask = nullptr);
+
     // True when `unit` is under a hard-CC mechanic that breaks on damage (fear/polymorph/sleep/
     // banish/shackle/sap/charm/horror/disorient) -- used to avoid a target-selection pass
     // attacking straight through a groupmate's crowd control (item 1/#8's "CC target -> huge

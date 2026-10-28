@@ -1237,6 +1237,7 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
     BotProgression::GrantMounts(bot);
     BotTaxi::GrantNodesForLevel(bot);
     BotProgression::ProvisionFood(bot, 20);
+    BotProgression::ProvisionPotions(bot, 5);
 
     GearUpFreshBotForLevel(bot, level);
 
@@ -1349,6 +1350,39 @@ void GearUpForTraining(Player* bot)
     GearUpFreshBotForLevel(bot, bot->GetLevel());
 }
 
+// Why the bot's gear does not suit it, or an empty string when it does.
+std::string GearRefitReason(Player* bot)
+{
+    if (!bot || BotGear::TrainingLocked(bot))
+        return {};
+    uint8 const level = bot->GetLevel();
+    static uint8 const mustHave[] = {
+        EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_SHOULDERS, EQUIPMENT_SLOT_CHEST, EQUIPMENT_SLOT_WAIST, EQUIPMENT_SLOT_LEGS,
+        EQUIPMENT_SLOT_FEET, EQUIPMENT_SLOT_WRISTS, EQUIPMENT_SLOT_HANDS,
+    };
+    for (uint8 slot : mustHave)
+        if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            return Acore::StringFormat("slot {} is empty", uint32(slot));
+
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!BotAI::IsProfessionTool(proto) && proto->RequiredLevel > level)
+            return Acore::StringFormat("slot {} holds an item for level {}", uint32(slot), uint32(proto->RequiredLevel));
+    }
+    if (BotAI::KitGearMismatch(bot))
+        return "the weapon type the spells need is not equipped";
+    return {};
+}
+
+bool NeedsGearRefit(Player* bot)
+{
+    return !GearRefitReason(bot).empty();
+}
+
 void RepairGear(Player* bot)
 {
     if (!bot || !BotGear::Ready() || BotGear::TrainingLocked(bot))
@@ -1356,6 +1390,14 @@ void RepairGear(Player* bot)
     repairingGear = true;
     GearUpFreshBotForLevel(bot, bot->GetLevel());
     repairingGear = false;
+    // The pass above only fills slots whose piece is not allowed. A suitable kit is a different question: replace a piece
+    // when the level-bracketed pool has a better one for this bot (TryEquipBestOf only swaps for a higher score).
+    if (std::string const reason = GearRefitReason(bot); !reason.empty())
+    {
+        GearUpFreshBotForLevel(bot, bot->GetLevel());
+        LOG_INFO("module.coa-playerbots.gear", "GearRefit: '{}' (class {}, level {}): {} -> {}.", bot->GetName(), uint32(bot->getClass()),
+            uint32(bot->GetLevel()), reason, GearRefitReason(bot).empty() ? "fixed" : GearRefitReason(bot));
+    }
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
             if (!BotAI::IsProfessionTool(item->GetTemplate()) && !BotGear::Allowed(bot, item->GetTemplate()))

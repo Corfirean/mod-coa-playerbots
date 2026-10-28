@@ -37,6 +37,9 @@ namespace
             return nullptr;
         if (!node->MountCreatureID[bot->GetTeamId() == TEAM_ALLIANCE ? 1 : 0])
             return nullptr;
+        // Not to or from a closed expansion map (Outland, Northrend) -- see BotZoneProgression::ExpansionBlocked.
+        if (BotZoneProgression::ExpansionBlocked(node->map_id, node->x, node->y))
+            return nullptr;
         return node;
     }
 

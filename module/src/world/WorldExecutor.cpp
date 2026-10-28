@@ -1,5 +1,6 @@
 #include "engine/BotDebugLog.h"
 #include "WorldExecutor.h"
+#include "DangerMap.h"
 #include "BotAI.h"
 #include "BotWorldBehavior.h"
 #include "ObjectiveCommon.h"
@@ -90,7 +91,62 @@ namespace WorldExecutor
         uint8 stageBefore = before ? before->progress.stage : 0;
 
         uint64 goal = state.task.GoalId(sub) + (goalSalt << 40);
-        NavStatus status = BotMovement::Navigate(bot, OwnerFor(state.task), goal, x, y, z, radius, &state.travelToken, allowMount);
+
+        // Around places a bot of this level would not survive, when the way is long enough to matter: a route of waypoints
+        // from the danger map, walked one by one. A waypoint that cannot be reached drops the route for this goal and the
+        // bot goes straight, as it did before.
+        TravelRoute& route = state.travelRoute;
+        uint64 routeKey = goal ^ (uint64(bot->GetMapId()) << 52) ^ (uint64(uint32(std::lround(x))) * 0x9E3779B1ULL) ^ (uint64(uint32(std::lround(y))) << 20);
+        uint32 now = NowMs();
+        if (route.key != routeKey || (route.next == 0 && !route.points.empty() && now - route.plannedAtMs > 180000))
+        {
+            route = TravelRoute();
+            route.key = routeKey;
+            route.plannedAtMs = now;
+            route.points = DangerMap::Plan(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), x, y, bot->GetLevel(), uint8(bot->GetTeamId()));
+            if (!route.points.empty())
+                LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' goes around danger toward ({:.0f}, {:.0f}) by {} waypoint(s).",
+                    bot->GetName(), x, y, route.points.size());
+        }
+
+        NavStatus status = NavStatus::Moving;
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            bool viaWaypoint = !route.disabled && route.next < route.points.size();
+            float tx = viaWaypoint ? route.points[route.next].x : x;
+            float ty = viaWaypoint ? route.points[route.next].y : y;
+            float tz = viaWaypoint ? bot->GetPositionZ() : z;
+            float tr = viaWaypoint ? 20.0f : radius;
+            uint64 leg = viaWaypoint ? goal + ((uint64(route.next) + 1) << 56) : goal;
+
+            status = BotMovement::Navigate(bot, OwnerFor(state.task), leg, tx, ty, tz, tr, &state.travelToken, allowMount);
+            if (!viaWaypoint)
+                break;
+            if (status == NavStatus::Arrived)
+            {
+                ++route.next;
+                status = NavStatus::Moving;
+                continue;
+            }
+            if (status == NavStatus::Blocked)
+            {
+                // Refused (typically no path to the waypoint: water, a cliff): after a few seconds go straight instead.
+                if (!route.blockedSinceMs)
+                    route.blockedSinceMs = now;
+                if (now - route.blockedSinceMs > 4000)
+                    status = NavStatus::Stuck;
+            }
+            else
+                route.blockedSinceMs = 0;
+            if (status == NavStatus::Stuck)
+            {
+                route.disabled = true;
+                route.blockedSinceMs = 0;
+                BotMovement::ResetRequest(bot->GetGUID());
+                status = NavStatus::Moving;
+            }
+            break;
+        }
 
         std::optional<MovementRequest> after = BotMovement::GetRequestSnapshot(bot->GetGUID());
         if (after && after->progress.stage > stageBefore)

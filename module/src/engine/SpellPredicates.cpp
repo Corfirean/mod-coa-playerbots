@@ -213,6 +213,95 @@ namespace BotAI
         return false;
     }
 
+    bool IsEatingOrDrinking(Unit const* unit)
+    {
+        if (!unit)
+            return false;
+        if (unit->HasAuraWithMechanic(1 << MECHANIC_BANDAGE))
+            return true;
+        for (auto const& pair : unit->GetAppliedAuras())
+        {
+            AuraApplication const* app = pair.second;
+            if (!app || !app->IsPositive())
+                continue;
+            SpellInfo const* info = app->GetBase() ? app->GetBase()->GetSpellInfo() : nullptr;
+            if (info && (info->AuraInterruptFlags & AURA_INTERRUPT_FLAG_NOT_SEATED))
+                return true;
+        }
+        return false;
+    }
+
+    bool IsInterruptWorthwhile(SpellInfo const* spellInfo)
+    {
+        if (!spellInfo)
+            return false;
+        // Aimed at us (negative) - damage, crowd control, debuffs.
+        if (!spellInfo->IsPositive())
+            return true;
+        // A positive cast still matters when it heals or revives other enemies or brings in more of them.
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            switch (spellInfo->Effects[i].Effect)
+            {
+                case SPELL_EFFECT_HEAL:
+                case SPELL_EFFECT_HEAL_PCT:
+                case SPELL_EFFECT_HEAL_MAX_HEALTH:
+                case SPELL_EFFECT_SUMMON:
+                case SPELL_EFFECT_SUMMON_PET:
+                case SPELL_EFFECT_RESURRECT:
+                case SPELL_EFFECT_RESURRECT_NEW:
+                    return true;
+                default:
+                    break;
+            }
+            if (spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_PERIODIC_HEAL)
+                return true;
+        }
+        return false;
+    }
+
+    bool GetDamagingCastOn(Unit* enemy, Unit* target, float& outDamage, uint32& outRemainingMs, uint32* outSchoolMask)
+    {
+        outDamage = 0.0f;
+        outRemainingMs = 0;
+        if (outSchoolMask)
+            *outSchoolMask = 0;
+        if (!enemy || !target || !enemy->IsAlive())
+            return false;
+        for (uint32 i = CURRENT_GENERIC_SPELL; i <= CURRENT_CHANNELED_SPELL; ++i)
+        {
+            Spell* spell = enemy->GetCurrentSpell(CurrentSpellTypes(i));
+            if (!spell || !spell->m_spellInfo)
+                continue;
+            if (spell->getState() != SPELL_STATE_PREPARING && spell->getState() != SPELL_STATE_CASTING)
+                continue;
+            if (spell->m_targets.GetUnitTarget() != target)
+                continue;
+            SpellInfo const* info = spell->m_spellInfo;
+            float total = 0.0f;
+            for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+            {
+                SpellEffectInfo const& effect = info->Effects[e];
+                if (effect.Effect != SPELL_EFFECT_SCHOOL_DAMAGE && effect.Effect != SPELL_EFFECT_WEAPON_DAMAGE &&
+                    effect.Effect != SPELL_EFFECT_NORMALIZED_WEAPON_DMG && effect.Effect != SPELL_EFFECT_WEAPON_PERCENT_DAMAGE)
+                    continue;
+                int32 base = spell->CalculateSpellDamage(e, target);
+                if (base <= 0)
+                    continue;
+                uint32 amount = enemy->SpellDamageBonusDone(target, info, uint32(base), SPELL_DIRECT_DAMAGE, e);
+                total += float(target->SpellDamageBonusTaken(enemy, info, amount, SPELL_DIRECT_DAMAGE));
+            }
+            if (total <= 0.0f)
+                continue;
+            outDamage = total;
+            outRemainingMs = uint32(std::max(0, spell->GetCastTimeRemaining()));
+            if (outSchoolMask)
+                *outSchoolMask = uint32(info->GetSchoolMask());
+            return true;
+        }
+        return false;
+    }
+
     bool IsTargetCastingInterruptibleSpell(Unit const* target)
     {
         uint32 unusedSpellId, unusedFinishTime;
@@ -349,7 +438,7 @@ namespace BotAI
         // (Spell::CheckCast, PLAYER_ALLOW_ONLY_ABILITY), which cost Crusader24 about 20 failed casts per 30 s.
         if (bot->HasPlayerFlag(PLAYER_ALLOW_ONLY_ABILITY) && !spellInfo->HasAttribute(SPELL_ATTR0_ON_NEXT_SWING_NO_DAMAGE))
             return "only abilities allowed while a Tempest-like state is active";
-        if (spellInfo->CasterAuraStateNot && bot->HasAuraState(AuraStateType(spellInfo->CasterAuraStateNot)))
+        if (spellInfo->CasterAuraStateNot && bot->HasAuraState(AuraStateType(spellInfo->CasterAuraStateNot), spellInfo, bot))
             return "blocked by spell-defined caster aura state";
         if (spellInfo->ExcludeCasterAuraSpell && bot->HasAura(spellInfo->ExcludeCasterAuraSpell))
             return "blocked by spell-defined caster aura";
@@ -422,9 +511,11 @@ namespace BotAI
             return false;
         if (NativeCastPrerequisiteFailure(bot, spellInfo))
             return false;
-        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
+        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState), spellInfo, bot))
             return false;
-        if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
+        if (target && spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState), spellInfo, bot))
+            return false;
+        if (target && spellInfo->TargetAuraStateNot && target->HasAuraState(AuraStateType(spellInfo->TargetAuraStateNot), spellInfo, bot))
             return false;
         if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
             return false;

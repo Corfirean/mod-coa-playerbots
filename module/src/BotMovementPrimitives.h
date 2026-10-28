@@ -33,12 +33,13 @@ enum class MoveOwner : uint8
     Fish = 4,
     Travel = 5,
     Quest = 6,
-    Loot = 7,
-    Corpse = 8,
-    AutoDungeon = 9,
-    Battleground = 10,
-    Combat = 11,
-    Avoidance = 12,
+    Encounter = 7,
+    Loot = 8,
+    Corpse = 9,
+    AutoDungeon = 10,
+    Battleground = 11,
+    Combat = 12,
+    Avoidance = 13,
     Count
 };
 
@@ -53,6 +54,7 @@ inline char const* MoveOwnerName(MoveOwner owner)
         case MoveOwner::Fish:         return "Fish";
         case MoveOwner::Travel:       return "Travel";
         case MoveOwner::Quest:        return "Quest";
+        case MoveOwner::Encounter:    return "Encounter";
         case MoveOwner::Loot:         return "Loot";
         case MoveOwner::Corpse:       return "Corpse";
         case MoveOwner::AutoDungeon:  return "AutoDungeon";
@@ -466,6 +468,7 @@ public:
             case MoveOwner::AutoDungeon:  return 90;
             case MoveOwner::Corpse:       return 80;
             case MoveOwner::Loot:         return 70;
+            case MoveOwner::Encounter:    return 65;
             case MoveOwner::Quest:        return 60;
             case MoveOwner::Travel:       return 50;
             case MoveOwner::Fish:         return 40;
@@ -689,7 +692,7 @@ public:
         // If the bot is moving autonomously (Quest, Travel, Ambient), leader's PreferUnmounted is ignored
         // to prevent flapping between autonomous mounting (>90yd) and leader dismount.
         // REQUIRES allowMount == true AND activeMode == MoveMode::Navigate (never mounts on Hold / Idle / Point)!
-        bool isAutonomousTravel = allowMount && (activeMode == MoveMode::Navigate && (activeOwner == MoveOwner::Travel || activeOwner == MoveOwner::Quest || activeOwner == MoveOwner::Ambient));
+        bool isAutonomousTravel = allowMount && (activeMode == MoveMode::Navigate && (activeOwner == MoveOwner::Travel || activeOwner == MoveOwner::Quest || activeOwner == MoveOwner::Ambient || activeOwner == MoveOwner::Encounter));
         if (isAutonomousTravel && travelDist >= MountStateMachine::MOUNT_HYSTERESIS_DIST)
         {
             if (!isCurrentlyMounted && currentState != MountState::MountCasting)

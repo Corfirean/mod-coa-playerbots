@@ -1,5 +1,6 @@
 #include "training/TrainingArenaManager.h"
 #include "UnitScript.h"
+#include "PlayerScript.h"
 #include "SpellAuras.h"
 #include "Unit.h"
 #include "SpellInfo.h"
@@ -72,10 +73,17 @@ public:
         CoaTraining::RecordAura(target, aura->GetId(), aura->GetCasterGUID(), "remove", aura->GetStackAmount());
     }
 };
+class coa_training_playerscript final : public PlayerScript
+{
+public:
+    coa_training_playerscript() : PlayerScript("coa_training_playerscript", { PLAYERHOOK_ON_CREATURE_KILL }) { }
+    void OnPlayerCreatureKill(Player* killer, Creature* killed) override { CoaTraining::RecordKill(killer, killed); }
+};
 void AddSC_coa_training()
 {
     if (sConfigMgr->GetOption<bool>("CoaBots.Training.Enable", false))
     {
+        new coa_training_playerscript();
         new coa_training_unitscript();
         new coa_training_spellscript();
     }

@@ -1,4 +1,7 @@
 #include "training/TrainingSession.h"
+#include <algorithm>
+#include <map>
+#include <string_view>
 #include "BotAI.h"
 #include "BotMgr.h"
 #include "BotGear.h"
@@ -39,6 +42,7 @@
 namespace BotAI
 {
 std::string DebugState(Player* bot);
+void DungeonProgress(Map* map, Player* leader, uint32& total, uint32& done);
 }
 
 namespace CoaTraining
@@ -216,11 +220,57 @@ void MechanicEvent(Session& s, Mechanic const& m)
     Json event; event["type"] = "mechanic"; event["kind"] = m.kind; event["scheduledTimeMs"] = m.timeMs;
     event["amount"] = m.amount; event["targetSlot"] = m.targetSlot;
     s.Event(event);
+    // Scripted hits used to go straight into DealDamage, so damage-taken auras, armor, resistance and absorbs never applied and a tank's
+    // defensive or a healer's shield could not show in a run. With CoaBots.Training.RealisticDamage on, the hit follows the steps a spell hit
+    // takes in Spell::EffectSchoolDMG and Spell::DoAllEffectOnTarget, in the same order and with the same core functions:
+    //   SpellDamageBonusTaken (the victim's damage-taken modifiers) -> IsImmunedToDamage -> CalculateSpellDamageTaken (script hooks, armor for
+    //   physical schools, block, resistance, absorbs) -> DealDamageMods -> SendSpellNonMeleeDamageLog -> DealSpellDamage
+    // for the school and spell of CoaBots.Training.RealisticDamageSpellId (default 686 Shadow Bolt: a Shadow-school hit, resisted by Shadow
+    // resistance, not reduced by armor; use a physical-school spell id for a physical hit). Intentionally NOT reproduced: the hit table (a
+    // scripted hit never misses), critical strikes, spell scripts' OnHit, procs of the attacker and threat -- they would only add noise to a
+    // paired comparison. Off by default so earlier measurements stay comparable.
+    static bool const realistic = sConfigMgr->GetOption<bool>("CoaBots.Training.RealisticDamage", false);
+    static uint32 const realisticSpell = sConfigMgr->GetOption<uint32>("CoaBots.Training.RealisticDamageSpellId", 686);
+    // CoaBots.Training.RealisticDamageLegacyPath=1 selects the earlier approximation (damage-taken modifiers and CalcAbsorbResist for the spell's school,
+    // then DealDamage as normal-school damage without a spell). Kept only so runs made with it stay comparable and the two paths can be measured.
+    static bool const legacyPath = sConfigMgr->GetOption<bool>("CoaBots.Training.RealisticDamageLegacyPath", false);
     auto damage = [&](Unit* target, bool avoidable)
     {
         if (!target || !target->IsAlive()) return;
         s.avoidableEvent = avoidable;
-        Unit::DealDamage(boss, target, m.amount, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        SpellInfo const* info = realistic ? sSpellMgr->GetSpellInfo(realisticSpell) : nullptr;
+        uint32 const healthBefore = target->GetHealth();
+        char const* path = "plain";
+        if (info && legacyPath)
+        {
+            path = "legacy";
+            uint32 amount = target->SpellDamageBonusTaken(boss, info, m.amount, SPELL_DIRECT_DAMAGE);
+            DamageInfo mitigated(boss, target, amount, info, info->GetSchoolMask(), SPELL_DIRECT_DAMAGE);
+            Unit::CalcAbsorbResist(mitigated);
+            Unit::DealDamage(boss, target, mitigated.GetDamage(), nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        }
+        else if (info)
+        {
+            path = "native";
+            if (!target->IsImmunedToDamage(boss, info))
+            {
+                // Spell::EffectSchoolDMG applies the victim's damage-taken modifiers before the hit is resolved; the attacker's own bonuses are
+                // left out on purpose (the scenario's amount is what the boss deals).
+                uint32 const amount = target->SpellDamageBonusTaken(boss, info, m.amount, SPELL_DIRECT_DAMAGE);
+                SpellNonMeleeDamage hit(boss, target, info, info->GetSchoolMask());
+                boss->CalculateSpellDamageTaken(&hit, int32(amount), info, BASE_ATTACK, false);
+                Unit::DealDamageMods(hit.target, hit.damage, &hit.absorb);
+                boss->SendSpellNonMeleeDamageLog(&hit);
+                boss->DealSpellDamage(&hit, true);
+            }
+        }
+        else
+            Unit::DealDamage(boss, target, m.amount, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        // What the hit really took off the victim, to compare the paths with each other and with a real spell hit.
+        uint32 const healthAfter = target->GetHealth();
+        Json hit; hit["type"] = "scripted_hit"; hit["kind"] = m.kind; hit["path"] = path; hit["requested"] = m.amount;
+        hit["dealt"] = healthBefore > healthAfter ? healthBefore - healthAfter : 0; hit["victimMaxHealth"] = target->GetMaxHealth();
+        s.Event(hit);
         s.avoidableEvent = false;
     };
     if (m.kind == "melee" || m.kind == "tankbuster" || m.kind == "ramp_hit")
@@ -235,6 +285,25 @@ void MechanicEvent(Session& s, Mechanic const& m)
             if (Unit* victim = boss->GetVictim()) boss->AttackerStateUpdate(victim);
         }
         else damage(boss->GetVictim(), false);
+    }
+    else if (m.kind == "tankbuster_cast")
+    {
+        // A tankbuster a player can see coming: the boss starts a real cast (cast bar, cast time) at its victim, and the damage is the
+        // spell's own, so armor, damage-taken auras and absorbs apply with no scripted shortcut. The spell is Shadow Bolt unless
+        // CoaBots.Training.TankbusterSpellId says otherwise; its first effect is overridden to the scenario's amount.
+        static uint32 const spellId = sConfigMgr->GetOption<uint32>("CoaBots.Training.TankbusterSpellId", 686);
+        boss->GetThreatMgr().UpdateVictimForTesting();
+        if (Unit* victim = boss->GetThreatMgr().GetCurrentVictim())
+        {
+            boss->Attack(victim, true);
+            uint32 amount = m.amount;
+            if (s.scenario.busterIsPercent)
+                amount = uint32(uint64(victim->GetMaxHealth()) * sConfigMgr->GetOption<uint32>("CoaBots.Training.TankbusterPercent", m.amount) / 100);
+            SpellCastResult result = boss->CastCustomSpell(spellId, SPELLVALUE_BASE_POINT0, int32(amount), victim, false);
+            Json cast; cast["type"] = "tankbuster_cast"; cast["spellId"] = spellId; cast["victim"] = victim->GetGUID().GetCounter();
+            cast["amount"] = amount; cast["victimMaxHealth"] = victim->GetMaxHealth();
+            cast["result"] = uint32(result); s.Event(cast);
+        }
     }
     else if (m.kind == "dispel_debuff")
     {
@@ -307,6 +376,35 @@ void MechanicEvent(Session& s, Mechanic const& m)
     }
     else if (m.kind == "boss_move")
         boss->NearTeleportTo(X, Y + ((m.timeMs / 15000) % 2 ? 15.0f : -15.0f), Z, 0);
+    else if (m.kind == "interruptible_cast_all")
+    {
+        // Every enemy starts the same interruptible cast at once, each at a different party member (round robin): the group has to share
+        // its interrupts instead of every kicker answering the first cast it sees.
+        uint32 spellId = sConfigMgr->GetOption<uint32>("CoaBots.Training.InterruptCastSpellId", 133);
+        size_t slot = 0;
+        for (ObjectGuid enemyGuid : s.enemies)
+        {
+            Creature* enemy = ObjectAccessor::GetCreature(*bot, enemyGuid);
+            if (!enemy || !enemy->IsAlive()) continue;
+            Player* victim = bot;
+            if (!s.members.empty())
+                if (Player* member = sBotMgr->FindBotPlayer(s.members[slot++ % s.members.size()].guid.GetCounter()))
+                    if (member->IsAlive()) victim = member;
+            SpellCastResult result = enemy->CastSpell(victim, spellId, false);
+            uint32 observedSpell = 0, finish = 0;
+            bool interruptible = BotAI::IsTargetCastingInterruptibleSpell(enemy, observedSpell, finish);
+            Json cast; cast["type"] = "multi_cast"; cast["spellId"] = spellId; cast["enemy"] = enemy->GetGUID().GetCounter();
+            cast["result"] = uint32(result); cast["interruptible"] = interruptible;
+            if (interruptible)
+            {
+                uint32 duration = finish - getMSTime();
+                s.multiCasts.push_back({ enemyGuid, s.timeMs, s.timeMs + duration });
+                ++s.interruptCasts;
+                cast["durationMs"] = duration;
+            }
+            s.Event(cast);
+        }
+    }
     else if (m.kind == "interruptible_cast")
     {
         uint32 spellId = sConfigMgr->GetOption<uint32>("CoaBots.Training.InterruptCastSpellId", 133);
@@ -388,6 +486,20 @@ void Update(uint32 diff)
                         event["successfulInterruptConfirmed"] = Json();
                         s.Event(event); s.watchingInterruptCast = false;
                     }
+            for (auto itr = s.multiCasts.begin(); itr != s.multiCasts.end();)
+            {
+                Creature* enemy = ObjectAccessor::GetCreature(*bot, itr->enemy);
+                if (enemy && enemy->IsAlive() && enemy->IsNonMeleeSpellCast(false)) { ++itr; continue; }
+                bool early = s.timeMs + 100 < itr->expectedEndMs;
+                if (early) ++s.interruptsStopped;
+                auto kick = s.lastKickMs.find(itr->enemy.GetCounter());
+                bool byKick = early && kick != s.lastKickMs.end() && kick->second + 800 >= s.timeMs && kick->second + 100 >= itr->startMs;
+                if (byKick) ++s.interruptsByKick;
+                Json event; event["type"] = "multi_cast_ended"; event["enemy"] = itr->enemy.GetCounter();
+                event["latencyMs"] = s.timeMs - itr->startMs; event["endedBeforeExpectedFinish"] = early; event["afterAcceptedKick"] = byKick;
+                s.Event(event);
+                itr = s.multiCasts.erase(itr);
+            }
             bool allDead = true;
             for (auto const& m : s.members)
             {
@@ -423,6 +535,11 @@ void Shutdown()
 // ---- Dungeon probe: a group of bots led by an inert leader (a suspended bot that stands still like a player who has not touched
 // the keyboard) walks into a dungeon, so the group behaviour a real player sees -- follow, tank, heal, assist -- can be measured on the
 // isolated training server. Verbs: dgroup, dgo, dmove, dpull, dstat, dfree. Dedicated bot accounts only, never account 1.
+// Totals of what each bot of a dungeon probe group did since dgroup (damage to creatures, effective healing, damage taken), for the probe report.
+struct SpellTally { uint32 casts = 0, hits = 0; uint64 damage = 0; };
+struct ProbeStats { uint64 damage = 0, healing = 0, taken = 0; uint32 kills = 0, eliteKills = 0; std::map<uint32, SpellTally> spells; };
+std::unordered_map<ObjectGuid, ProbeStats> probeStats;
+
 Player* DungeonBot(uint32 guid)
 {
     Player* p = sBotMgr->FindBotPlayer(guid);
@@ -439,9 +556,14 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
     if (verb == "dgroup")
     {
         std::vector<Player*> members;
-        uint32 guid;
-        while (input >> guid) members.push_back(DungeonBot(guid));
-        if (members.empty() || members.size() > 4) throw std::runtime_error("dgroup <leader> <1..4 members>");
+        std::string token;
+        bool keepGear = false; // "locked": the group keeps the equipment it has (no gear maintenance or loot upgrades while it plays)
+        while (input >> token)
+        {
+            if (token == "locked") { keepGear = true; continue; }
+            members.push_back(DungeonBot(uint32(std::stoul(token))));
+        }
+        if (members.empty() || members.size() > 4) throw std::runtime_error("dgroup <leader> <1..4 members> [locked]");
         std::vector<Player*> all{leader};
         all.insert(all.end(), members.begin(), members.end());
         for (Player* p : all)
@@ -458,7 +580,10 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
         for (Player* m : members)
             if (!group->AddMember(m)) throw std::runtime_error("cannot add " + m->GetName());
         for (Player* p : all)
-            BotGear::SetProbeUnlock(p, true);
+        {
+            BotGear::SetProbeUnlock(p, !keepGear);
+            probeStats[p->GetGUID()] = ProbeStats{};
+        }
         h->PSendSysMessage("dgroup: leader {} + {} members", leader->GetName(), members.size());
         return;
     }
@@ -474,6 +599,53 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
                     if (Player* m = ObjectAccessor::FindPlayer(slot.guid))
                         if (m != leader) m->TeleportTo(map, x, y, z, o);
         h->PSendSysMessage("dgo: leader to map {} ({:.1f} {:.1f} {:.1f})", map, x, y, z);
+        return;
+    }
+    if (verb == "dauto")
+    {
+        std::string state; input >> state;
+        bool const enable = state == "on" || state == "1";
+        sBotMgr->SetAutoDungeonMode(leader->GetGUID(), enable);
+        h->PSendSysMessage("dauto: auto-dungeon {} for leader {}", enable ? "on" : "off", leader->GetName());
+        return;
+    }
+    if (verb == "dheal")
+    {
+        // Set-up only, before a run: everybody of the group is alive next to the leader with full health and power and no cooldowns.
+        Group* group = leader->GetGroup();
+        uint32 revived = 0;
+        auto restore = [&](Player* m)
+        {
+            if (!m->IsAlive())
+            {
+                if (m->GetMapId() != leader->GetMapId() || m->GetDistance(leader) > 5.0f)
+                    m->TeleportTo(leader->GetMapId(), leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), leader->GetOrientation());
+                m->ResurrectPlayer(1.0f);
+                m->SpawnCorpseBones();
+                ++revived;
+            }
+            m->RemoveAllSpellCooldown();
+            m->SetHealth(m->GetMaxHealth());
+            for (uint8 power = 0; power < MAX_POWERS; ++power)
+                if (m->GetMaxPower(Powers(power)) && Powers(power) != POWER_RAGE && Powers(power) != POWER_RUNIC_POWER)
+                    m->SetPower(Powers(power), m->GetMaxPower(Powers(power)));
+        };
+        restore(leader);
+        if (group)
+            for (auto const& slot : group->GetMemberSlots())
+                if (Player* m = ObjectAccessor::FindPlayer(slot.guid); m && m != leader) restore(m);
+        h->PSendSysMessage("dheal: group restored ({} revived)", revived);
+        return;
+    }
+    if (verb == "ddiff")
+    {
+        uint32 difficulty = 0; input >> difficulty;
+        if (difficulty > 2) throw std::runtime_error("ddiff <leader> <0 normal|1 heroic|2 mythic>");
+        if (Group* group = leader->GetGroup())
+            for (auto const& slot : group->GetMemberSlots())
+                if (Player* m = ObjectAccessor::FindPlayer(slot.guid)) m->SetDungeonDifficulty(Difficulty(difficulty));
+        leader->SetDungeonDifficulty(Difficulty(difficulty));
+        h->PSendSysMessage("ddiff: dungeon difficulty {}", difficulty);
         return;
     }
     if (verb == "dmove")
@@ -502,6 +674,14 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
         Json out;
         out["map"] = leader->GetMapId();
         out["inCombat"] = leader->IsInCombat();
+        out["auto"] = sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID());
+        if (Map* map = leader->GetMap(); map && map->IsDungeon())
+        {
+            uint32 total = 0, done = 0;
+            BotAI::DungeonProgress(map, leader, total, done);
+            out["bossTotal"] = total; out["bossDone"] = done;
+            out["diff"] = uint32(leader->GetDungeonDifficulty());
+        }
         std::set<Unit*> attackers;
         std::vector<Player*> members;
         if (group)
@@ -522,8 +702,23 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
             j["d"] = m == leader ? 0.0f : (m->GetMapId() == leader->GetMapId() ? m->GetDistance(leader) : -1.0f);
             j["cmb"] = m->IsInCombat();
             j["moving"] = m->isMoving();
-            if (Unit* v = m->GetVictim()) j["tgt"] = v->GetName();
+            if (Unit* v = m->GetVictim()) { j["tgt"] = v->GetName(); j["td"] = m->GetDistance(v); }
             if (m != leader) j["dbg"] = BotAI::DebugState(m);
+            if (auto stats = probeStats.find(m->GetGUID()); stats != probeStats.end())
+            {
+                j["dmg"] = stats->second.damage; j["heal"] = stats->second.healing; j["taken"] = stats->second.taken;
+                j["kills"] = stats->second.kills; j["elite"] = stats->second.eliteKills;
+                // Per-spell casts, hits and damage of this bot (the eight with most damage or casts), so a run shows what a weak spec actually does.
+                std::vector<std::pair<uint32, SpellTally>> ranked(stats->second.spells.begin(), stats->second.spells.end());
+                std::sort(ranked.begin(), ranked.end(), [](auto const& a, auto const& b) { return a.second.damage + a.second.casts * 1000ull > b.second.damage + b.second.casts * 1000ull; });
+                if (ranked.size() > 8) ranked.resize(8);
+                for (auto const& [id, t] : ranked)
+                {
+                    Json sp; sp["id"] = id; sp["casts"] = t.casts; sp["hits"] = t.hits; sp["dmg"] = t.damage;
+                    j["spells"].Push(sp);
+                }
+            }
+            j["lvl"] = m->GetLevel();
             Spell* cur = m->GetCurrentSpell(CURRENT_GENERIC_SPELL);
             if (!cur) cur = m->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
             if (cur && cur->GetSpellInfo()) j["cast"] = cur->GetSpellInfo()->Id;
@@ -536,6 +731,7 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
             Json j;
             j["name"] = a->GetName();
             j["hp"] = a->GetMaxHealth() ? int(a->GetHealth() * 100 / a->GetMaxHealth()) : 0;
+            j["lvl"] = a->GetLevel(); j["maxhp"] = a->GetMaxHealth();
             if (Unit* v = a->GetVictim()) j["on"] = v->GetName();
             out["mobs"].Push(j);
         }
@@ -547,7 +743,8 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
         if (Group* group = leader->GetGroup())
         {
             for (auto const& slot : group->GetMemberSlots())
-                if (Player* m = ObjectAccessor::FindPlayer(slot.guid)) BotGear::SetProbeUnlock(m, false);
+                if (Player* m = ObjectAccessor::FindPlayer(slot.guid)) { BotGear::SetProbeUnlock(m, false); probeStats.erase(m->GetGUID()); }
+            sBotMgr->SetAutoDungeonMode(leader->GetGUID(), false);
             group->Disband();
         }
         h->SendSysMessage("dfree: group disbanded");
@@ -565,7 +762,7 @@ void Command(ChatHandler* h, std::string const& args)
     std::string verb; input >> verb;
     try
     {
-        if (verb == "dgroup" || verb == "dgo" || verb == "dmove" || verb == "dpull" || verb == "dstat" || verb == "dfree")
+        if (verb == "dgroup" || verb == "dgo" || verb == "dmove" || verb == "dpull" || verb == "dstat" || verb == "dfree" || verb == "dauto" || verb == "ddiff" || verb == "dheal")
         {
             DungeonProbe(h, verb, input);
             return;
@@ -881,6 +1078,12 @@ void RecordDamage(Unit* attacker, Unit* victim, uint32 amount)
     std::lock_guard lock(mutex);
     Session* s = Lookup(victim->GetGUID());
     ObjectGuid principal = Principal(attacker);
+    if (!probeStats.empty())
+    {
+        uint32 const hit = std::min(amount, victim->GetHealth());
+        if (auto dealer = probeStats.find(principal); dealer != probeStats.end() && victim->GetTypeId() == TYPEID_UNIT) dealer->second.damage += hit;
+        if (auto taker = probeStats.find(victim->GetGUID()); taker != probeStats.end()) taker->second.taken += hit;
+    }
     if (!s || !s->running || Lookup(principal) != s) return;
     uint32 effective = std::min(amount, victim->GetHealth());
     if (principal == s->candidate && std::find(s->enemies.begin(), s->enemies.end(), victim->GetGUID()) != s->enemies.end())
@@ -894,11 +1097,23 @@ void RecordDamage(Unit* attacker, Unit* victim, uint32 amount)
     row["target"] = uint64(victim->GetGUID().GetCounter()); row["amount"] = effective;
     row["avoidable"] = s->avoidableEvent; if (attacker && attacker->GetGUID() != principal) row["viaOwned"] = 1; s->Event(row);
 }
+void RecordKill(Player* killer, Creature* killed)
+{
+    if (!Enabled.load(std::memory_order_relaxed) || !killer || !killed) return;
+    std::lock_guard lock(mutex);
+    if (auto it = probeStats.find(killer->GetGUID()); it != probeStats.end())
+    {
+        ++it->second.kills;
+        if (killed->isElite() || killed->isWorldBoss()) ++it->second.eliteKills;
+    }
+}
 void RecordHeal(Unit* healer, Unit* target, uint32 amount)
 {
     if (!Enabled.load(std::memory_order_relaxed) || !target) return;
     std::lock_guard lock(mutex);
     Session* s = Lookup(target->GetGUID()); ObjectGuid principal = Principal(healer);
+    if (!probeStats.empty())
+        if (auto given = probeStats.find(principal); given != probeStats.end()) given->second.healing += amount;
     if (!s || !s->running || Lookup(principal) != s) return;
     if (principal == s->candidate) s->healing += amount;
     Json row; row["type"] = "effective_heal"; row["source"] = uint64(principal.GetCounter());
@@ -925,6 +1140,12 @@ void RecordSpellDamage(Unit* attacker, Unit* target, uint32 spell, uint32 amount
     std::lock_guard lock(mutex);
     Session* s = Lookup(target->GetGUID());
     ObjectGuid principal = Principal(attacker);
+    if (!probeStats.empty() && target->GetTypeId() == TYPEID_UNIT)
+        if (auto dealer = probeStats.find(principal); dealer != probeStats.end())
+        {
+            SpellTally& t = dealer->second.spells[spell];
+            ++t.hits; t.damage += std::min(amount, target->GetHealth());
+        }
     if (!s || !s->running || principal != s->candidate || Lookup(principal) != s) return;
     if (std::find(s->enemies.begin(), s->enemies.end(), target->GetGUID()) == s->enemies.end()) return;
     Json row; row["type"] = "spell_damage"; row["spellId"] = spell; row["amount"] = std::min(amount, target->GetHealth());
@@ -1021,6 +1242,8 @@ void RecordSpellLifecycle(Unit* caster, ObjectGuid target, uint32 spell, char co
 {
     if (!Enabled.load(std::memory_order_relaxed) || !caster) return;
     std::lock_guard lock(mutex);
+    if (!probeStats.empty() && std::string_view(phase) == "dispatch")
+        if (auto bot = probeStats.find(caster->GetGUID()); bot != probeStats.end()) ++bot->second.spells[spell].casts;
     Session* s = Lookup(caster->GetGUID());
     if (!s || !s->running || s->candidate != caster->GetGUID()) return;
     Json row; row["type"] = "spell_lifecycle"; row["phase"] = phase;
@@ -1038,6 +1261,18 @@ void RecordSpellLifecycle(Unit* caster, ObjectGuid target, uint32 spell, char co
         }
     }
     row["result"] = result; row["bySelf"] = bySelf; s->Event(row);
+}
+void InterruptKick(Player* bot, uint32 spell, Unit* enemy, uint32 result, char const* source, bool applied)
+{
+    if (!Enabled.load(std::memory_order_relaxed) || !bot || !enemy) return;
+    std::lock_guard lock(mutex);
+    Session* s = Lookup(bot->GetGUID());
+    if (!s || !s->running) return;
+    ++s->kickAttempts;
+    if (result == uint32(SPELL_CAST_OK)) { ++s->kicksAccepted; s->lastKickMs[enemy->GetGUID().GetCounter()] = s->timeMs; }
+    if (applied) ++s->kicksApplied;
+    Json row; row["type"] = "interrupt_kick"; row["bot"] = bot->GetGUID().GetCounter(); row["spellId"] = spell;
+    row["enemy"] = enemy->GetGUID().GetCounter(); row["result"] = result; row["source"] = source; row["applied"] = applied; s->Event(row);
 }
 void CastResult(Player* bot, uint32 spell, uint32 result, Unit* target)
 {
@@ -1064,6 +1299,14 @@ void CastResult(Player* bot, uint32 spell, uint32 result, Unit* target)
         item["event"] = uint32(g.event); item["chancePercent"] = g.chancePercent; gains.Push(item);
     }
     row["requirementsAfterAttempt"] = requirements; row["potentialGainsMetadata"] = gains;
+    // Where the cast went and what it cost: lets a run show heals landing on full-health allies and the mana left after each cast.
+    if (target)
+    {
+        row["targetHpPct"] = int(target->GetHealthPct());
+        row["targetFriendly"] = bot->IsFriendlyTo(target);
+    }
+    if (bot->getPowerType() == POWER_MANA && bot->GetMaxPower(POWER_MANA))
+        row["botManaPct"] = int(bot->GetPower(POWER_MANA) * 100 / bot->GetMaxPower(POWER_MANA));
     if (result != SPELL_CAST_OK)
     {
         // A failed cast with no visible cause (e.g. CASTER_AURASTATE for a health-cost spell) cannot be diagnosed from the result code alone.

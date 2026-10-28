@@ -1,0 +1,167 @@
+[
+  {
+    "id": "nemesis.greeting.001",
+    "beat": "NemesisGreeting",
+    "tags": ["nemesis", "personal", "threat"],
+    "weight": 1.0,
+    "cooldownSec": 60,
+    "locales": {
+      "enUS": "I remember you, {playerName}.",
+      "ruRU": "Я помню тебя, {playerName}.",
+      "deDE": "Ich erinnere mich an dich, {playerName}.",
+      "frFR": "Je me souviens de toi, {playerName}.",
+      "esES": "Me acuerdo de ti, {playerName}.",
+      "zhCN": "我记得你，{playerName}。"
+    }
+  },
+  {
+    "id": "nemesis.threat.001",
+    "beat": "NemesisThreat",
+    "tags": ["nemesis", "aggressive"],
+    "weight": 1.0,
+    "cooldownSec": 60,
+    "locales": {
+      "enUS": "You won't get lucky this time, {playerRace}.",
+      "ruRU": "В этот раз тебе не повезёт, {playerRace}.",
+      "deDE": "Diesmal hast du kein Glück, {playerRace}.",
+      "frFR": "La chance ne sera pas de ton côté cette fois, {playerRace}.",
+      "esES": "Esta vez no tendrás suerte, {playerRace}.",
+      "zhCN": "这一次你不会走运了，{playerRace}。"
+    }
+  },
+  {
+    "id": "nemesis.revenge.001",
+    "beat": "NemesisRevenge",
+    "tags": ["nemesis", "grudge"],
+    "weight": 1.2,
+    "cooldownSec": 60,
+    "locales": {
+      "enUS": "You took me down last time, {playerName}... payback time!",
+      "ruRU": "В прошлый раз ты одолел меня, {playerName}... время расплаты!",
+      "deDE": "Letztes Mal hast du mich erwischt, {playerName}... Zeit für Rache!",
+      "frFR": "Tu m'as eu la dernière fois, {playerName}... c'est l'heure de payer !",
+      "esES": "La última vez me venciste, {playerName}... ¡hora de la revancha!",
+      "zhCN": "上次你打败了我，{playerName}……受死吧！"
+    }
+  },
+  {
+    "id": "nemesis.confidence.001",
+    "beat": "NemesisConfidence",
+    "tags": ["nemesis", "taunt"],
+    "weight": 1.0,
+    "cooldownSec": 60,
+    "locales": {
+      "enUS": "Back for more punishment, {playerName}?",
+      "ruRU": "Вернулся за добавкой, {playerName}?",
+      "deDE": "Wieder da für noch mehr Prügel, {playerName}?",
+      "frFR": "De retour pour une autre leçon, {playerName} ?",
+      "esES": "¿Has vuelto a por más, {playerName}?",
+      "zhCN": "又来挨打了，{playerName}？"
+    }
+  },
+  {
+    "id": "nemesis.recurring.001",
+    "beat": "NemesisRecurring",
+    "tags": ["nemesis", "rivalry"],
+    "weight": 1.0,
+    "cooldownSec": 60,
+    "locales": {
+      "enUS": "How many times must we do this, {playerRace}?",
+      "ruRU": "Сколько раз нам ещё придётся повторить это, {playerRace}?",
+      "deDE": "Wie oft müssen wir das noch wiederholen, {playerRace}?",
+      "frFR": "Combien de fois devrons-nous répéter cela, {playerRace} ?",
+      "esES": "¿Cuántas veces tendremos que repetir esto, {playerRace}?",
+      "zhCN": "我们还要重复多少次，{playerRace}？"
+    }
+  },
+  {
+    "id": "assassin.preattack.001",
+    "beat": "AssassinPreAttack",
+    "tags": ["assassin", "stealth", "threat"],
+    "weight": 1.0,
+    "cooldownSec": 45,
+    "locales": {
+      "enUS": "Your bounty has been claimed, {playerName}.",
+      "ruRU": "Награда за твою голову будет моей, {playerName}.",
+      "deDE": "Dein Kopfgeld gehört mir, {playerName}.",
+      "frFR": "Ta prime a été réclamée, {playerName}.",
+      "esES": "Tu recompensa ha sido reclamada, {playerName}.",
+      "zhCN": "你的赏金归我了，{playerName}。"
+    }
+  },
+  {
+    "id": "assassin.escape.001",
+    "beat": "AssassinEscape",
+    "tags": ["assassin", "retreat"],
+    "weight": 1.0,
+    "cooldownSec": 45,
+    "locales": {
+      "enUS": "Contract fulfilled. Into the shadows.",
+      "ruRU": "Контракт закрыт. Ухожу в тени.",
+      "deDE": "Auftrag erfüllt. Zurück in die Schatten.",
+      "frFR": "Contrat rempli. Je retourne dans les ombres.",
+      "esES": "Contrato cumplido. A las sombras.",
+      "zhCN": "契约已完成。归于阴影。"
+    }
+  },
+  {
+    "id": "duel.challenge.001",
+    "beat": "RoadDuelChallenge",
+    "tags": ["duel", "challenge"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Yield or fight! Let's see your steel!",
+      "ruRU": "Сдавайся или защищайся! Покажи, на что способен!",
+      "deDE": "Ergib dich oder kämpfe! Zeig mir deinen Stahl!",
+      "frFR": "Rends-toi ou combats ! Montre-moi ce que tu vaux !",
+      "esES": "¡Ríndete o pelea! ¡Muéstrame tu acero!",
+      "zhCN": "投降还是迎战！拔出你的武器！"
+    }
+  },
+  {
+    "id": "duel.victory.001",
+    "beat": "RoadDuelVictory",
+    "tags": ["duel", "victory"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "A worthy match. Honor to you.",
+      "ruRU": "Достойный поединок. Честь тебе.",
+      "deDE": "Ein ehrenhafter Kampf. Ehre sei dir.",
+      "frFR": "Un beau combat. Honneur à toi.",
+      "esES": "Un combate digno. Honor para ti.",
+      "zhCN": "一场值得的决斗。向你致敬。"
+    }
+  },
+  {
+    "id": "hunter.threat.001",
+    "beat": "HunterThreat",
+    "tags": ["hunter", "pvp"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "You won't get away, Horde scum!",
+      "ruRU": "Ты не уйдёшь, отребье Орды!",
+      "deDE": "Du entkommst nicht, Horden-Abschaum!",
+      "frFR": "Tu ne t'échapperas pas, ordure de la Horde !",
+      "esES": "¡No escaparás, escoria de la Horda!",
+      "zhCN": "你逃不掉的，部落杂碎！"
+    }
+  },
+  {
+    "id": "prey.panic.001",
+    "beat": "PreyPanic",
+    "tags": ["prey", "escape"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Not today! You'll have to catch me first!",
+      "ruRU": "Не сегодня! Сначала догони!",
+      "deDE": "Nicht heute! Du musst mich erst fangen!",
+      "frFR": "Pas aujourd'hui ! Il faudra m'attraper d'abord !",
+      "esES": "¡Hoy no! ¡Tendrás que atraparme primero!",
+      "zhCN": "今天不行！你得先追上我！"
+    }
+  }
+]

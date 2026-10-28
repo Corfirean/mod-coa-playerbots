@@ -8,6 +8,7 @@
 #include "engine/ActionEvaluator.h"
 #include "engine/BotDebugLog.h"
 #include "engine/CombatResource.h"
+#include "engine/DamageTracker.h"
 #include "engine/HealEvaluator.h"
 #include "engine/SpellPredicates.h"
 #include "engine/SpellResolver.h"
@@ -161,9 +162,20 @@ namespace BotAI
         s_internalThrottles[botGuid][rootSpellId] = getMSTime() + durationMs;
     }
 
+    namespace
+    {
+        std::unordered_map<ObjectGuid, uint32> s_lastDefensiveMs;
+    }
+
+    void ActionEvaluator::NoteDefensiveCast(ObjectGuid botGuid)
+    {
+        s_lastDefensiveMs[botGuid] = getMSTime();
+    }
+
     void ActionEvaluator::ClearThrottles(ObjectGuid botGuid)
     {
         s_internalThrottles.erase(botGuid);
+        s_lastDefensiveMs.erase(botGuid);
     }
 
     Unit* ActionEvaluator::ResolveTarget(CombatContext const& ctx, TargetType targetType, AbilityDescriptor const& desc, uint32 resolvedSpellId)
@@ -354,6 +366,36 @@ namespace BotAI
                 return reject("emergency-only, nobody critical");
         }
 
+        // A direct heal is only worth its mana when the target needs it and the heal would not mostly overheal; a profile
+        // heal with the default maxTargetHpPct of 100 used to land on any ally the urgency ranking liked, full health included.
+        // Heals that carry an absorb (Shield tag) are valued for more than their health and keep their own descriptor limits.
+        if ((HasTag(desc.tags, AbilityTag::DirectHeal) || HasTag(desc.tags, AbilityTag::EmergencyHeal)) &&
+            !HasTag(desc.tags, AbilityTag::Shield) && bot->IsFriendlyTo(target))
+        {
+            if (Player* healTarget = target->ToPlayer())
+            {
+                if (!HealEvaluator::IsDirectHealWorthCasting(bot, healTarget, spellInfo))
+                    return reject("heal would be wasted (target needs no healing or it would mostly overheal)");
+            }
+        }
+
+        // A pure absorb shield is worth casting when it adds protection: not when shields already on the target cover what is expected to
+        // arrive while it lasts and are at least half as large as the new one (two healers, or a shield cast again too early).
+        if (HasTag(desc.tags, AbilityTag::Shield) && !HasTag(desc.tags, AbilityTag::DirectHeal) && !HasTag(desc.tags, AbilityTag::EmergencyHeal) &&
+            bot->IsFriendlyTo(target))
+        {
+            uint32 added = 0;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                if (spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_SCHOOL_ABSORB)
+                    if (int32 value = spellInfo->Effects[i].CalcValue(bot); value > 0)
+                        added += uint32(value);
+            constexpr uint32 SHIELD_HORIZON_MS = 6000;
+            uint32 existing = HealEvaluator::UsableAbsorb(target, SHIELD_HORIZON_MS, 0);
+            float expectedDamage = DamageTracker::SampleIncomingDps(target) * float(SHIELD_HORIZON_MS) / 1000.0f;
+            if (Decisions::ShieldIsRedundant(existing, added, expectedDamage))
+                return reject("an absorb already covers what is expected to arrive");
+        }
+
         // Persistent entity tracking (Pets, Minions, Turrets, Wards)
         if (desc.trackedEntityType == TrackedEntityType::Pet)
         {
@@ -414,7 +456,9 @@ namespace BotAI
                 return reject("caster aura already up, not due for refresh");
         }
 
-        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState)))
+        // The core asks HasAuraState with the spell and the caster, which honours "ignore aura state" auras and per-caster states (a
+        // debuff only counts when this caster applied it); the one-argument form answered differently and sent casts the core then refused.
+        if (spellInfo->CasterAuraState && !bot->HasAuraState(AuraStateType(spellInfo->CasterAuraState), spellInfo, bot))
             return reject("missing spell-defined caster aura state");
         if (spellInfo->CasterAuraSpell && !bot->HasAura(spellInfo->CasterAuraSpell))
             return reject("missing spell-defined caster aura");
@@ -427,8 +471,10 @@ namespace BotAI
         if (!IsTargetAuraDue(bot, target, desc, resolvedSpellId))
             return reject("target aura not due for refresh yet");
 
-        if (spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState)))
+        if (spellInfo->TargetAuraState && !target->HasAuraState(AuraStateType(spellInfo->TargetAuraState), spellInfo, bot))
             return reject("missing spell-defined target aura state");
+        if (spellInfo->TargetAuraStateNot && target->HasAuraState(AuraStateType(spellInfo->TargetAuraStateNot), spellInfo, bot))
+            return reject("blocked by spell-defined target aura state");
         if (spellInfo->TargetAuraSpell && !target->HasAura(spellInfo->TargetAuraSpell))
             return reject("missing spell-defined target aura");
 
@@ -464,7 +510,18 @@ namespace BotAI
         if (targetHpPct < desc.minTargetHpPct || targetHpPct > desc.maxTargetHpPct)
             return -1.0f;
 
-        if (ctx.botHpPct < desc.minSelfHpPct || ctx.botHpPct > desc.maxSelfHpPct)
+        // A defensive with a health ceiling is meant for a hurt bot; when a damaging cast is about to land on the bot it is worth using at
+        // any health (the tank is at full health when a tankbuster starts casting).
+        bool burstOverridesCeiling = ctx.burstIncoming && HasTag(desc.tags, AbilityTag::DefensiveCD);
+        if (burstOverridesCeiling)
+        {
+            // One defensive answers a moderate hit: a second one is spent only on a large hit or when the bot would end up low.
+            auto last = s_lastDefensiveMs.find(ctx.bot->GetGUID());
+            uint32 since = last == s_lastDefensiveMs.end() ? 0xFFFFFFFFu : getMSTime() - last->second;
+            if (!Decisions::StackedDefensiveAllowed(ctx.predictedBurstPct, ctx.botHpPct, since))
+                burstOverridesCeiling = false;
+        }
+        if (ctx.botHpPct < desc.minSelfHpPct || (ctx.botHpPct > desc.maxSelfHpPct && !burstOverridesCeiling))
             return -1.0f;
 
         if (desc.minInjuredAllies > 0 && ctx.injuredAllyCount < desc.minInjuredAllies)

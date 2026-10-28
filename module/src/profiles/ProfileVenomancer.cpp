@@ -74,38 +74,49 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
             {
+                // Spell.dbc 704235: auras MOD_DISARM + MOD_DISARM_OFFHAND, 150 rage, 60 s cooldown - a disarm, never a taunt (it used to
+                // be tagged Taunt at 440, so it spent 150 rage whenever a mob left the tank). Used as a defensive: it removes the
+                // weapon damage of the mob that is hitting the tank while the tank is hurt.
                 AbilityDescriptor d;
-                d.name = "Pinch (Beetle Threat Strike)";
+                d.name = "Pinch (Disarm)";
                 d.rootSpellId = 704235;
-                d.tags = AbilityTag::Taunt | AbilityTag::MeleeAttack;
+                d.tags = AbilityTag::DefensiveCD | AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
-                d.baseScore = 440.0f;
+                d.maxSelfHpPct = 70.0f;
+                d.baseScore = 300.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    // Only worth the rage against an enemy that is actually hitting the tank.
+                    return (ctx.victim && ctx.victim->GetVictim() == ctx.bot) ? 0.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
 
             // Active Mitigation & Defensives (Strict internal throttles to eliminate OOM bug)
+            // Reinforced Shell (705966) and Fury of Anub'Rekhan (800894) are Passive in Spell.dbc: the always-on armour and damage
+            // effects of the class, not buttons. They sat here as castable defensives and were rejected as "passive ability" on
+            // every decision, so the tank had no active mitigation at all. The real buttons of the spec follow.
             {
+                // Spell.dbc 803197: MOD_DAMAGE_TAKEN_PCT -21%, 60 s cooldown (Fortitude talent).
                 AbilityDescriptor d;
-                d.name = "Reinforced Shell";
-                d.rootSpellId = 705966;
-                d.tags = AbilityTag::DefensiveCD | AbilityTag::Shield;
+                d.name = "Regrow Exoskeleton";
+                d.rootSpellId = 803197;
+                d.tags = AbilityTag::DefensiveCD;
                 d.targetType = TargetType::Self;
-                d.maxSelfHpPct = 50.0f;
-                d.missingAuraOnCaster = 705966;
-                d.internalThrottleMs = 15000;
+                d.maxSelfHpPct = 75.0f;
+                d.missingAuraOnCaster = 803197;
                 d.baseScore = 350.0f;
                 p.abilities.push_back(d);
             }
             {
+                // Spell.dbc 804963: MOD_DAMAGE_TAKEN_PCT -21% plus a proc effect, 90 s cooldown (class ability).
                 AbilityDescriptor d;
-                d.name = "Fury of Anub'Rekhan";
-                d.rootSpellId = 800894;
+                d.name = "Lifeblood (self defensive)";
+                d.rootSpellId = 804963;
                 d.tags = AbilityTag::DefensiveCD;
                 d.targetType = TargetType::Self;
-                d.maxSelfHpPct = 65.0f;
-                d.missingAuraOnCaster = 800894;
-                d.internalThrottleMs = 30000;
-                d.baseScore = 320.0f;
+                d.maxSelfHpPct = 55.0f;
+                d.missingAuraOnCaster = 804963;
+                d.baseScore = 330.0f;
                 p.abilities.push_back(d);
             }
 

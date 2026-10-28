@@ -92,12 +92,16 @@ namespace BotAI
         FaceHostileTargetForCast(bot, action.target);
         SpellCastResult result = bot->CastSpell(action.target, action.spellId, false);
         CoaTraining::CastResult(bot, action.spellId, uint32(result), action.target);
+        if (HasTag(action.tags, AbilityTag::Interrupt))
+            CoaTraining::InterruptKick(bot, action.spellId, action.target, uint32(result), "profile interrupt");
         SpecStrategyRegistry::OnActionCastResult(bot, action, result == SPELL_CAST_OK);
         if (result == SPELL_CAST_OK)
         {
             // Throttle only the ability that was actually cast, keyed on its root spell id (not
             // every internalThrottleMs-bearing entry in the whole profile -- see item 1 of the
             // combat-engine rework), and only now that the cast has genuinely succeeded.
+            if (HasTag(action.tags, AbilityTag::DefensiveCD))
+                ActionEvaluator::NoteDefensiveCast(bot->GetGUID());
             if (action.internalThrottleMs > 0 && action.rootSpellId != 0)
                 ActionEvaluator::SetThrottle(bot->GetGUID(), action.rootSpellId, action.internalThrottleMs);
 

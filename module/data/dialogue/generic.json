@@ -1,0 +1,167 @@
+[
+  {
+    "id": "social.greeting.001",
+    "beat": "Greeting",
+    "tags": ["social", "calm"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Greetings, traveler.",
+      "ruRU": "Приветствую, путник.",
+      "deDE": "Seid gegrüßt, Reisender.",
+      "frFR": "Salutations, voyageur.",
+      "esES": "Saludos, viajero.",
+      "zhCN": "你好，旅行者。"
+    }
+  },
+  {
+    "id": "social.greeting.002",
+    "beat": "Greeting",
+    "tags": ["social", "sociable"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Hey there! Good to see another friendly face.",
+      "ruRU": "Привет! Рад видеть знакомое лицо.",
+      "deDE": "Hallo! Schön, ein freundliches Gesicht zu sehen.",
+      "frFR": "Salut ! Content de voir un visage amical.",
+      "esES": "¡Hola! Qué bien ver una cara amiga.",
+      "zhCN": "嘿！很高兴见到友好的面孔。"
+    }
+  },
+  {
+    "id": "social.greeting.003",
+    "beat": "Greeting",
+    "tags": ["social", "loner"],
+    "weight": 0.8,
+    "cooldownSec": 45,
+    "locales": {
+      "enUS": "Move along.",
+      "ruRU": "Проходи мимо.",
+      "deDE": "Weitergehen.",
+      "frFR": "Passez votre chemin.",
+      "esES": "Sigue tu camino.",
+      "zhCN": "往前走吧。"
+    }
+  },
+  {
+    "id": "social.farewell.001",
+    "beat": "Farewell",
+    "tags": ["social", "calm"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Safe travels.",
+      "ruRU": "Безопасной дороги.",
+      "deDE": "Sichere Reise.",
+      "frFR": "Bon voyage.",
+      "esES": "Buen viaje.",
+      "zhCN": "一路平安。"
+    }
+  },
+  {
+    "id": "social.farewell.002",
+    "beat": "Farewell",
+    "tags": ["social", "aggressive"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Watch your back out there.",
+      "ruRU": "Смотри в оба там.",
+      "deDE": "Pass auf deinen Rücken auf.",
+      "frFR": "Surveille tes arrières.",
+      "esES": "Cuida tus espaldas ahí fuera.",
+      "zhCN": "在外面小心你的背后。"
+    }
+  },
+  {
+    "id": "social.thanks.001",
+    "beat": "Thanks",
+    "tags": ["social", "calm"],
+    "weight": 1.0,
+    "cooldownSec": 20,
+    "locales": {
+      "enUS": "Thanks for the hand.",
+      "ruRU": "Спасибо за помощь.",
+      "deDE": "Danke für die Hilfe.",
+      "frFR": "Merci pour le coup de main.",
+      "esES": "Gracias por la ayuda.",
+      "zhCN": "谢谢你的帮助。"
+    }
+  },
+  {
+    "id": "social.joke.001",
+    "beat": "Joke",
+    "tags": ["social", "humor", "sociable"],
+    "weight": 0.7,
+    "cooldownSec": 90,
+    "locales": {
+      "enUS": "Ever feel like someone is watching our every move?",
+      "ruRU": "У вас бывало чувство, будто кто-то следит за каждым нашим шагом?",
+      "deDE": "Hattet ihr jemals das Gefühl, beobachtet zu werden?",
+      "frFR": "Vous avez déjà eu l'impression qu'on surveille chacun de nos pas ?",
+      "esES": "¿Alguna vez sentís que alguien vigila cada uno de nuestros pasos?",
+      "zhCN": "你有没有觉得好像有人在监视我们的一举一动？"
+    }
+  },
+  {
+    "id": "social.taunt.001",
+    "beat": "Taunt",
+    "tags": ["combat", "aggressive"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Is that the best you can do?",
+      "ruRU": "Это всё, на что ты способен?",
+      "deDE": "Ist das alles, was du kannst?",
+      "frFR": "C'est tout ce que tu as dans le ventre ?",
+      "esES": "¿Es eso lo mejor que puedes hacer?",
+      "zhCN": "你就这点本事吗？"
+    }
+  },
+  {
+    "id": "social.victory.001",
+    "beat": "Victory",
+    "tags": ["combat", "victory"],
+    "weight": 1.0,
+    "cooldownSec": 30,
+    "locales": {
+      "enUS": "Target eliminated. Let's keep moving.",
+      "ruRU": "Цель уничтожена. Двигаемся дальше.",
+      "deDE": "Ziel ausgeschaltet. Weiter geht's.",
+      "frFR": "Cible éliminée. Continuons.",
+      "esES": "Objetivo eliminado. Sigamos moviéndonos.",
+      "zhCN": "目标已消灭。继续前进。"
+    }
+  },
+  {
+    "id": "social.defeat.001",
+    "beat": "Defeat",
+    "tags": ["combat", "defeat"],
+    "weight": 1.0,
+    "cooldownSec": 45,
+    "locales": {
+      "enUS": "Ugh... that was rough.",
+      "ruRU": "Ох... это было тяжело.",
+      "deDE": "Uff... das war hart.",
+      "frFR": "Ouf... c'était rude.",
+      "esES": "Uf... eso fue duro.",
+      "zhCN": "呃……真艰难。"
+    }
+  },
+  {
+    "id": "social.retreat.001",
+    "beat": "Retreat",
+    "tags": ["combat", "retreat", "cautious"],
+    "weight": 1.0,
+    "cooldownSec": 20,
+    "locales": {
+      "enUS": "Fall back! We're overwhelmed!",
+      "ruRU": "Отступаем! Нас задавили!",
+      "deDE": "Rückzug! Sie sind zu viele!",
+      "frFR": "Repliez-vous ! Nous sommes submergés !",
+      "esES": "¡Retirada! ¡Nos superan!",
+      "zhCN": "撤退！敌方势大！"
+    }
+  }
+]

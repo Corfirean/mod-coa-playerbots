@@ -21,6 +21,19 @@
 
 namespace BotAI
 {
+    namespace
+    {
+        // A cast that would take this share of the bot's maximum health counts as a burst worth a defensive button (default 25%,
+        // CoaBots.Combat.BurstPctThreshold)...
+        float BurstPctThreshold()
+        {
+            static float const value = sConfigMgr->GetOption<float>("CoaBots.Combat.BurstPctThreshold", 25.0f);
+            return value;
+        }
+        // ...from this long before it lands (a longer cast is not yet worth spending the cooldown on).
+        constexpr uint32 BURST_WINDOW_MS = 4500;
+    }
+
     CombatContext CombatContext::Build(Player* bot, Unit* explicitVictim)
     {
         CombatContext ctx;
@@ -90,13 +103,37 @@ namespace BotAI
         // a real incoming-damage trend implying death soon, or the current victim being both
         // dangerous (boss/elite mid-cast) and actually targeting the bot all count.
         ctx.botIncomingDps = DamageTracker::SampleIncomingDps(bot);
-        float timeToDieSec = (ctx.botIncomingDps > 1.0f)
-            ? (float(bot->GetHealth()) / ctx.botIncomingDps) : 999.0f;
+        float timeToDieSec = Decisions::TimeToDieSec(bot->GetHealth(), HealEvaluator::UsableAbsorb(bot, 4000, 0), ctx.botIncomingDps);
         bool dangerousBossOnBot = ctx.targetIsBossOrElite && ctx.victim && ctx.victim->GetVictim() == bot
             && ctx.victimIsCastingInterruptible;
         ctx.worthDefensiveCooldown = ctx.botHpPct < 25.0f
             || timeToDieSec < 6.0f
             || (ctx.botHpPct < 60.0f && dangerousBossOnBot);
+
+        // Burst prediction (see CombatContext.h): the largest damaging cast any attacker of the bot has aimed at it.
+        static bool const predictBurst = sConfigMgr->GetOption<bool>("CoaBots.Combat.BurstPrediction", true);
+        if (uint32 maxHealth = predictBurst ? bot->GetMaxHealth() : 0)
+        {
+            for (Unit* attacker : bot->getAttackers())
+            {
+                float damage = 0.0f;
+                uint32 remainingMs = 0;
+                uint32 schoolMask = 0;
+                if (!GetDamagingCastOn(attacker, bot, damage, remainingMs, &schoolMask))
+                    continue;
+                // Only what gets past the shields that are still up when the cast lands reaches health.
+                damage = std::max(0.0f, damage - float(HealEvaluator::UsableAbsorb(bot, std::max<uint32>(remainingMs, 1), schoolMask)));
+                float pct = damage * 100.0f / float(maxHealth);
+                if (pct > ctx.predictedBurstPct)
+                {
+                    ctx.predictedBurstPct = pct;
+                    ctx.burstRemainingMs = remainingMs;
+                }
+            }
+            ctx.burstIncoming = ctx.predictedBurstPct >= BurstPctThreshold() && ctx.burstRemainingMs <= BURST_WINDOW_MS;
+            if (ctx.burstIncoming)
+                ctx.worthDefensiveCooldown = true;
+        }
 
         // Ally triage snapshot
         Group const* group = bot->GetGroup();

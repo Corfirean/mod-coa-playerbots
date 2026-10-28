@@ -404,6 +404,33 @@ CoaBots.Economy.ListingMinutes = 1440
 CoaBots.Economy.PriceSpreadMinPercent = 5
 CoaBots.Economy.PriceSpreadMaxPercent = 10
 
+###################################################################################################
+# COMBAT INTELLIGENCE
+###################################################################################################
+#
+#    CoaBots.Combat.BurstPrediction
+#        Description: A damaging cast aimed at a bot (a tankbuster on its cast bar) makes the bot spend
+#                     a defensive cooldown, and its healers pre-heal, before the hit lands. The damage
+#                     counted is what reaches health after the shields that are still up when it lands.
+#        Default:     1
+#
+#    CoaBots.Combat.BurstPctThreshold
+#        Description: A predicted hit of at least this share of the bot's maximum health counts as a burst.
+#        Default:     25
+#
+#    CoaBots.Combat.GroupInterruptDirector
+#        Description: EXPERIMENTAL. Grouped bots interrupt what the group assigns them (one primary and one backup
+#                     per enemy cast, backup takes over at once when the primary cannot act). 0 keeps the rule where
+#                     every bot kicks the cast of its own target. Off because in the INTERRUPT_MULTI test it applied
+#                     about half as many interrupts as the own-target rule (its reaction delay is long for 1.5 s casts),
+#                     see docs/combat-intelligence/POST_REVIEW_HARDENING.md.
+#        Default:     0
+#
+
+CoaBots.Combat.BurstPrediction = 1
+CoaBots.Combat.BurstPctThreshold = 25
+CoaBots.Combat.GroupInterruptDirector = 0
+
 CoaBots.Training.Enable = 0
 CoaBots.Training.OutputDir = training/results
 CoaBots.Training.DefaultLevel = 60
@@ -425,5 +452,126 @@ CoaBots.Training.TargetIsBoss = 0
 CoaBots.Training.HazardSpellId = 5740
 CoaBots.Training.InterruptCastSpellId = 133
 
+#    CoaBots.Training.RealisticDamage
+#        Description: Training only. A scripted hit (tankbuster, ramp hit) goes through the same steps as a spell hit
+#                     (immunity, armor for physical schools, damage-taken modifiers, resistance, absorbs) for the school of
+#                     RealisticDamageSpellId. It never misses, never crits and has no procs or threat. Changes
+#                     measurements: do not compare runs across the setting.
+#        Default:     0
+#
+CoaBots.Training.RealisticDamage = 0
+CoaBots.Training.RealisticDamageSpellId = 686
+
+#    CoaBots.Training.RealisticDamageLegacyPath
+#        Description: Training only. 1 selects the first approximation of RealisticDamage (damage-taken modifiers and absorbs,
+#                     then plain DealDamage) instead of the spell-hit steps. Only for runs that must stay comparable with earlier ones.
+#        Default:     0
+#
+CoaBots.Training.RealisticDamageLegacyPath = 0
+
 # Reserved training phases: bits 30..27; configure only on isolated servers.
 CoaBots.Training.MaxParallelArenas = 1
+
+# Outland (map 530) and Northrend (map 571) for bots. 2 = automatic: closed when MaxPlayerLevel is 60 or lower and the
+# content scaling that brings those expansions down to that range is off (CoAContentScaling.Enable, with CoATBC.Enable
+# for Outland and CoAWotLK.Enable for Northrend). 1 = always closed, 0 = always open. A closed map means: no
+# spawns, no hubs, no quests, no flights there, and bots found there are moved out. The starting areas of the
+# Blood Elves (Eversong, Ghostlands, Silvermoon) and the Draenei (Azuremyst, Bloodmyst, the Exodar) stay open.
+CoaBots.RestrictExpansionZones = 2
+
+###################################################################################################
+# DYNAMIC BOT ENCOUNTERS (WorldEncounterDirector)
+#
+#    BotAI.DynamicEncounters.Enable
+#        Description: Master toggle for open-world dynamic bot encounters (WorldEncounterDirector).
+#                     Encounters temporarily borrow existing open-world playerbots to stage rare
+#                     ambient, PvP, or atmospheric events, returning bots to WorldBrain afterward.
+#        Default:     1
+#
+#    BotAI.DynamicEncounters.<Type>.Enable
+#        Description: Per-encounter enable flags for all 13 encounter types.
+#        Default:     1
+#
+#    BotAI.DynamicEncounters.MaxGlobalActive / MaxActivePerMap / MaxActiveNearPlayer
+#        Description: Global, per-map, and per-real-player active encounter caps.
+#        Default:     12 / 4 / 1
+#
+#    BotAI.DynamicEncounters.ThinkIntervalMs / RareScanIntervalMs
+#        Description: Staggered evaluation cadence for the director and rare creature scans.
+#        Default:     5000 / 20000
+#
+#    BotAI.DynamicEncounters.PlayerCooldownSec / PlayerHostileCooldownSec / BotCooldownSec
+#        Description: Cooldowns (seconds) preventing a real player or bot from being repeatedly
+#                     selected for encounters.
+#        Default:     900 / 1500 / 600
+#
+#    BotAI.DynamicEncounters.Narrator.Enable / PlayerCooldownSec / BotCooldownSec
+#        Description: Optional atmospheric messages and contextual bot lines (/say, /yell, /emote).
+#        Default:     1 / 120 / 45
+#
+###################################################################################################
+
+BotAI.DynamicEncounters.Enable = 1
+BotAI.DynamicEncounters.ThinkIntervalMs = 5000
+BotAI.DynamicEncounters.RareScanIntervalMs = 20000
+
+BotAI.DynamicEncounters.AssassinContract.Enable = 1
+BotAI.DynamicEncounters.TheWatcher.Enable = 1
+BotAI.DynamicEncounters.FactionSkirmish.Enable = 1
+BotAI.DynamicEncounters.PatrolAmbush.Enable = 1
+BotAI.DynamicEncounters.BountyHunter.Enable = 1
+BotAI.DynamicEncounters.Nemesis.Enable = 1
+BotAI.DynamicEncounters.RoadDuel.Enable = 1
+BotAI.DynamicEncounters.Caravan.Enable = 1
+BotAI.DynamicEncounters.Deserter.Enable = 1
+BotAI.DynamicEncounters.HunterAndPrey.Enable = 1
+BotAI.DynamicEncounters.RivalAdventuringParty.Enable = 1
+BotAI.DynamicEncounters.RareHunter.Enable = 1
+BotAI.DynamicEncounters.MysteryEncounter.Enable = 1
+
+BotAI.DynamicEncounters.MaxGlobalActive = 12
+BotAI.DynamicEncounters.MaxActivePerMap = 4
+BotAI.DynamicEncounters.MaxActiveNearPlayer = 1
+
+BotAI.DynamicEncounters.PlayerCooldownSec = 900
+BotAI.DynamicEncounters.PlayerHostileCooldownSec = 1500
+BotAI.DynamicEncounters.BotCooldownSec = 600
+BotAI.DynamicEncounters.TypeCooldownSec = 300
+
+BotAI.DynamicEncounters.MaxLevelDiffHostile = 4
+BotAI.DynamicEncounters.MaxLevelDiffAmbient = 8
+BotAI.DynamicEncounters.MaxPlayerPartySizeForSoloHostile = 2
+BotAI.DynamicEncounters.SearchRadiusYards = 220
+BotAI.DynamicEncounters.MaxChaseDistanceYards = 280
+BotAI.DynamicEncounters.MinDistanceFromCapitalYards = 180
+
+BotAI.DynamicEncounters.PrepareTimeoutSec = 90
+BotAI.DynamicEncounters.ActiveTimeoutSec = 180
+BotAI.DynamicEncounters.ResolveTimeoutSec = 20
+
+BotAI.DynamicEncounters.Narrator.Enable = 1
+BotAI.DynamicEncounters.Narrator.PlayerCooldownSec = 120
+BotAI.DynamicEncounters.Narrator.BotCooldownSec = 45
+BotAI.DynamicEncounters.Narrator.MaxRangeYards = 45
+
+BotAI.DynamicEncounters.Bounty.KillThreshold = 3
+BotAI.DynamicEncounters.Bounty.WindowSec = 1200
+BotAI.DynamicEncounters.Bounty.CooldownSec = 1800
+
+BotAI.DynamicEncounters.Nemesis.MemoryTtlSec = 3600
+BotAI.DynamicEncounters.Nemesis.MaxTrackedPairs = 256
+BotAI.DynamicEncounters.Nemesis.MinKillsForTrigger = 1
+
+BotAI.DynamicEncounters.Caravan.MinMembers = 2
+BotAI.DynamicEncounters.Caravan.MaxMembers = 5
+BotAI.DynamicEncounters.Skirmish.MinPerSide = 2
+BotAI.DynamicEncounters.Skirmish.MaxPerSide = 4
+BotAI.DynamicEncounters.RivalParty.MinMembers = 3
+BotAI.DynamicEncounters.RivalParty.MaxMembers = 5
+BotAI.DynamicEncounters.RareHunter.MaxBots = 3
+
+BotAI.DynamicEncounters.Mystery.ChancePermil = 15
+BotAI.DynamicEncounters.Mystery.MorphDisplayId = 0
+BotAI.DynamicEncounters.Mystery.RuneGameObjectEntry = 0
+BotAI.DynamicEncounters.Mystery.SpellVisualId = 0
+
