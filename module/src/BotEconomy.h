@@ -70,6 +70,7 @@ namespace BotEconomy
 
     // The roster line for a bot with a gold order ("earning gold for the guild (12/100 g - 12%)"), empty otherwise.
     std::string GoldOrderTask(Player* bot);
+    bool GetGoldOrderInfo(Player* bot, uint64& outTargetCopper, uint64& outDepositedCopper);
 
     // Food and drink that cost something. With CoaBots.Economy.ConsumeSupplies = 1 a bot that sits down to eat or drink
     // really uses up one item of its level range (the same instant-regeneration auras as before, 433 and 431, are

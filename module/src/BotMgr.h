@@ -126,6 +126,17 @@ public:
     };
     GuildGatherOrder const* GetGuildGatherOrder(ObjectGuid const& guid) const;
 
+    struct CraftOrderState
+    {
+        ObjectGuid requesterGuid;
+        uint32 spellId = 0;
+        uint32 itemEntry = 0;
+        uint32 remainingCount = 0;
+        bool awaitingCastResult = false;
+        uint32 itemCountBeforeCast = 0;
+    };
+    CraftOrderState const* GetCraftOrder(ObjectGuid const& guid) const;
+
     // Re-resolves and re-teleports an in-progress guild gather order to a fresh location for the
     // same item, called from BotAI.cpp's UpdateSoloWorld when a targeted node search has come up
     // empty nearby for too long (GUILD_GATHER_RETELEPORT_MS) -- the original spot's node was
@@ -540,22 +551,6 @@ private:
 
     std::unordered_map<ObjectGuid, GuildGatherOrder> _guildGatherOrders;
 
-    // See CraftOrder's header comment. A crafter (bot guid) may have at most one active order
-    // at a time -- a second CraftOrder call for a crafter already crafting replaces it rather
-    // than queuing, matching this feature's "simplest that works" scope.
-    struct CraftOrderState
-    {
-        ObjectGuid requesterGuid;
-        uint32 spellId = 0;
-        uint32 itemEntry = 0;
-        uint32 remainingCount = 0;
-        // Set once a cast has been fired, so the next tick(s) wait for it to actually finish
-        // (Unit::IsNonMeleeSpellCast) instead of re-casting over it -- some tradeskill recipes
-        // have a real cast time, not just instant ones, and firing a new cast mid-cast would
-        // interrupt and restart it every tick, never letting it finish.
-        bool awaitingCastResult = false;
-        uint32 itemCountBeforeCast = 0;
-    };
     std::unordered_map<ObjectGuid, CraftOrderState> _craftOrders;
     void ProcessCraftOrders();
 

@@ -62,6 +62,7 @@ namespace WorldBrain
     bool HasQuestWork(Player* bot);
 
     WorldGoal GetGoal(ObjectGuid botGuid);
+    bool GetBrainActivity(ObjectGuid botGuid, WorldGoal& goal, WorldTaskType& taskType, TaskPhase& phase, bool& isBreak);
 
     // `.botcmd brain` and `.botcmd worldstats`.
     void Describe(Player* bot, ChatHandler* handler);

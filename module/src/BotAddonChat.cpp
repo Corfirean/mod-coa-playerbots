@@ -21,6 +21,7 @@
 #include "ClassSpecRoles.h"
 #include "Group.h"
 #include "ItemTemplate.h"
+#include "map/BotMapService.h"
 #include "Log.h"
 #include "MotionMaster.h"
 #include "Player.h"
@@ -346,6 +347,26 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
     {
         LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GETRECIPECATALOG.", commander->GetName());
         for (std::string const& line : sBotMgr->GetRecipeCatalog(commander))
+            SendCoaBotReply(commander, line);
+        return;
+    }
+
+    // MAPQUERY / MAPDETAIL / MAPEVENTS: CoA World Map Intelligence
+    if (verb == "MAPQUERY")
+    {
+        for (std::string const& line : sBotMapService->HandleMapQuery(commander, parts))
+            SendCoaBotReply(commander, line);
+        return;
+    }
+    if (verb == "MAPDETAIL")
+    {
+        for (std::string const& line : sBotMapService->HandleMapDetail(commander, parts))
+            SendCoaBotReply(commander, line);
+        return;
+    }
+    if (verb == "MAPEVENTS")
+    {
+        for (std::string const& line : sBotMapService->HandleMapEvents(commander, parts))
             SendCoaBotReply(commander, line);
         return;
     }

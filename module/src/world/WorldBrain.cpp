@@ -863,6 +863,19 @@ namespace WorldBrain
         return itr == _states.end() ? WorldGoal::None : itr->second.goal;
     }
 
+    bool GetBrainActivity(ObjectGuid botGuid, WorldGoal& goal, WorldTaskType& taskType, TaskPhase& phase, bool& isBreak)
+    {
+        auto itr = _states.find(botGuid);
+        if (itr == _states.end())
+            return false;
+        goal = itr->second.goal;
+        taskType = itr->second.task.type;
+        phase = itr->second.task.phase;
+        uint32 now = WorldBrainInternal::NowMs();
+        isBreak = (itr->second.breakUntilMs > now);
+        return true;
+    }
+
     void Describe(Player* bot, ChatHandler* handler)
     {
         if (!bot || !handler)
