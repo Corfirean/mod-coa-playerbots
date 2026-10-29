@@ -58,7 +58,12 @@ namespace
     uint32 StepTimeout(EventStep const& s)
     {
         static uint32 const configured = sConfigMgr->GetOption<uint32>("CoaBots.Dungeon.EventStepTimeoutMs", DEFAULT_STEP_TIMEOUT_MS);
-        return s.timeoutMs ? s.timeoutMs : configured;
+        if (s.timeoutMs)
+            return s.timeoutMs;
+        // An escort walks the whole dungeon with the escortee: it ends by the dungeon's own progress, not by a short timer.
+        if (s.kind == EventStepKind::EscortCreature)
+            return 20 * 60 * 1000;
+        return configured;
     }
 
     InstanceScript* InstanceOf(Player* bot)
@@ -462,7 +467,16 @@ namespace
                 if (s.escortDoneEntry && tank->FindNearestCreature(s.escortDoneEntry, 300.0f, true))
                     return StepResult::Done;
                 if (!escortee)
-                    return run.used ? StepResult::Running : StepResult::Running;
+                {
+                    // Not in the scan radius: the escortee waits somewhere else (Arthas at the start of the Culling of Stratholme waits for the
+                    // party to come and speak to him). Walk to him wherever he is on the map instead of waiting for him to appear.
+                    if (Creature* distant = tank->FindNearestCreature(s.creatureEntry, 450.0f, true))
+                    {
+                        WalkTo(tank, ev, index, distant->GetPositionX(), distant->GetPositionY(), distant->GetPositionZ(), 3.5f);
+                        return StepResult::Running;
+                    }
+                    return StepResult::Running;
+                }
                 if (!run.used && s.gossipOption >= 0)
                 {
                     if (tank->GetExactDist(escortee) > 4.5f)
