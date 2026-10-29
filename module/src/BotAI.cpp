@@ -68,6 +68,7 @@
 #include "engine/ThreatEvaluator.h"
 #include "ClassSpecRoles.h"
 #include "CombatManager.h"
+#include "StringFormat.h"
 #include "Config.h"
 #include "Bag.h"
 #include "CellImpl.h"
@@ -2163,6 +2164,7 @@ std::string AutoDungeonWaitReason(Player* tank, Group* group)
     float const hpLimit = st.waiting ? 90.0f : 70.0f;
 
     std::string reason;
+    Player* straggler = nullptr;
     for (GroupReference const* ref = group->GetFirstMember(); ref && reason.empty(); ref = ref->next())
     {
         Player* member = ref->GetSource();
@@ -2172,7 +2174,10 @@ std::string AutoDungeonWaitReason(Player* tank, Group* group)
         if (!member->IsAlive())
             reason = member->GetName() + " is dead and on the way back";
         else if (member->GetMap() != tank->GetMap() || tank->GetDistance(member) > farLimit)
+        {
             reason = member->GetName() + " is too far behind";
+            straggler = member;
+        }
         else if (member->getPowerType() == POWER_MANA && member->GetMaxPower(POWER_MANA) > 0 &&
                  member->GetPower(POWER_MANA) * 100.0f / member->GetMaxPower(POWER_MANA) < manaLimit)
             reason = member->GetName() + " is low on mana";
@@ -2188,6 +2193,14 @@ std::string AutoDungeonWaitReason(Player* tank, Group* group)
     if (!st.waiting)
     {
         st.waiting = true;
+        st.sinceMs = now;
+    }
+    else if (straggler && now - st.sinceMs > 45000 && straggler->GetMap() == tank->GetMap() && !straggler->IsInCombat())
+    {
+        // A member that has been left behind for good (it died and came back at the entrance, or lost the way) is called to the tank, the way
+        // a meeting stone or a summon would: waiting for it costs two and a half minutes every few minutes of the run. Soak test: Blood Furnace.
+        LOG_INFO("module.coa-playerbots", "AutoDungeon: tank '{}' calls '{}' to the group ({:.0f} yd behind).", tank->GetName(), straggler->GetName(), tank->GetDistance(straggler));
+        straggler->NearTeleportTo(tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ() + 0.5f, straggler->GetOrientation());
         st.sinceMs = now;
     }
     else if (now - st.sinceMs > 150000)
@@ -2359,6 +2372,11 @@ void BreakGroupStalemate(Player* tank, Group* group)
         for (Unit* attacker : member->getAttackers())
             addMob(attacker);
         addMob(member->GetVictim());
+        // Creatures the member is in combat with without being attacked or attacking (behind a gate, out of reach, evading): they keep the group
+        // "in combat" all the same. Soak test: a group stood in such a fight in the Nexus for 38 minutes.
+        for (auto const& [guid, combatRef] : member->GetCombatManager().GetPvECombatRefs())
+            if (combatRef)
+                addMob(combatRef->GetOther(member));
     }
     if (mobs.empty())
     {
@@ -2381,8 +2399,11 @@ void BreakGroupStalemate(Player* tank, Group* group)
     if (now - w.lastProgressMs < (boss ? STALEMATE_BOSS_MS : STALEMATE_MS))
         return;
 
-    LOG_WARN("module.coa-playerbots.dungeon", "Group of '{}': a fight with {} creature(s) made no progress for {} s; breaking it off.", tank->GetName(), mobs.size(),
-        (now - w.lastProgressMs) / 1000);
+    std::string names;
+    for (Unit* m : mobs)
+        names += Acore::StringFormat("{}({}) at {:.0f},{:.0f},{:.0f} {:.0f}yd; ", m->GetName(), m->GetEntry(), m->GetPositionX(), m->GetPositionY(), m->GetPositionZ(), tank->GetExactDist(m));
+    LOG_WARN("module.coa-playerbots.dungeon", "Group of '{}': a fight with {} creature(s) made no progress for {} s; breaking it off: {}", tank->GetName(), mobs.size(),
+        (now - w.lastProgressMs) / 1000, names);
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
@@ -2432,7 +2453,12 @@ void TryAutoPullInInstance(Player* bot)
     if (leader->IsInCombat())
     {
         if (isPointRunnerTank && DungeonRuntime::Enabled())
+        {
+            Map* combatMap = bot->GetMap();
+            if (combatMap && (combatMap->IsDungeon() || combatMap->IsRaid()) && DungeonRuntime::AdvanceInCombat(bot, group))
+                return note("driving a wave event in combat");
             BreakGroupStalemate(bot, group);
+        }
         return note("leader is in combat, waiting");
     }
 
@@ -5454,11 +5480,10 @@ void DungeonProgress(Map* map, Player* leader, uint32& total, uint32& done)
         return;
     if (DungeonRuntime::Enabled())
     {
-        // The roster knows the wing the group is in and the objectives; count its bosses only.
+        // The roster knows the wing the group is in; bosses and objectives together are what the run has to get through (a dungeon whose
+        // encounters are all events, like the Culling of Stratholme, has no boss row at all).
         for (DungeonBossInfo const& anchor : DungeonRoster::Full(map, leader))
         {
-            if (anchor.kind != DungeonAnchorKind::Boss)
-                continue;
             ++total;
             if (DungeonRoster::IsDone(map, anchor))
                 ++done;

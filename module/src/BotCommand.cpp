@@ -21,6 +21,12 @@
 #include "SpellMgr.h"
 #include "BotTalentBuilds.h"
 #include "Chat.h"
+#include "CellImpl.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
+#include "Creature.h"
+#include "InstanceScript.h"
+#include "Map.h"
 #include "CommandScript.h"
 #include "GameTime.h"
 #include "LFGMgr.h"
@@ -30,6 +36,7 @@
 #include "Player.h"
 #include "RBAC.h"
 #include "ScriptMgr.h"
+#include <list>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -225,6 +232,40 @@ public:
             if (ev.mapId == map->GetId())
                 events += Acore::StringFormat("[{} #{} {} steps{}] ", ev.name, ev.id, ev.steps.size(), ev.activation == EventActivation::Conditional ? " cond" : "");
         handler->PSendSysMessage("EVENTS: {}", events.empty() ? "none" : events);
+        // What the map's script and the surroundings look like right now: the first thing to read when a group stands still.
+        if (InstanceMap* instanceMap = map->ToInstanceMap())
+            if (InstanceScript* inst = instanceMap->GetInstanceScript())
+            {
+                std::string states, data;
+                for (uint32 i = 0; i < 12; ++i)
+                    states += Acore::StringFormat("{}:{} ", i, uint32(inst->GetBossState(i)));
+                for (uint32 i = 0; i < 64; ++i)
+                    if (uint32 v = inst->GetData(i))
+                        data += Acore::StringFormat("{}={} ", i, v);
+                handler->PSendSysMessage("STATE bosses {}| data {}", states, data.empty() ? "none" : data);
+            }
+        std::list<Unit*> units;
+        {
+            Acore::AnyUnitInObjectRangeCheck check(bot, 70.0f);
+            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+            Cell::VisitObjects(bot, searcher, 70.0f);
+        }
+        std::list<Creature*> around;
+        for (Unit* u : units)
+            if (Creature* creature = u->ToCreature())
+                around.push_back(creature);
+        around.sort([&](Creature* a, Creature* b) { return bot->GetExactDist(a) < bot->GetExactDist(b); });
+        std::string census;
+        uint32 shown = 0;
+        for (Creature* c : around)
+        {
+            if (!c || shown >= 22)
+                break;
+            census += Acore::StringFormat("[{} {} {:.0f}yd{}{} f{:x} h{}] ", c->GetEntry(), c->GetName(), bot->GetExactDist(c), c->IsAlive() ? "" : " dead",
+                c->IsInCombat() ? " cmb" : "", c->GetUInt32Value(UNIT_FIELD_FLAGS), c->IsHostileTo(bot) ? 1 : 0);
+            ++shown;
+        }
+        handler->PSendSysMessage("NEAR {}", census.empty() ? "none" : census);
         return true;
     }
 

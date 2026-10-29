@@ -450,6 +450,14 @@ namespace
 
             case EventStepKind::EscortCreature:
             {
+                // The escort is over when the dungeon's own progress says so (the counter reached the value, or the encounter bit is set).
+                if (InstanceScript* inst = InstanceOf(tank))
+                {
+                    if (s.instanceDataId >= 0 && inst->GetData(uint32(s.instanceDataId)) >= s.instanceDataMin)
+                        return StepResult::Done;
+                    if (s.escortDoneBit >= 0 && (inst->GetCompletedEncounterMask() & (1u << uint32(s.escortDoneBit))))
+                        return StepResult::Done;
+                }
                 Creature* escortee = tank->FindNearestCreature(s.creatureEntry, s.radius > 0.0f ? s.radius : 120.0f, true);
                 if (s.escortDoneEntry && tank->FindNearestCreature(s.escortDoneEntry, 300.0f, true))
                     return StepResult::Done;
@@ -495,6 +503,23 @@ namespace
 
 namespace DungeonEventExecutor
 {
+    void TalkTo(Player* bot, Creature* npc, int32 option)
+    {
+        GossipHello(bot, npc);
+        if (option >= 0)
+            GossipSelect(bot, npc, option);
+    }
+
+    uint32 OpenMenuId(Player* bot)
+    {
+        return bot && bot->PlayerTalkClass ? bot->PlayerTalkClass->GetGossipMenu().GetMenuId() : 0;
+    }
+
+    void SelectOption(Player* bot, Creature* npc, int32 option)
+    {
+        GossipSelect(bot, npc, option);
+    }
+
     EventResult Drive(Player* tank, Group* group, DungeonEvent const& ev)
     {
         if (!tank || !group)

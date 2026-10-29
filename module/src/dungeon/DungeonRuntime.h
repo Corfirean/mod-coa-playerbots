@@ -8,8 +8,10 @@
 #ifndef COA_PLAYERBOTS_DUNGEON_RUNTIME_H
 #define COA_PLAYERBOTS_DUNGEON_RUNTIME_H
 
+#include "Define.h"
 #include <functional>
 
+class Creature;
 class Group;
 class Map;
 class Player;
@@ -30,6 +32,12 @@ namespace DungeonRuntime
 
     // Hostile creatures standing in the room of the next room-aggro boss that should be cleared before it is pulled (for the room-clear event).
     bool RoomTrashRemaining(Player* tank);
+
+    // The events that are driven during a fight (continuous wave encounters such as the Violet Hold). True when one took the tick.
+    bool AdvanceInCombat(Player* tank, Group* group);
+
+    // Walks the tank to a creature and attacks it; the ordinary combat logic takes over once it is engaged. False when it cannot get there.
+    bool EngageCreature(Player* tank, Creature* target, uint64 goalId);
 
     // Drops everything the run remembers about this group.
     void Forget(Group* group);

@@ -24,8 +24,16 @@ enum class EventResult : uint8
     Blocked,  // a step timed out or cannot be done unaided
 };
 
+class Creature;
+
 namespace DungeonEventExecutor
 {
+    // Talks to an NPC the way a client does: opens its menu (and, with option >= 0, picks that option straight away).
+    void TalkTo(Player* bot, Creature* npc, int32 option);
+    // The id of the gossip menu the bot has open (0 when none), and a pick from the open menu.
+    uint32 OpenMenuId(Player* bot);
+    void SelectOption(Player* bot, Creature* npc, int32 option);
+
     // Performs the event for the group; call once per tick while it is due and the party is out of combat (a fight in between is fine for a
     // persistent event).
     EventResult Drive(Player* tank, Group* group, DungeonEvent const& ev);

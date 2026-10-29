@@ -319,7 +319,9 @@ namespace
     using HookFn = ObjectiveArriveResult (*)(Player*);
     std::unordered_map<uint32, HookFn> const& Table()
     {
-        static std::unordered_map<uint32, HookFn> const table = {
+        static std::unordered_map<uint32, HookFn> const table = []
+        {
+            std::unordered_map<uint32, HookFn> t = {
             { 1, &EnsureRingStarted },
             { 2, &FireDefiasCannon },
             { 3, &GrantIncendiaryBombs },
@@ -331,7 +333,10 @@ namespace
             { 10, &SendGhazanToPlatform },
             { 13, &HadronoxHasWebbedTheDoors },
             { 14, &HoldNovosCamp },
-        };
+            };
+            DungeonHooks::RegisterWaveHooks(t);
+            return t;
+        }();
         return table;
     }
 }

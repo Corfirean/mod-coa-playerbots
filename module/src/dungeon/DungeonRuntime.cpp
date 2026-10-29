@@ -18,9 +18,11 @@
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include <algorithm>
 #include <cmath>
 #include <list>
 #include <map>
@@ -140,7 +142,7 @@ namespace
     }
 
     // Walks to a creature and attacks it; the ordinary pull logic takes over once it is engaged.
-    bool EngageCreature(Player* tank, Creature* target, uint64 goalId)
+    bool EngageImpl(Player* tank, Creature* target, uint64 goalId)
     {
         if (tank->GetExactDist(target) > 28.0f)
         {
@@ -153,12 +155,45 @@ namespace
         return true;
     }
 
-    bool RunConditionalEvents(Player* tank, Group* group)
+    // A group that fell off a ledge (Hellfire Ramparts' zone-in room has a drop along its south-west side, the Halls of Lightning a pit under the
+    // first walkway) stands on the floor far below the dungeon with no path back. The players of the group would run back or be summoned; the
+    // group is put back at the dungeon's entrance, at most once a minute.
+    bool RescueFromBelow(Player* tank, Group* group, float targetZ)
+    {
+        AreaTriggerTeleport const* entrance = sObjectMgr->GetMapEntranceTrigger(tank->GetMapId());
+        if (!entrance)
+            return false;
+        float const floorZ = std::min(targetZ, entrance->target_Z);
+        if (tank->GetPositionZ() > floorZ - 25.0f)
+            return false;
+        static std::map<ObjectGuid, uint32> last;
+        uint32 const now = getMSTime();
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            uint32& at = last[group->GetGUID()];
+            if (at && now - at < 60000)
+                return false;
+            at = now;
+        }
+        LOG_WARN("module.coa-playerbots.dungeon", "'{}' and the group are {:.0f} yd below the floor of the dungeon (z {:.0f}); putting them back at the entrance.", tank->GetName(),
+            floorZ - tank->GetPositionZ(), tank->GetPositionZ());
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource(); member && member->IsInWorld() && member->IsAlive() && member->GetMapId() == tank->GetMapId())
+                member->NearTeleportTo(entrance->target_X, entrance->target_Y, entrance->target_Z, entrance->target_Orientation);
+        BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
+        ResetProgress(group->GetGUID());
+        return true;
+    }
+
+    // inCombat: only the events that are meant to be driven during a fight (continuous wave encounters).
+    bool RunConditionalEvents(Player* tank, Group* group, bool inCombat = false)
     {
         Map* map = tank->GetMap();
         ObjectGuid const key = group->GetGUID();
         for (DungeonEvent const* ev : DungeonEventRegistry::Conditional(map->GetId(), DcDifficulty::Of(map)))
         {
+            if (inCombat && !ev->drivesInCombat)
+                continue;
             if (!ev->repeatable && DungeonEventExecutor::IsLatched(map->GetInstanceId(), ev->mapId, ev->id))
                 continue;
             bool const active = DungeonEventExecutor::Active(key, ev->mapId, ev->id);
@@ -223,6 +258,16 @@ namespace DungeonRuntime
         return NearestRoomMember(tank, *row, bx, by) != nullptr;
     }
 
+    bool EngageCreature(Player* tank, Creature* target, uint64 goalId)
+    {
+        return EngageImpl(tank, target, goalId);
+    }
+
+    bool AdvanceInCombat(Player* tank, Group* group)
+    {
+        return tank && group && tank->GetMap() && RunConditionalEvents(tank, group, true);
+    }
+
     void Forget(Group* group)
     {
         if (!group)
@@ -273,9 +318,9 @@ namespace DungeonRuntime
                 note("heading for an objective");
                 NavStatus const status = BotMovement::Navigate(tank, MoveOwner::AutoDungeon, uint64(target.entry) << 8 | 0xA1, x, y, z, std::max(2.0f, arrive * 0.6f));
                 if (status == NavStatus::Stuck)
-                    giveUp("no way there");
+                    { if (!RescueFromBelow(tank, group, z)) giveUp("no way there"); }
                 else if (Stalled(key, target.entry, tank->GetExactDist(x, y, z)))
-                    giveUp("no progress");
+                    { if (!RescueFromBelow(tank, group, z)) giveUp("no progress"); }
                 return true;
             }
 
@@ -318,7 +363,7 @@ namespace DungeonRuntime
                 if (Creature* member = NearestRoomMember(tank, *row, bx, by))
                 {
                     note("clearing the room of a boss first");
-                    if (!EngageCreature(tank, member, uint64(target.entry) << 8 | 0xA2))
+                    if (!EngageImpl(tank, member, uint64(target.entry) << 8 | 0xA2))
                         giveUp("the room cannot be reached");
                     return true;
                 }
@@ -355,9 +400,9 @@ namespace DungeonRuntime
         float const dist = tank->GetExactDist(x, y, z);
         NavStatus const status = BotMovement::Navigate(tank, MoveOwner::AutoDungeon, uint64(target.entry) << 8 | 0xA0, x, y, z, 8.0f);
         if (status == NavStatus::Stuck)
-            giveUp("no way there");
+            { if (!RescueFromBelow(tank, group, z)) giveUp("no way there"); }
         else if (!tank->IsInCombat() && Stalled(key, target.entry, dist))
-            giveUp("no progress");
+            { if (!RescueFromBelow(tank, group, z)) giveUp("no progress"); }
         return true;
     }
 }

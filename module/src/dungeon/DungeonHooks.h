@@ -14,10 +14,15 @@
 #include "dungeon/DcCompat.h"
 #include "dungeon/DungeonBossInfo.h"
 
+#include <unordered_map>
+
 class Player;
 
 namespace DungeonHooks
 {
+    // The hooks of the wave dungeons (DungeonHooksWaves.cpp): Violet Hold, Culling of Stratholme, Halls of Lightning.
+    void RegisterWaveHooks(std::unordered_map<uint32, ObjectiveArriveResult (*)(Player*)>& table);
+
     // Runs hook `hookId` for the group's tank. An id without an implementation reads Blocked (and is logged once).
     ObjectiveArriveResult Run(uint32 hookId, Player* tank, DungeonBossInfo const* info);
 
