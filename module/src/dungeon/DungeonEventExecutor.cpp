@@ -27,6 +27,7 @@
 #include "Timer.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include <algorithm>
 #include <map>
 #include <mutex>
 #include <set>
@@ -58,12 +59,17 @@ namespace
     uint32 StepTimeout(EventStep const& s)
     {
         static uint32 const configured = sConfigMgr->GetOption<uint32>("CoaBots.Dungeon.EventStepTimeoutMs", DEFAULT_STEP_TIMEOUT_MS);
+        // Scales every step timer, the ones authored on the rows too (CoaBots.Dungeon.EventTimeoutScale, 1 = as authored). The authored timers
+        // assume a group that walks and fights like the original bots; ours is slower, and a step that is cut off only gets the whole event
+        // blocked for six minutes.
+        static float const scale = std::max(1.0f, sConfigMgr->GetOption<float>("CoaBots.Dungeon.EventTimeoutScale", 1.0f));
+        uint32 base = configured;
         if (s.timeoutMs)
-            return s.timeoutMs;
+            base = s.timeoutMs;
         // An escort walks the whole dungeon with the escortee: it ends by the dungeon's own progress, not by a short timer.
-        if (s.kind == EventStepKind::EscortCreature)
-            return 20 * 60 * 1000;
-        return configured;
+        else if (s.kind == EventStepKind::EscortCreature)
+            base = 20 * 60 * 1000;
+        return uint32(base * scale);
     }
 
     InstanceScript* InstanceOf(Player* bot)
@@ -477,7 +483,10 @@ namespace
                     }
                     return StepResult::Running;
                 }
-                if (!run.used && s.gossipOption >= 0)
+                // The escortee offers its gossip again whenever it waits for the party (at the start and at each pause of the scripted escort):
+                // talk to it again every few seconds while the flag is up.
+                bool const wantsTalk = s.gossipOption >= 0 && escortee->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP);
+                if (s.gossipOption >= 0 && (!run.used || (wantsTalk && getMSTime() - run.stageAtMs > 5000)))
                 {
                     if (tank->GetExactDist(escortee) > 4.5f)
                     {
@@ -487,6 +496,7 @@ namespace
                     GossipHello(tank, escortee);
                     GossipSelect(tank, escortee, s.gossipOption);
                     run.used = true;
+                    run.stageAtMs = getMSTime();
                     return StepResult::Running;
                 }
                 // Follow the escortee; the pull logic fights what attacks it.
@@ -578,6 +588,8 @@ namespace DungeonEventExecutor
                     }
                     return EventResult::Running;
                 case StepResult::Done:
+                    LOG_INFO("module.coa-playerbots.dungeon", "Event '{}' step {} (kind {}) done after {} s for '{}'.", ev.name, run.step, uint32(s.kind),
+                        (now - run.stepStartedMs) / 1000, tank->GetName());
                     ++run.step;
                     run.stage = 0;
                     run.used = false;

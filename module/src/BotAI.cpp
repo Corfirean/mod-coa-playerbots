@@ -2195,7 +2195,7 @@ std::string AutoDungeonWaitReason(Player* tank, Group* group)
         st.waiting = true;
         st.sinceMs = now;
     }
-    else if (straggler && now - st.sinceMs > 45000 && straggler->GetMap() == tank->GetMap() && !straggler->IsInCombat())
+    else if (straggler && now - st.sinceMs > 45000 && straggler->GetMap() == tank->GetMap())
     {
         // A member that has been left behind for good (it died and came back at the entrance, or lost the way) is called to the tank, the way
         // a meeting stone or a summon would: waiting for it costs two and a half minutes every few minutes of the run. Soak test: Blood Furnace.
