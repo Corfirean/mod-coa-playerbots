@@ -446,6 +446,12 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
         return;
     }
 
+    if (!BotSpawn::PrepareNameForLogin(charLowGuid, accountId))
+    {
+        LOG_ERROR("module.coa-playerbots", "BotMgr: could not prepare a valid login name for guid {} account {}", charLowGuid, accountId);
+        return;
+    }
+
     // Real WorldSession, real Player, but a null socket instead of a real
     // client connection — this is the core mechanism proven in pilot/. No
     // bot-aware constructor flag: CoA's WorldSession constructor is used
@@ -504,7 +510,7 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
             }
             else
             {
-                LOG_ERROR("module.coa-playerbots", "BotMgr: bot login failed, Player is null after HandlePlayerLoginFromDB.");
+                LOG_ERROR("module.coa-playerbots", "BotMgr: bot login failed for guid {} account {}, Player is null after HandlePlayerLoginFromDB.", charLowGuid, botSession->GetAccountId());
             }
         });
 
