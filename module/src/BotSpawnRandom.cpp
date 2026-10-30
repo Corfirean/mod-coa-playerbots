@@ -221,15 +221,14 @@ std::string GenerateLoreName(uint8 race, uint8 gender)
 
 std::string GenerateUniqueName(uint8 race, uint8 gender)
 {
-    for (uint32 attempt = 0; attempt < 50; ++attempt)
+    for (uint32 attempt = 0; attempt < 100; ++attempt)
     {
-        std::string candidate = GenerateLoreName(race, gender);
-        if (!sCharacterCache->GetCharacterGuidByName(candidate))
+        std::string candidate = attempt < 50 ? GenerateLoreName(race, gender) : GenerateRandomName();
+        if (ObjectMgr::CheckPlayerName(candidate) == CHAR_NAME_SUCCESS &&
+            !sCharacterCache->GetCharacterGuidByName(candidate))
             return candidate;
     }
-    // Exhausted retries (astronomically unlikely given the combinatorics above) -- fall back
-    // to a name that's unique by construction even though it doesn't match the usual shape.
-    return "Cb" + std::to_string(sObjectMgr->GetGenerator<HighGuid::Player>().GetNextAfterMaxUsed());
+    return {};
 }
 
 // A template's own race matters, not just its guid -- see CreateOneRandomBot's comment on why.
@@ -511,6 +510,30 @@ uint32 g_pendingRandomBotCreated = 0;
 uint32 g_pendingRandomBotThrottleMs = 0;
 }
 
+bool PrepareNameForLogin(uint32 guid, uint32 accountId)
+{
+    if (!BotMgr::IsBotAccountId(accountId))
+        return true;
+    QueryResult result = CharacterDatabase.Query("SELECT name, race, gender, at_login FROM characters WHERE guid={} AND account={}", guid, accountId);
+    if (!result)
+        return false;
+    Field* fields = result->Fetch();
+    std::string oldName = fields[0].Get<std::string>();
+    if (ObjectMgr::CheckPlayerName(oldName) == CHAR_NAME_SUCCESS && !(fields[3].Get<uint16>() & AT_LOGIN_RENAME))
+        return true;
+    std::string name = GenerateUniqueName(fields[1].Get<uint8>(), fields[2].Get<uint8>());
+    if (name.empty())
+        return false;
+    CharacterDatabase.DirectExecute("UPDATE characters SET name='{}', at_login=at_login & ~{} WHERE guid={} AND account={}",
+        name, uint32(AT_LOGIN_RENAME), guid, accountId);
+    QueryResult saved = CharacterDatabase.Query("SELECT name, at_login FROM characters WHERE guid={} AND account={}", guid, accountId);
+    if (!saved || saved->Fetch()[0].Get<std::string>() != name || (saved->Fetch()[1].Get<uint16>() & AT_LOGIN_RENAME))
+        return false;
+    sCharacterCache->UpdateCharacterData(ObjectGuid::Create<HighGuid::Player>(guid), name);
+    LOG_INFO("module.coa-playerbots", "BotSpawn: repaired rejected companion name '{}' to '{}' for guid {}", oldName, name, guid);
+    return true;
+}
+
 void SpawnRandomBots(uint32 requestedCount, ChatHandler* handler)
 {
     if (!sBotMgr->BotsEnabled())
@@ -787,6 +810,11 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
         : templates.byTeam[1 - wantedTeam].guid;
     uint8 gender = uint8(RandomInt(0, 1));
     std::string name = GenerateUniqueName(race, gender);
+    if (name.empty())
+    {
+        LOG_ERROR("module.coa-playerbots", "BotSpawn: no valid unused name available for race {} gender {}", race, gender);
+        return 0;
+    }
 
     std::vector<std::pair<std::string, std::string>> overrides;
     if (level)

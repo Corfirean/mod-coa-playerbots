@@ -19,6 +19,7 @@ class Player;
 
 namespace BotSpawn
 {
+bool PrepareNameForLogin(uint32 guid, uint32 accountId);
 // requestedCount == 0 means "use CoaBots.RandomSpawn.DefaultCount"; the result is always
 // clamped to CoaBots.RandomSpawn.MaxCount regardless. Queues the batch for gradual creation
 // (a few bots every ProcessPendingRandomBotSpawns tick, not all of them in one go) and returns
