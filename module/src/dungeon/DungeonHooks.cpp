@@ -12,7 +12,9 @@
 #include "GameObject.h"
 #include "Group.h"
 #include "InstanceScript.h"
+#include "Bag.h"
 #include "Item.h"
+#include "ItemTemplate.h"
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
@@ -22,6 +24,7 @@
 #include "Timer.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -109,7 +112,7 @@ namespace
         Item* gunpowder = bot->GetItemByEntry(DM_ITEM_GUNPOWDER);
         if (!gunpowder)
         {
-            bot->AddItem(DM_ITEM_GUNPOWDER, 1);
+            DungeonHooks::GiveItem(bot, DM_ITEM_GUNPOWDER);
             gunpowder = bot->GetItemByEntry(DM_ITEM_GUNPOWDER);
             if (!gunpowder)
                 return ObjectiveArriveResult::Running;
@@ -128,7 +131,7 @@ namespace
     {
         if (bot->GetItemByEntry(OH_ITEM_INCENDIARY_BOMBS))
             return ObjectiveArriveResult::Done;
-        bot->AddItem(OH_ITEM_INCENDIARY_BOMBS, 1);
+        DungeonHooks::GiveItem(bot, OH_ITEM_INCENDIARY_BOMBS);
         return bot->GetItemByEntry(OH_ITEM_INCENDIARY_BOMBS) ? ObjectiveArriveResult::Done : ObjectiveArriveResult::Running;
     }
 
@@ -151,7 +154,7 @@ namespace
         Item* key = bot->GetItemByEntry(MECH_ITEM_CACHE_KEY);
         if (!key)
         {
-            bot->AddItem(MECH_ITEM_CACHE_KEY, 1);
+            DungeonHooks::GiveItem(bot, MECH_ITEM_CACHE_KEY);
             key = bot->GetItemByEntry(MECH_ITEM_CACHE_KEY);
             if (!key)
                 return ObjectiveArriveResult::Running;
@@ -343,6 +346,47 @@ namespace
 
 namespace DungeonHooks
 {
+    bool GiveItem(Player* bot, uint32 itemId)
+    {
+        if (!bot)
+            return false;
+        if (bot->HasItemCount(itemId, 1))
+            return true;
+        if (bot->AddItem(itemId, 1))
+            return true;
+
+        // Bags full: free one slot. Lowest quality first, then the lowest sell price; consumables, quest items and bags only as a last resort.
+        Item* worst = nullptr;
+        uint64 worstScore = ~uint64(0);
+        auto consider = [&](Item* item)
+        {
+            if (!item)
+                return;
+            ItemTemplate const* tmpl = item->GetTemplate();
+            if (!tmpl)
+                return;
+            bool const precious = tmpl->Class == ITEM_CLASS_QUEST || tmpl->Class == ITEM_CLASS_CONTAINER || tmpl->Class == ITEM_CLASS_CONSUMABLE;
+            uint64 const score = (uint64(precious ? 1 : 0) << 40) | (uint64(tmpl->Quality) << 32) | std::min<uint32>(tmpl->SellPrice, 0x7FFFFFFFu);
+            if (score < worstScore)
+            {
+                worstScore = score;
+                worst = item;
+            }
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+            if (Item* bagItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot))
+                if (Bag* bag = bagItem->ToBag())
+                    for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                        consider(bag->GetItemByPos(uint8(slot)));
+        if (!worst)
+            return false;
+        LOG_INFO("module.coa-playerbots.dungeon", "'{}' has full bags: destroying '{}' to make room for item {}.", bot->GetName(), worst->GetTemplate()->Name1, itemId);
+        bot->DestroyItem(worst->GetBagSlot(), worst->GetSlot(), true);
+        return bot->AddItem(itemId, 1);
+    }
+
     bool Has(uint32 hookId)
     {
         return Table().count(hookId) != 0 || ImportedTable().count(hookId) != 0;

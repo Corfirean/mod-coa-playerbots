@@ -28,6 +28,11 @@ namespace DungeonHooks
 
     // Whether the id has an implementation.
     bool Has(uint32 hookId);
+
+    // Makes sure the bot carries the item (a quest item the bots never looted). When the bags are full the least valuable loose item is destroyed
+    // to make room (never a quest item, a bag or a consumable unless nothing else is left). Soak test: a tank with full bags stood at the first
+    // crate of the Culling of Stratholme for good, because the Arcane Disruptor had no room.
+    bool GiveItem(Player* bot, uint32 itemId);
 }
 
 #endif

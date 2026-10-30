@@ -18,6 +18,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "ObjectMgr.h"
 #include "Opcodes.h"
 #include "Player.h"
 #include "Spell.h"
@@ -157,7 +158,7 @@ namespace
         Item* item = FindItem(bot, itemId);
         if (!item)
         {
-            bot->AddItem(itemId, 1);
+            DungeonHooks::GiveItem(bot, itemId);
             item = FindItem(bot, itemId);
         }
         return item;
@@ -184,6 +185,23 @@ namespace
         packet << npc->GetGUID() << menuId << uint32(option);
         packet << std::string();
         bot->GetSession()->HandleGossipSelectOptionOpcode(packet);
+    }
+
+    // Takes the quests an NPC offers, the way a client's accept button does. Some dungeon scripts start on the accept (Chromie's "A Royal Escort"
+    // starts the Culling of Stratholme intro) and the gossip alone never fires them.
+    void AcceptOfferedQuests(Player* bot, Creature* npc)
+    {
+        auto const bounds = sObjectMgr->GetCreatureQuestRelationBounds(npc->GetEntry());
+        for (auto it = bounds.first; it != bounds.second; ++it)
+        {
+            uint32 const questId = it->second;
+            if (!sObjectMgr->GetQuestTemplate(questId) || bot->GetQuestStatus(questId) != QUEST_STATUS_NONE)
+                continue;
+            WorldPacket packet(CMSG_QUESTGIVER_ACCEPT_QUEST, 8 + 4 + 4);
+            packet << npc->GetGUID() << questId << uint32(0);
+            bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(packet);
+            LOG_INFO("module.coa-playerbots.dungeon", "'{}' took quest {} from '{}'.", bot->GetName(), questId, npc->GetName());
+        }
     }
 
     void TeleportParty(Player* tank, float x, float y, float z)
@@ -239,7 +257,7 @@ namespace
                 }
                 BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
                 if (s.itemId && !tank->GetItemByEntry(s.itemId))
-                    tank->AddItem(s.itemId, 1);
+                    DungeonHooks::GiveItem(tank, s.itemId);
                 if (s.reportUse && go->AI())
                     go->AI()->GossipHello(tank, true);
                 else
@@ -330,11 +348,14 @@ namespace
                     GossipHello(tank, npc);
                     run.stage = 1;
                     run.stageAtMs = now;
+                    if (s.gossipOption < 0)
+                        AcceptOfferedQuests(tank, npc);
                     return s.gossipOption < 0 ? StepResult::Done : StepResult::Running;
                 }
                 if (now - run.stageAtMs < 600)
                     return StepResult::Running;
                 GossipSelect(tank, npc, s.gossipOption);
+                AcceptOfferedQuests(tank, npc);
                 return StepResult::Done;
             }
 
@@ -385,6 +406,17 @@ namespace
                 if (s.goEntry)
                     if (GameObject* receipt = tank->FindNearestGameObject(s.goEntry, 15.0f); receipt && receipt->GetExactDist(s.x, s.y, s.z) < 15.0f)
                         return StepResult::Done;
+                {
+                    static std::map<ObjectGuid, uint32> lastNote;
+                    uint32& at = lastNote[tank->GetGUID()];
+                    if (getMSTime() - at > 20000)
+                    {
+                        at = getMSTime();
+                        LOG_INFO("module.coa-playerbots.dungeon", "Event '{}' step {}: '{}' is {:.1f} yd from ({:.0f}, {:.0f}, {:.0f}), item {} {}, casting {}.", ev.name, index,
+                            tank->GetName(), tank->GetExactDist(s.x, s.y, s.z), s.x, s.y, s.z, s.itemId, tank->HasItemCount(s.itemId, 1) ? "in the bags" : "missing",
+                            tank->IsNonMeleeSpellCast(false) ? "yes" : "no");
+                    }
+                }
                 if (tank->GetExactDist(s.x, s.y, s.z) > radius)
                 {
                     StepResult const walked = WalkTo(tank, ev, index, s.x, s.y, s.z, radius);
