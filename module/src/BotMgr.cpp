@@ -605,8 +605,7 @@ void BotMgr::EnsureBotBankRights(Player* bot, Guild* guild)
     // freshly bot-populated guild with a human leader had zero bank tabs and every one of 21
     // guildgather orders "completed" by depositing nothing. BotMgr is a declared friend of Guild
     // (see Guild.h) specifically so this self-heal can create the tab on any member's behalf.
-    if (guild->_GetPurchasedTabsSize() == 0)
-        guild->_CreateNewBankTab();
+    guild->EnsureFirstBankTab();
 
     uint8 rankId = bot->GetRank();
     Guild::RankInfo* rankInfo = guild->GetRankInfo(rankId);
