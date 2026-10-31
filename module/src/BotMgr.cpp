@@ -1039,7 +1039,7 @@ uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntr
 
     EnsureBotBankRights(bot, guild);
 
-    if (guild->_GetPurchasedTabsSize() == 0)
+    if (guild->GetPurchasedTabsSize() == 0)
     {
         if (handler)
             handler->PSendSysMessage("BotMgr: guild '{}' has no bank tabs.", guild->GetName());
@@ -1110,7 +1110,7 @@ uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntr
         // after tab 0 untouched just because tab 0 personally happens to be full. Stops at the
         // first tab that actually accepts it.
         bool moved = false;
-        for (uint8 tabId = 0; tabId < guild->_GetPurchasedTabsSize(); ++tabId)
+        for (uint8 tabId = 0; tabId < guild->GetPurchasedTabsSize(); ++tabId)
         {
             guild->SwapItemsWithInventory(bot, false, tabId, NULL_SLOT, foundBag, foundSlot, moveAmount);
 
