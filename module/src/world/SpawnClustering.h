@@ -185,4 +185,99 @@ namespace SpawnClustering
     }
 }
 
+struct AreaArrivalPoint
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
+namespace AreaArrivalRule
+{
+    // Vertical separation within which terrain is treated as same-floor without requiring a navmesh slope query.
+    inline constexpr float SAME_FLOOR_Z_YARDS = 6.0f;
+    // Base vertical tolerance when horizontally on top of the reference point (rejects bridges/floors >= 10 yd apart).
+    inline constexpr float BASE_LOCAL_Z_YARDS = 10.0f;
+    // Maximum hillside vertical rise per horizontal yard (~40% grade) before capping.
+    inline constexpr float HILLSIDE_SLOPE_FACTOR = 0.40f;
+    // Hard cap on local vertical separation from the nearest area reference point.
+    inline constexpr float MAX_LOCAL_Z_YARDS = 22.0f;
+
+    template <typename PointT>
+    inline AreaArrivalPoint SelectReferencePoint(
+        float botX, float botY, float botZ,
+        float anchorX, float anchorY, float anchorZ,
+        std::vector<PointT> const& memberPoints)
+    {
+        AreaArrivalPoint best{ anchorX, anchorY, anchorZ };
+        float bestScore = std::fabs(botZ - anchorZ) + std::hypot(botX - anchorX, botY - anchorY) * 0.25f;
+
+        for (PointT const& pt : memberPoints)
+        {
+            float const d2d = std::hypot(botX - pt.x, botY - pt.y);
+            float const dz = std::fabs(botZ - pt.z);
+            float const score = dz + d2d * 0.25f;
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = AreaArrivalPoint{ pt.x, pt.y, pt.z };
+            }
+        }
+        return best;
+    }
+
+    inline float MaxAllowedZ(float refDist2d, float slack)
+    {
+        float const slackBonus = (slack >= 40.0f) ? 3.0f : 0.0f;
+        return std::min(MAX_LOCAL_Z_YARDS, BASE_LOCAL_Z_YARDS + refDist2d * HILLSIDE_SLOPE_FACTOR) + slackBonus;
+    }
+
+    inline bool NeedsTopologicalCheck(float refDz)
+    {
+        return refDz > SAME_FLOOR_Z_YARDS;
+    }
+
+    inline float MaxDirectPathLength(float refDist2d, float refDz)
+    {
+        float const d3d = std::hypot(refDist2d, refDz);
+        return std::max(24.0f, d3d * 1.85f + 10.0f);
+    }
+
+    inline bool IsPathLengthAcceptable(float refDist2d, float refDz, float navPathLength)
+    {
+        if (navPathLength < 0.0f)
+            return false;
+        return navPathLength <= MaxDirectPathLength(refDist2d, refDz);
+    }
+
+    template <typename PointT>
+    inline bool Evaluate(
+        float botX, float botY, float botZ,
+        float anchorX, float anchorY, float anchorZ,
+        float areaRadius, float slack,
+        std::vector<PointT> const& memberPoints,
+        float navPathLengthToRef = -1.0f,
+        bool hasNavPathQuery = false)
+    {
+        float const anchorDist2d = std::hypot(botX - anchorX, botY - anchorY);
+        if (anchorDist2d > areaRadius + slack)
+            return false;
+
+        if (anchorZ == 0.0f && memberPoints.empty())
+            return true;
+
+        AreaArrivalPoint const ref = SelectReferencePoint(botX, botY, botZ, anchorX, anchorY, anchorZ, memberPoints);
+        float const refDist2d = std::hypot(botX - ref.x, botY - ref.y);
+        float const refDz = std::fabs(botZ - ref.z);
+
+        if (refDz > MaxAllowedZ(refDist2d, slack))
+            return false;
+
+        if (NeedsTopologicalCheck(refDz) && hasNavPathQuery)
+            return IsPathLengthAcceptable(refDist2d, refDz, navPathLengthToRef);
+
+        return true;
+    }
+}
+
 #endif // COA_PLAYERBOTS_SPAWN_CLUSTERING_H

@@ -2056,22 +2056,22 @@ static void TestSharedNoPathCorridorCacheCrossBotAndExpiry()
     uint32 const mapId = 0;
     uint32 const t0 = 10000;
 
-    // Bot 1 records first failure from start cell [96..103.9] -> dest cell [300..303.9]
-    LocomotionStateStore::RecordSharedCorridorFailure(mapId, 100.0f, 100.0f, 10.0f, 301.0f, 301.0f, 20.0f, t0);
+    // Bot 1 records first failure from start cell [100..103.9] -> dest cell [300..303.9]
+    LocomotionStateStore::RecordSharedCorridorFailure(mapId, 100.5f, 100.5f, 8.5f, 301.0f, 301.0f, 20.5f, t0);
     // Strike 1 does not block globally yet (avoids single-bot transient false positive)
-    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(mapId, 102.0f, 99.0f, 10.5f, 301.5f, 302.0f, 20.5f, t0 + 100));
+    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(mapId, 102.0f, 101.0f, 9.0f, 301.5f, 302.0f, 21.0f, t0 + 100));
 
     // Bot 2 records second failure in the same quantized corridor cell -> reaches STRIKE_THRESHOLD (2)
-    LocomotionStateStore::RecordSharedCorridorFailure(mapId, 103.0f, 101.0f, 11.0f, 302.5f, 301.2f, 21.0f, t0 + 200);
-    CHECK(LocomotionStateStore::IsSharedCorridorBlocked(mapId, 101.0f, 102.0f, 10.0f, 302.0f, 301.5f, 20.0f, t0 + 300));
+    LocomotionStateStore::RecordSharedCorridorFailure(mapId, 103.0f, 101.5f, 10.0f, 302.5f, 301.2f, 21.5f, t0 + 200);
+    CHECK(LocomotionStateStore::IsSharedCorridorBlocked(mapId, 101.0f, 102.0f, 9.5f, 302.0f, 301.5f, 20.5f, t0 + 300));
 
     // Unrelated corridor is unaffected
-    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(mapId, 100.0f, 100.0f, 10.0f, 500.0f, 500.0f, 20.0f, t0 + 300));
-    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(530, 100.0f, 100.0f, 10.0f, 301.0f, 301.0f, 20.0f, t0 + 300));
+    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(mapId, 100.5f, 100.5f, 8.5f, 500.0f, 500.0f, 20.5f, t0 + 300));
+    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(530, 100.5f, 100.5f, 8.5f, 301.0f, 301.0f, 20.5f, t0 + 300));
 
     // Expires cleanly after DEFAULT_TTL_MS
     uint32 const afterTtl = t0 + 200 + SharedNoPathCache::DEFAULT_TTL_MS + 1;
-    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(mapId, 101.0f, 102.0f, 10.0f, 302.0f, 301.5f, 20.0f, afterTtl));
+    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(mapId, 101.0f, 102.0f, 9.5f, 302.0f, 301.5f, 20.5f, afterTtl));
 }
 
 static void TestHoldPreservesGoalAndLegProgressClocks()
@@ -2221,6 +2221,326 @@ static void TestTwentyGeometricNavigationScenariosAndRecoveryFaultInjection()
     }
 }
 
+static void TestBlockedStateDoesNotPoisonCorridorMemory()
+{
+    NavProgressRules rules;
+
+    // 1. Quest movement preempted by combat for over 4 seconds (e.g. 12 seconds of combat):
+    // TravelWaypointPolicy must return HoldBlocked, shift the phase clock, and NEVER escalate to SkipStuckWaypoint.
+    {
+        uint32 blockedSince = 0;
+        uint32 totalPhaseShift = 0;
+        for (uint32 t = 1000; t <= 13000; t += 1000)
+        {
+            uint32 shift = 0;
+            WaypointStepAction act = TravelWaypointPolicy::EvaluateStep(
+                NavStatus::Blocked, NavFailureKind::BlockedByOwner, blockedSince, t, shift);
+            CHECK(act == WaypointStepAction::HoldBlocked);
+            CHECK(act != WaypointStepAction::SkipStuckWaypoint);
+            totalPhaseShift += shift;
+        }
+        CHECK(totalPhaseShift == 12000);
+    }
+
+    // 2. Rooted bot for over 4 seconds (e.g. 8 seconds root):
+    // Hold() advances progress clocks so stall timer does not accumulate, and holdReason is Rooted.
+    {
+        MovementRequest req;
+        req.owner = MoveOwner::Quest;
+        req.goalId = 501;
+        req.progress.Start(80.0f, 0.0f, 1000);
+        req.progress.StartLeg(80.0f, 0.0f, 1000);
+        for (uint32 t = 2000; t <= 10000; t += 1000)
+        {
+            req.progress.Hold(t);
+            req.holdReason = NavHoldReason::Rooted;
+        }
+        CHECK(std::string(NavHoldReasonName(req.holdReason)) == "Rooted");
+        CHECK(req.progress.UpdateRoute(80.0f, 0.0f, 80.0f, 0.0f, 0.0f, 0.0f, 11000, rules) == NavRecovery::None);
+    }
+
+    // 3. Temporarily stunned or externally controlled bot for over 4 seconds (10 seconds stun/fear):
+    {
+        uint32 blockedSince = 0;
+        uint32 totalShift = 0;
+        for (uint32 t = 5000; t <= 15000; t += 1000)
+        {
+            uint32 shift = 0;
+            WaypointStepAction act = TravelWaypointPolicy::EvaluateStep(
+                NavStatus::Blocked, NavFailureKind::ExternallyControlled, blockedSince, t, shift);
+            CHECK(act == WaypointStepAction::HoldBlocked);
+            totalShift += shift;
+        }
+        CHECK(totalShift == 10000);
+    }
+
+    // 4. Higher-priority movement owner holds control (e.g. Flee/Combat owns slot while Quest calls Navigate):
+    {
+        LocomotionStateStore::ResetAllForTest();
+        ObjectGuid bot(6100);
+        auto& shard = LocomotionStateStore::GetShard(bot);
+        {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            shard.locomotion[bot].owner = MoveOwner::Combat;
+            shard.locomotion[bot].state = LocomotionState::Moving;
+            CHECK(!LocomotionStateStore::CanClaimLocked(shard, bot, MoveOwner::Quest, false));
+        }
+        CHECK(std::string(NavHoldReasonName(NavHoldReason::HigherPriorityOwner)) == "HigherPriorityOwner");
+        uint32 blockedSince = 0;
+        uint32 shift = 0;
+        CHECK(TravelWaypointPolicy::EvaluateStep(
+            NavStatus::Blocked, NavFailureKind::BlockedByOwner, blockedSince, 20000, shift) == WaypointStepAction::HoldBlocked);
+    }
+
+    // 5. Genuine PATHFIND_NOPATH escalates to Stuck and SkipStuckWaypoint:
+    {
+        uint32 blockedSince = 0;
+        uint32 shift = 0;
+        WaypointStepAction act = TravelWaypointPolicy::EvaluateStep(
+            NavStatus::Stuck, NavFailureKind::NoPath, blockedSince, 30000, shift);
+        CHECK(act == WaypointStepAction::SkipStuckWaypoint);
+        CHECK(shift == 0);
+    }
+
+    // 6. Repeated invalid waypoints advance finitely and disable the danger route once exhausted:
+    {
+        uint32 nextWp = 0;
+        uint32 const totalWps = 3;
+        bool routeDisabled = false;
+        uint32 skippedCount = 0;
+        uint32 blockedSince = 0;
+        for (int pass = 0; pass < 3; ++pass)
+        {
+            uint32 shift = 0;
+            WaypointStepAction act = TravelWaypointPolicy::EvaluateStep(
+                NavStatus::Stuck, NavFailureKind::NoPath, blockedSince, 40000 + pass * 1000, shift);
+            if (act == WaypointStepAction::SkipStuckWaypoint)
+            {
+                ++skippedCount;
+                ++nextWp;
+                if (nextWp >= totalWps)
+                    routeDisabled = true;
+            }
+        }
+        CHECK(skippedCount == 3);
+        CHECK(nextWp == 3);
+        CHECK(routeDisabled);
+    }
+
+    // 7. Interrupted route successfully resumed after combat/control ends:
+    {
+        uint32 blockedSince = 0;
+        uint32 shift = 0;
+        CHECK(TravelWaypointPolicy::EvaluateStep(
+            NavStatus::Blocked, NavFailureKind::BlockedByOwner, blockedSince, 1000, shift) == WaypointStepAction::HoldBlocked);
+        CHECK(TravelWaypointPolicy::EvaluateStep(
+            NavStatus::Blocked, NavFailureKind::BlockedByOwner, blockedSince, 7000, shift) == WaypointStepAction::HoldBlocked);
+        CHECK(shift == 6000);
+        // Restriction ends -> Navigate resumes Moving and then Arrived:
+        CHECK(TravelWaypointPolicy::EvaluateStep(
+            NavStatus::Moving, NavFailureKind::None, blockedSince, 8000, shift) == WaypointStepAction::ContinueMoving);
+        CHECK(blockedSince == 0);
+        CHECK(TravelWaypointPolicy::EvaluateStep(
+            NavStatus::Arrived, NavFailureKind::None, blockedSince, 12000, shift) == WaypointStepAction::AdvanceArrived);
+    }
+
+    // 8. Stale navigation request superseded by a newer goal produces SupersededNoOp and zero failure memory:
+    {
+        uint32 blockedSince = 1000;
+        uint32 shift = 0;
+        WaypointStepAction act = TravelWaypointPolicy::EvaluateStep(
+            NavStatus::Superseded, NavFailureKind::None, blockedSince, 5000, shift);
+        CHECK(act == WaypointStepAction::SupersededNoOp);
+        CHECK(blockedSince == 0);
+        CHECK(shift == 0);
+    }
+}
+
+static void TestSharedNoPathCachePostReviewHardening()
+{
+    LocomotionStateStore::ResetAllForTest();
+    uint32 const t0 = 50000;
+
+    // 1. 20 bots repeatedly requesting a genuinely unreachable corridor:
+    {
+        uint32 pathQueries = 0;
+        for (uint64 botId = 1; botId <= 20; ++botId)
+        {
+            SharedNoPathContext ctx;
+            ctx.mapId = 0;
+            ctx.instanceId = 0;
+            ctx.phaseMask = 1;
+            ctx.capabilityFlags = SharedNoPathCache::PackCapabilities(false, false, false, false);
+            ctx.startPolyRef = 0xAA01ULL;
+            ctx.botGuid = botId;
+            if (!LocomotionStateStore::IsSharedCorridorBlocked(ctx, 200.5f, 200.5f, 10.0f, 350.5f, 350.5f, 15.0f, t0 + uint32(botId * 10)))
+            {
+                ++pathQueries;
+                LocomotionStateStore::RecordSharedCorridorFailure(ctx, 200.5f, 200.5f, 10.0f, 350.5f, 350.5f, 15.0f, t0 + uint32(botId * 10));
+            }
+        }
+        // Only the first 2 distinct bots run PathGenerator; the remaining 18 bots short-circuit!
+        CHECK(pathQueries == 2);
+    }
+
+    // 2. Two bots on opposite sides of a thin wall (same 4x4x4 coordinate cell, different startPolyRef):
+    {
+        SharedNoPathContext sideA;
+        sideA.mapId = 0;
+        sideA.startPolyRef = 0x1001ULL;
+        sideA.botGuid = 101;
+        LocomotionStateStore::RecordSharedCorridorFailure(sideA, 400.2f, 400.2f, 20.0f, 450.0f, 400.0f, 20.0f, t0);
+        sideA.botGuid = 102;
+        LocomotionStateStore::RecordSharedCorridorFailure(sideA, 400.5f, 400.2f, 20.0f, 450.0f, 400.0f, 20.0f, t0 + 50);
+        CHECK(LocomotionStateStore::IsSharedCorridorBlocked(sideA, 400.3f, 400.2f, 20.0f, 450.0f, 400.0f, 20.0f, t0 + 100));
+
+        // Bot on the other side of the thin wall (1.5 yd away in the SAME 4x4x4 cell, but polygon 0x2002) is NOT blocked!
+        SharedNoPathContext sideB = sideA;
+        sideB.startPolyRef = 0x2002ULL;
+        sideB.botGuid = 103;
+        CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(sideB, 401.7f, 400.2f, 20.0f, 450.0f, 400.0f, 20.0f, t0 + 100));
+
+        // Ambiguous / unresolved startPolyRef (0) conservatively skips shared cache:
+        SharedNoPathContext ambiguousCtx = sideA;
+        ambiguousCtx.startPolyRef = 0;
+        ambiguousCtx.ambiguous = true;
+        CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(ambiguousCtx, 400.3f, 400.2f, 20.0f, 450.0f, 400.0f, 20.0f, t0 + 100));
+    }
+
+    // 3. Same coordinates, different phases (phaseMask 1 vs phaseMask 2):
+    {
+        SharedNoPathContext phase1;
+        phase1.mapId = 0;
+        phase1.phaseMask = 1;
+        phase1.startPolyRef = 0x3001ULL;
+        phase1.botGuid = 201;
+        LocomotionStateStore::RecordSharedCorridorFailure(phase1, 500.5f, 500.5f, 10.0f, 560.5f, 500.5f, 10.0f, t0);
+        phase1.botGuid = 202;
+        LocomotionStateStore::RecordSharedCorridorFailure(phase1, 500.5f, 500.5f, 10.0f, 560.5f, 500.5f, 10.0f, t0 + 10);
+        CHECK(LocomotionStateStore::IsSharedCorridorBlocked(phase1, 500.5f, 500.5f, 10.0f, 560.5f, 500.5f, 10.0f, t0 + 20));
+
+        SharedNoPathContext phase2 = phase1;
+        phase2.phaseMask = 2;
+        CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(phase2, 500.5f, 500.5f, 10.0f, 560.5f, 500.5f, 10.0f, t0 + 20));
+    }
+
+    // 4. Same coordinates, different movement capabilities (ground vs flying/swimming/ghost):
+    {
+        SharedNoPathContext groundCtx;
+        groundCtx.mapId = 530;
+        groundCtx.startPolyRef = 0x4001ULL;
+        groundCtx.capabilityFlags = SharedNoPathCache::PackCapabilities(false, false, false, false);
+        groundCtx.botGuid = 301;
+        LocomotionStateStore::RecordSharedCorridorFailure(groundCtx, 600.5f, 600.5f, 12.0f, 680.5f, 600.5f, 40.0f, t0);
+        groundCtx.botGuid = 302;
+        LocomotionStateStore::RecordSharedCorridorFailure(groundCtx, 600.5f, 600.5f, 12.0f, 680.5f, 600.5f, 40.0f, t0 + 10);
+        CHECK(LocomotionStateStore::IsSharedCorridorBlocked(groundCtx, 600.5f, 600.5f, 12.0f, 680.5f, 600.5f, 40.0f, t0 + 20));
+
+        SharedNoPathContext swimCtx = groundCtx;
+        swimCtx.capabilityFlags = SharedNoPathCache::PackCapabilities(false, true, false, false);
+        CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(swimCtx, 600.5f, 600.5f, 12.0f, 680.5f, 600.5f, 40.0f, t0 + 20));
+    }
+
+    // 5. Same map coordinates, different instances (instanceId 10 vs instanceId 20):
+    {
+        SharedNoPathContext instA;
+        instA.mapId = 36;
+        instA.instanceId = 10;
+        instA.startPolyRef = 0x5001ULL;
+        instA.botGuid = 401;
+        LocomotionStateStore::RecordSharedCorridorFailure(instA, 700.5f, 700.5f, 5.0f, 740.5f, 700.5f, 5.0f, t0);
+        instA.botGuid = 402;
+        LocomotionStateStore::RecordSharedCorridorFailure(instA, 700.5f, 700.5f, 5.0f, 740.5f, 700.5f, 5.0f, t0 + 10);
+        CHECK(LocomotionStateStore::IsSharedCorridorBlocked(instA, 700.5f, 700.5f, 5.0f, 740.5f, 700.5f, 5.0f, t0 + 20));
+
+        SharedNoPathContext instB = instA;
+        instB.instanceId = 20;
+        CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(instB, 700.5f, 700.5f, 5.0f, 740.5f, 700.5f, 5.0f, t0 + 20));
+    }
+
+    // 6. Single-bot repeated failure does NOT self-confirm strike 2, and a successful path invalidates negative entry:
+    {
+        SharedNoPathContext singleBot;
+        singleBot.mapId = 0;
+        singleBot.startPolyRef = 0x6001ULL;
+        singleBot.botGuid = 501;
+        uint32 s1 = LocomotionStateStore::RecordSharedCorridorFailure(singleBot, 800.5f, 800.5f, 10.0f, 850.5f, 800.5f, 10.0f, t0);
+        uint32 s2SameBot = LocomotionStateStore::RecordSharedCorridorFailure(singleBot, 800.5f, 800.5f, 10.0f, 850.5f, 800.5f, 10.0f, t0 + 50);
+        CHECK(s1 == 1);
+        CHECK(s2SameBot == 1); // Same botGuid cannot self-confirm strike 2!
+        CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(singleBot, 800.5f, 800.5f, 10.0f, 850.5f, 800.5f, 10.0f, t0 + 60));
+
+        // Second distinct bot confirms strike 2, then a subsequent valid path (e.g. door opened) invalidates it:
+        SharedNoPathContext secondBot = singleBot;
+        secondBot.botGuid = 502;
+        CHECK(LocomotionStateStore::RecordSharedCorridorFailure(secondBot, 800.5f, 800.5f, 10.0f, 850.5f, 800.5f, 10.0f, t0 + 70) == 2);
+        CHECK(LocomotionStateStore::IsSharedCorridorBlocked(singleBot, 800.5f, 800.5f, 10.0f, 850.5f, 800.5f, 10.0f, t0 + 80));
+
+        LocomotionStateStore::RecordSharedCorridorSuccess(singleBot, 800.5f, 800.5f, 10.0f, 850.5f, 800.5f, 10.0f);
+        CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(singleBot, 800.5f, 800.5f, 10.0f, 850.5f, 800.5f, 10.0f, t0 + 90));
+    }
+
+    // 7. Cache expiration and strike reset to 1:
+    {
+        SharedNoPathContext expCtx;
+        expCtx.mapId = 1;
+        expCtx.startPolyRef = 0x7001ULL;
+        expCtx.botGuid = 601;
+        LocomotionStateStore::RecordSharedCorridorFailure(expCtx, 900.5f, 900.5f, 10.0f, 950.5f, 900.5f, 10.0f, t0);
+        expCtx.botGuid = 602;
+        LocomotionStateStore::RecordSharedCorridorFailure(expCtx, 900.5f, 900.5f, 10.0f, 950.5f, 900.5f, 10.0f, t0 + 10);
+        uint32 const expiredNow = t0 + 10 + SharedNoPathCache::DEFAULT_TTL_MS + 5;
+        CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(expCtx, 900.5f, 900.5f, 10.0f, 950.5f, 900.5f, 10.0f, expiredNow));
+        // Next failure after TTL resets strikes back to 1 instead of staying >= 2:
+        expCtx.botGuid = 603;
+        uint32 resetStrikes = LocomotionStateStore::RecordSharedCorridorFailure(expCtx, 900.5f, 900.5f, 10.0f, 950.5f, 900.5f, 10.0f, expiredNow);
+        CHECK(resetStrikes == 1);
+        CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(expCtx, 900.5f, 900.5f, 10.0f, 950.5f, 900.5f, 10.0f, expiredNow + 1));
+    }
+
+    // 8. Concurrent read/write/invalidate operations across 8 threads:
+    {
+        std::vector<std::thread> workers;
+        std::atomic<uint32> blockedReads{0};
+        for (uint32 tid = 0; tid < 8; ++tid)
+        {
+            workers.emplace_back([tid, t0, &blockedReads]()
+            {
+                for (uint32 i = 0; i < 200; ++i)
+                {
+                    SharedNoPathContext c;
+                    c.mapId = tid % 2;
+                    c.startPolyRef = 0x8000ULL + (i % 16);
+                    c.botGuid = uint64(tid * 1000 + i);
+                    float sx = float((i % 16) * 10) + 0.5f;
+                    float dx = sx + 50.0f;
+                    LocomotionStateStore::RecordSharedCorridorFailure(c, sx, 100.5f, 10.0f, dx, 100.5f, 10.0f, t0 + i);
+                    if (LocomotionStateStore::IsSharedCorridorBlocked(c, sx, 100.5f, 10.0f, dx, 100.5f, 10.0f, t0 + i))
+                        blockedReads.fetch_add(1, std::memory_order_relaxed);
+                    if (i % 17 == 0)
+                        LocomotionStateStore::RecordSharedCorridorSuccess(c, sx, 100.5f, 10.0f, dx, 100.5f, 10.0f);
+                }
+            });
+        }
+        for (auto& w : workers)
+            w.join();
+        CHECK(blockedReads.load() > 0);
+    }
+
+    // 9. Capacity and memory bounds (1,000 insertions bounded strictly at CAPACITY = 256):
+    {
+        for (uint32 i = 0; i < 1000; ++i)
+        {
+            SharedNoPathContext c;
+            c.mapId = 0;
+            c.startPolyRef = 0x90000ULL + i;
+            c.botGuid = i + 1;
+            LocomotionStateStore::RecordSharedCorridorFailure(c, float(i * 8), 0.0f, 0.0f, float(i * 8 + 40), 0.0f, 0.0f, t0 + i);
+        }
+        CHECK(LocomotionStateStore::SharedNoPathCacheSize() == SharedNoPathCache::CAPACITY);
+    }
+}
+
 int main()
 {
     std::printf("Running locomotion & navigation overhaul regression tests (Round 4, 5, 6 & Pre-Live Hardening)...\n");
@@ -2277,13 +2597,15 @@ int main()
     TestPlanningEpochPreservesSameOwnerHistoryAcrossIntermediary();
     TestMountSelectionFailureZeroLocomotionMutation();
 
-    // Open-world navigation hardening tests (Tests 43-48)
+    // Open-world navigation hardening tests (Tests 43-50)
     TestRouteAwareProgressSwitchbacks();
     TestRouteAwareProgressDetourCircuitBreakerAndOscillation();
     Test3DArrivalValidationMultiFloorRejection();
     TestSharedNoPathCorridorCacheCrossBotAndExpiry();
     TestHoldPreservesGoalAndLegProgressClocks();
     TestTwentyGeometricNavigationScenariosAndRecoveryFaultInjection();
+    TestBlockedStateDoesNotPoisonCorridorMemory();
+    TestSharedNoPathCachePostReviewHardening();
 
     std::printf("Locomotion tests completed: %d checks, %d failures\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;

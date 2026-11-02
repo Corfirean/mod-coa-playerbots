@@ -946,6 +946,89 @@ static void TestScaleMicrobenchmarks()
     CHECK(usPer1000BotsTick < 5000.0);
 }
 
+static void TestAreaArrivalVerticalAndTopologicalHardening()
+{
+    std::vector<ClusterInputPoint> const noMembers;
+
+    // 1. Objective 18 yards below bot on a disconnected cave floor:
+    // Horizontally inside areaRadius (d2d = 3.0 yd <= 25 yd), but 18 yd below -> REJECTED!
+    CHECK(!AreaArrivalRule::Evaluate(
+        103.0f, 100.0f, 50.0f,
+        100.0f, 100.0f, 32.0f,
+        25.0f, 0.0f, noMembers,
+        /*navPathLengthToRef=*/-1.0f, /*hasNavPathQuery=*/true));
+    // Even if horizontally 22 yd away inside a wider area where 18 yd <= MaxAllowedZ(22) = 18.8 yd,
+    // disconnected cave floor has no valid navmesh path (navPathLength = -1.0f) -> REJECTED!
+    CHECK(!AreaArrivalRule::Evaluate(
+        122.0f, 100.0f, 50.0f,
+        100.0f, 100.0f, 32.0f,
+        35.0f, 0.0f, noMembers,
+        /*navPathLengthToRef=*/-1.0f, /*hasNavPathQuery=*/true));
+
+    // 2. Objective 25 yards above bot on a separate building floor:
+    // Horizontally 2 yd from anchor, 25 yd above -> REJECTED!
+    CHECK(!AreaArrivalRule::Evaluate(
+        102.0f, 100.0f, 10.0f,
+        100.0f, 100.0f, 35.0f,
+        40.0f, 0.0f, noMembers,
+        /*navPathLengthToRef=*/45.0f, /*hasNavPathQuery=*/true));
+
+    // 3. Target on bridge above bot (12 yards above at 1.5 yd horizontal offset; or 9 yards above with 65 yd detour):
+    CHECK(!AreaArrivalRule::Evaluate(
+        101.5f, 100.0f, 10.0f,
+        100.0f, 100.0f, 22.0f,
+        25.0f, 0.0f, noMembers,
+        /*navPathLengthToRef=*/-1.0f, /*hasNavPathQuery=*/true));
+    CHECK(!AreaArrivalRule::Evaluate(
+        101.5f, 100.0f, 10.0f,
+        100.0f, 100.0f, 19.0f,
+        25.0f, 0.0f, noMembers,
+        /*navPathLengthToRef=*/65.0f, /*hasNavPathQuery=*/true));
+
+    // 4. Accessible objective on a steep hillside:
+    // Bot is 24 yd horizontally from anchor and 11 yd lower on a continuous hillside slope (direct path = 28 yd):
+    CHECK(AreaArrivalRule::Evaluate(
+        124.0f, 100.0f, 39.0f,
+        100.0f, 100.0f, 50.0f,
+        35.0f, 0.0f, noMembers,
+        /*navPathLengthToRef=*/28.0f, /*hasNavPathQuery=*/true));
+
+    // 5. Reachable target approached through a long ramp:
+    // While bot is at the bottom of the ramp (15 yd 2D, 11.5 yd Z below, ramp path length = 85 yd),
+    // InArea() returns false so TravelToArea continues climbing the ramp; once climbed (12 yd 2D, 2.5 yd Z, path = 13 yd), returns true!
+    CHECK(!AreaArrivalRule::Evaluate(
+        115.0f, 100.0f, 38.5f,
+        100.0f, 100.0f, 50.0f,
+        30.0f, 0.0f, noMembers,
+        /*navPathLengthToRef=*/85.0f, /*hasNavPathQuery=*/true));
+    CHECK(AreaArrivalRule::Evaluate(
+        112.0f, 100.0f, 47.5f,
+        100.0f, 100.0f, 50.0f,
+        30.0f, 0.0f, noMembers,
+        /*navPathLengthToRef=*/13.0f, /*hasNavPathQuery=*/true));
+
+    // 6. Legitimate large objective area with varied elevations across member spawns:
+    // Anchor is at top of hill (100, 100, 72), areaRadius = 80 yd, member spawns descend hillside down to Z = 44.
+    // Bot arrives near lower member spawn at (48, 100, 42): |botZ - anchorZ| = 30 yd, but nearest member is 7 yd away with dZ = 2 yd -> ACCEPTED!
+    std::vector<ClusterInputPoint> const hillsideCamp = {
+        { 100.0f, 100.0f, 72.0f, 1 },
+        {  75.0f, 100.0f, 58.0f, 1 },
+        {  55.0f, 100.0f, 44.0f, 1 },
+    };
+    CHECK(AreaArrivalRule::Evaluate(
+        48.0f, 100.0f, 42.0f,
+        100.0f, 100.0f, 72.0f,
+        80.0f, 0.0f, hillsideCamp,
+        /*navPathLengthToRef=*/7.5f, /*hasNavPathQuery=*/true));
+
+    // 7. Existing ordinary flat-terrain behavior:
+    CHECK(!AreaArrivalRule::NeedsTopologicalCheck(1.5f));
+    CHECK(AreaArrivalRule::Evaluate(
+        118.0f, 105.0f, 40.5f,
+        100.0f, 100.0f, 42.0f,
+        30.0f, 0.0f, noMembers));
+}
+
 int main()
 {
     TestFailureMemory();
@@ -964,6 +1047,7 @@ int main()
     TestBehavioralLoopDetector();
     TestDecisionHysteresis();
     TestScaleMicrobenchmarks();
+    TestAreaArrivalVerticalAndTopologicalHardening();
 
     std::printf("%d checks, %d failures\n", _checks, _failures);
     return _failures ? 1 : 0;
