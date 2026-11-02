@@ -22,6 +22,10 @@ struct MovementStats
     uint64 mountAttempts = 0;
     uint64 mountSuccesses = 0;
     uint64 dismounts = 0;
+    uint64 pathQueries = 0;     // PathGenerator::CalculatePath + RouteWaypoint queries
+    uint64 sharedNoPathHits = 0; // Cross-bot shared no-path cache short-circuits
+    uint64 legSwitchbacksHandled = 0; // Route-aware leg progress ticks that deferred false stall
+    uint64 verticalRejections = 0; // 2D arrivals rejected due to vertical floor separation
 };
 
 namespace BotMovement

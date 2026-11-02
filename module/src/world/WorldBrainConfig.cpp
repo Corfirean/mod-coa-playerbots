@@ -64,7 +64,9 @@ namespace WorldBrainSettings
         c.utility.overlapBonus = Opt<float>("Weight.Overlap", c.utility.overlapBonus);
         c.utility.turnInBase = Opt<float>("Weight.TurnIn", c.utility.turnInBase);
         c.utility.acceptBase = Opt<float>("Weight.Accept", c.utility.acceptBase);
+        c.utility.activeQuestHysteresis = Opt<float>("Weight.ActiveQuestHysteresis", c.utility.activeQuestHysteresis);
         c.cluster.occupancy = Opt<float>("Weight.AreaOccupancy", c.cluster.occupancy);
+        c.cluster.currentAreaHysteresis = Opt<float>("Weight.CurrentAreaHysteresis", c.cluster.currentAreaHysteresis);
         c.target.reserved = Opt<float>("Weight.TargetReserved", c.target.reserved);
 
         _config = c;

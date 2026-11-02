@@ -60,6 +60,18 @@ public:
         return _dispatchGates[guid.GetCounter() % DISPATCH_GATES];
     }
 
+    static bool IsSharedCorridorBlocked(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs)
+    {
+        std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
+        return _sharedNoPathCache.IsBlocked(mapId, sx, sy, sz, dx, dy, dz, nowMs);
+    }
+
+    static uint32 RecordSharedCorridorFailure(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs)
+    {
+        std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
+        return _sharedNoPathCache.RecordFailure(mapId, sx, sy, sz, dx, dy, dz, nowMs);
+    }
+
     // Monotonic request generation allocator (caller MUST hold shard.mutex)
     static uint64 AllocateRequestGenerationLocked(LocomotionShard& shard, ObjectGuid guid)
     {
@@ -243,12 +255,17 @@ public:
             s.activePlanning.clear();
             s.nextPlanTicket.clear();
         }
+        {
+            std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
+            _sharedNoPathCache.Clear();
+        }
     }
-
 
 private:
     static inline std::array<LocomotionShard, LOCOMOTION_SHARDS> _shards;
     static inline std::array<std::mutex, DISPATCH_GATES> _dispatchGates;
+    static inline std::mutex _sharedNoPathMutex;
+    static inline SharedNoPathCache _sharedNoPathCache;
 };
 
 #endif // COA_PLAYERBOTS_BOT_MOVEMENT_STATE_STORE_H

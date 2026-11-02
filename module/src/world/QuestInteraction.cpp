@@ -273,6 +273,7 @@ namespace QuestInteraction
             bot->RewardQuest(quest, reward, giver, true);
             ++result.turnedIn;
             Count(state.metrics, &WorldMetrics::questsTurnedIn);
+            state.loopDetector.OnProgress(NowMs());
             state.questSuspensions.erase(questId);
             LOG_INFO("module.coa-playerbots.quests", "QuestTurnIn: '{}' (level {}) handed in quest {} '{}' (quest level {}) to {} {}, reward choice {}, money {}.",
                 bot->GetName(), uint32(bot->GetLevel()), questId, quest->GetTitle(), quest->GetQuestLevel(),
@@ -302,6 +303,7 @@ namespace QuestInteraction
                 bot->CastSpell(bot, spell, true);
             ++result.accepted;
             Count(state.metrics, &WorldMetrics::questsAccepted);
+            state.loopDetector.OnProgress(NowMs());
             LOG_INFO("module.coa-playerbots.quests", "QuestAccepted: '{}' (level {}) took quest {} '{}' (quest level {}) from {} {}.", bot->GetName(),
                 uint32(bot->GetLevel()), questId, quest->GetTitle(), quest->GetQuestLevel(), giver->GetTypeId() == TYPEID_UNIT ? "creature" : "object", giver->GetEntry());
             LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "Bot '{}' QuestAccepted {} ('{}', level {}).", bot->GetName(), questId,
@@ -351,7 +353,8 @@ namespace QuestInteraction
             case TaskPhase::TravelToArea:
             {
                 float dist = std::hypot(bot->GetPositionX() - task.x, bot->GetPositionY() - task.y);
-                if (bot->GetMapId() == task.mapId && dist <= 20.0f)
+                float distZ = std::fabs(bot->GetPositionZ() - task.z);
+                if (bot->GetMapId() == task.mapId && dist <= 20.0f && (task.z == 0.0f || distZ <= 15.0f))
                 {
                     SetPhase(bot, state, TaskPhase::Search, "at the npc's spot");
                     return ExecResult::Running;

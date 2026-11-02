@@ -191,6 +191,7 @@ namespace WorldPlanner
                 in.distance = d;
                 in.occupancy = WorldReservations::Occupancy(ReservationKind::QuestCluster, areaId, bot->GetGUID());
                 in.here = d <= area->radius + 15.0f;
+                in.currentArea = (state.task.IsValid() && state.task.quest.selectedClusterId == areaId);
                 uint32 crowd = PopulationHeatmap::Around(mapId, area->cx, area->cy).Crowd();
                 in.crowd = in.here && crowd ? crowd - 1 : crowd;
                 in.jitter = WorldUtility::Jitter(botRaw, areaId);
@@ -498,6 +499,7 @@ namespace WorldPlanner
                     ? 1.0f - std::min(1.0f, float(task.quest.currentCount) / float(def.requiredCount)) : 1.0f;
                 in.questXpShare = XpShare(bot, quest);
                 in.chainQuest = IsChain(bot, quest);
+                in.activeQuest = (questId != 0 && (questId == state.task.quest.questId || questId == state.lastCommittedQuestId));
                 in.distance = distance;
                 in.crowd = PopulationHeatmap::Around(mapId, task.x, task.y).Crowd();
                 auto suspensions = state.questSuspensions.find(questId);
@@ -631,6 +633,16 @@ namespace WorldPlanner
         Candidate* best = *std::max_element(all.begin(), all.end(),
             [](Candidate const* a, Candidate const* b) { return a->utility < b->utility; });
         WorldTask chosen = best->task;
+        if (chosen.type == WorldTaskType::QuestObjective)
+        {
+            state.lastCommittedQuestId = chosen.quest.questId;
+            if (LoopDiagnosis diag = state.loopDetector.RecordTaskChoice(chosen.quest.questId, chosen.quest.objectiveIndex, now))
+            {
+                state.failures.Remember(FailKind::Quest, uint32(diag.offendingId), now, cfg.questSuspendMs, uint8(FailureReason::Timeout));
+                Count(state.metrics, &WorldMetrics::loopsBroken);
+                NoteEvent(state, Acore::StringFormat("loop broken ({}): quest {} suspended", LoopKindName(diag.kind), diag.offendingId));
+            }
+        }
 
         // One trip, several objectives: same action, and either the same targets or a place close by.
         if (chosen.type == WorldTaskType::QuestObjective && best->def)

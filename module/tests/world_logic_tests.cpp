@@ -14,6 +14,7 @@
  *       module/tests/world_logic_tests.cpp -o /tmp/world_logic_tests && /tmp/world_logic_tests
  */
 
+#include "BehavioralLoopDetector.h"
 #include "BotNavProgress.h"
 #include "FailureMemory.h"
 #include "PopulationGrid.h"
@@ -23,6 +24,7 @@
 #include "SpawnClustering.h"
 #include "WorldTask.h"
 #include "WorldUtility.h"
+#include <chrono>
 #include <cstdio>
 #include <set>
 #include <string>
@@ -800,6 +802,150 @@ static void TestQuestPolicy()
     CHECK(!QuestPolicy::Workable(false, 1, 1));                 // player kills / no ender
 }
 
+static void TestCorridorFailureMemory()
+{
+    FailureMemory memory;
+    // Two positions in the same 16x16 yd corridor cell [96..111.9, 192..207.9] map to the same CorridorId
+    uint64 const id1 = FailureMemory::CorridorId(0, 100.0f, 200.0f);
+    uint64 const id2 = FailureMemory::CorridorId(0, 108.0f, 205.0f);
+    uint64 const idOtherCell = FailureMemory::CorridorId(0, 200.0f, 200.0f);
+    uint64 const idOtherMap = FailureMemory::CorridorId(530, 100.0f, 200.0f);
+    CHECK(id1 == id2);
+    CHECK(id1 != idOtherCell);
+    CHECK(id1 != idOtherMap);
+
+    memory.Remember(FailKind::NavCorridor, id1, 1000, 180000, 1);
+    CHECK(memory.Has(FailKind::NavCorridor, id2, 5000));
+    CHECK(!memory.Has(FailKind::NavCorridor, idOtherCell, 5000));
+    CHECK(!memory.Has(FailKind::NavCorridor, id2, 181001));
+}
+
+static void TestBehavioralLoopDetector()
+{
+    BehavioralLoopDetector det;
+
+    // 1. TargetApproachLoop: 3 attempts on the same target without progress triggers loop detection
+    CHECK(!bool(det.RecordTargetAttempt(0xF1300001ull, 1000)));
+    CHECK(!bool(det.RecordTargetAttempt(0xF1300001ull, 5000)));
+    CHECK(bool(det.RecordTargetAttempt(0xF1300001ull, 9000)));
+    CHECK(det.LastLoopKind() == LoopKind::TargetApproachLoop);
+    CHECK(det.LoopsDetected() == 1);
+    CHECK(std::string(LoopKindName(det.LastLoopKind())) == "target-approach-loop");
+
+    // Real progress resets the target history
+    det.OnProgress(10000);
+    CHECK(!bool(det.RecordTargetAttempt(0xF1300001ull, 11000)));
+    CHECK(!bool(det.RecordTargetAttempt(0xF1300001ull, 12000)));
+
+    // 2. AreaPingPong: alternating A -> B -> A -> B -> A without progress triggers loop detection
+    det.OnProgress(20000);
+    CHECK(!bool(det.RecordAreaSwitch(101, 21000)));
+    CHECK(!bool(det.RecordAreaSwitch(202, 25000)));
+    CHECK(!bool(det.RecordAreaSwitch(101, 30000)));
+    CHECK(!bool(det.RecordAreaSwitch(202, 35000)));
+    CHECK(bool(det.RecordAreaSwitch(101, 40000)));
+    CHECK(det.LastLoopKind() == LoopKind::AreaPingPong);
+    CHECK(det.LoopsDetected() == 2);
+
+    // 3. TaskOscillation: alternating Quest 10 -> Quest 20 -> Quest 10 -> Quest 20 -> Quest 10 without progress
+    det.OnProgress(50000);
+    CHECK(!bool(det.RecordTaskChoice(10, 0, 51000)));
+    CHECK(!bool(det.RecordTaskChoice(20, 0, 55000)));
+    CHECK(!bool(det.RecordTaskChoice(10, 0, 60000)));
+    CHECK(!bool(det.RecordTaskChoice(20, 0, 65000)));
+    CHECK(bool(det.RecordTaskChoice(10, 0, 70000)));
+    CHECK(det.LastLoopKind() == LoopKind::TaskOscillation);
+    CHECK(det.LoopsDetected() == 3);
+}
+
+static void TestDecisionHysteresis()
+{
+    UtilityWeights w;
+
+    // Two objectives with nearly identical utility (Quest B is 80 yards closer = +5.6 points):
+    ObjectiveUtilityInput questA;
+    questA.distance = 280.0f;
+    questA.activeQuest = true; // currently committed quest
+
+    ObjectiveUtilityInput questB;
+    questB.distance = 200.0f;
+    questB.activeQuest = false;
+
+    // Without hysteresis, questB would outscore questA and cause mid-travel oscillation;
+    // with activeQuestHysteresis (18.0f), questA remains preferred:
+    CHECK(WorldUtility::ScoreObjective(questA, w) > WorldUtility::ScoreObjective(questB, w));
+
+    // However, if questB has strong multi-quest overlap or is a nearby TurnIn, it legitimately overrides hysteresis:
+    ObjectiveUtilityInput synergyB = questB;
+    synergyB.overlapCount = 2;
+    synergyB.distance = 30.0f;
+    CHECK(WorldUtility::ScoreObjective(synergyB, w) > WorldUtility::ScoreObjective(questA, w));
+
+    // Area cluster hysteresis: staying in the current camp beats switching to a marginally less crowded camp
+    ClusterWeights cw;
+    ClusterScoreInput currentCamp;
+    currentCamp.spawnCount = 8;
+    currentCamp.distance = 20.0f;
+    currentCamp.crowd = 2;
+    currentCamp.currentArea = true;
+
+    ClusterScoreInput otherCamp;
+    otherCamp.spawnCount = 8;
+    otherCamp.distance = 120.0f;
+    otherCamp.crowd = 1;
+    otherCamp.currentArea = false;
+
+    CHECK(WorldUtility::ScoreCluster(currentCamp, cw) > WorldUtility::ScoreCluster(otherCamp, cw));
+}
+
+static void TestScaleMicrobenchmarks()
+{
+    constexpr uint32 NUM_BOTS = 1000;
+    NavProgressRules rules;
+    UtilityWeights uw;
+    ClusterWeights cw;
+
+    std::vector<NavProgress> progresses(NUM_BOTS);
+    std::vector<BehavioralLoopDetector> detectors(NUM_BOTS);
+    for (uint32 i = 0; i < NUM_BOTS; ++i)
+    {
+        progresses[i].Start(150.0f, 10.0f, 0);
+        progresses[i].StartLeg(60.0f, 5.0f, 0);
+    }
+
+    auto t0 = std::chrono::steady_clock::now();
+    float sink = 0.0f;
+    for (uint32 tick = 1; tick <= 10; ++tick)
+    {
+        uint32 now = tick * 1000;
+        for (uint32 i = 0; i < NUM_BOTS; ++i)
+        {
+            NavRecovery r = progresses[i].UpdateRoute(
+                150.0f - float(tick) * 2.0f, 5.0f,
+                60.0f - float(tick) * 4.0f, 2.0f,
+                float(i) + float(tick) * 4.0f, float(tick) * 2.0f, now, rules);
+            detectors[i].RecordTaskChoice(1000 + (i % 5), 0, now);
+
+            ObjectiveUtilityInput oin;
+            oin.distance = 200.0f + float(i % 50);
+            oin.crowd = i % 4;
+            oin.activeQuest = (tick % 2 == 0);
+            ClusterScoreInput cin;
+            cin.spawnCount = 10;
+            cin.distance = oin.distance;
+            cin.currentArea = true;
+            sink += WorldUtility::ScoreObjective(oin, uw) + WorldUtility::ScoreCluster(cin, cw) + float(int(r));
+        }
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    double elapsedUs = std::chrono::duration<double, std::micro>(t1 - t0).count();
+    double usPer1000BotsTick = elapsedUs / 10.0;
+    std::printf("[Benchmark] 1000-bot AI & route-progress tick: %.2f us/tick (%.4f us/bot, sink=%.1f)\n",
+        usPer1000BotsTick, usPer1000BotsTick / double(NUM_BOTS), sink);
+    // Must complete well within 5,000 us (5 ms) per 1,000-bot tick
+    CHECK(usPer1000BotsTick < 5000.0);
+}
+
 int main()
 {
     TestFailureMemory();
@@ -814,6 +960,10 @@ int main()
     TestNavProgress();
     TestPhaseSeparatedClustering();
     TestQuestPolicy();
+    TestCorridorFailureMemory();
+    TestBehavioralLoopDetector();
+    TestDecisionHysteresis();
+    TestScaleMicrobenchmarks();
 
     std::printf("%d checks, %d failures\n", _checks, _failures);
     return _failures ? 1 : 0;

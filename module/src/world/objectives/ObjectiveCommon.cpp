@@ -175,7 +175,10 @@ namespace ObjectiveCommon
 
     bool InArea(ObjectiveContext const& ctx, float slack)
     {
-        return ctx.bot->GetMapId() == ctx.task.mapId && Dist2d(ctx.bot, ctx.task.x, ctx.task.y) <= ctx.task.areaRadius + slack;
+        float maxZ = std::max(25.0f, (ctx.task.areaRadius + slack) * 0.6f);
+        return ctx.bot->GetMapId() == ctx.task.mapId &&
+               Dist2d(ctx.bot, ctx.task.x, ctx.task.y) <= ctx.task.areaRadius + slack &&
+               (ctx.task.z == 0.0f || std::fabs(ctx.bot->GetPositionZ() - ctx.task.z) <= maxZ);
     }
 
     ObjectiveResult TravelToArea(ObjectiveContext& ctx)
@@ -236,6 +239,15 @@ namespace ObjectiveCommon
         if (!pick.area)
         {
             ctx.task.quest.lastFailure = FailureReason::NoTargets;
+            return ObjectiveResult::Failed;
+        }
+
+        if (LoopDiagnosis diag = ctx.state.loopDetector.RecordAreaSwitch(pick.area->id, ctx.now))
+        {
+            ctx.state.failures.Remember(FailKind::Cluster, pick.area->id, ctx.now, ctx.cfg.clusterFailMs, uint8(FailureReason::NoProgress));
+            Count(ctx.state.metrics, &WorldMetrics::loopsBroken);
+            NoteEvent(ctx.state, Acore::StringFormat("loop broken ({}): area {} ping-pong", LoopKindName(diag.kind), pick.area->id));
+            ctx.task.quest.lastFailure = FailureReason::NoProgress;
             return ObjectiveResult::Failed;
         }
 
@@ -385,8 +397,9 @@ namespace ObjectiveCommon
             return NavStatus::Arrived;
         }
 
-        // In range but something in the way: walk right up to it instead of stopping at range.
-        float accept = inRange ? 3.0f : std::max(2.0f, range * 0.7f);
+        // In range horizontally or 3D, but out of LOS or on a different elevation: tighten acceptRadius to walk right up to it.
+        bool close2d = Dist2d(bot, target->GetPositionX(), target->GetPositionY()) <= range;
+        float accept = (inRange || close2d) ? 2.0f : std::max(2.0f, range * 0.7f);
         NavStatus status = WorldExecutor::TravelTo(bot, ctx.state, WorldGoalSub::Target, target->GetPositionX(),
             target->GetPositionY(), target->GetPositionZ(), accept, target->GetGUID().GetCounter(), dist > 60.0f);
         // Navigate judges arrival by distance only; line of sight is re-checked next tick.
@@ -480,6 +493,7 @@ namespace ObjectiveCommon
         if (progress > ctx.task.quest.progressMark)
         {
             Count(ctx.state.metrics, &WorldMetrics::objectiveProgress, progress - ctx.task.quest.progressMark);
+            ctx.state.loopDetector.OnProgress(ctx.now);
             ctx.task.quest.dryAttempts = 0;
             ctx.task.quest.retryCount = 0;
             LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' ObjectiveProgress quest {} objective {}: {}/{}.",

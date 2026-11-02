@@ -22,6 +22,7 @@
 #include "Define.h"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <iterator>
 #include <unordered_map>
@@ -39,6 +40,7 @@ enum class FailKind : uint8
     DeadEnd,    // a quest id noted as a dead end (logging / debug only; planning asks Workable)
     Unworkable, // a quest id a handler tried and found this bot cannot do (talk gave no credit,
                 // trigger gave nothing, the quest item is gone): no work on it, a dead end
+    NavCorridor, // a danger-map waypoint or nav corridor cell that had no valid path
     Count,
 };
 
@@ -125,6 +127,12 @@ public:
                     fn(FailKind(kind), id, entry.expiresAt - now, entry.reason, entry.strikes);
     }
 
+    static uint64 CorridorId(uint32 mapId, float x, float y)
+    {
+        auto q = [](float v) -> uint64 { return static_cast<uint64>(static_cast<uint32>( static_cast<int32>(std::floor(v / 16.0f)) + 32768 ) & 0xFFFFu); };
+        return (uint64(mapId) << 32) | (q(x) << 16) | q(y);
+    }
+
 private:
     // A bot remembers a handful of things at a time; pruning on write once a map grows past this
     // keeps it bounded without any per-tick sweep across thousands of bots.
@@ -145,9 +153,10 @@ inline char const* FailKindName(FailKind kind)
         case FailKind::Quest:      return "quest";
         case FailKind::Hub:        return "hub";
         case FailKind::TurnIn:     return "turn-in";
-        case FailKind::DeadEnd:    return "dead end";
-        case FailKind::Unworkable: return "unworkable";
-        default:                   return "?";
+        case FailKind::DeadEnd:     return "dead end";
+        case FailKind::Unworkable:  return "unworkable";
+        case FailKind::NavCorridor: return "corridor";
+        default:                    return "?";
     }
 }
 

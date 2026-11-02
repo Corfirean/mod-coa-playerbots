@@ -250,6 +250,8 @@ CoaBots.WorldBrain.Weight.TurnIn = 120
 CoaBots.WorldBrain.Weight.Accept = 55
 CoaBots.WorldBrain.Weight.AreaOccupancy = 12
 CoaBots.WorldBrain.Weight.TargetReserved = 200
+CoaBots.WorldBrain.Weight.ActiveQuestHysteresis = 18
+CoaBots.WorldBrain.Weight.CurrentAreaHysteresis = 15
 
 #
 #    CoaBots.AI.CombatIntervalMs
