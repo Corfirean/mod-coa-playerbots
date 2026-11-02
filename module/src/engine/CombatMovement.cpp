@@ -26,6 +26,14 @@ namespace BotAI
         if (!bot->isMoving())
             return true; // already stationary
 
+        // If the bot is actively repositioning because its combat target is out of line of sight,
+        // do NOT halt movement prematurely to start a stationary cast that will fail with SPELL_FAILED_LINE_OF_SIGHT!
+        if (Unit const* victim = bot->GetVictim())
+        {
+            if (!bot->IsWithinLOSInMap(victim))
+                return false;
+        }
+
         // Begin stopping -- the movement flag doesn't clear until the stop is actually processed,
         // so the cast itself is deferred to whichever tick next observes !bot->isMoving().
         BotMovement::ForceStopOwner(bot, MoveOwner::Combat); // ADMINISTRATIVE FORCE — intentionally cancels any active Combat locomotion generation before cast

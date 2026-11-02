@@ -10,6 +10,12 @@
  * it looked stuck after nine seconds and got repathed and detoured off the stairs. Closing either
  * the ground distance or the height difference by its threshold counts as progress.
  *
+ * Route-aware extension: A legitimate navmesh corridor or switchback ramp around a ridge or wall
+ * often increases or holds flat Euclidean distance to the final destination while steadily closing
+ * distance to the active leg waypoint (legX, legY, legZ). UpdateRoute() credits progress toward the
+ * active leg waypoint for up to maxDetourLegMs (unless the bot is oscillating across the same grid
+ * cells), preventing false Repath/Detour triggers on valid switchbacks.
+ *
  * The recovery ladder -- repath, detour one side, detour the other side, give up -- climbs one stage
  * per stall. Small accidental progress (a repath that moves the bot three yards before it jams
  * again) resets the stall timer but not the ladder: the stage only drops back to zero once the
@@ -22,6 +28,7 @@
 
 #include "Define.h"
 #include <algorithm>
+#include <cmath>
 
 struct NavProgressRules
 {
@@ -30,6 +37,8 @@ struct NavProgressRules
     uint32 stallMs = 9000;            // no progress for this long is a stall
     float recoveredYards = 20.0f;     // this much closer than at the first stall: the ladder resets
     float recoveredClimbYards = 8.0f; // ...or this much less height to go
+    uint32 maxDetourLegMs = 27000;    // max duration leg progress can defer goal stall on a switchback
+    float cellQuantumYards = 6.0f;    // grid cell size for repeated-area oscillation detection
 };
 
 enum class NavRecovery : uint8
@@ -43,12 +52,22 @@ enum class NavRecovery : uint8
 
 struct NavProgress
 {
-    float best2d = 0.0f;              // closest ground distance reached so far
-    float bestDz = 0.0f;              // smallest height difference reached so far
+    float best2d = 0.0f;              // closest ground distance reached so far to final goal
+    float bestDz = 0.0f;              // smallest height difference reached so far to final goal
+    float bestLeg2d = 0.0f;           // closest ground distance reached so far to current leg/waypoint
+    float bestLegDz = 0.0f;           // smallest height difference reached so far to current leg/waypoint
     uint32 lastProgressAt = 0;
+    uint32 lastGoalProgressAt = 0;    // last time final-goal distance improved
     uint8 stage = 0;                  // recovery stages used since the ladder last reset (0-4)
     float stall2d = 0.0f;             // distances when the ladder started climbing
     float stallDz = 0.0f;
+    uint32 legSwitchbacks = 0;        // count of switchback/corridor updates that deferred false stalls
+    bool oscillatingArea = false;     // true when repeatedly revisiting recent cells without net goal progress
+    int32 recentCellX[4] = {0, 0, 0, 0};
+    int32 recentCellY[4] = {0, 0, 0, 0};
+    uint8 cellCount = 0;
+    uint8 cellHead = 0;
+    uint8 cellRevisits = 0;
 
     // A fresh goal.
     void Start(float dist2d, float distZ, uint32 now)
@@ -56,7 +75,19 @@ struct NavProgress
         *this = NavProgress();
         best2d = dist2d;
         bestDz = distZ;
+        bestLeg2d = dist2d;
+        bestLegDz = distZ;
         lastProgressAt = now;
+        lastGoalProgressAt = now;
+    }
+
+    // Reset leg-specific progress baseline when a new corridor waypoint or detour leg is committed.
+    void StartLeg(float legDist2d, float legDistZ, uint32 now)
+    {
+        bestLeg2d = legDist2d;
+        bestLegDz = legDistZ;
+        if (lastGoalProgressAt == 0)
+            lastGoalProgressAt = now;
     }
 
     // Same goal, new baseline: the goal moved (a walking mob), or the bot was busy with something
@@ -66,7 +97,14 @@ struct NavProgress
     {
         best2d = dist2d;
         bestDz = distZ;
+        bestLeg2d = dist2d;
+        bestLegDz = distZ;
         lastProgressAt = now;
+        lastGoalProgressAt = now;
+        cellCount = 0;
+        cellHead = 0;
+        cellRevisits = 0;
+        oscillatingArea = false;
         if (stage)
         {
             stall2d = dist2d;
@@ -74,23 +112,84 @@ struct NavProgress
         }
     }
 
-    // Time that should not count toward a stall (the movement slot was held by someone else).
+    // Time that should not count toward a stall (the movement slot was held by someone else, rooted, or casting).
     void Hold(uint32 now)
     {
+        uint32 delta = (now > lastProgressAt) ? (now - lastProgressAt) : 0;
         lastProgressAt = now;
+        if (lastGoalProgressAt > 0)
+            lastGoalProgressAt += delta;
     }
 
-    NavRecovery Update(float dist2d, float distZ, uint32 now, NavProgressRules const& rules)
+    void RecordCell(float bx, float by, float quantum)
     {
-        bool closer = dist2d < best2d - rules.progressYards;
-        bool climbed = distZ < bestDz - rules.climbYards;
+        if (quantum <= 0.0f)
+            return;
+        int32 cx = static_cast<int32>(std::floor(bx / quantum));
+        int32 cy = static_cast<int32>(std::floor(by / quantum));
+
+        if (cellCount > 0)
+        {
+            uint8 lastIdx = (cellHead + 3u) % 4u;
+            if (recentCellX[lastIdx] == cx && recentCellY[lastIdx] == cy)
+                return;
+
+            for (uint8 i = 0; i < cellCount; ++i)
+            {
+                uint8 idx = (cellHead + 4u - 1u - i) % 4u;
+                if (recentCellX[idx] == cx && recentCellY[idx] == cy)
+                {
+                    if (cellRevisits < 255)
+                        ++cellRevisits;
+                    if (cellRevisits >= 3)
+                        oscillatingArea = true;
+                    break;
+                }
+            }
+        }
+
+        recentCellX[cellHead] = cx;
+        recentCellY[cellHead] = cy;
+        cellHead = (cellHead + 1u) % 4u;
+        if (cellCount < 4u)
+            ++cellCount;
+    }
+
+    NavRecovery UpdateRoute(float goalDist2d, float goalDistZ, float legDist2d, float legDistZ,
+                            float bx, float by, uint32 now, NavProgressRules const& rules)
+    {
+        if (lastGoalProgressAt == 0)
+            lastGoalProgressAt = lastProgressAt;
+
+        bool closer = goalDist2d < best2d - rules.progressYards;
+        bool climbed = goalDistZ < bestDz - rules.climbYards;
         if (closer || climbed)
         {
-            best2d = std::min(best2d, dist2d);
-            bestDz = std::min(bestDz, distZ);
+            best2d = std::min(best2d, goalDist2d);
+            bestDz = std::min(bestDz, goalDistZ);
+            bestLeg2d = std::min(bestLeg2d, legDist2d);
+            bestLegDz = std::min(bestLegDz, legDistZ);
             lastProgressAt = now;
-            if (stage && (stall2d - dist2d >= rules.recoveredYards || stallDz - distZ >= rules.recoveredClimbYards))
+            lastGoalProgressAt = now;
+            cellRevisits = 0;
+            oscillatingArea = false;
+            if (stage && (stall2d - goalDist2d >= rules.recoveredYards || stallDz - goalDistZ >= rules.recoveredClimbYards))
                 stage = 0;
+            return NavRecovery::None;
+        }
+
+        RecordCell(bx, by, rules.cellQuantumYards);
+
+        // Route-aware leg progress: walking a switchback or around a ridge increases or holds flat
+        // Euclidean distance to the final goal while steadily closing distance to the current leg waypoint.
+        bool legCloser = legDist2d < bestLeg2d - rules.progressYards;
+        bool legClimbed = legDistZ < bestLegDz - rules.climbYards;
+        if ((legCloser || legClimbed) && !oscillatingArea && (now - lastGoalProgressAt <= rules.maxDetourLegMs))
+        {
+            bestLeg2d = std::min(bestLeg2d, legDist2d);
+            bestLegDz = std::min(bestLegDz, legDistZ);
+            lastProgressAt = now;
+            ++legSwitchbacks;
             return NavRecovery::None;
         }
 
@@ -111,6 +210,11 @@ struct NavProgress
             case 3:  return NavRecovery::DetourRight;
             default: return NavRecovery::GiveUp;
         }
+    }
+
+    NavRecovery Update(float dist2d, float distZ, uint32 now, NavProgressRules const& rules)
+    {
+        return UpdateRoute(dist2d, distZ, dist2d, distZ, 0.0f, 0.0f, now, rules);
     }
 };
 

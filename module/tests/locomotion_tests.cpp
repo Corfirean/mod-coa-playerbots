@@ -1915,6 +1915,312 @@ static void TestCompressedRealmFlightPolicy()
     CHECK(switchMount.dismountReason == DismountReason::LeaderState);
 }
 
+// ============================================================================
+// Open-World Navigation Hardening Tests (Tests 43-48)
+// ============================================================================
+static void TestRouteAwareProgressSwitchbacks()
+{
+    NavProgressRules rules;
+    NavProgress p;
+
+    // Bot starts at (0, 0, 0). Final goal is across a ridge at (60, 0, 0), so goalDist2d = 60 yd.
+    // The valid navmesh route first travels away from the goal along a switchback ramp to (-35, 40, 2)
+    // (legDist2d = 53 yd), increasing goalDist2d from 60 yd to 103 yd over 18 seconds before turning toward the goal.
+    p.Start(60.0f, 0.0f, 0);
+    p.StartLeg(53.0f, 2.0f, 0);
+
+    for (uint32 t = 1; t <= 18; ++t)
+    {
+        float bx = -2.0f * float(t);
+        float by = 2.2f * float(t);
+        float goalDist2d = 60.0f + float(t) * 2.4f;
+        float legDist2d = std::max(1.0f, 53.0f - float(t) * 2.9f);
+        NavRecovery rec = p.UpdateRoute(goalDist2d, 0.5f, legDist2d, 0.5f, bx, by, t * 1000, rules);
+        CHECK(rec == NavRecovery::None);
+    }
+    CHECK(p.stage == 0);
+    CHECK(p.legSwitchbacks > 0);
+    CHECK(!p.oscillatingArea);
+
+    // Leg 2 now heads toward final goal from (-36, 39.6) -> (60, 0).
+    p.StartLeg(104.0f, 0.0f, 18000);
+    for (uint32 t = 19; t <= 35; ++t)
+    {
+        float frac = float(t - 18) / 17.0f;
+        float bx = -36.0f + frac * 96.0f;
+        float by = 39.6f * (1.0f - frac);
+        float d2d = std::max(0.0f, 104.0f * (1.0f - frac));
+        NavRecovery rec = p.UpdateRoute(d2d, 0.0f, d2d, 0.0f, bx, by, t * 1000, rules);
+        CHECK(rec == NavRecovery::None);
+    }
+    CHECK(p.stage == 0);
+}
+
+static void TestRouteAwareProgressDetourCircuitBreakerAndOscillation()
+{
+    NavProgressRules rules;
+    NavProgress p;
+
+    // 1) Circuit breaker: if leg progress continues past maxDetourLegMs (27s) with zero net goal progress,
+    // pure leg credit is denied and the stall timer triggers Repath.
+    p.Start(100.0f, 0.0f, 0);
+    p.StartLeg(300.0f, 0.0f, 0);
+    NavRecovery triggered = NavRecovery::None;
+    for (uint32 t = 1; t <= 40; ++t)
+    {
+        float bx = float(t) * 5.0f; // distinct cells so not oscillating
+        float legDist = std::max(1.0f, 300.0f - float(t) * 4.0f);
+        NavRecovery rec = p.UpdateRoute(110.0f, 0.0f, legDist, 0.0f, bx, 0.0f, t * 1000, rules);
+        if (rec != NavRecovery::None)
+        {
+            triggered = rec;
+            break;
+        }
+    }
+    CHECK(triggered == NavRecovery::Repath);
+
+    // 2) Area oscillation: pacing back and forth between two 2D cells sets oscillatingArea = true
+    // and denies switchback leg credit so recovery escalates on schedule.
+    NavProgress osc;
+    osc.Start(80.0f, 0.0f, 0);
+    osc.StartLeg(40.0f, 0.0f, 0);
+    NavRecovery oscRec = NavRecovery::None;
+    for (uint32 t = 1; t <= 14; ++t)
+    {
+        // Alternate between cell (10, 10) and cell (24, 10)
+        float bx = (t % 2 == 0) ? 10.0f : 24.0f;
+        if (t % 2 == 0)
+            osc.StartLeg(40.0f, 0.0f, t * 1000);
+        NavRecovery r = osc.UpdateRoute(82.0f, 0.0f, (t % 2 == 0) ? 39.0f : 35.0f, 0.0f, bx, 10.0f, t * 1000, rules);
+        if (r != NavRecovery::None)
+            oscRec = r;
+    }
+    CHECK(osc.oscillatingArea);
+    CHECK(oscRec == NavRecovery::Repath);
+}
+
+static void Test3DArrivalValidationMultiFloorRejection()
+{
+    LocomotionStateStore::ResetAllForTest();
+    ObjectGuid bot(5001);
+    LocomotionShard& shard = LocomotionStateStore::GetShard(bot);
+
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        MovementRequest& req = shard.requests[bot];
+        req.botGuid = bot;
+        req.owner = MoveOwner::Quest;
+        req.goalId = 777;
+        req.requestGeneration = 1;
+        req.movementCommandId = 88;
+        req.x = 100.0f;
+        req.y = 200.0f;
+        req.z = 50.0f;
+        req.acceptRadius = 3.5f;
+
+        BotLocomotionRecord& loc = shard.locomotion[bot];
+        loc.owner = MoveOwner::Quest;
+        loc.commandId = 88;
+        loc.state = LocomotionState::Moving;
+    }
+
+    // Same horizontal position (dist2d = 1.0 yd), but 15 yards below (e.g. cave beneath overland NPC):
+    CHECK(!NavigateTransaction::IsWithin3dArrival(1.0f, 3.5f, 15.0f));
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        LocomotionToken tok;
+        bool arrived = NavigateTransaction::ValidateArrival(shard.requests[bot], MoveOwner::Quest, 777, 1.0f, 3.5f, tok, 15.0f);
+        CHECK(!arrived);
+        CHECK(!tok.IsValid());
+    }
+
+    // Broad area radius (acceptRadius = 35 yd), but 25 yards vertically separated (deep mine below camp):
+    CHECK(NavigateTransaction::MaxArrivalZ(35.0f) <= 12.0f);
+    CHECK(!NavigateTransaction::IsWithin3dArrival(5.0f, 35.0f, 25.0f));
+
+    // Legitimate arrival on same floor (dist2d = 2.0 yd, distZ = 1.8 yd):
+    CHECK(NavigateTransaction::IsWithin3dArrival(2.0f, 3.5f, 1.8f));
+    {
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        LocomotionToken tok;
+        bool arrived = NavigateTransaction::ValidateArrival(shard.requests[bot], MoveOwner::Quest, 777, 2.0f, 3.5f, tok, 1.8f);
+        CHECK(arrived);
+        CHECK(tok.IsValid());
+        CHECK(tok.commandId == 88);
+    }
+}
+
+static void TestSharedNoPathCorridorCacheCrossBotAndExpiry()
+{
+    LocomotionStateStore::ResetAllForTest();
+    uint32 const mapId = 0;
+    uint32 const t0 = 10000;
+
+    // Bot 1 records first failure from start cell [96..103.9] -> dest cell [300..303.9]
+    LocomotionStateStore::RecordSharedCorridorFailure(mapId, 100.0f, 100.0f, 10.0f, 301.0f, 301.0f, 20.0f, t0);
+    // Strike 1 does not block globally yet (avoids single-bot transient false positive)
+    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(mapId, 102.0f, 99.0f, 10.5f, 301.5f, 302.0f, 20.5f, t0 + 100));
+
+    // Bot 2 records second failure in the same quantized corridor cell -> reaches STRIKE_THRESHOLD (2)
+    LocomotionStateStore::RecordSharedCorridorFailure(mapId, 103.0f, 101.0f, 11.0f, 302.5f, 301.2f, 21.0f, t0 + 200);
+    CHECK(LocomotionStateStore::IsSharedCorridorBlocked(mapId, 101.0f, 102.0f, 10.0f, 302.0f, 301.5f, 20.0f, t0 + 300));
+
+    // Unrelated corridor is unaffected
+    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(mapId, 100.0f, 100.0f, 10.0f, 500.0f, 500.0f, 20.0f, t0 + 300));
+    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(530, 100.0f, 100.0f, 10.0f, 301.0f, 301.0f, 20.0f, t0 + 300));
+
+    // Expires cleanly after DEFAULT_TTL_MS
+    uint32 const afterTtl = t0 + 200 + SharedNoPathCache::DEFAULT_TTL_MS + 1;
+    CHECK(!LocomotionStateStore::IsSharedCorridorBlocked(mapId, 101.0f, 102.0f, 10.0f, 302.0f, 301.5f, 20.0f, afterTtl));
+}
+
+static void TestHoldPreservesGoalAndLegProgressClocks()
+{
+    NavProgressRules rules;
+    NavProgress p;
+    p.Start(90.0f, 0.0f, 1000);
+    p.StartLeg(45.0f, 0.0f, 1000);
+
+    // Bot is rooted / casting / externally controlled from t=2000 to t=22000 (20 full seconds)
+    for (uint32 t = 2000; t <= 22000; t += 1000)
+        p.Hold(t);
+
+    // Next tick at t=23000 with no movement yet must NOT trigger Repath because only 2s of unheld time elapsed
+    CHECK(p.UpdateRoute(90.0f, 0.0f, 45.0f, 0.0f, 0.0f, 0.0f, 23000, rules) == NavRecovery::None);
+    CHECK(p.stage == 0);
+}
+
+static void TestTwentyGeometricNavigationScenariosAndRecoveryFaultInjection()
+{
+    NavProgressRules rules;
+
+    // Scenarios 1-20 geometric validation matrix:
+    // 1. Flat open terrain
+    {
+        NavProgress p;
+        p.Start(120.0f, 0.0f, 0);
+        for (uint32 t = 1; t <= 15; ++t)
+            CHECK(p.UpdateRoute(120.0f - float(t) * 7.0f, 0.0f, 120.0f - float(t) * 7.0f, 0.0f, float(t) * 7.0f, 0.0f, t * 1000, rules) == NavRecovery::None);
+    }
+    // 2. Steep hills and ramps (2D slow, Z steady)
+    {
+        NavProgress p;
+        p.Start(20.0f, 30.0f, 0);
+        for (uint32 t = 1; t <= 15; ++t)
+            CHECK(p.UpdateRoute(20.0f - float(t) * 0.5f, std::max(0.0f, 30.0f - float(t) * 2.0f), 20.0f - float(t) * 0.5f, std::max(0.0f, 30.0f - float(t) * 2.0f), float(t), 0.0f, t * 1000, rules) == NavRecovery::None);
+    }
+    // 3. Switchbacks where initial path moves away from destination
+    {
+        NavProgress p;
+        p.Start(50.0f, 10.0f, 0);
+        p.StartLeg(40.0f, 5.0f, 0);
+        for (uint32 t = 1; t <= 10; ++t)
+            CHECK(p.UpdateRoute(50.0f + float(t) * 3.0f, 10.0f, 40.0f - float(t) * 3.5f, 3.0f, -float(t) * 3.0f, float(t) * 2.0f, t * 1000, rules) == NavRecovery::None);
+        CHECK(p.legSwitchbacks == 10);
+    }
+    // 4. Target behind wall with nearby 2D distance (5 yd 2D, corridor leg routes 35 yd around wall)
+    {
+        NavProgress p;
+        p.Start(5.0f, 0.0f, 0);
+        p.StartLeg(35.0f, 0.0f, 0);
+        for (uint32 t = 1; t <= 8; ++t)
+            CHECK(p.UpdateRoute(5.0f + float(t) * 2.0f, 0.0f, 35.0f - float(t) * 4.0f, 0.0f, 0.0f, float(t) * 4.0f, t * 1000, rules) == NavRecovery::None);
+    }
+    // 5. Target on cliff above or below bot (5 yd 2D, 22 yd Z -> rejected as arrived, must follow ramp)
+    CHECK(!NavigateTransaction::IsWithin3dArrival(2.5f, 4.0f, 22.0f));
+    // 6. Cave entrance and interior objective (Z-separated from surface)
+    CHECK(!NavigateTransaction::IsWithin3dArrival(0.5f, 3.0f, 18.0f));
+    CHECK(NavigateTransaction::IsWithin3dArrival(2.0f, 3.0f, 1.5f));
+    // 7. Spiral tower or multi-level mine (2D radius constant ~6yd, Z decreases 1.6yd/s)
+    {
+        NavProgress p;
+        p.Start(6.0f, 32.0f, 0);
+        for (uint32 t = 1; t <= 20; ++t)
+            CHECK(p.UpdateRoute(6.0f + float(t % 2), 32.0f - float(t) * 1.6f, 6.0f, 32.0f - float(t) * 1.6f, 6.0f, 0.0f, t * 1000, rules) == NavRecovery::None);
+    }
+    // 8. Indoor multi-room building (corridor waypoints around interior walls)
+    {
+        NavProgress p;
+        p.Start(12.0f, 4.0f, 0);
+        p.StartLeg(18.0f, 0.0f, 0);
+        CHECK(p.UpdateRoute(14.0f, 4.0f, 10.0f, 0.0f, 8.0f, 0.0f, 4000, rules) == NavRecovery::None);
+        p.StartLeg(14.0f, 4.0f, 4000);
+        CHECK(p.UpdateRoute(2.0f, 0.5f, 2.0f, 0.5f, 12.0f, 8.0f, 8000, rules) == NavRecovery::None);
+    }
+    // 9. Bridge or narrow causeway (under-bridge Z mismatch rejected)
+    CHECK(!NavigateTransaction::IsWithin3dArrival(1.0f, 3.5f, 14.0f));
+    CHECK(NavigateTransaction::IsWithin3dArrival(1.0f, 3.5f, 0.8f));
+    // 10. Water-to-shore transition (mount blocked in water, allowed on shore)
+    {
+        auto inWater = MountPolicyResolver::Evaluate(MoveOwner::Travel, MoveMode::Navigate, 150.0f,
+            false, DesiredMountState::None, false, true, false, false, 40, false,
+            MountState::Unmounted, 0, 10000, false, false, false, true);
+        CHECK(inWater.action == MountAction::None);
+        auto onShore = MountPolicyResolver::Evaluate(MoveOwner::Travel, MoveMode::Navigate, 150.0f,
+            false, DesiredMountState::None, false, true, false, false, 40, false,
+            MountState::Unmounted, 0, 10000, false, false, false, false);
+        CHECK(onShore.action == MountAction::MountGround);
+    }
+    // 11. Fenced enclosure with single gate (leg moves to gate opposite target)
+    {
+        NavProgress p;
+        p.Start(8.0f, 0.0f, 0);
+        p.StartLeg(25.0f, 0.0f, 0);
+        CHECK(p.UpdateRoute(22.0f, 0.0f, 4.0f, 0.0f, -20.0f, 0.0f, 6000, rules) == NavRecovery::None);
+    }
+    // 12. Dense trees/rocks/pillars & 13. Dynamic blocked corridor -> Fault injection recovery ladder:
+    // Repath -> DetourLeft -> DetourRight -> Backtrack -> GiveUp
+    {
+        NavProgress p;
+        SafePositionHistory safe;
+        safe.Push(0.0f, 0.0f, 0.0f, 0, 1000);
+        safe.Push(15.0f, 0.0f, 0.0f, 0, 3000);
+        p.Start(50.0f, 0.0f, 0);
+        CHECK(p.UpdateRoute(50.0f, 0.0f, 50.0f, 0.0f, 30.0f, 0.0f, 9001, rules) == NavRecovery::Repath);
+        CHECK(p.UpdateRoute(50.0f, 0.0f, 50.0f, 0.0f, 30.0f, 0.0f, 18002, rules) == NavRecovery::DetourLeft);
+        CHECK(p.UpdateRoute(50.0f, 0.0f, 50.0f, 0.0f, 30.0f, 0.0f, 27003, rules) == NavRecovery::DetourRight);
+        CHECK(p.UpdateRoute(50.0f, 0.0f, 50.0f, 0.0f, 30.0f, 0.0f, 36004, rules) == NavRecovery::GiveUp);
+        auto bt = safe.FindBacktrackTarget(30.0f, 0.0f, 0.0f, 0, 0);
+        CHECK(bt.has_value());
+    }
+    // 14. Multi-bot convergence on narrow doorway (shared corridor cache prevents N-bot path storm when blocked)
+    {
+        LocomotionStateStore::ResetAllForTest();
+        LocomotionStateStore::RecordSharedCorridorFailure(0, 500.0f, 500.0f, 0.0f, 520.0f, 500.0f, 0.0f, 1000);
+        LocomotionStateStore::RecordSharedCorridorFailure(0, 501.0f, 500.0f, 0.0f, 520.0f, 500.0f, 0.0f, 1100);
+        for (int b = 0; b < 20; ++b)
+            CHECK(LocomotionStateStore::IsSharedCorridorBlocked(0, 500.0f + float(b % 3), 500.0f, 0.0f, 520.0f, 500.0f, 0.0f, 1200));
+    }
+    // 15. Moving target pursuit (Rebase updates goal baseline without false stall)
+    {
+        NavProgress p;
+        p.Start(25.0f, 0.0f, 0);
+        p.Rebase(32.0f, 0.0f, 5000);
+        CHECK(p.UpdateRoute(28.0f, 0.0f, 28.0f, 0.0f, 10.0f, 0.0f, 9000, rules) == NavRecovery::None);
+    }
+    // 16. Combat transition on uneven terrain & 17. Post-combat resumption of prior task
+    {
+        CHECK(LocomotionArbiter::CanClaim(MoveOwner::Quest, MoveOwner::Combat, false));
+        CHECK(LocomotionArbiter::CanClaim(MoveOwner::None, MoveOwner::Quest, false));
+    }
+    // 18. Quest NPC inside building (tight acceptRadius + 3D Z validation)
+    CHECK(NavigateTransaction::IsWithin3dArrival(1.8f, 2.0f, 0.5f));
+    CHECK(!NavigateTransaction::IsWithin3dArrival(1.8f, 2.0f, 7.5f));
+    // 19. Loot corpse on slope (Z within MaxArrivalZ(3.2f) = 4.0f accepted)
+    CHECK(NavigateTransaction::IsWithin3dArrival(2.5f, 3.2f, 2.8f));
+    // 20. Travel across zone boundary (long multi-leg route > 120yd per leg)
+    {
+        NavProgress p;
+        p.Start(600.0f, 15.0f, 0);
+        for (uint32 leg = 0; leg < 5; ++leg)
+        {
+            p.StartLeg(120.0f, 3.0f, leg * 15000);
+            CHECK(p.UpdateRoute(600.0f - float(leg + 1) * 120.0f, 2.0f, 10.0f, 0.5f, float(leg + 1) * 120.0f, 0.0f, (leg + 1) * 15000, rules) == NavRecovery::None);
+        }
+        CHECK(p.stage == 0);
+    }
+}
+
 int main()
 {
     std::printf("Running locomotion & navigation overhaul regression tests (Round 4, 5, 6 & Pre-Live Hardening)...\n");
@@ -1970,6 +2276,14 @@ int main()
     TestForgetClearsPlanningMetadata();
     TestPlanningEpochPreservesSameOwnerHistoryAcrossIntermediary();
     TestMountSelectionFailureZeroLocomotionMutation();
+
+    // Open-world navigation hardening tests (Tests 43-48)
+    TestRouteAwareProgressSwitchbacks();
+    TestRouteAwareProgressDetourCircuitBreakerAndOscillation();
+    Test3DArrivalValidationMultiFloorRejection();
+    TestSharedNoPathCorridorCacheCrossBotAndExpiry();
+    TestHoldPreservesGoalAndLegProgressClocks();
+    TestTwentyGeometricNavigationScenariosAndRecoveryFaultInjection();
 
     std::printf("Locomotion tests completed: %d checks, %d failures\n", _checks, _failures);
     return _failures == 0 ? 0 : 1;

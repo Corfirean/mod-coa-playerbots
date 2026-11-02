@@ -59,6 +59,14 @@ Creature* CreatureTargetHandler::Scan(ObjectiveContext& ctx, uint32& corpses)
 void CreatureTargetHandler::StartApproach(ObjectiveContext& ctx, Creature* target)
 {
     ctx.task.quest.targetGuid = target->GetGUID();
+    if (LoopDiagnosis diag = ctx.state.loopDetector.RecordTargetAttempt(target->GetGUID().GetRawValue(), ctx.now))
+    {
+        Count(ctx.state.metrics, &WorldMetrics::loopsBroken);
+        NoteEvent(ctx.state, Acore::StringFormat("loop broken ({}): target {} skipped", LoopKindName(diag.kind), target->GetName()));
+        ObjectiveCommon::ForgetTarget(ctx, FailureReason::NoProgress);
+        ObjectiveCommon::BeginSearch(ctx, "target loop broken");
+        return;
+    }
     ctx.task.quest.progressMark = ObjectiveCommon::TaskProgress(ctx.bot, ctx.task);
     ctx.task.wandering = false;
     LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' TargetSelected '{}' ({}) for quest {} objective {} at {:.0f} yd.",

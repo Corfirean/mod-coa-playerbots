@@ -187,6 +187,52 @@ inline char const* NavStatusName(NavStatus s)
     }
 }
 
+enum class NavFailureKind : uint8
+{
+    None = 0,
+    BlockedByOwner,
+    ExternallyControlled,
+    NoPath,
+    VerticallyDisconnected,
+    StallExhausted,
+};
+
+inline char const* NavFailureKindName(NavFailureKind k)
+{
+    switch (k)
+    {
+        case NavFailureKind::None:                   return "None";
+        case NavFailureKind::BlockedByOwner:         return "BlockedByOwner";
+        case NavFailureKind::ExternallyControlled:   return "ExternallyControlled";
+        case NavFailureKind::NoPath:                 return "NoPath";
+        case NavFailureKind::VerticallyDisconnected: return "VerticallyDisconnected";
+        case NavFailureKind::StallExhausted:         return "StallExhausted";
+        default:                                     return "Unknown";
+    }
+}
+
+enum class NavHoldReason : uint8
+{
+    None = 0,
+    ExternalControl,
+    Rooted,
+    Casting,
+    MountCasting,
+};
+
+inline char const* NavHoldReasonName(NavHoldReason r)
+{
+    switch (r)
+    {
+        case NavHoldReason::None:            return "None";
+        case NavHoldReason::ExternalControl: return "ExternalControl";
+        case NavHoldReason::Rooted:          return "Rooted";
+        case NavHoldReason::Casting:         return "Casting";
+        case NavHoldReason::MountCasting:    return "MountCasting";
+        default:                             return "Unknown";
+    }
+}
+
 enum class DismountReason : uint8
 {
     Manual = 0,
@@ -276,7 +322,7 @@ struct TransitionRecord
 
 class HistoryBuffer
 {
-public:
+    public:
     static constexpr size_t CAPACITY = 32;
 
     void Record(TransitionRecord const& rec)
@@ -383,6 +429,86 @@ struct NopathCacheEntry
     uint32 expiresAtMs = 0;
 };
 
+struct SharedNoPathEntry
+{
+    uint64 key = 0;
+    uint32 strikes = 0;
+    uint32 expiresAtMs = 0;
+};
+
+class SharedNoPathCache
+{
+public:
+    static constexpr size_t CAPACITY = 256;
+    static constexpr uint32 DEFAULT_TTL_MS = 20000;
+    static constexpr uint32 STRIKE_THRESHOLD = 2;
+
+    static uint64 MakeCorridorKey(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz)
+    {
+        auto q8 = [](float v) -> int64_t { return static_cast<int64_t>(std::floor(v / 8.0f)); };
+        auto q4 = [](float v) -> int64_t { return static_cast<int64_t>(std::floor(v / 4.0f)); };
+        uint64 h = 1469598103934665603ULL;
+        auto mix = [&](uint64 v) {
+            h ^= v;
+            h *= 1099511628211ULL;
+        };
+        mix(mapId);
+        mix(static_cast<uint64>(q8(sx)));
+        mix(static_cast<uint64>(q8(sy)));
+        mix(static_cast<uint64>(q8(sz)));
+        mix(static_cast<uint64>(q4(dx)));
+        mix(static_cast<uint64>(q4(dy)));
+        mix(static_cast<uint64>(q4(dz)));
+        return h ? h : 1ULL;
+    }
+
+    bool IsBlocked(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs) const
+    {
+        uint64 const k = MakeCorridorKey(mapId, sx, sy, sz, dx, dy, dz);
+        for (size_t i = 0; i < _count; ++i)
+        {
+            SharedNoPathEntry const& e = _entries[i];
+            if (e.key == k)
+                return nowMs < e.expiresAtMs && e.strikes >= STRIKE_THRESHOLD;
+        }
+        return false;
+    }
+
+    uint32 RecordFailure(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs, uint32 ttlMs = DEFAULT_TTL_MS)
+    {
+        uint64 const k = MakeCorridorKey(mapId, sx, sy, sz, dx, dy, dz);
+        for (size_t i = 0; i < _count; ++i)
+        {
+            if (_entries[i].key == k)
+            {
+                if (nowMs >= _entries[i].expiresAtMs)
+                    _entries[i].strikes = 1;
+                else
+                    ++_entries[i].strikes;
+                _entries[i].expiresAtMs = nowMs + ttlMs;
+                return _entries[i].strikes;
+            }
+        }
+        size_t idx = _head;
+        _entries[idx] = SharedNoPathEntry{k, 1, nowMs + ttlMs};
+        _head = (_head + 1) % CAPACITY;
+        if (_count < CAPACITY)
+            ++_count;
+        return 1;
+    }
+
+    void Clear()
+    {
+        _head = 0;
+        _count = 0;
+    }
+
+private:
+    std::array<SharedNoPathEntry, CAPACITY> _entries{};
+    size_t _head = 0;
+    size_t _count = 0;
+};
+
 struct MovementRequest
 {
     ObjectGuid botGuid;
@@ -401,6 +527,7 @@ struct MovementRequest
     uint32 lastIssueAt = 0;
     float legX = 0.0f;
     float legY = 0.0f;
+    float legZ = 0.0f;
     bool detour = false;
     float detourX = 0.0f;
     float detourY = 0.0f;
@@ -412,6 +539,9 @@ struct MovementRequest
     uint64 backtrackCommandId = 0;
     uint32 backtrackAttempts = 0;
     bool allowMount = true;
+    uint8 consecutiveNoPath = 0;
+    NavFailureKind lastFailureKind = NavFailureKind::None;
+    NavHoldReason holdReason = NavHoldReason::None;
 };
 
 struct BotLocomotionRecord
@@ -786,10 +916,23 @@ public:
 class NavigateTransaction
 {
 public:
-    static bool ValidateArrival(MovementRequest const& req, MoveOwner owner, uint64 goalId,
-                                float distToGoal, float acceptRadius, LocomotionToken& outTokenToRelease)
+    static constexpr float DEFAULT_MAX_Z_ARRIVAL = 6.0f;
+
+    static float MaxArrivalZ(float acceptRadius)
     {
-        if (distToGoal <= acceptRadius)
+        return std::min(12.0f, std::max(DEFAULT_MAX_Z_ARRIVAL, acceptRadius * 1.5f));
+    }
+
+    static bool IsWithin3dArrival(float distToGoal2d, float acceptRadius, float distZ = 0.0f)
+    {
+        return distToGoal2d <= acceptRadius && distZ <= MaxArrivalZ(acceptRadius);
+    }
+
+    static bool ValidateArrival(MovementRequest const& req, MoveOwner owner, uint64 goalId,
+                                float distToGoal, float acceptRadius, LocomotionToken& outTokenToRelease,
+                                float distZ = 0.0f)
+    {
+        if (IsWithin3dArrival(distToGoal, acceptRadius, distZ))
         {
             if (req.owner == owner && req.goalId == goalId && req.movementCommandId != 0)
             {
@@ -805,7 +948,7 @@ public:
         return req.requestGeneration == expectedGeneration && req.goalId == goalId;
     }
 
-    static void CommitLeg(MovementRequest& req, LocomotionToken const& token, float legX, float legY, uint32 now)
+    static void CommitLeg(MovementRequest& req, LocomotionToken const& token, float legX, float legY, uint32 now, float legZ = 0.0f)
     {
         if (!token.IsValid())
             return;
@@ -813,7 +956,10 @@ public:
         req.legs++;
         req.legX = legX;
         req.legY = legY;
+        req.legZ = legZ;
         req.lastIssueAt = now;
+        req.consecutiveNoPath = 0;
+        req.lastFailureKind = NavFailureKind::None;
     }
 };
 

@@ -4184,8 +4184,11 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
 
     if (!target || !target->IsAlive() || !bot->IsValidAttackTarget(target))
     {
-        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+        MoveOwner activeOwner = BotMovement::CurrentOwner(bot);
+        if (activeOwner == MoveOwner::Combat || bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
             BotMovement::ForceStopOwner(bot, MoveOwner::Combat);
+        if (activeOwner == MoveOwner::Avoidance && !state.flee.fleeing)
+            BotMovement::ForceStopOwner(bot, MoveOwner::Avoidance);
 
         if (!bot->IsInCombat())
         {
@@ -4441,6 +4444,10 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     if (BotAvoidance::TryAvoidBossTelegraphedAttacks(bot, target))
         return;
 
+    // Release completed hazard/telegraph Avoidance claim once out of danger so Combat can resume
+    if (!state.flee.fleeing && BotMovement::CurrentOwner(bot) == MoveOwner::Avoidance && !bot->isMoving())
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Avoidance);
+
     // CC protection policy (item 6, Phase 2 fixup): damaging a target under breakable crowd
     // control -- even via auto-attack -- breaks it. TargetEvaluator's own scoring already tries
     // to steer away from a CC'd target (see ScoreTarget's penalty and RefineTarget's forced-
@@ -4482,22 +4489,32 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
 
     if (preferredDist > MELEE_ENGAGE_RANGE)
     {
-        // This core's ChaseMovementGenerator::PositionOkay only enforces a maximum
-        // distance. ChaseRange alone cannot retreat a ranged bot out of its dead zone.
-        // Leave hysteresis below the chase stopping band: collision-distance rounding
-        // can otherwise leave the bot just below 70% forever, skipping every action.
-        if (distance < preferredDist * 0.6f)
+        if (!bot->IsWithinLOSInMap(target))
         {
-            float x, y, z;
-            target->GetNearPoint(bot, x, y, z, 0.0f, preferredDist, target->GetAngle(bot));
-            // Finish repositioning before a stationary filler stops the move -- but only if a move was issued: a refused one (no path to the
-            // point, another movement owner) used to end the tick here every tick and a bot cornered in a dead end never cast again.
-            if (BotMovement::MoveTo(bot, MoveOwner::Combat, x, y, z).IsValid())
-                return;
+            // Target is obstructed by terrain, wall, or pillar: ChaseRange(preferredDist * 0.7f, preferredDist)
+            // treats distance <= preferredDist as already positioned and never moves to clear LOS.
+            // Close in along the navmesh until line of sight is restored.
+            BotMovement::Chase(bot, MoveOwner::Combat, target, ChaseRange(0.0f, MELEE_ENGAGE_RANGE));
         }
-        // A comfortable band, not a razor-thin one -- retreats once the enemy closes past
-        // ~70% of preferredDist, holds anywhere between that and preferredDist itself.
-        BotMovement::Chase(bot, MoveOwner::Combat, target, ChaseRange(preferredDist * 0.7f, preferredDist));
+        else
+        {
+            // This core's ChaseMovementGenerator::PositionOkay only enforces a maximum
+            // distance. ChaseRange alone cannot retreat a ranged bot out of its dead zone.
+            // Leave hysteresis below the chase stopping band: collision-distance rounding
+            // can otherwise leave the bot just below 70% forever, skipping every action.
+            if (distance < preferredDist * 0.6f)
+            {
+                float x, y, z;
+                target->GetNearPoint(bot, x, y, z, 0.0f, preferredDist, target->GetAngle(bot));
+                // Finish repositioning before a stationary filler stops the move -- but only if a move was issued: a refused one (no path to the
+                // point, another movement owner) used to end the tick here every tick and a bot cornered in a dead end never cast again.
+                if (BotMovement::MoveTo(bot, MoveOwner::Combat, x, y, z).IsValid())
+                    return;
+            }
+            // A comfortable band, not a razor-thin one -- retreats once the enemy closes past
+            // ~70% of preferredDist, holds anywhere between that and preferredDist itself.
+            BotMovement::Chase(bot, MoveOwner::Combat, target, ChaseRange(preferredDist * 0.7f, preferredDist));
+        }
     }
     else
     {
@@ -4870,6 +4887,9 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
     if (BotAvoidance::TryAvoidGroundHazards(bot))
         return;
 
+    if (!state.flee.fleeing && BotMovement::CurrentOwner(bot) == MoveOwner::Avoidance && !bot->isMoving())
+        BotMovement::ForceReleaseOwner(bot, MoveOwner::Avoidance);
+
     if (RunToTankIfTargeted(bot))
         return;
 
@@ -4947,7 +4967,8 @@ void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
         BotMovement::Chase(bot, MoveOwner::Combat, healTarget, ChaseRange(0.0f, healRange - 5.0f));
         return;
     }
-    else if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+    else if (BotMovement::CurrentOwner(bot) == MoveOwner::Combat ||
+             bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
         BotMovement::ForceStopOwner(bot, MoveOwner::Combat);
 
     // The heal cast itself always targets the ally, regardless of which anchor positioning

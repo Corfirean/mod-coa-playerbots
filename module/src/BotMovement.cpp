@@ -44,6 +44,10 @@ namespace
         std::atomic<uint64> mountAttempts{0};
         std::atomic<uint64> mountSuccesses{0};
         std::atomic<uint64> dismounts{0};
+        std::atomic<uint64> pathQueries{0};
+        std::atomic<uint64> sharedNoPathHits{0};
+        std::atomic<uint64> legSwitchbacksHandled{0};
+        std::atomic<uint64> verticalRejections{0};
 
         MovementStats Snapshot() const
         {
@@ -58,6 +62,10 @@ namespace
             s.mountAttempts = mountAttempts.load(std::memory_order_relaxed);
             s.mountSuccesses = mountSuccesses.load(std::memory_order_relaxed);
             s.dismounts = dismounts.load(std::memory_order_relaxed);
+            s.pathQueries = pathQueries.load(std::memory_order_relaxed);
+            s.sharedNoPathHits = sharedNoPathHits.load(std::memory_order_relaxed);
+            s.legSwitchbacksHandled = legSwitchbacksHandled.load(std::memory_order_relaxed);
+            s.verticalRejections = verticalRejections.load(std::memory_order_relaxed);
             return s;
         }
     };
@@ -249,6 +257,8 @@ namespace
         if (!query)
             return false;
 
+        _stats.pathQueries.fetch_add(1, std::memory_order_relaxed);
+
         dtQueryFilter filter;
         filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
         filter.setExcludeFlags(0);
@@ -312,10 +322,12 @@ namespace
     {
         float bx = bot->GetPositionX();
         float by = bot->GetPositionY();
+        float bz = bot->GetPositionZ();
 
         float tx = req.x;
         float ty = req.y;
         float tz = req.z;
+        bool usedRouteWaypoint = false;
 
         if (req.recoveryMode == RecoveryMode::DetourLeft || req.recoveryMode == RecoveryMode::DetourRight)
         {
@@ -334,28 +346,38 @@ namespace
             float dist = Dist2d(bx, by, req.x, req.y);
             if (dist > LEG_YARDS)
             {
-                float t = LEG_YARDS / dist;
-                tx = bx + (req.x - bx) * t;
-                ty = by + (req.y - by) * t;
-                tz = bot->GetPositionZ();
+                // Prefer navmesh corridor waypoint first for long legs (>120 yd) instead of
+                // guessing a straight-line 2D point that may land inside a wall, cliff, or wrong floor.
+                float wx = 0.0f, wy = 0.0f, wz = 0.0f;
+                if (RouteWaypoint(bot, req.x, req.y, req.z, wx, wy, wz) && Dist2d(bx, by, wx, wy) > SAME_POINT_YARDS)
+                {
+                    tx = wx;
+                    ty = wy;
+                    tz = wz;
+                    usedRouteWaypoint = true;
+                }
+                else
+                {
+                    float t = LEG_YARDS / dist;
+                    tx = bx + (req.x - bx) * t;
+                    ty = by + (req.y - by) * t;
+                    tz = bz;
+                }
             }
         }
 
         // Token-safe: Issue leg under explicit Navigate MoveMode and carry request generation guard.
         MovementDispatchGuard guard{req.requestGeneration, req.goalId};
+        if (usedRouteWaypoint)
+            g_trustGivenZ = true;
         LocomotionToken token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
-        if (!token.IsValid() && req.recoveryMode == RecoveryMode::None && (tx != req.x || ty != req.y))
+        if (usedRouteWaypoint)
+            g_trustGivenZ = false;
+
+        if (!token.IsValid() && req.recoveryMode == RecoveryMode::None && !usedRouteWaypoint)
         {
-            // The leg point is a straight-line guess towards the goal. In a cave or a corridor it lies inside rock, has no path, and the first leg
-            // used to fail for good (an auto-dungeon tank stood at the entrance because of it). Ask for the path to the goal itself instead: the
-            // navigation mesh finds the way, and the next leg continues from wherever that path ends.
-            tx = req.x;
-            ty = req.y;
-            tz = req.z;
-            token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
-        }
-        if (!token.IsValid() && req.recoveryMode == RecoveryMode::None)
-        {
+            // Short/medium leg failed direct PathGenerator (e.g. winding switchback > 74 polys even though 2D dist <= 120 yd)
+            // or flying/fallback leg failed: ask RouteWaypoint for a reachable corridor point.
             float wx = 0.0f, wy = 0.0f, wz = 0.0f;
             if (RouteWaypoint(bot, req.x, req.y, req.z, wx, wy, wz) && Dist2d(bx, by, wx, wy) > SAME_POINT_YARDS)
             {
@@ -366,11 +388,20 @@ namespace
                 token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
                 g_trustGivenZ = false;
             }
+            else if (tx != req.x || ty != req.y)
+            {
+                tx = req.x;
+                ty = req.y;
+                tz = req.z;
+                token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+            }
         }
         if (!token.IsValid())
             return {};
 
-        NavigateTransaction::CommitLeg(req, token, tx, ty, NowMs());
+        uint32 now = NowMs();
+        NavigateTransaction::CommitLeg(req, token, tx, ty, now, tz);
+        req.progress.StartLeg(Dist2d(bx, by, tx, ty), std::abs(bz - tz), now);
         if (req.recoveryMode == RecoveryMode::Backtrack)
             req.backtrackCommandId = token.commandId;
 
@@ -559,12 +590,26 @@ namespace BotMovement
             }
         }
 
+        // Cross-bot shared no-path corridor check: if multiple nearby bots already confirmed this corridor has no path,
+        // skip repeating the expensive PathGenerator query until TTL expires.
+        float const startX = bot->GetPositionX();
+        float const startY = bot->GetPositionY();
+        float const startZ = bot->GetPositionZ();
+        if (!bot->CanFly() && !forceDestination &&
+            LocomotionStateStore::IsSharedCorridorBlocked(bot->GetMapId(), startX, startY, startZ, x, y, groundZ, now))
+        {
+            _stats.sharedNoPathHits.fetch_add(1, std::memory_order_relaxed);
+            NoteMoveRefusal(bot, owner, "no path to this corridor (shared cache)", x, y);
+            return {};
+        }
+
         // Step 2: Outside shard state lock AND outside dispatch gate: compute PathGenerator!
         // This ensures unrelated bots sharing the striped dispatch gate are not blocked during pathfinding.
         bool pathValid = true;
         uint32 failedPathType = 0;
         if (!bot->CanFly())
         {
+            _stats.pathQueries.fetch_add(1, std::memory_order_relaxed);
             PathGenerator path(bot);
             path.CalculatePath(x, y, groundZ, forceDestination);
             if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH))
@@ -577,6 +622,7 @@ namespace BotMovement
         // Step 3: Handle path result under shard state lock
         if (!pathValid)
         {
+            LocomotionStateStore::RecordSharedCorridorFailure(bot->GetMapId(), startX, startY, startZ, x, y, groundZ, now);
             std::lock_guard<std::mutex> lock(shard.mutex);
             // Record failure in nopath cache WITHOUT touching rec.owner or rec.commandId!
             NopathCacheEntry& entry = shard.nopathCache[bot->GetGUID()];
@@ -663,43 +709,84 @@ namespace BotMovement
         if (!bot->IsAlive() && !(owner == MoveOwner::Corpse && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST)))
             return NavStatus::Blocked;
 
-        if (IsExternallyControlled(bot))
-            return NavStatus::Blocked;
-
         uint32 now = NowMs();
+        LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
+
+        if (IsExternallyControlled(bot))
+        {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            auto rItr = shard.requests.find(bot->GetGUID());
+            if (rItr != shard.requests.end() && rItr->second.owner == owner && rItr->second.goalId == goalId)
+            {
+                rItr->second.progress.Hold(now);
+                rItr->second.holdReason = NavHoldReason::ExternalControl;
+                rItr->second.lastFailureKind = NavFailureKind::ExternallyControlled;
+            }
+            return NavStatus::Blocked;
+        }
+
+        // Context-aware pause: rooted or actively casting a non-melee spell (including mount cast).
+        // Do not advance the stall timer or trigger false recovery while legitimately stationary.
+        bool const isRooted = bot->HasUnitState(UNIT_STATE_ROOT);
+        bool const isCasting = bot->IsNonMeleeSpellCast(false, false, /*skipAutorepeat=*/true);
+        if (isRooted || isCasting)
+        {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
+                return NavStatus::Blocked;
+
+            auto rItr = shard.requests.find(bot->GetGUID());
+            if (rItr != shard.requests.end() && rItr->second.owner == owner && rItr->second.goalId == goalId)
+            {
+                rItr->second.lastCallAt = now;
+                rItr->second.progress.Hold(now);
+                rItr->second.holdReason = isRooted ? NavHoldReason::Rooted : NavHoldReason::Casting;
+                if (outToken && rItr->second.movementCommandId != 0)
+                    *outToken = LocomotionToken{bot->GetGUID(), owner, rItr->second.movementCommandId};
+            }
+            return NavStatus::Moving;
+        }
+
         float bx = bot->GetPositionX();
         float by = bot->GetPositionY();
         float bz = bot->GetPositionZ();
         float distToGoal = Dist2d(bx, by, x, y);
+        float distZ = std::abs(bz - z);
 
-        LocomotionShard& shard = LocomotionStateStore::GetShard(bot->GetGUID());
-
-        // Arrival Check
+        // 3D Arrival Check: require both planar proximity and vertical floor compatibility
         if (distToGoal <= acceptRadius)
         {
-            LocomotionToken tokenToRelease;
+            if (NavigateTransaction::IsWithin3dArrival(distToGoal, acceptRadius, distZ))
             {
-                std::lock_guard<std::mutex> lock(shard.mutex);
-                auto rItr = shard.requests.find(bot->GetGUID());
-                if (rItr != shard.requests.end())
+                LocomotionToken tokenToRelease;
                 {
-                    if (NavigateTransaction::ValidateArrival(rItr->second, owner, goalId, distToGoal, acceptRadius, tokenToRelease))
+                    std::lock_guard<std::mutex> lock(shard.mutex);
+                    auto rItr = shard.requests.find(bot->GetGUID());
+                    if (rItr != shard.requests.end())
                     {
-                        shard.requests.erase(rItr);
+                        if (NavigateTransaction::ValidateArrival(rItr->second, owner, goalId, distToGoal, acceptRadius, tokenToRelease, distZ))
+                        {
+                            shard.requests.erase(rItr);
+                        }
                     }
                 }
-            }
 
-            if (tokenToRelease.IsValid())
-            {
-                Release(bot, tokenToRelease);
-                return NavStatus::Arrived;
+                if (tokenToRelease.IsValid())
+                {
+                    Release(bot, tokenToRelease);
+                    return NavStatus::Arrived;
+                }
+                else
+                {
+                    // Stale arrival: request was already superseded by newer goal or cleared.
+                    // Do NOT touch any state or MotionMaster!
+                    return NavStatus::Superseded;
+                }
             }
             else
             {
-                // Stale arrival: request was already superseded by newer goal or cleared.
-                // Do NOT touch any state or MotionMaster!
-                return NavStatus::Superseded;
+                // Horizontally within acceptRadius, but on a different vertical floor/bridge/cave level!
+                _stats.verticalRejections.fetch_add(1, std::memory_order_relaxed);
             }
         }
 
@@ -734,15 +821,18 @@ namespace BotMovement
                 req.allowMount = allowMount;
                 req.startedAt = now;
                 req.lastCallAt = now;
-                float distZ = std::abs(bz - z);
                 req.progress.Start(distToGoal, distZ, now);
                 req.legs = 0;
                 req.lastIssueAt = 0;
                 req.legX = 0.0f;
                 req.legY = 0.0f;
+                req.legZ = 0.0f;
                 req.detour = false;
                 req.recoveryMode = RecoveryMode::None;
                 req.backtrackAttempts = 0;
+                req.consecutiveNoPath = 0;
+                req.lastFailureKind = NavFailureKind::None;
+                req.holdReason = NavHoldReason::None;
 
                 reqCopy = req;
             }
@@ -751,14 +841,25 @@ namespace BotMovement
                 rItr->second.lastCallAt = now;
                 rItr->second.acceptRadius = acceptRadius;
                 rItr->second.allowMount = allowMount;
+                rItr->second.holdReason = NavHoldReason::None;
                 expectedRequestGen = rItr->second.requestGeneration;
+                // If previous first-leg attempt had no path (movementCommandId == 0), retry first leg when cooldown expires
+                if (rItr->second.movementCommandId == 0)
+                    isNewRequest = true;
                 reqCopy = rItr->second;
             }
         }
 
-        // Step 2: Handle First Leg
+        // Step 2: Handle First Leg (or retry after unissued first-leg failure)
         if (isNewRequest)
         {
+            if (reqCopy.consecutiveNoPath > 0 && (now - reqCopy.lastIssueAt < NOPATH_RECHECK_COOLDOWN_MS) &&
+                !LocomotionStateStore::IsSharedCorridorBlocked(bot->GetMapId(), bx, by, bz, x, y, z, now))
+            {
+                // Waiting for nopath recheck cooldown before strike 2
+                return NavStatus::Moving;
+            }
+
             uint64 previousMovementCommandId = reqCopy.movementCommandId;
             LocomotionToken token = IssueLeg(bot, reqCopy);
             if (token.IsValid())
@@ -781,18 +882,41 @@ namespace BotMovement
             }
             else
             {
-                // First-leg failure: DO NOT release anything! No token was issued.
-                // Erase own request generation if still current:
+                // First-leg path failure: classify and escalate after 2 strikes (or immediately if shared corridor is blocked)
+                reqCopy.consecutiveNoPath++;
+                reqCopy.lastIssueAt = now;
+                reqCopy.lastFailureKind = (distToGoal <= acceptRadius * 2.0f && distZ > NavigateTransaction::MaxArrivalZ(acceptRadius))
+                    ? NavFailureKind::VerticallyDisconnected
+                    : NavFailureKind::NoPath;
+
+                bool const corridorConfirmedBlocked =
+                    reqCopy.consecutiveNoPath >= 2 ||
+                    LocomotionStateStore::IsSharedCorridorBlocked(bot->GetMapId(), bx, by, bz, x, y, z, now);
+
+                if (corridorConfirmedBlocked)
                 {
+                    _stats.gaveUp.fetch_add(1, std::memory_order_relaxed);
                     std::lock_guard<std::mutex> lock(shard.mutex);
                     LocomotionStateStore::EraseRequestIfCurrentLocked(shard, bot->GetGUID(), expectedRequestGen, 0);
+                    return NavStatus::Stuck;
                 }
-                return NavStatus::Blocked;
+
+                // Strike 1: retain request state so next attempt after cooldown can escalate to Stuck if still unreachable
+                {
+                    std::lock_guard<std::mutex> lock(shard.mutex);
+                    auto rItr = shard.requests.find(bot->GetGUID());
+                    if (rItr != shard.requests.end() &&
+                        NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId) &&
+                        rItr->second.movementCommandId == 0)
+                    {
+                        rItr->second = reqCopy;
+                    }
+                }
+                return NavStatus::Moving;
             }
         }
 
         // Step 3: Backtrack state machine
-        float distZ = std::abs(bz - z);
         if (reqCopy.recoveryMode == RecoveryMode::Backtrack)
         {
             float distToBacktrack = Dist2d(bx, by, reqCopy.backtrackX, reqCopy.backtrackY);
@@ -877,12 +1001,23 @@ namespace BotMovement
             }
         }
 
-        // Step 4: Progress evaluation
-        NavRecovery recovery = reqCopy.progress.Update(distToGoal, distZ, now, PROGRESS_RULES);
+        // Step 4: Route-aware progress evaluation (tracks both final goal and active corridor/detour leg)
+        bool const hasLegTarget = (reqCopy.legX != 0.0f || reqCopy.legY != 0.0f);
+        float const activeLegX = hasLegTarget ? reqCopy.legX : x;
+        float const activeLegY = hasLegTarget ? reqCopy.legY : y;
+        float const activeLegZ = hasLegTarget ? reqCopy.legZ : z;
+        float const legDist2d = Dist2d(bx, by, activeLegX, activeLegY);
+        float const legDistZ = std::abs(bz - activeLegZ);
+        uint32 const prevSwitchbacks = reqCopy.progress.legSwitchbacks;
+
+        NavRecovery recovery = reqCopy.progress.UpdateRoute(distToGoal, distZ, legDist2d, legDistZ, bx, by, now, PROGRESS_RULES);
+        if (reqCopy.progress.legSwitchbacks > prevSwitchbacks)
+            _stats.legSwitchbacksHandled.fetch_add(reqCopy.progress.legSwitchbacks - prevSwitchbacks, std::memory_order_relaxed);
 
         // If progress said GiveUp, check if Backtrack candidates exist before giving up!
         if (recovery == NavRecovery::GiveUp)
         {
+            reqCopy.lastFailureKind = NavFailureKind::StallExhausted;
             if (reqCopy.recoveryMode != RecoveryMode::Backtrack && reqCopy.backtrackAttempts < 3)
             {
                 std::optional<SafePosition> safeTarget;
@@ -985,13 +1120,25 @@ namespace BotMovement
             _stats.detours.fetch_add(1, std::memory_order_relaxed);
             reqCopy.recoveryMode = (recovery == NavRecovery::DetourLeft) ? RecoveryMode::DetourLeft : RecoveryMode::DetourRight;
             reqCopy.detour = true;
-            float angle = bot->GetOrientation() + (recovery == NavRecovery::DetourLeft ? 1.047f : -1.047f);
+            float const goalBearing = std::atan2(y - by, x - bx);
+            float angle = goalBearing + (recovery == NavRecovery::DetourLeft ? 1.047f : -1.047f);
             reqCopy.detourX = bx + std::cos(angle) * 15.0f;
             reqCopy.detourY = by + std::sin(angle) * 15.0f;
             reqCopy.detourZ = ResolveGroundZ(bot, reqCopy.detourX, reqCopy.detourY, bz);
 
             uint64 previousMovementCommandId = reqCopy.movementCommandId;
             LocomotionToken token = IssueLeg(bot, reqCopy);
+            if (!token.IsValid() && recovery == NavRecovery::DetourLeft)
+            {
+                // Left detour blocked on navmesh -> immediately try Right detour in the same tick
+                reqCopy.recoveryMode = RecoveryMode::DetourRight;
+                reqCopy.progress.stage = 3;
+                float const rightAngle = goalBearing - 1.047f;
+                reqCopy.detourX = bx + std::cos(rightAngle) * 15.0f;
+                reqCopy.detourY = by + std::sin(rightAngle) * 15.0f;
+                reqCopy.detourZ = ResolveGroundZ(bot, reqCopy.detourX, reqCopy.detourY, bz);
+                token = IssueLeg(bot, reqCopy);
+            }
             if (!token.IsValid())
             {
                 // Detour issue failed -> escalate to Backtrack
@@ -1064,24 +1211,15 @@ namespace BotMovement
             }
         }
 
-        // Check if Detour leg stalled
-        if ((reqCopy.recoveryMode == RecoveryMode::DetourLeft || reqCopy.recoveryMode == RecoveryMode::DetourRight) &&
-            !bot->isMoving() && (now - reqCopy.lastIssueAt > 1500))
+        // Check if Detour leg completed (arrived near detour waypoint) or stalled early
+        if (reqCopy.recoveryMode == RecoveryMode::DetourLeft || reqCopy.recoveryMode == RecoveryMode::DetourRight)
         {
-            std::optional<SafePosition> safeTarget;
+            float const distToDetour = Dist2d(bx, by, reqCopy.detourX, reqCopy.detourY);
+            if (distToDetour <= 4.0f)
             {
-                std::lock_guard<std::mutex> lock(shard.mutex);
-                safeTarget = shard.safeHistories[bot->GetGUID()].FindBacktrackTarget(bx, by, bz, bot->GetMapId(), reqCopy.backtrackAttempts);
-            }
-
-            if (safeTarget && reqCopy.backtrackAttempts < 3)
-            {
-                _stats.backtracks.fetch_add(1, std::memory_order_relaxed);
-                reqCopy.backtrackAttempts++;
-                reqCopy.recoveryMode = RecoveryMode::Backtrack;
-                reqCopy.backtrackX = safeTarget->x;
-                reqCopy.backtrackY = safeTarget->y;
-                reqCopy.backtrackZ = safeTarget->z;
+                // Completed detour leg! Resume normal pathing toward original goal from this new vantage point.
+                reqCopy.recoveryMode = RecoveryMode::None;
+                reqCopy.detour = false;
                 uint64 previousMovementCommandId = reqCopy.movementCommandId;
                 LocomotionToken token = IssueLeg(bot, reqCopy);
                 if (token.IsValid())
@@ -1099,24 +1237,61 @@ namespace BotMovement
                         Release(bot, token);
                         return NavStatus::Superseded;
                     }
+                    return NavStatus::Moving;
                 }
             }
-            else
+            else if (!bot->isMoving() && (now - reqCopy.lastIssueAt > 1500))
             {
-                _stats.gaveUp.fetch_add(1, std::memory_order_relaxed);
-                bool erased = false;
+                std::optional<SafePosition> safeTarget;
                 {
                     std::lock_guard<std::mutex> lock(shard.mutex);
-                    erased = LocomotionStateStore::EraseRequestIfCurrentLocked(
-                        shard, bot->GetGUID(), expectedRequestGen, reqCopy.movementCommandId);
+                    safeTarget = shard.safeHistories[bot->GetGUID()].FindBacktrackTarget(bx, by, bz, bot->GetMapId(), reqCopy.backtrackAttempts);
                 }
-                if (erased)
+
+                if (safeTarget && reqCopy.backtrackAttempts < 3)
                 {
-                    if (reqCopy.movementCommandId != 0)
-                        Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.movementCommandId});
-                    return NavStatus::Stuck;
+                    _stats.backtracks.fetch_add(1, std::memory_order_relaxed);
+                    reqCopy.backtrackAttempts++;
+                    reqCopy.recoveryMode = RecoveryMode::Backtrack;
+                    reqCopy.backtrackX = safeTarget->x;
+                    reqCopy.backtrackY = safeTarget->y;
+                    reqCopy.backtrackZ = safeTarget->z;
+                    uint64 previousMovementCommandId = reqCopy.movementCommandId;
+                    LocomotionToken token = IssueLeg(bot, reqCopy);
+                    if (token.IsValid())
+                    {
+                        bool committed = false;
+                        {
+                            std::lock_guard<std::mutex> lock(shard.mutex);
+                            committed = LocomotionStateStore::CommitNavigateLegLocked(
+                                shard, bot->GetGUID(), expectedRequestGen, goalId, previousMovementCommandId, reqCopy, token);
+                            if (committed && outToken)
+                                *outToken = token;
+                        }
+                        if (!committed)
+                        {
+                            Release(bot, token);
+                            return NavStatus::Superseded;
+                        }
+                    }
                 }
-                return NavStatus::Superseded;
+                else
+                {
+                    _stats.gaveUp.fetch_add(1, std::memory_order_relaxed);
+                    bool erased = false;
+                    {
+                        std::lock_guard<std::mutex> lock(shard.mutex);
+                        erased = LocomotionStateStore::EraseRequestIfCurrentLocked(
+                            shard, bot->GetGUID(), expectedRequestGen, reqCopy.movementCommandId);
+                    }
+                    if (erased)
+                    {
+                        if (reqCopy.movementCommandId != 0)
+                            Release(bot, LocomotionToken{bot->GetGUID(), owner, reqCopy.movementCommandId});
+                        return NavStatus::Stuck;
+                    }
+                    return NavStatus::Superseded;
+                }
             }
         }
 
@@ -1124,7 +1299,7 @@ namespace BotMovement
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE && !bot->isMoving())
         {
             float legDist = Dist2d(bx, by, reqCopy.legX, reqCopy.legY);
-            if (legDist <= 4.0f && distToGoal > acceptRadius)
+            if (legDist <= 4.0f && !NavigateTransaction::IsWithin3dArrival(distToGoal, acceptRadius, distZ))
             {
                 uint64 previousMovementCommandId = reqCopy.movementCommandId;
                 LocomotionToken token = IssueLeg(bot, reqCopy);
@@ -2079,10 +2254,19 @@ namespace BotMovement
         uint64 navGoal = rItr != shard.requests.end() ? rItr->second.goalId : 0;
         uint8 navStage = rItr != shard.requests.end() ? rItr->second.progress.stage : 0;
         uint32 btAttempts = rItr != shard.requests.end() ? rItr->second.backtrackAttempts : 0;
+        float legDist = (rItr != shard.requests.end() && (rItr->second.legX != 0.0f || rItr->second.legY != 0.0f))
+            ? Dist2d(bot->GetPositionX(), bot->GetPositionY(), rItr->second.legX, rItr->second.legY)
+            : 0.0f;
+        float distZ = rItr != shard.requests.end() ? std::abs(bot->GetPositionZ() - rItr->second.z) : 0.0f;
+        NavHoldReason holdReason = rItr != shard.requests.end() ? rItr->second.holdReason : NavHoldReason::None;
+        NavFailureKind failKind = rItr != shard.requests.end() ? rItr->second.lastFailureKind : NavFailureKind::None;
+        uint32 switchbacks = rItr != shard.requests.end() ? rItr->second.progress.legSwitchbacks : 0;
+        uint8 noPathStrikes = rItr != shard.requests.end() ? rItr->second.consecutiveNoPath : 0;
 
         return Acore::StringFormat(
             "cmdId={} owner={} mode={} state={} gen={} extCtrl={} target={} ranges=[{:.1f}, {:.1f}, ang={:.2f}] "
-            "mountState={} pendingSpell={} cdLeft={}ms dismountReason={} navGoal={} navStage={} btAttempts={}",
+            "mountState={} pendingSpell={} cdLeft={}ms dismountReason={} navGoal={} navStage={} btAttempts={} "
+            "legDist={:.1f}yd distZ={:.1f}yd hold={} fail={} switchbacks={} noPathStrikes={}",
             cmdId, MoveOwnerName(owner), MoveModeName(mode), LocomotionStateName(state),
             uint32(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()),
             IsExternallyControlled(bot),
@@ -2091,7 +2275,8 @@ namespace BotMovement
             lItr != shard.locomotion.end() ? lItr->second.chaseMaxRange : 0.0f,
             lItr != shard.locomotion.end() ? lItr->second.chaseAngle : 0.0f,
             MountStateName(mState), pendingSpell, cooldownLeft, DismountReasonName(dReason),
-            navGoal, navStage, btAttempts);
+            navGoal, navStage, btAttempts,
+            legDist, distZ, NavHoldReasonName(holdReason), NavFailureKindName(failKind), switchbacks, noPathStrikes);
     }
 
     std::string DescribeHistory(Player* bot)

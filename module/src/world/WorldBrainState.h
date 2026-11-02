@@ -9,6 +9,7 @@
 #ifndef COA_PLAYERBOTS_WORLD_BRAIN_STATE_H
 #define COA_PLAYERBOTS_WORLD_BRAIN_STATE_H
 
+#include "BehavioralLoopDetector.h"
 #include "BotMovementPrimitives.h"
 #include "DangerMap.h"
 #include "FailureMemory.h"
@@ -70,6 +71,8 @@ struct BrainState
     SuspendReason suspendReason = SuspendReason::None;
 
     FailureMemory failures;
+    BehavioralLoopDetector loopDetector;
+    uint32 lastCommittedQuestId = 0;  // last quest worked on, used for planner decision hysteresis
     // Transient failures in a row per quest; sets the back-off (QuestPolicy::SuspendMs). Never abandons.
     std::unordered_map<uint32, uint32> questSuspensions;
 
