@@ -47,7 +47,7 @@ namespace BotMovement
     LocomotionToken MoveTo(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination = false);
 
     // Internal execution variant with explicit MoveMode (Point vs Navigate) and optional dispatch guard
-    LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard = std::nullopt);
+    LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard = std::nullopt, NavFailureKind* outFailureKind = nullptr);
 
     // Goal-directed multi-leg travel with progress tracking, navmesh-aware detour, and backtrack recovery.
     NavStatus Navigate(Player* bot, MoveOwner owner, uint64 goalId, float x, float y, float z, float acceptRadius, LocomotionToken* outToken = nullptr, bool allowMount = true);
@@ -143,6 +143,10 @@ namespace BotMovement
 
     // Returns a safe value-copy snapshot of aggregated telemetry counters.
     MovementStats Stats();
+
+    // Queries the 3D navmesh path length from the bot to (gx, gy, gz) to verify same-floor topological reachability.
+    // Returns true if a navmesh query is available (with outLength >= 0.0f on a complete path, or -1.0f if unreachable/disconnected).
+    bool QueryDirectPathLength(Player const* bot, float gx, float gy, float gz, float& outLength);
 
     // Diagnostics and command inspection
     std::string Describe(Player* bot);

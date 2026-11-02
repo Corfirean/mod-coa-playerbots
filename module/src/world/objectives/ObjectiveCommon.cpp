@@ -9,6 +9,7 @@
 #include "ObjectiveAreas.h"
 #include "Player.h"
 #include "QuestDef.h"
+#include "SpawnClustering.h"
 #include "WorldExecutor.h"
 #include "WorldPlanner.h"
 #include "WorldReservations.h"
@@ -175,10 +176,41 @@ namespace ObjectiveCommon
 
     bool InArea(ObjectiveContext const& ctx, float slack)
     {
-        float maxZ = std::max(25.0f, (ctx.task.areaRadius + slack) * 0.6f);
-        return ctx.bot->GetMapId() == ctx.task.mapId &&
-               Dist2d(ctx.bot, ctx.task.x, ctx.task.y) <= ctx.task.areaRadius + slack &&
-               (ctx.task.z == 0.0f || std::fabs(ctx.bot->GetPositionZ() - ctx.task.z) <= maxZ);
+        if (ctx.bot->GetMapId() != ctx.task.mapId)
+            return false;
+
+        float const botX = ctx.bot->GetPositionX();
+        float const botY = ctx.bot->GetPositionY();
+        float const botZ = ctx.bot->GetPositionZ();
+        float const anchorDist2d = std::hypot(botX - ctx.task.x, botY - ctx.task.y);
+        if (anchorDist2d > ctx.task.areaRadius + slack)
+            return false;
+
+        ObjectiveArea const* area = ObjectiveAreas::Get(ctx.task.quest.selectedClusterId);
+        static std::vector<SpawnPoint> const emptyPoints;
+        std::vector<SpawnPoint> const& memberPoints = area ? area->points : emptyPoints;
+
+        if (ctx.task.z == 0.0f && memberPoints.empty())
+            return true;
+
+        AreaArrivalPoint const ref = AreaArrivalRule::SelectReferencePoint(
+            botX, botY, botZ, ctx.task.x, ctx.task.y, ctx.task.z, memberPoints);
+        float const refDist2d = std::hypot(botX - ref.x, botY - ref.y);
+        float const refDz = std::fabs(botZ - ref.z);
+
+        if (refDz > AreaArrivalRule::MaxAllowedZ(refDist2d, slack))
+            return false;
+
+        float navPathLen = -1.0f;
+        bool hasNavQuery = false;
+        if (AreaArrivalRule::NeedsTopologicalCheck(refDz) && !ctx.bot->CanFly())
+            hasNavQuery = BotMovement::QueryDirectPathLength(ctx.bot, ref.x, ref.y, ref.z, navPathLen);
+
+        return AreaArrivalRule::Evaluate(
+            botX, botY, botZ,
+            ctx.task.x, ctx.task.y, ctx.task.z,
+            ctx.task.areaRadius, slack, memberPoints,
+            navPathLen, hasNavQuery);
     }
 
     ObjectiveResult TravelToArea(ObjectiveContext& ctx)
@@ -302,6 +334,10 @@ namespace ObjectiveCommon
                 continue;
             if (WorldReservations::IsHeldByOther(ReservationKind::Creature, raw, botGuid))
                 continue;
+            if (ctx.task.phase == TaskPhase::TravelToArea &&
+                std::fabs(creature->GetPositionZ() - bot->GetPositionZ()) > 12.0f &&
+                !bot->IsWithinLOSInMap(creature))
+                continue;
 
             if (acceptHostileOnly)
             {
@@ -361,6 +397,10 @@ namespace ObjectiveCommon
             if (ctx.state.failures.Has(FailKind::GameObject, raw, ctx.now))
                 continue;
             if (WorldReservations::IsHeldByOther(ReservationKind::GameObject, raw, botGuid))
+                continue;
+            if (ctx.task.phase == TaskPhase::TravelToArea &&
+                std::fabs(go->GetPositionZ() - bot->GetPositionZ()) > 12.0f &&
+                !bot->IsWithinLOSInMap(go))
                 continue;
             if (usable && !usable(go))
                 continue;

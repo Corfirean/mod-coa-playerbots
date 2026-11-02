@@ -195,8 +195,7 @@ ObjectiveResult CreatureTargetHandler::Update(ObjectiveContext& ctx)
 
         case TaskPhase::TravelToArea:
         {
-            float dist = std::hypot(ctx.bot->GetPositionX() - task.x, ctx.bot->GetPositionY() - task.y);
-            if (ctx.bot->GetMapId() == task.mapId && dist <= task.areaRadius + EARLY_SCAN_SLACK && ctx.now >= task.nextScanMs)
+            if (ObjectiveCommon::InArea(ctx, EARLY_SCAN_SLACK) && ctx.now >= task.nextScanMs)
             {
                 task.nextScanMs = ctx.now + RollRange(ctx.state, 0x5ca9, ctx.cfg.scanMinMs, ctx.cfg.scanMaxMs);
                 uint32 corpses = 0;

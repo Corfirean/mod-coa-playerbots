@@ -133,25 +133,23 @@ namespace WorldExecutor
             uint64 leg = viaWaypoint ? goal + ((uint64(route.next) + 1) << 56) : goal;
 
             status = BotMovement::Navigate(bot, OwnerFor(state.task), leg, tx, ty, tz, tr, &state.travelToken, allowMount);
+            std::optional<MovementRequest> reqSnap = BotMovement::GetRequestSnapshot(bot->GetGUID());
+            NavFailureKind const failureKind = reqSnap ? reqSnap->lastFailureKind : NavFailureKind::None;
+            uint32 phaseShiftMs = 0;
+            WaypointStepAction const action = TravelWaypointPolicy::EvaluateStep(
+                status, failureKind, route.blockedSinceMs, now, phaseShiftMs);
+            if (phaseShiftMs > 0)
+                state.task.ShiftPhaseClock(phaseShiftMs);
+
             if (!viaWaypoint)
                 break;
-            if (status == NavStatus::Arrived)
+            if (action == WaypointStepAction::AdvanceArrived)
             {
                 ++route.next;
                 status = NavStatus::Moving;
                 continue;
             }
-            if (status == NavStatus::Blocked)
-            {
-                // Refused: after 4 seconds treat as unreachable waypoint and advance.
-                if (!route.blockedSinceMs)
-                    route.blockedSinceMs = now;
-                if (now - route.blockedSinceMs > 4000)
-                    status = NavStatus::Stuck;
-            }
-            else
-                route.blockedSinceMs = 0;
-            if (status == NavStatus::Stuck)
+            if (action == WaypointStepAction::SkipStuckWaypoint)
             {
                 state.failures.Remember(FailKind::NavCorridor, FailureMemory::CorridorId(bot->GetMapId(), tx, ty), now,
                     WorldBrainSettings::Get().clusterFailMs, uint8(FailureReason::Unreachable));
@@ -159,7 +157,6 @@ namespace WorldExecutor
                 ++route.next;
                 if (route.next >= route.points.size())
                     route.disabled = true;
-                route.blockedSinceMs = 0;
                 BotMovement::ResetRequest(bot->GetGUID());
                 status = NavStatus::Moving;
                 continue;

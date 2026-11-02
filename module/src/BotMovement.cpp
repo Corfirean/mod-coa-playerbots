@@ -248,6 +248,52 @@ namespace
     // dungeon with stacked levels (a corridor at -37 became -52 below it) and the point would be off the mesh.
     thread_local bool g_trustGivenZ = false;
 
+    uint64 ResolveStartPolyRef(Player const* bot, float x, float y, float z)
+    {
+        if (!bot)
+            return 0;
+        Map* map = bot->GetMap();
+        if (!map)
+            return 0;
+        dtNavMeshQuery const* query = map->GetMapCollisionData().GetMMapData().GetNavMeshQuery();
+        if (!query)
+            return 0;
+
+        dtQueryFilter filter;
+        filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
+        filter.setExcludeFlags(0);
+
+        float const start[3] = { y, z, x };
+        float const extents[3] = { 3.0f, 6.0f, 3.0f };
+        dtPolyRef startRef = 0;
+        float startPt[3];
+        if (dtStatusFailed(query->findNearestPoly(start, extents, &filter, &startRef, startPt)))
+            return 0;
+        return static_cast<uint64>(startRef);
+    }
+
+    SharedNoPathContext MakeSharedNoPathContext(Player const* bot, float sx, float sy, float sz)
+    {
+        SharedNoPathContext ctx;
+        if (!bot)
+        {
+            ctx.ambiguous = true;
+            return ctx;
+        }
+        ctx.mapId = bot->GetMapId();
+        ctx.instanceId = bot->GetInstanceId();
+        ctx.phaseMask = bot->GetPhaseMask();
+        ctx.capabilityFlags = SharedNoPathCache::PackCapabilities(
+            bot->CanFly(),
+            bot->IsInWater(),
+            bot->HasPlayerFlag(PLAYER_FLAGS_GHOST),
+            bot->IsMounted());
+        ctx.startPolyRef = ResolveStartPolyRef(bot, sx, sy, sz);
+        ctx.botGuid = bot->GetGUID().GetRawValue();
+        ctx.ambiguous = (ctx.startPolyRef == 0);
+        return ctx;
+    }
+
     bool RouteWaypoint(Player* bot, float gx, float gy, float gz, float& ox, float& oy, float& oz)
     {
         Map* map = bot->GetMap();
@@ -368,13 +414,14 @@ namespace
 
         // Token-safe: Issue leg under explicit Navigate MoveMode and carry request generation guard.
         MovementDispatchGuard guard{req.requestGeneration, req.goalId};
+        NavFailureKind failureKind = NavFailureKind::None;
         if (usedRouteWaypoint)
             g_trustGivenZ = true;
-        LocomotionToken token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+        LocomotionToken token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard, &failureKind);
         if (usedRouteWaypoint)
             g_trustGivenZ = false;
 
-        if (!token.IsValid() && req.recoveryMode == RecoveryMode::None && !usedRouteWaypoint)
+        if (!token.IsValid() && failureKind == NavFailureKind::NoPath && req.recoveryMode == RecoveryMode::None && !usedRouteWaypoint)
         {
             // Short/medium leg failed direct PathGenerator (e.g. winding switchback > 74 polys even though 2D dist <= 120 yd)
             // or flying/fallback leg failed: ask RouteWaypoint for a reachable corridor point.
@@ -385,7 +432,7 @@ namespace
                 ty = wy;
                 tz = wz;
                 g_trustGivenZ = true;
-                token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+                token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard, &failureKind);
                 g_trustGivenZ = false;
             }
             else if (tx != req.x || ty != req.y)
@@ -393,9 +440,10 @@ namespace
                 tx = req.x;
                 ty = req.y;
                 tz = req.z;
-                token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard);
+                token = BotMovement::MoveToInternal(bot, req.owner, tx, ty, tz, /*forceDestination=*/false, MoveMode::Navigate, guard, &failureKind);
             }
         }
+        req.lastFailureKind = failureKind;
         if (!token.IsValid())
             return {};
 
@@ -497,6 +545,75 @@ namespace BotMovement
         return _stats.Snapshot();
     }
 
+    bool QueryDirectPathLength(Player const* bot, float gx, float gy, float gz, float& outLength)
+    {
+        outLength = -1.0f;
+        if (!bot)
+            return false;
+        if (bot->CanFly())
+        {
+            outLength = std::hypot(std::hypot(bot->GetPositionX() - gx, bot->GetPositionY() - gy), bot->GetPositionZ() - gz);
+            return true;
+        }
+        Map* map = bot->GetMap();
+        if (!map)
+            return false;
+        dtNavMeshQuery const* query = map->GetMapCollisionData().GetMMapData().GetNavMeshQuery();
+        if (!query)
+            return false;
+
+        _stats.pathQueries.fetch_add(1, std::memory_order_relaxed);
+
+        dtQueryFilter filter;
+        filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
+        filter.setExcludeFlags(0);
+
+        float const start[3] = { bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX() };
+        float const end[3] = { gy, gz, gx };
+        float const extents[3] = { 5.0f, 10.0f, 5.0f };
+        dtPolyRef startRef = 0, endRef = 0;
+        float startPt[3], endPt[3];
+        if (dtStatusFailed(query->findNearestPoly(start, extents, &filter, &startRef, startPt)) || !startRef)
+            return true;
+        if (dtStatusFailed(query->findNearestPoly(end, extents, &filter, &endRef, endPt)) || !endRef)
+            return true;
+        if (std::fabs(endPt[1] - gz) > 6.0f)
+            return true;
+
+        constexpr int MAX_POLYS = 256;
+        constexpr int MAX_POINTS = 256;
+        dtPolyRef polys[MAX_POLYS];
+        int polyCount = 0;
+        dtStatus const pathStatus = query->findPath(startRef, endRef, startPt, endPt, &filter, polys, &polyCount, MAX_POLYS);
+        if (dtStatusFailed(pathStatus) || (pathStatus & DT_PARTIAL_RESULT) || polyCount <= 0 || polys[polyCount - 1] != endRef)
+            return true;
+
+        float closestEnd[3];
+        bool overPoly = false;
+        if (dtStatusFailed(query->closestPointOnPoly(polys[polyCount - 1], endPt, closestEnd, &overPoly)))
+            return true;
+
+        float points[MAX_POINTS * 3];
+        int pointCount = 0;
+        if (dtStatusFailed(query->findStraightPath(startPt, closestEnd, polys, polyCount, points, nullptr, nullptr, &pointCount, MAX_POINTS)) || pointCount < 1)
+            return true;
+
+        float total = 0.0f;
+        float lastX = startPt[0], lastY = startPt[1], lastZ = startPt[2];
+        for (int i = 0; i < pointCount; ++i)
+        {
+            float const dx = points[i * 3] - lastX;
+            float const dy = points[i * 3 + 1] - lastY;
+            float const dz = points[i * 3 + 2] - lastZ;
+            total += std::sqrt(dx * dx + dy * dy + dz * dz);
+            lastX = points[i * 3];
+            lastY = points[i * 3 + 1];
+            lastZ = points[i * 3 + 2];
+        }
+        outLength = total;
+        return true;
+    }
+
     // =========================================================================
     // Arbitrated Locomotion Primitives (Linearized Physical Dispatch & Token-Safe)
     // =========================================================================
@@ -520,26 +637,41 @@ namespace BotMovement
             owner == MoveOwner::Corpse ? "CorpseRun" : "AutoDungeon", bot->GetName(), reason, x, y, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
     }
 
-    LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard)
+    LocomotionToken MoveToInternal(Player* bot, MoveOwner owner, float x, float y, float z, bool forceDestination, MoveMode executionMode, std::optional<MovementDispatchGuard> guard, NavFailureKind* outFailureKind)
     {
+        auto setFailure = [&](NavFailureKind kind)
+        {
+            if (outFailureKind)
+                *outFailureKind = kind;
+        };
+        setFailure(NavFailureKind::None);
+
         if (!bot || !bot->IsInWorld())
+        {
+            setFailure(NavFailureKind::ExternallyControlled);
             return {};
+        }
 
         // A released ghost is not alive, but walking back to its corpse is exactly what it has to do: refusing
         // every move of a dead bot meant no ghost ever reached its body and each came back only on the failsafe.
         if (!bot->IsAlive() && !(owner == MoveOwner::Corpse && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST)))
+        {
+            setFailure(NavFailureKind::ExternallyControlled);
             return {};
+        }
 
         // An active Auto Shot / Shoot (the auto-repeat slot) is not a cast in progress: it stays set for the whole fight and, counted here, kept every
         // ranged bot from walking anywhere (retreating from a target in its dead zone, following, auto-dungeon legs) while it was on.
         if (bot->IsNonMeleeSpellCast(false, false, /*skipAutorepeat=*/true))
         {
+            setFailure(NavFailureKind::ExternallyControlled);
             NoteMoveRefusal(bot, owner, "the bot is casting a spell", x, y);
             return {};
         }
 
         if (IsExternallyControlled(bot))
         {
+            setFailure(NavFailureKind::ExternallyControlled);
             NoteMoveRefusal(bot, owner, "the bot is externally controlled (flight, stun, charge, ...)", x, y);
             return {};
         }
@@ -556,6 +688,7 @@ namespace BotMovement
 
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
             {
+                setFailure(NavFailureKind::BlockedByOwner);
                 NoteMoveRefusal(bot, owner, "another movement owner holds the bot", x, y);
                 return {};
             }
@@ -585,19 +718,22 @@ namespace BotMovement
                 std::fabs(cached->second.y - y) <= SAME_POINT_YARDS &&
                 std::fabs(cached->second.z - groundZ) <= SAME_POINT_YARDS * 3.0f)
             {
+                setFailure(NavFailureKind::NoPath);
                 NoteMoveRefusal(bot, owner, "no path to this point (cached)", x, y);
                 return {};
             }
         }
 
-        // Cross-bot shared no-path corridor check: if multiple nearby bots already confirmed this corridor has no path,
-        // skip repeating the expensive PathGenerator query until TTL expires.
+        // Cross-bot shared no-path corridor check: if multiple nearby bots in the same topology/phase/capability context
+        // already confirmed this corridor has no path, skip repeating the expensive PathGenerator query until TTL expires.
         float const startX = bot->GetPositionX();
         float const startY = bot->GetPositionY();
         float const startZ = bot->GetPositionZ();
+        SharedNoPathContext const noPathCtx = MakeSharedNoPathContext(bot, startX, startY, startZ);
         if (!bot->CanFly() && !forceDestination &&
-            LocomotionStateStore::IsSharedCorridorBlocked(bot->GetMapId(), startX, startY, startZ, x, y, groundZ, now))
+            LocomotionStateStore::IsSharedCorridorBlocked(noPathCtx, startX, startY, startZ, x, y, groundZ, now))
         {
+            setFailure(NavFailureKind::NoPath);
             _stats.sharedNoPathHits.fetch_add(1, std::memory_order_relaxed);
             NoteMoveRefusal(bot, owner, "no path to this corridor (shared cache)", x, y);
             return {};
@@ -622,7 +758,8 @@ namespace BotMovement
         // Step 3: Handle path result under shard state lock
         if (!pathValid)
         {
-            LocomotionStateStore::RecordSharedCorridorFailure(bot->GetMapId(), startX, startY, startZ, x, y, groundZ, now);
+            setFailure(NavFailureKind::NoPath);
+            LocomotionStateStore::RecordSharedCorridorFailure(noPathCtx, startX, startY, startZ, x, y, groundZ, now);
             std::lock_guard<std::mutex> lock(shard.mutex);
             // Record failure in nopath cache WITHOUT touching rec.owner or rec.commandId!
             NopathCacheEntry& entry = shard.nopathCache[bot->GetGUID()];
@@ -635,6 +772,11 @@ namespace BotMovement
             return {};
         }
 
+        if (!bot->CanFly())
+        {
+            LocomotionStateStore::RecordSharedCorridorSuccess(noPathCtx, startX, startY, startZ, x, y, groundZ);
+        }
+
         // Step 4: Serialize physical MotionMaster dispatch under dispatch gate
         std::lock_guard<std::mutex> dispatchLock(LocomotionStateStore::GetDispatchGate(bot->GetGUID()));
         LocomotionToken token;
@@ -644,11 +786,17 @@ namespace BotMovement
 
             // Revalidate CanClaim in case state changed during PathGenerator calculation
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
+            {
+                setFailure(NavFailureKind::BlockedByOwner);
                 return {};
+            }
 
             // Planning ticket epoch check: older plan cannot overwrite newer intent
             if (!LocomotionStateStore::IsPlanCurrentLocked(shard, bot->GetGUID(), owner, myPlanTicket))
+            {
+                setFailure(NavFailureKind::BlockedByOwner);
                 return {};
+            }
 
             // Stale Navigate guard check: validate BEFORE physical commit and command bump!
             if (executionMode == MoveMode::Navigate && guard.has_value())
@@ -660,6 +808,7 @@ namespace BotMovement
                     rItr->second.goalId != guard->goalId)
                 {
                     // Stale request! Zero physical mutation, zero commandId bump.
+                    setFailure(NavFailureKind::BlockedByOwner);
                     return {};
                 }
             }
@@ -733,7 +882,16 @@ namespace BotMovement
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
+            {
+                auto rItr = shard.requests.find(bot->GetGUID());
+                if (rItr != shard.requests.end() && rItr->second.owner == owner && rItr->second.goalId == goalId)
+                {
+                    rItr->second.progress.Hold(now);
+                    rItr->second.holdReason = NavHoldReason::HigherPriorityOwner;
+                    rItr->second.lastFailureKind = NavFailureKind::BlockedByOwner;
+                }
                 return NavStatus::Blocked;
+            }
 
             auto rItr = shard.requests.find(bot->GetGUID());
             if (rItr != shard.requests.end() && rItr->second.owner == owner && rItr->second.goalId == goalId)
@@ -799,7 +957,16 @@ namespace BotMovement
             std::lock_guard<std::mutex> lock(shard.mutex);
 
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
+            {
+                auto rItr = shard.requests.find(bot->GetGUID());
+                if (rItr != shard.requests.end() && rItr->second.owner == owner && rItr->second.goalId == goalId)
+                {
+                    rItr->second.progress.Hold(now);
+                    rItr->second.holdReason = NavHoldReason::HigherPriorityOwner;
+                    rItr->second.lastFailureKind = NavFailureKind::BlockedByOwner;
+                }
                 return NavStatus::Blocked;
+            }
 
             auto rItr = shard.requests.find(bot->GetGUID());
             if (rItr == shard.requests.end() || rItr->second.goalId != goalId || rItr->second.owner != owner ||
@@ -853,8 +1020,9 @@ namespace BotMovement
         // Step 2: Handle First Leg (or retry after unissued first-leg failure)
         if (isNewRequest)
         {
+            SharedNoPathContext const noPathCtx = MakeSharedNoPathContext(bot, bx, by, bz);
             if (reqCopy.consecutiveNoPath > 0 && (now - reqCopy.lastIssueAt < NOPATH_RECHECK_COOLDOWN_MS) &&
-                !LocomotionStateStore::IsSharedCorridorBlocked(bot->GetMapId(), bx, by, bz, x, y, z, now))
+                !LocomotionStateStore::IsSharedCorridorBlocked(noPathCtx, bx, by, bz, x, y, z, now))
             {
                 // Waiting for nopath recheck cooldown before strike 2
                 return NavStatus::Moving;
@@ -882,7 +1050,27 @@ namespace BotMovement
             }
             else
             {
-                // First-leg path failure: classify and escalate after 2 strikes (or immediately if shared corridor is blocked)
+                // If first leg was refused due to temporary ownership preemption or external control,
+                // hold progress clocks and return Blocked without counting a geometric NoPath strike.
+                if (reqCopy.lastFailureKind == NavFailureKind::BlockedByOwner ||
+                    reqCopy.lastFailureKind == NavFailureKind::ExternallyControlled)
+                {
+                    reqCopy.progress.Hold(now);
+                    reqCopy.holdReason = (reqCopy.lastFailureKind == NavFailureKind::BlockedByOwner)
+                        ? NavHoldReason::HigherPriorityOwner
+                        : NavHoldReason::ExternalControl;
+                    std::lock_guard<std::mutex> lock(shard.mutex);
+                    auto rItr = shard.requests.find(bot->GetGUID());
+                    if (rItr != shard.requests.end() &&
+                        NavigateTransaction::IsRequestCurrent(rItr->second, expectedRequestGen, goalId) &&
+                        rItr->second.movementCommandId == 0)
+                    {
+                        rItr->second = reqCopy;
+                    }
+                    return NavStatus::Blocked;
+                }
+
+                // First-leg geometric path failure: classify and escalate after 2 strikes (or immediately if shared corridor is blocked)
                 reqCopy.consecutiveNoPath++;
                 reqCopy.lastIssueAt = now;
                 reqCopy.lastFailureKind = (distToGoal <= acceptRadius * 2.0f && distZ > NavigateTransaction::MaxArrivalZ(acceptRadius))
@@ -891,7 +1079,7 @@ namespace BotMovement
 
                 bool const corridorConfirmedBlocked =
                     reqCopy.consecutiveNoPath >= 2 ||
-                    LocomotionStateStore::IsSharedCorridorBlocked(bot->GetMapId(), bx, by, bz, x, y, z, now);
+                    LocomotionStateStore::IsSharedCorridorBlocked(noPathCtx, bx, by, bz, x, y, z, now);
 
                 if (corridorConfirmedBlocked)
                 {
@@ -1295,11 +1483,13 @@ namespace BotMovement
             }
         }
 
-        // Check if current normal leg completed and next leg needed
+        // Check if current normal leg completed (or was interrupted mid-leg by temporary combat/control preemption) and next leg is needed
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE && !bot->isMoving())
         {
             float legDist = Dist2d(bx, by, reqCopy.legX, reqCopy.legY);
-            if (legDist <= 4.0f && !NavigateTransaction::IsWithin3dArrival(distToGoal, acceptRadius, distZ))
+            bool const legReachedOrInterrupted = (legDist <= 4.0f) ||
+                (reqCopy.recoveryMode == RecoveryMode::None && now - reqCopy.lastIssueAt >= 1500);
+            if (legReachedOrInterrupted && !NavigateTransaction::IsWithin3dArrival(distToGoal, acceptRadius, distZ))
             {
                 uint64 previousMovementCommandId = reqCopy.movementCommandId;
                 LocomotionToken token = IssueLeg(bot, reqCopy);

@@ -58,8 +58,8 @@ All 10 root-cause defects identified during Phase 0 (`docs/open-world-hardening/
 ## 4. Tests Executed vs. Not Executed
 
 ### Executed (`PASS` — 100% Pass Rate)
-- `locomotion_tests.exe`: **398 checks, 0 failures** (includes 6 new open-world navigation hardening test suites and all 20 geometric scenarios + fault injection).
-- `world_logic_tests.exe`: **519 checks, 0 failures** (includes `TestCorridorFailureMemory`, `TestBehavioralLoopDetector`, `TestDecisionHysteresis`, and `TestScaleMicrobenchmarks`).
+- `locomotion_tests.exe`: **477 checks, 0 failures** (includes 8 open-world & post-review navigation hardening test suites covering all 20 geometric scenarios, blocked-state failure-memory protection, and context-isolated `SharedNoPathCache`).
+- `world_logic_tests.exe`: **530 checks, 0 failures** (includes `TestCorridorFailureMemory`, `TestBehavioralLoopDetector`, `TestDecisionHysteresis`, `TestScaleMicrobenchmarks`, and `TestAreaArrivalVerticalAndTopologicalHardening`).
 - `combat_decisions_tests.exe`: **87 checks, 0 failures**.
 - `encounter_tests.exe`: **9,916 checks, 0 failures**.
 - `map_service_tests.exe`: **1,776 checks, 0 failures**.

@@ -37,4 +37,4 @@ Executed via `TestScaleMicrobenchmarks()` in `world_logic_tests.cpp` (`cl /O2 /s
 ### 2.3 Per-Bot & Global Memory Footprint of New Structures
 - **`NavProgress` additions:** `+32 bytes` per active `MovementRequest` (`bestLeg2d`, `bestLegDz`, `lastGoalProgressAt`, `legSwitchbacks`, 4-cell ring `recentCellX`/`Y`, counters). At 1,000 bots: **`32 KB`**.
 - **`BehavioralLoopDetector` (`BrainState`):** `3 x 8 x 16 bytes + 24 bytes = 408 bytes` per bot. At 1,000 bots: **`408 KB`** (fixed-size `std::array`, zero heap allocations).
-- **`SharedNoPathCache` (Global):** `256 x 16 bytes = 4,096 bytes` (**`4 KB`** total global static ring buffer, zero heap allocations).
+- **`SharedNoPathCache` (Global):** `256 x 24 bytes = 6,144 bytes` (**`6 KB`** total global static ring buffer, zero heap allocations).

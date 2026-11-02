@@ -60,16 +60,46 @@ public:
         return _dispatchGates[guid.GetCounter() % DISPATCH_GATES];
     }
 
+    static bool IsSharedCorridorBlocked(SharedNoPathContext const& ctx, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs)
+    {
+        std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
+        return _sharedNoPathCache.IsBlocked(ctx, sx, sy, sz, dx, dy, dz, nowMs);
+    }
+
     static bool IsSharedCorridorBlocked(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs)
     {
         std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
         return _sharedNoPathCache.IsBlocked(mapId, sx, sy, sz, dx, dy, dz, nowMs);
     }
 
+    static uint32 RecordSharedCorridorFailure(SharedNoPathContext const& ctx, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs)
+    {
+        std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
+        return _sharedNoPathCache.RecordFailure(ctx, sx, sy, sz, dx, dy, dz, nowMs);
+    }
+
     static uint32 RecordSharedCorridorFailure(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs)
     {
         std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
         return _sharedNoPathCache.RecordFailure(mapId, sx, sy, sz, dx, dy, dz, nowMs);
+    }
+
+    static void RecordSharedCorridorSuccess(SharedNoPathContext const& ctx, float sx, float sy, float sz, float dx, float dy, float dz)
+    {
+        std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
+        _sharedNoPathCache.RecordSuccess(ctx, sx, sy, sz, dx, dy, dz);
+    }
+
+    static void RecordSharedCorridorSuccess(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz)
+    {
+        std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
+        _sharedNoPathCache.RecordSuccess(mapId, sx, sy, sz, dx, dy, dz);
+    }
+
+    static size_t SharedNoPathCacheSize()
+    {
+        std::lock_guard<std::mutex> lock(_sharedNoPathMutex);
+        return _sharedNoPathCache.Size();
     }
 
     // Monotonic request generation allocator (caller MUST hold shard.mutex)

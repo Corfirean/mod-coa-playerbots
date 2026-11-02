@@ -6,8 +6,8 @@ All standalone C++ test suites, Python test suites, and full AzerothCore module 
 
 | Suite / Target | Command / Binary | Checks / Tests | Failures | Status |
 |---|---|---:|---:|---|
-| **Locomotion & Navigation Overhaul + Open-World Hardening** | `locomotion_tests.exe` (`module/tests/locomotion_tests.cpp`) | 398 checks (48 test functions) | 0 | **PASS** |
-| **Open-World Pure Logic, Hysteresis, Loop Detector & Benchmarks** | `world_logic_tests.exe` (`module/tests/world_logic_tests.cpp`) | 519 checks (16 test functions) | 0 | **PASS** |
+| **Locomotion & Navigation Overhaul + Open-World Hardening** | `locomotion_tests.exe` (`module/tests/locomotion_tests.cpp`) | 477 checks (50 test functions) | 0 | **PASS** |
+| **Open-World Pure Logic, Hysteresis, Loop Detector & Benchmarks** | `world_logic_tests.exe` (`module/tests/world_logic_tests.cpp`) | 530 checks (17 test functions) | 0 | **PASS** |
 | **Combat Movement & Decision Logic** | `combat_decisions_tests.exe` (`module/tests/combat_decisions_tests.cpp`) | 87 checks | 0 | **PASS** |
 | **Open-World Encounters & Choreography** | `encounter_tests.exe` (`module/tests/encounter_tests.cpp`) | 9,916 checks | 0 | **PASS** |
 | **World Map Protocol, Viewport Filtering & Scale Benchmarks** | `map_service_tests.exe` (`module/tests/map_service_tests.cpp`) | 1,776 checks | 0 | **PASS** |
