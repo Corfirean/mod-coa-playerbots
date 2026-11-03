@@ -23,6 +23,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "TemporarySummon.h"
 #include "SpellAuras.h"
@@ -592,6 +593,20 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
         uint32 map = 0; float x = 0, y = 0, z = 0, o = 0; std::string all;
         if (!(input >> map >> x >> y >> z >> o)) throw std::runtime_error("dgo <leader> <map> <x> <y> <z> <o> [all]");
         input >> all;
+        // The quest an instance asks for (Old Hillsbrad: "The Caverns of Time") is not what a test group is about: hand it over before the teleport.
+        auto grantAccess = [&](Player* member)
+        {
+            if (DungeonProgressionRequirements const* req = sObjectMgr->GetAccessRequirement(map, member->GetDifficulty(false)))
+                for (ProgressionRequirement const* quest : req->quests)
+                    if (quest && (quest->faction == TEAM_NEUTRAL || quest->faction == member->GetTeamId()) && !member->IsQuestRewarded(quest->id))
+                        member->SetRewardedQuest(quest->id);
+        };
+        grantAccess(leader);
+        if (all == "all")
+            if (Group* accessGroup = leader->GetGroup())
+                for (auto const& slot : accessGroup->GetMemberSlots())
+                    if (Player* m = ObjectAccessor::FindPlayer(slot.guid); m && m != leader)
+                        grantAccess(m);
         leader->TeleportTo(map, x, y, z, o);
         if (all == "all")
             if (Group* group = leader->GetGroup())
