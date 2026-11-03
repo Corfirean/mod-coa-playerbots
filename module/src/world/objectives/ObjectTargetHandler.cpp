@@ -50,6 +50,14 @@ GameObject* ObjectTargetHandler::Scan(ObjectiveContext& ctx)
 void ObjectTargetHandler::StartApproach(ObjectiveContext& ctx, GameObject* go)
 {
     ctx.task.quest.targetGuid = go->GetGUID();
+    if (LoopDiagnosis diag = ctx.state.loopDetector.RecordTargetAttempt(go->GetGUID().GetRawValue(), ctx.now))
+    {
+        Count(ctx.state.metrics, &WorldMetrics::loopsBroken);
+        NoteEvent(ctx.state, Acore::StringFormat("loop broken ({}): object {} skipped", LoopKindName(diag.kind), go->GetEntry()));
+        ObjectiveCommon::ForgetTarget(ctx, FailureReason::NoProgress);
+        ObjectiveCommon::BeginSearch(ctx, "object loop broken");
+        return;
+    }
     ctx.task.quest.progressMark = ObjectiveCommon::TaskProgress(ctx.bot, ctx.task);
     ctx.task.wandering = false;
     LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' TargetSelected object {} ({}) for quest {} objective {} at {:.0f} yd.",
@@ -71,8 +79,7 @@ ObjectiveResult ObjectTargetHandler::Update(ObjectiveContext& ctx)
 
         case TaskPhase::TravelToArea:
         {
-            float dist = std::hypot(ctx.bot->GetPositionX() - task.x, ctx.bot->GetPositionY() - task.y);
-            if (ctx.bot->GetMapId() == task.mapId && dist <= task.areaRadius + EARLY_SCAN_SLACK && ctx.now >= task.nextScanMs)
+            if (ObjectiveCommon::InArea(ctx, EARLY_SCAN_SLACK) && ctx.now >= task.nextScanMs)
             {
                 task.nextScanMs = ctx.now + RollRange(ctx.state, 0x0b5c, ctx.cfg.scanMinMs, ctx.cfg.scanMaxMs);
                 if (GameObject* go = Scan(ctx))
@@ -134,8 +141,11 @@ ObjectiveResult ObjectTargetHandler::Update(ObjectiveContext& ctx)
             if (!InUseRange(ctx, go))
             {
                 float dist = ctx.bot->GetDistance(go);
+                float dist2d = std::hypot(ctx.bot->GetPositionX() - go->GetPositionX(), ctx.bot->GetPositionY() - go->GetPositionY());
+                float useRange = UseRange(ctx, go);
+                float accept = (dist2d <= useRange) ? 1.5f : std::max(1.5f, useRange - 1.5f);
                 NavStatus status = WorldExecutor::TravelTo(ctx.bot, ctx.state, WorldGoalSub::Target, go->GetPositionX(),
-                    go->GetPositionY(), go->GetPositionZ(), std::max(1.5f, UseRange(ctx, go) - 1.5f), go->GetGUID().GetCounter(),
+                    go->GetPositionY(), go->GetPositionZ(), accept, go->GetGUID().GetCounter(),
                     dist > 60.0f);
                 if (status == NavStatus::Stuck)
                 {

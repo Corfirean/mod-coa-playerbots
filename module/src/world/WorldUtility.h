@@ -37,6 +37,7 @@ struct UtilityWeights
     float turnInBatch = 30.0f;        // per extra completed quest handed in at the same NPC
     float acceptBase = 55.0f;         // a quest giver with work for the bot
     float acceptPerQuest = 20.0f;     // per acceptable quest on offer
+    float activeQuestHysteresis = 18.0f; // commitment bonus for continuing the active quest
 };
 
 struct TargetWeights
@@ -62,6 +63,7 @@ struct ClusterWeights
     float crowd = 4.0f;               // per bot in the surrounding cells
     float failure = 80.0f;            // per live failure strike on the place
     float here = 25.0f;               // already standing in it: no trip needed
+    float currentAreaHysteresis = 15.0f; // commitment bonus for staying in the currently assigned area
     float jitter = 10.0f;
 };
 
@@ -70,6 +72,7 @@ struct ObjectiveUtilityInput
     float remainingFraction = 1.0f;   // 0 = done, 1 = nothing done yet
     float questXpShare = 0.0f;        // quest XP / XP needed for the bot's next level
     bool chainQuest = false;
+    bool activeQuest = false;         // bot is already committed to this quest
     uint32 overlapCount = 0;          // other objectives served by the same targets
     uint32 routeNeighbours = 0;       // other objectives with an area nearby
     float distance = 0.0f;
@@ -89,6 +92,7 @@ struct ClusterScoreInput
     uint32 crowd = 0;
     uint32 failureStrikes = 0;
     bool here = false;
+    bool currentArea = false;         // bot's task is already assigned to this cluster
     float jitter = 0.0f;              // 0-1
 };
 
@@ -125,6 +129,8 @@ namespace WorldUtility
         score += w.xpValue * std::clamp(in.questXpShare, 0.0f, 1.0f);
         if (in.chainQuest)
             score += w.chainProgress;
+        if (in.activeQuest)
+            score += w.activeQuestHysteresis;
         score += w.overlapBonus * float(std::min<uint32>(in.overlapCount, 4));
         score += w.routeSynergy * float(std::min<uint32>(in.routeNeighbours, 4));
         score += w.personality * (in.questingTrait - 50.0f);
@@ -148,6 +154,8 @@ namespace WorldUtility
         score -= w.failure * float(std::min<uint32>(in.failureStrikes, 4));
         if (in.here)
             score += w.here;
+        if (in.currentArea)
+            score += w.currentAreaHysteresis;
         score += w.jitter * in.jitter;
         return score;
     }

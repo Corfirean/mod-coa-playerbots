@@ -59,6 +59,14 @@ Creature* CreatureTargetHandler::Scan(ObjectiveContext& ctx, uint32& corpses)
 void CreatureTargetHandler::StartApproach(ObjectiveContext& ctx, Creature* target)
 {
     ctx.task.quest.targetGuid = target->GetGUID();
+    if (LoopDiagnosis diag = ctx.state.loopDetector.RecordTargetAttempt(target->GetGUID().GetRawValue(), ctx.now))
+    {
+        Count(ctx.state.metrics, &WorldMetrics::loopsBroken);
+        NoteEvent(ctx.state, Acore::StringFormat("loop broken ({}): target {} skipped", LoopKindName(diag.kind), target->GetName()));
+        ObjectiveCommon::ForgetTarget(ctx, FailureReason::NoProgress);
+        ObjectiveCommon::BeginSearch(ctx, "target loop broken");
+        return;
+    }
     ctx.task.quest.progressMark = ObjectiveCommon::TaskProgress(ctx.bot, ctx.task);
     ctx.task.wandering = false;
     LOG_DEBUG(BotAI::BotDebugLog::LoggerName(ctx.bot->GetGUID()), "Bot '{}' TargetSelected '{}' ({}) for quest {} objective {} at {:.0f} yd.",
@@ -187,8 +195,7 @@ ObjectiveResult CreatureTargetHandler::Update(ObjectiveContext& ctx)
 
         case TaskPhase::TravelToArea:
         {
-            float dist = std::hypot(ctx.bot->GetPositionX() - task.x, ctx.bot->GetPositionY() - task.y);
-            if (ctx.bot->GetMapId() == task.mapId && dist <= task.areaRadius + EARLY_SCAN_SLACK && ctx.now >= task.nextScanMs)
+            if (ObjectiveCommon::InArea(ctx, EARLY_SCAN_SLACK) && ctx.now >= task.nextScanMs)
             {
                 task.nextScanMs = ctx.now + RollRange(ctx.state, 0x5ca9, ctx.cfg.scanMinMs, ctx.cfg.scanMaxMs);
                 uint32 corpses = 0;

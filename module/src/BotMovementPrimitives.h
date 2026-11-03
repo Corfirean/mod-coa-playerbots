@@ -187,6 +187,54 @@ inline char const* NavStatusName(NavStatus s)
     }
 }
 
+enum class NavFailureKind : uint8
+{
+    None = 0,
+    BlockedByOwner,
+    ExternallyControlled,
+    NoPath,
+    VerticallyDisconnected,
+    StallExhausted,
+};
+
+inline char const* NavFailureKindName(NavFailureKind k)
+{
+    switch (k)
+    {
+        case NavFailureKind::None:                   return "None";
+        case NavFailureKind::BlockedByOwner:         return "BlockedByOwner";
+        case NavFailureKind::ExternallyControlled:   return "ExternallyControlled";
+        case NavFailureKind::NoPath:                 return "NoPath";
+        case NavFailureKind::VerticallyDisconnected: return "VerticallyDisconnected";
+        case NavFailureKind::StallExhausted:         return "StallExhausted";
+        default:                                     return "Unknown";
+    }
+}
+
+enum class NavHoldReason : uint8
+{
+    None = 0,
+    ExternalControl,
+    Rooted,
+    Casting,
+    MountCasting,
+    HigherPriorityOwner,
+};
+
+inline char const* NavHoldReasonName(NavHoldReason r)
+{
+    switch (r)
+    {
+        case NavHoldReason::None:                return "None";
+        case NavHoldReason::ExternalControl:     return "ExternalControl";
+        case NavHoldReason::Rooted:              return "Rooted";
+        case NavHoldReason::Casting:             return "Casting";
+        case NavHoldReason::MountCasting:        return "MountCasting";
+        case NavHoldReason::HigherPriorityOwner: return "HigherPriorityOwner";
+        default:                                 return "Unknown";
+    }
+}
+
 enum class DismountReason : uint8
 {
     Manual = 0,
@@ -276,7 +324,7 @@ struct TransitionRecord
 
 class HistoryBuffer
 {
-public:
+    public:
     static constexpr size_t CAPACITY = 32;
 
     void Record(TransitionRecord const& rec)
@@ -383,6 +431,172 @@ struct NopathCacheEntry
     uint32 expiresAtMs = 0;
 };
 
+struct SharedNoPathContext
+{
+    uint32 mapId = 0;
+    uint32 instanceId = 0;
+    uint32 phaseMask = 1;
+    uint8 capabilityFlags = 0; // bit 0: canFly, bit 1: inWater, bit 2: isGhost, bit 3: isMounted
+    uint64 startPolyRef = 1;   // Detour polygon ref of start position (isolates thin walls / disconnected mesh regions)
+    uint64 botGuid = 0;        // Reporter bot GUID raw value (prevents single-bot self-confirmation when != 0)
+    bool ambiguous = false;    // True when start navmesh polygon could not be resolved: conservative fallback skips cache
+};
+
+struct SharedNoPathEntry
+{
+    uint64 key = 0;
+    uint32 strikes = 0;
+    uint32 expiresAtMs = 0;
+    uint64 lastBotGuid = 0;
+};
+
+class SharedNoPathCache
+{
+public:
+    static constexpr size_t CAPACITY = 256;
+    static constexpr uint32 DEFAULT_TTL_MS = 20000;
+    static constexpr uint32 STRIKE_THRESHOLD = 2;
+    static constexpr float START_CELL_YARDS = 4.0f;
+    static constexpr float DEST_CELL_YARDS = 4.0f;
+
+    static uint8 PackCapabilities(bool canFly, bool inWater, bool isGhost, bool isMounted = false)
+    {
+        return static_cast<uint8>((canFly ? 1u : 0u) |
+                                  (inWater ? 2u : 0u) |
+                                  (isGhost ? 4u : 0u) |
+                                  (isMounted ? 8u : 0u));
+    }
+
+    static uint64 MakeCorridorKey(SharedNoPathContext const& ctx, float sx, float sy, float sz, float dx, float dy, float dz)
+    {
+        auto qs = [](float v) -> int64_t { return static_cast<int64_t>(std::floor(v / START_CELL_YARDS)); };
+        auto qd = [](float v) -> int64_t { return static_cast<int64_t>(std::floor(v / DEST_CELL_YARDS)); };
+        uint64 h = 1469598103934665603ULL;
+        auto mix = [&](uint64 v) {
+            h ^= v;
+            h *= 1099511628211ULL;
+        };
+        mix(ctx.mapId);
+        mix(ctx.instanceId);
+        mix(ctx.phaseMask);
+        mix(ctx.capabilityFlags);
+        mix(ctx.startPolyRef);
+        mix(static_cast<uint64>(qs(sx)));
+        mix(static_cast<uint64>(qs(sy)));
+        mix(static_cast<uint64>(qs(sz)));
+        mix(static_cast<uint64>(qd(dx)));
+        mix(static_cast<uint64>(qd(dy)));
+        mix(static_cast<uint64>(qd(dz)));
+        return h ? h : 1ULL;
+    }
+
+    static uint64 MakeCorridorKey(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz)
+    {
+        SharedNoPathContext ctx;
+        ctx.mapId = mapId;
+        return MakeCorridorKey(ctx, sx, sy, sz, dx, dy, dz);
+    }
+
+    bool IsBlocked(SharedNoPathContext const& ctx, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs) const
+    {
+        if (ctx.ambiguous || ctx.startPolyRef == 0)
+            return false;
+
+        uint64 const k = MakeCorridorKey(ctx, sx, sy, sz, dx, dy, dz);
+        for (size_t i = 0; i < _count; ++i)
+        {
+            SharedNoPathEntry const& e = _entries[i];
+            if (e.key == k)
+                return nowMs < e.expiresAtMs && e.strikes >= STRIKE_THRESHOLD;
+        }
+        return false;
+    }
+
+    bool IsBlocked(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs) const
+    {
+        SharedNoPathContext ctx;
+        ctx.mapId = mapId;
+        return IsBlocked(ctx, sx, sy, sz, dx, dy, dz, nowMs);
+    }
+
+    uint32 RecordFailure(SharedNoPathContext const& ctx, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs, uint32 ttlMs = DEFAULT_TTL_MS)
+    {
+        if (ctx.ambiguous || ctx.startPolyRef == 0)
+            return 0;
+
+        uint64 const k = MakeCorridorKey(ctx, sx, sy, sz, dx, dy, dz);
+        for (size_t i = 0; i < _count; ++i)
+        {
+            if (_entries[i].key == k)
+            {
+                if (nowMs >= _entries[i].expiresAtMs)
+                {
+                    _entries[i].strikes = 1;
+                    _entries[i].lastBotGuid = ctx.botGuid;
+                }
+                else if (ctx.botGuid == 0 || ctx.botGuid != _entries[i].lastBotGuid)
+                {
+                    ++_entries[i].strikes;
+                    _entries[i].lastBotGuid = ctx.botGuid;
+                }
+                _entries[i].expiresAtMs = nowMs + ttlMs;
+                return _entries[i].strikes;
+            }
+        }
+        size_t idx = _head;
+        _entries[idx] = SharedNoPathEntry{k, 1, nowMs + ttlMs, ctx.botGuid};
+        _head = (_head + 1) % CAPACITY;
+        if (_count < CAPACITY)
+            ++_count;
+        return 1;
+    }
+
+    uint32 RecordFailure(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz, uint32 nowMs, uint32 ttlMs = DEFAULT_TTL_MS)
+    {
+        SharedNoPathContext ctx;
+        ctx.mapId = mapId;
+        return RecordFailure(ctx, sx, sy, sz, dx, dy, dz, nowMs, ttlMs);
+    }
+
+    void RecordSuccess(SharedNoPathContext const& ctx, float sx, float sy, float sz, float dx, float dy, float dz)
+    {
+        if (ctx.ambiguous || ctx.startPolyRef == 0)
+            return;
+
+        uint64 const k = MakeCorridorKey(ctx, sx, sy, sz, dx, dy, dz);
+        for (size_t i = 0; i < _count; ++i)
+        {
+            if (_entries[i].key == k)
+            {
+                _entries[i].strikes = 0;
+                _entries[i].expiresAtMs = 0;
+                _entries[i].lastBotGuid = 0;
+                return;
+            }
+        }
+    }
+
+    void RecordSuccess(uint32 mapId, float sx, float sy, float sz, float dx, float dy, float dz)
+    {
+        SharedNoPathContext ctx;
+        ctx.mapId = mapId;
+        RecordSuccess(ctx, sx, sy, sz, dx, dy, dz);
+    }
+
+    size_t Size() const { return _count; }
+
+    void Clear()
+    {
+        _head = 0;
+        _count = 0;
+    }
+
+private:
+    std::array<SharedNoPathEntry, CAPACITY> _entries{};
+    size_t _head = 0;
+    size_t _count = 0;
+};
+
 struct MovementRequest
 {
     ObjectGuid botGuid;
@@ -401,6 +615,7 @@ struct MovementRequest
     uint32 lastIssueAt = 0;
     float legX = 0.0f;
     float legY = 0.0f;
+    float legZ = 0.0f;
     bool detour = false;
     float detourX = 0.0f;
     float detourY = 0.0f;
@@ -412,6 +627,9 @@ struct MovementRequest
     uint64 backtrackCommandId = 0;
     uint32 backtrackAttempts = 0;
     bool allowMount = true;
+    uint8 consecutiveNoPath = 0;
+    NavFailureKind lastFailureKind = NavFailureKind::None;
+    NavHoldReason holdReason = NavHoldReason::None;
 };
 
 struct BotLocomotionRecord
@@ -786,10 +1004,23 @@ public:
 class NavigateTransaction
 {
 public:
-    static bool ValidateArrival(MovementRequest const& req, MoveOwner owner, uint64 goalId,
-                                float distToGoal, float acceptRadius, LocomotionToken& outTokenToRelease)
+    static constexpr float DEFAULT_MAX_Z_ARRIVAL = 6.0f;
+
+    static float MaxArrivalZ(float acceptRadius)
     {
-        if (distToGoal <= acceptRadius)
+        return std::min(12.0f, std::max(DEFAULT_MAX_Z_ARRIVAL, acceptRadius * 1.5f));
+    }
+
+    static bool IsWithin3dArrival(float distToGoal2d, float acceptRadius, float distZ = 0.0f)
+    {
+        return distToGoal2d <= acceptRadius && distZ <= MaxArrivalZ(acceptRadius);
+    }
+
+    static bool ValidateArrival(MovementRequest const& req, MoveOwner owner, uint64 goalId,
+                                float distToGoal, float acceptRadius, LocomotionToken& outTokenToRelease,
+                                float distZ = 0.0f)
+    {
+        if (IsWithin3dArrival(distToGoal, acceptRadius, distZ))
         {
             if (req.owner == owner && req.goalId == goalId && req.movementCommandId != 0)
             {
@@ -805,7 +1036,7 @@ public:
         return req.requestGeneration == expectedGeneration && req.goalId == goalId;
     }
 
-    static void CommitLeg(MovementRequest& req, LocomotionToken const& token, float legX, float legY, uint32 now)
+    static void CommitLeg(MovementRequest& req, LocomotionToken const& token, float legX, float legY, uint32 now, float legZ = 0.0f)
     {
         if (!token.IsValid())
             return;
@@ -813,7 +1044,53 @@ public:
         req.legs++;
         req.legX = legX;
         req.legY = legY;
+        req.legZ = legZ;
         req.lastIssueAt = now;
+        req.consecutiveNoPath = 0;
+        req.lastFailureKind = NavFailureKind::None;
+    }
+};
+
+enum class WaypointStepAction : uint8
+{
+    ContinueMoving = 0, // Keep current waypoint, stay in Moving state
+    HoldBlocked,        // Temporary preemption/control: shift task phase clock, do NOT mark Stuck or record NavCorridor
+    AdvanceArrived,     // Waypoint reached: ++route.next and continue
+    SkipStuckWaypoint,  // Genuine navigation failure (NavStatus::Stuck): record FailKind::NavCorridor, ++route.next
+    SupersededNoOp,     // Request superseded by a newer goal: do not record failure or mutate route
+};
+
+class TravelWaypointPolicy
+{
+public:
+    static WaypointStepAction EvaluateStep(NavStatus status, NavFailureKind failureKind, uint32& blockedSinceMs,
+                                           uint32 nowMs, uint32& outPhaseShiftMs)
+    {
+        outPhaseShiftMs = 0;
+        if (status == NavStatus::Blocked)
+        {
+            if (!blockedSinceMs)
+                blockedSinceMs = nowMs;
+            else if (nowMs > blockedSinceMs)
+            {
+                outPhaseShiftMs = nowMs - blockedSinceMs;
+                blockedSinceMs = nowMs;
+            }
+            return WaypointStepAction::HoldBlocked;
+        }
+
+        blockedSinceMs = 0;
+        if (status == NavStatus::Arrived)
+            return WaypointStepAction::AdvanceArrived;
+        if (status == NavStatus::Superseded)
+            return WaypointStepAction::SupersededNoOp;
+        if (status == NavStatus::Stuck)
+        {
+            if (failureKind == NavFailureKind::BlockedByOwner || failureKind == NavFailureKind::ExternallyControlled)
+                return WaypointStepAction::HoldBlocked;
+            return WaypointStepAction::SkipStuckWaypoint;
+        }
+        return WaypointStepAction::ContinueMoving;
     }
 };
 

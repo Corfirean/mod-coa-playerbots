@@ -1022,11 +1022,12 @@ namespace WorldBrain
 
         WorldMetrics const& m = state.metrics;
         handler->PSendSysMessage("  Metrics: quests accepted {}, completed {}, turned in {}, suspended {}, abandoned {}; objectives {}; "
-            "kill targets {}; tasks {}/{} ok/failed; stuck {}; reservation conflicts {}; area switches {}; detours {}; "
-            "helped {}, resurrected {}, parties {}.",
+            "kill targets {}; tasks {}/{} ok/failed; stuck {}; loops broken {} (detector: {}, last: {}); danger skipped {}; "
+            "reservation conflicts {}; area switches {}; detours {}; helped {}, resurrected {}, parties {}.",
             m.questsAccepted, m.questsCompleted, m.questsTurnedIn, m.questsSuspended, m.questsAbandoned, m.objectivesCompleted,
-            m.killTargetsSelected, m.tasksCompleted, m.tasksFailed, m.movementStuck, m.reservationConflicts, m.areaSwitches,
-            m.opportunities, m.assists, m.resurrections, m.partiesFormed);
+            m.killTargetsSelected, m.tasksCompleted, m.tasksFailed, m.movementStuck, m.loopsBroken,
+            state.loopDetector.LoopsDetected(), LoopKindName(state.loopDetector.LastLoopKind()), m.dangerWaypointsSkipped,
+            m.reservationConflicts, m.areaSwitches, m.opportunities, m.assists, m.resurrections, m.partiesFormed);
     }
 
     void DescribeGlobal(ChatHandler* handler)
@@ -1065,17 +1066,19 @@ namespace WorldBrain
             m.questsSuspended, m.questsAbandoned, m.objectivesCompleted, m.lootObjectivesCompleted, m.useObjectivesCompleted,
             m.exploreObjectivesCompleted, m.failedObjectives, m.objectiveProgress);
         handler->PSendSysMessage("Tasks: started {}, completed {}, failed {}, replans {}. Kill targets selected {}. Flights {}. "
-            "Area switches {}. Detours {}. Breaks {}.", m.tasksStarted, m.tasksCompleted, m.tasksFailed, m.replans,
-            m.killTargetsSelected, m.travels, m.areaSwitches, m.opportunities, m.breaks);
+            "Area switches {}. Detours {}. Loops broken {}. Danger waypoints skipped {}. Breaks {}.",
+            m.tasksStarted, m.tasksCompleted, m.tasksFailed, m.replans,
+            m.killTargetsSelected, m.travels, m.areaSwitches, m.opportunities, m.loopsBroken, m.dangerWaypointsSkipped, m.breaks);
 
         handler->PSendSysMessage("Social: {} fights helped, {} resurrections, {} temporary parties formed ({} active), {} ended.",
             m.assists, m.resurrections, m.partiesFormed, WorldParties::Count(), m.partiesEnded);
 
         MovementStats const& mv = BotMovement::Stats();
         double avgRetries = m.tasksStarted ? double(m.travelRetries) / double(m.tasksStarted) : 0.0;
-        handler->PSendSysMessage("Movement: {} MovePoints issued, {} redundant requests skipped, {} stalls ({} repaths, {} detours, {} gave up), "
-            "{:.2f} travel retries per task.", mv.issued, mv.redundantSkipped, mv.stuckEvents, mv.repaths, mv.detours, mv.gaveUp,
-            avgRetries);
+        handler->PSendSysMessage("Movement: {} MovePoints issued ({} PathGenerator queries, {} shared no-path cache hits, {} switchbacks, {} Z-rejections), "
+            "{} redundant skipped, {} stalls ({} repaths, {} detours, {} backtracks, {} gave up), {:.2f} travel retries per task.",
+            mv.issued, mv.pathQueries, mv.sharedNoPathHits, mv.legSwitchbacksHandled, mv.verticalRejections,
+            mv.redundantSkipped, mv.stuckEvents, mv.repaths, mv.detours, mv.backtracks, mv.gaveUp, avgRetries);
 
         ReservationTable const& table = WorldReservations::Table();
         PopulationGrid const& grid = PopulationHeatmap::Grid();

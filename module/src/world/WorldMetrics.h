@@ -40,6 +40,8 @@ struct WorldMetrics
     uint64 resurrections = 0;
     uint64 partiesFormed = 0;
     uint64 partiesEnded = 0;
+    uint64 loopsBroken = 0;
+    uint64 dangerWaypointsSkipped = 0;
 };
 
 namespace WorldMetricsGlobal
