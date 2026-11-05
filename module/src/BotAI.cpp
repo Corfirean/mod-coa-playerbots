@@ -2199,7 +2199,9 @@ std::string AutoDungeonWaitReason(Player* tank, Group* group)
     {
         // A member that has been left behind for good (it died and came back at the entrance, or lost the way) is called to the tank, the way
         // a meeting stone or a summon would: waiting for it costs two and a half minutes every few minutes of the run. Soak test: Blood Furnace.
-        LOG_INFO("module.coa-playerbots", "AutoDungeon: tank '{}' calls '{}' to the group ({:.0f} yd behind).", tank->GetName(), straggler->GetName(), tank->GetDistance(straggler));
+        LOG_INFO("module.coa-playerbots", "AutoDungeon: tank '{}' calls '{}' to the group ({:.0f} yd behind; it stands at {:.0f} {:.0f} {:.0f}, the tank at {:.0f} {:.0f} {:.0f}, teleport pending {}).",
+            tank->GetName(), straggler->GetName(), tank->GetDistance(straggler), straggler->GetPositionX(), straggler->GetPositionY(), straggler->GetPositionZ(),
+            tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), straggler->IsBeingTeleported());
         straggler->NearTeleportTo(tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ() + 0.5f, straggler->GetOrientation());
         st.sinceMs = now;
     }

@@ -43,6 +43,30 @@ namespace
     constexpr float DEFAULT_DAMAGE_TAKEN = 0.7f;
     constexpr float DEFAULT_TANK_THREAT = 1.5f;
 
+    // Bosses whose mechanic hurts every bot of the group wherever it stands, so the fight has to be short: Loken's Pulsing Shockwave (spell
+    // 52942) reaches the whole instance and grows with the distance from him; a member that died (or trails the tank) is hit for 5000 every two
+    // seconds at the entrance, 400 yd away, for the whole fight. Extra multipliers on top of the ordinary ones, for this boss only.
+    struct BossTuning
+    {
+        uint32 entry;
+        float damageDone;
+        float damageTaken;
+    };
+    constexpr BossTuning BOSS_TUNING[] =
+    {
+        { 28923, 2.0f, 0.4f },  // Halls of Lightning: Loken
+    };
+
+    BossTuning const* TuningFor(Unit* creature)
+    {
+        if (!creature || !creature->IsCreature())
+            return nullptr;
+        for (BossTuning const& row : BOSS_TUNING)
+            if (row.entry == creature->GetEntry())
+                return &row;
+        return nullptr;
+    }
+
     struct ScalingConfig
     {
         bool enabled = true;
@@ -161,6 +185,8 @@ namespace
             uint32 const before = damage;
             if (cfg.damageDone != 1.0f)
                 damage = uint32(Scaled(float(damage), cfg.damageDone));
+            if (BossTuning const* tuning = TuningFor(target))
+                damage = uint32(Scaled(float(damage), tuning->damageDone));
             if (cfg.tankThreat > 1.0f && attacker == bot && BotAI::GetRole(bot->GetGUID()) == BotRole::Tank && target->IsCreature())
                 target->GetThreatMgr().AddThreat(bot, float(std::max(before, damage)) * (cfg.tankThreat - 1.0f), spellInfo, /*ignoreModifiers*/ true);
             return;
@@ -169,6 +195,8 @@ namespace
         // A creature hitting a bot (or its pet).
         if (cfg.damageTaken != 1.0f && attacker->IsCreature() && !PlayerBehind(attacker) && BotBehind(target))
             damage = std::max<uint32>(1, uint32(Scaled(float(damage), cfg.damageTaken)));
+        if (BossTuning const* tuning = TuningFor(attacker); tuning && attacker->IsCreature() && !PlayerBehind(attacker) && BotBehind(target))
+            damage = std::max<uint32>(1, uint32(Scaled(float(damage), tuning->damageTaken)));
         NoteHit(target, attacker, damage, spellInfo);
     }
 

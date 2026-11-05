@@ -17,6 +17,7 @@
 #include "dungeon/DungeonRuntime.h"
 #include "BotMovement.h"
 #include "Creature.h"
+#include "GameObject.h"
 #include "InstanceScript.h"
 #include "Log.h"
 #include "Map.h"
@@ -27,6 +28,7 @@
 #include "WorldSession.h"
 #include <algorithm>
 #include <list>
+#include <map>
 #include <vector>
 
 namespace
@@ -251,6 +253,48 @@ namespace
     }
 }
 
+namespace
+{
+    // --- Utgarde Pinnacle (map 575): bring down Grauf ---------------------------------------------------------------------------------------
+    // Skadi cannot be fought until his drake is harpooned three times, once per lap when it hovers at the breach. The party holds the harpoon
+    // pocket and the leader presses the launcher whenever Grauf is over the breach (the launcher's lock is not enforced server-side for the
+    // click). Everything else is the ordinary combat logic: in the pocket the hook yields.
+    Result GraufHarpoon(Player* tank)
+    {
+        using namespace DcUtgardePinnacle;
+        InstanceScript* inst = InstanceOf(tank);
+        Creature* grauf = inst ? inst->GetCreature(DATA_GRAUF) : nullptr;
+        if (!grauf || !grauf->IsAlive())
+            return Result::Done;
+        if (!tank->IsInCombat() && tank->GetExactDist(POCKET_X, POCKET_Y, POCKET_Z) > POCKET_LEASH + 3.0f)
+        {
+            BotMovement::MoveTo(tank, MoveOwner::AutoDungeon, POCKET_X, POCKET_Y, POCKET_Z);
+            return Result::Running;
+        }
+        bool const overBreach = grauf->GetExactDist(BREACH_A_X, BREACH_A_Y, BREACH_A_Z) < BREACH_RADIUS || grauf->GetExactDist(BREACH_B_X, BREACH_B_Y, BREACH_B_Z) < BREACH_RADIUS;
+        if (overBreach)
+        {
+            static std::map<ObjectGuid, uint32> lastShot;
+            uint32 const now = getMSTime();
+            uint32& at = lastShot[tank->GetGUID()];
+            if (now - at >= HARPOON_REFIRE_MS)
+                if (GameObject* launcher = tank->FindNearestGameObject(GO_HARPOON_LAUNCHER, HARPOON_SEARCH); launcher && tank->GetExactDist(launcher) < 6.0f)
+                {
+                    at = now;
+                    launcher->Use(tank);
+                    return Result::Running;
+                }
+        }
+        return Result::Done;
+    }
+
+    // Svala's ritual: nothing to steer (the channelers are ordinary targets); the combat logic fights them.
+    Result SvalaRitualHold(Player* /*tank*/)
+    {
+        return Result::Done;
+    }
+}
+
 namespace DungeonHooks
 {
     void RegisterWaveHooks(std::unordered_map<uint32, Result (*)(Player*)>& table)
@@ -263,6 +307,8 @@ namespace DungeonHooks
         table[22] = &HallsOfStoneTribunal;
         table[23] = &HallsOfStoneWave;
         table[24] = &LightningSlagTransit;
+        table[27] = &GraufHarpoon;
+        table[28] = &SvalaRitualHold;
         table[25] = &SvalaAreaTrigger;
         table[26] = &SkadiAreaTrigger;
         table[36] = &CullingWaves;
