@@ -91,18 +91,62 @@ namespace
     }
 
     // Walks the tank to a point. Done when within `radius`; Blocked when the movement layer gives up.
+    // Per tank: how the walk to the current goal goes (see WalkTo).
+    struct WalkState
+    {
+        uint64 goal = 0;
+        uint32 straightSince = 0;  // non-zero: the leg is walked in a straight line since then
+        float best = 1.0e9f;
+        uint32 improvedAt = 0;
+    };
+    std::map<ObjectGuid, WalkState> g_walks;
+
     StepResult WalkTo(Player* tank, DungeonEvent const& ev, size_t step, float x, float y, float z, float radius)
     {
         if (tank->GetExactDist(x, y, z) <= radius)
         {
+            g_walks.erase(tank->GetGUID());
             BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
             return StepResult::Done;
         }
-        NavStatus const status = BotMovement::Navigate(tank, MoveOwner::AutoDungeon, GoalId(ev, step), x, y, z, std::max(1.0f, radius * 0.8f));
-        if (status == NavStatus::Stuck)
+        // When the pathfinder gives up, or the tank does not get closer for a while, the leg is walked in a straight line for up to half a minute
+        // before the step is called blocked (Old Hillsbrad's walk to the north-east houses was refused outright and the whole event was written off
+        // with four bombs unplanted; the walk to Thrall's cell went on for good without getting closer).
+        uint64 const goal = GoalId(ev, step);
+        uint32 const now = getMSTime();
+        float const dist = tank->GetExactDist(x, y, z);
+        WalkState& w = g_walks[tank->GetGUID()];
+        if (w.goal != goal || now - w.improvedAt > 120000)
+            w = WalkState{ goal, 0, dist, now };
+        if (dist < w.best - 2.0f)
+        {
+            w.best = dist;
+            w.improvedAt = now;
+        }
+        if (tank->IsInCombat() || !tank->IsAlive())
+            w.improvedAt = now;  // a fight is not a stall
+        if (w.straightSince)
+        {
+            if (now - w.straightSince < 30000)
+            {
+                BotMovement::MoveTo(tank, MoveOwner::AutoDungeon, x, y, z, true);
+                return StepResult::Running;
+            }
+            g_walks.erase(tank->GetGUID());
             return StepResult::Blocked;
+        }
+        NavStatus const status = BotMovement::Navigate(tank, MoveOwner::AutoDungeon, goal, x, y, z, std::max(1.0f, radius * 0.8f));
         if (status == NavStatus::Arrived)
+        {
+            g_walks.erase(tank->GetGUID());
             return StepResult::Done;
+        }
+        if (status == NavStatus::Stuck || (!tank->IsInCombat() && now - w.improvedAt > 15000))
+        {
+            w.straightSince = now;
+            LOG_INFO("module.coa-playerbots.dungeon", "Event '{}' step {}: '{}' does not get to ({:.0f}, {:.0f}, {:.0f}) ({:.0f} yd away): walking it in a straight line.", ev.name,
+                step, tank->GetName(), x, y, z, dist);
+        }
         return StepResult::Running;
     }
 
@@ -391,9 +435,30 @@ namespace
 
             case EventStepKind::UseItemOnGO:
             {
+                // The object of THIS step is the one at the step's anchor (Old Hillsbrad: one barrel per house, a different spot per pool roll),
+                // not the one nearest to the tank: that is the same barrel for all five steps, and when it was already burning every step
+                // read "done" at once and no bomb was planted.
                 GameObject* go = nullptr;
                 if (HasAnchor(s))
-                    go = tank->FindNearestGameObject(s.goEntry, 200.0f);
+                {
+                    std::list<GameObject*> found;
+                    tank->GetGameObjectListWithEntryInGrid(found, s.goEntry, 400.0f);
+                    float best = 1.0e9f;
+                    for (GameObject* candidate : found)
+                    {
+                        float const d = candidate && candidate->IsInWorld() ? candidate->GetExactDist(s.x, s.y, s.z) : 1.0e9f;
+                        if (d <= 30.0f && d < best)
+                        {
+                            best = d;
+                            go = candidate;
+                        }
+                    }
+                    if (!go && tank->GetExactDist(s.x, s.y, s.z) > 25.0f)
+                    {
+                        StepResult const walked = WalkTo(tank, ev, index, s.x, s.y, s.z, 15.0f);
+                        return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                    }
+                }
                 if (!go)
                     return StepResult::Running;
                 if (go->GetGoState() != GO_STATE_READY)

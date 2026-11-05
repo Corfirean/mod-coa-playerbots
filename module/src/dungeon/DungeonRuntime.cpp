@@ -115,6 +115,29 @@ namespace
             return false;
         std::lock_guard<std::mutex> lock(g_mutex);
         size_t& cursor = g_hintCursor[{ key, bossEntry }];
+        // The cursor is where the tank was last on the route. A tank that was thrown off it (knocked into the Halls of Lightning's slag pit, died
+        // and came back) stands far from the hop the cursor points at, on another floor: that hop cannot be reached from here and the group stood
+        // there for good. Far from the hop, the cursor goes back to the hop the tank is nearest to.
+        if (cursor < hints->size() && tank->GetExactDist((*hints)[cursor].x, (*hints)[cursor].y, (*hints)[cursor].z) > 45.0f)
+        {
+            size_t nearest = cursor;
+            float best = 1.0e9f;
+            for (size_t i = 0; i < hints->size(); ++i)
+            {
+                float const d = tank->GetExactDist((*hints)[i].x, (*hints)[i].y, (*hints)[i].z);
+                if (d < best)
+                {
+                    best = d;
+                    nearest = i;
+                }
+            }
+            if (nearest != cursor)
+            {
+                LOG_INFO("module.coa-playerbots.dungeon", "'{}' is {:.0f} yd from route hop {} of {}: back to hop {}.", tank->GetName(),
+                    tank->GetExactDist((*hints)[cursor].x, (*hints)[cursor].y, (*hints)[cursor].z), cursor, hints->size(), nearest);
+                cursor = nearest;
+            }
+        }
         while (cursor < hints->size() && tank->GetExactDist((*hints)[cursor].x, (*hints)[cursor].y, (*hints)[cursor].z) <= (*hints)[cursor].arriveRadius)
             ++cursor;
         if (cursor >= hints->size())

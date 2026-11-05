@@ -261,6 +261,9 @@ namespace
         { 600, 27583 },  // Drak'Tharon Keep — Novos Summon Target (killing one softlocks the Novos gate)
         { 608, 31079 },  // The Violet Hold — Azure Saboteur (IMMUNE_TO_PC bait that walks the whole room)
         { 599, 27980 },  // Halls of Stone — Earthen Dwarf (Sjonnir 25%: faction copied from a player; they fight FOR you)
+        // Halls of Lightning — the Slags of the slag pit (fourteen of them, a 20 s respawn). The tank that went after them from the route left the
+        // ledge for the pit floor, came back, and went down again, for half an hour. Only the pit's own box: a Slag anywhere else is trash.
+        { 602, 28585, 1260.0f, 1420.0f, -215.0f, -90.0f },
         { 469, 14022 },  // Blackwing Lair — Corrupted Red Whelp    (160 whelps, 30s respawn: infinite)
         { 469, 14023 },  // Blackwing Lair — Corrupted Green Whelp  (see the class-3 note above)
         { 469, 14024 },  // Blackwing Lair — Corrupted Blue Whelp

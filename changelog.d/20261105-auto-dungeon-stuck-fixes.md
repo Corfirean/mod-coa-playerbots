@@ -9,3 +9,5 @@ Three ways a dungeon run could stop for good are fixed. The Lost Dwarves of Ulda
 A group that stopped on a hand-authored route point in Azjol-Nerub, Halls of Lightning, Blackrock Spire and similar dungeons now walks the point in a straight line when the pathfinder refuses it.
 
 Talking to an NPC in a scripted event (Brann in the Halls of Stone, Thrall, Arthas) now picks the menu option by its real id, so the NPC reacts instead of silently ignoring the choice. The Tribunal of Ages in the Halls of Stone has its driver. A repeatable event that only yields (the Halls of Lightning slag pit) no longer takes every tick from the route.
+
+Old Hillsbrad's bomb steps look for the barrel of their own house instead of the one nearest the tank. A walk in a scripted event that stops getting closer (or that the pathfinder refuses) is finished in a straight line. A group thrown off the route (into the Halls of Lightning's slag pit) goes back to the nearest point of it, and the pit's Slags are no longer pulled from the route.
