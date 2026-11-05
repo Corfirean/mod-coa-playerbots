@@ -263,7 +263,11 @@ namespace
         AreaTriggerTeleport const* entrance = sObjectMgr->GetMapEntranceTrigger(tank->GetMapId());
         if (!entrance)
             return false;
-        float const floorZ = std::min(targetZ, entrance->target_Z);
+        float floorZ = std::min(targetZ, entrance->target_Z);
+        // The lowest anchor of the roster is a floor of the dungeon too: the Halls of Lightning has bosses at z 0 and a pit floor at z 24 under an
+        // entrance at z 53, and every group on those floors was "below the dungeon" and sent back to the entrance, minute after minute.
+        for (DungeonBossInfo const& anchor : DungeonRoster::Full(tank->GetMap(), tank))
+            floorZ = std::min(floorZ, anchor.z);
         if (tank->GetPositionZ() > floorZ - 25.0f)
             return false;
         static std::map<ObjectGuid, uint32> last;

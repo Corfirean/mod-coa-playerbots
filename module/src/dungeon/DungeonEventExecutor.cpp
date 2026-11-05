@@ -476,8 +476,14 @@ namespace
                 if (tank->GetExactDist(go) > 6.0f)
                 {
                     StepResult const walked = WalkTo(tank, ev, index, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), 4.0f);
-                    if (walked == StepResult::Blocked)
+                    // A fight on the way can throw the tank far off (it chased a guard): a step that has taken long and is still far away is
+                    // answered the same way, at most every 20 s.
+                    static std::map<ObjectGuid, uint32> lastMove;
+                    uint32 const nowMs = getMSTime();
+                    bool const slow = nowMs - run.stepStartedMs > 45000 && tank->GetExactDist(go) > 25.0f && nowMs - lastMove[tank->GetGUID()] > 20000;
+                    if (walked == StepResult::Blocked || slow)
                     {
+                        lastMove[tank->GetGUID()] = nowMs;
                         // Neither the pathfinder nor a straight walk gets there (Old Hillsbrad's north-east houses, 170 yd of streets the mesh does not
                         // connect): the party is put next to the object, the way the elevators of other dungeons are done.
                         LOG_WARN("module.coa-playerbots.dungeon", "Event '{}' step {}: '{}' cannot walk to the object, {:.0f} yd away; moving the party next to it.", ev.name, index,
