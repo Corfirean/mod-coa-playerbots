@@ -92,6 +92,19 @@ namespace
     // Per group and boss: how many of the boss's authored route hints the tank has passed.
     std::map<std::pair<ObjectGuid, uint32>, size_t> g_hintCursor;
 
+    // Per group and boss: how the tank gets on with the hop it is walking to. The authored hops were laid out for a straight walk (the original
+    // mod walked them in a straight line); the pathfinder refuses some of them (a drop between two navmesh pieces, a steep descent) and the tank
+    // then stood on the previous hop for good. Once a hop stops getting closer, it is walked in a straight line instead.
+    struct HopProgress
+    {
+        size_t cursor = SIZE_MAX;
+        float best = 1.0e9f;
+        uint32 sinceMs = 0;
+        bool straight = false;
+    };
+    std::map<std::pair<ObjectGuid, uint32>, HopProgress> g_hopProgress;
+    constexpr uint32 HOP_STALL_MS = 8000;
+
     // Walks the authored hops (intermediate points, jumps over navmesh gaps) to a boss. Returns true while a hop is being worked on, false when
     // the route is exhausted or there is none and the ordinary approach should take over.
     bool FollowRouteHints(Player* tank, ObjectGuid key, uint32 bossEntry)
@@ -118,7 +131,30 @@ namespace
             }
             return true;
         }
-        BotMovement::Navigate(tank, MoveOwner::AutoDungeon, uint64(bossEntry) << 12 | 0x500 | (cursor & 0xFF), hop.x, hop.y, hop.z, std::max(2.0f, hop.arriveRadius * 0.7f));
+        HopProgress& progress = g_hopProgress[{ key, bossEntry }];
+        uint32 const now = getMSTime();
+        float const distToHop = tank->GetExactDist(hop.x, hop.y, hop.z);
+        if (progress.cursor != cursor)
+            progress = HopProgress{ cursor, distToHop, now, false };
+        else if (distToHop < progress.best - 2.0f)
+        {
+            progress.best = distToHop;
+            progress.sinceMs = now;
+        }
+        else if (!progress.straight && now - progress.sinceMs > HOP_STALL_MS && !tank->IsInCombat())
+        {
+            progress.straight = true;
+            LOG_INFO("module.coa-playerbots.dungeon", "'{}' does not get closer to route hop {} of {} ({:.0f} yd away, z {:.0f} -> {:.0f}): walking it in a straight line.",
+                tank->GetName(), cursor, hints->size(), distToHop, tank->GetPositionZ(), hop.z);
+        }
+        if (progress.straight)
+        {
+            BotMovement::MoveTo(tank, MoveOwner::AutoDungeon, hop.x, hop.y, hop.z, true);
+            return true;
+        }
+        NavStatus const status = BotMovement::Navigate(tank, MoveOwner::AutoDungeon, uint64(bossEntry) << 12 | 0x500 | (cursor & 0xFF), hop.x, hop.y, hop.z, std::max(2.0f, hop.arriveRadius * 0.7f));
+        if (status == NavStatus::Stuck)
+            progress.sinceMs = 0;  // the pathfinder gave up: the straight walk starts on the next tick
         return true;
     }
 
@@ -339,6 +375,8 @@ namespace DungeonRuntime
         g_musterSince.erase(key);
         for (auto it = g_giveUps.begin(); it != g_giveUps.end();)
             it = it->first.first == key ? g_giveUps.erase(it) : std::next(it);
+        for (auto it = g_hopProgress.begin(); it != g_hopProgress.end();)
+            it = it->first.first == key ? g_hopProgress.erase(it) : std::next(it);
     }
 
     bool Advance(Player* tank, Group* group, std::function<void(char const*)> const& note)
