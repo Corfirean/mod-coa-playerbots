@@ -519,7 +519,7 @@ namespace DungeonRuntime
             DungeonRoster::MarkUnreachable(key, target.entry, UNREACHABLE_MS);
             DungeonEventExecutor::Forget(key);
             ResetProgress(key);
-            if (target.kind == DungeonAnchorKind::Boss && !tank->IsInCombat())
+            if (!tank->IsInCombat() && tank->GetExactDist(x, y, z) > 30.0f)
             {
                 uint32 const nowMs = getMSTime();
                 uint32 since;
