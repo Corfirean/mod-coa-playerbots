@@ -10,6 +10,7 @@
 
 #include "Define.h"
 #include <functional>
+#include <string>
 
 class Creature;
 class Group;
@@ -38,6 +39,9 @@ namespace DungeonRuntime
 
     // Walks the tank to a creature and attacks it; the ordinary combat logic takes over once it is engaged. False when it cannot get there.
     bool EngageCreature(Player* tank, Creature* target, uint64 goalId);
+
+    // One line for the training probe: the anchor the group is heading for, how far it is, what is left and what is given up on.
+    std::string Describe(Player* tank, Group* group);
 
     // Drops everything the run remembers about this group.
     void Forget(Group* group);

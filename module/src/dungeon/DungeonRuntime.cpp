@@ -48,6 +48,47 @@ namespace
     // Since when the tank waits for the group to gather before a sealed room (per group).
     std::map<ObjectGuid, uint32> g_musterSince;
 
+    // Per group and objective: how many times the group has given it up. A second time it is written off (see Advance), so the run goes on
+    // instead of walking back to the same blocked objective every few minutes for good (Mechanar's cache chest, Old Hillsbrad's Lieutenant Drake).
+    std::map<std::pair<ObjectGuid, uint32>, uint32> g_giveUps;
+    constexpr uint32 OBJECTIVE_GIVE_UPS_BEFORE_WRITE_OFF = 2;
+
+    // Bosses that are friendly in the world database (faction of an NPC the quest line talks to) and have to be fought for the instance to count
+    // as cleared: the group's tank turns them hostile when it gets close, the way a player's first attack on a neutral creature would.
+    struct FriendlyBossRow
+    {
+        uint32 mapId;
+        uint32 bossEntry;
+        std::vector<uint32> companions;  // the creatures of the same fight that are turned hostile with it
+        uint32 hostileFaction;
+    };
+    std::vector<FriendlyBossRow> const& FriendlyBosses()
+    {
+        static std::vector<FriendlyBossRow> const rows =
+        {
+            { 70, 6906, { 6906, 6907, 6908 }, 14 },  // Uldaman: Baelog, Eric "The Swift" and Olaf (faction 122, nobody can attack them)
+        };
+        return rows;
+    }
+
+    void TurnFriendlyBossHostile(Player* tank, uint32 bossEntry)
+    {
+        Map* map = tank->GetMap();
+        for (FriendlyBossRow const& row : FriendlyBosses())
+        {
+            if (row.mapId != map->GetId() || row.bossEntry != bossEntry)
+                continue;
+            for (uint32 entry : row.companions)
+                if (Creature* c = tank->FindNearestCreature(entry, 120.0f, true))
+                    if (c->GetFaction() != row.hostileFaction && !tank->IsValidAttackTarget(c))
+                    {
+                        LOG_INFO("module.coa-playerbots.dungeon", "'{}' turns '{}' ({}) hostile: it is friendly in the database and the boss fight cannot start otherwise.",
+                            tank->GetName(), c->GetName(), entry);
+                        c->SetFaction(row.hostileFaction);
+                    }
+        }
+    }
+
     // Per group and boss: how many of the boss's authored route hints the tank has passed.
     std::map<std::pair<ObjectGuid, uint32>, size_t> g_hintCursor;
 
@@ -268,6 +309,24 @@ namespace DungeonRuntime
         return tank && group && tank->GetMap() && RunConditionalEvents(tank, group, true);
     }
 
+    std::string Describe(Player* tank, Group* group)
+    {
+        Map* map = tank ? tank->GetMap() : nullptr;
+        if (!map || !group)
+            return {};
+        std::string out = "roster:";
+        DungeonBossInfo next;
+        bool const havePeek = DungeonRoster::Peek(map, tank, group->GetGUID(), next);
+        if (havePeek)
+            out += Acore::StringFormat(" next='{}'({}, {}) at ({:.0f} {:.0f} {:.0f}) dist={:.0f}", next.name, next.entry,
+                next.kind == DungeonAnchorKind::Objective ? "objective" : "boss", next.x, next.y, next.z, tank->GetExactDist(next.x, next.y, next.z));
+        else
+            out += " next=none";
+        out += " all=[" + DungeonRoster::Describe(map, tank) + "]";
+        out += Acore::StringFormat(" tankPos=({:.0f} {:.0f} {:.0f})", tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ());
+        return out;
+    }
+
     void Forget(Group* group)
     {
         if (!group)
@@ -278,6 +337,8 @@ namespace DungeonRuntime
         ResetProgress(key);
         std::lock_guard<std::mutex> lock(g_mutex);
         g_musterSince.erase(key);
+        for (auto it = g_giveUps.begin(); it != g_giveUps.end();)
+            it = it->first.first == key ? g_giveUps.erase(it) : std::next(it);
     }
 
     bool Advance(Player* tank, Group* group, std::function<void(char const*)> const& note)
@@ -297,6 +358,16 @@ namespace DungeonRuntime
 
         float x = target.x, y = target.y, z = target.z;
         DungeonRoster::ResolvePosition(map, target, x, y, z);
+        // A boss that walks around its room (Arcatraz's Soccothrates and Dalliah) is not at its spawn point: heading for the spawn point ends "arrived"
+        // some yards from a boss nobody attacks. Head for where it stands when that is well away from the spawn point.
+        if (target.kind == DungeonAnchorKind::Boss)
+            if (Creature* live = tank->FindNearestCreature(target.entry, 250.0f, true))
+                if (live->IsAlive() && std::hypot(live->GetPositionX() - x, live->GetPositionY() - y) > 10.0f)
+                {
+                    x = live->GetPositionX();
+                    y = live->GetPositionY();
+                    z = live->GetPositionZ();
+                }
 
         auto giveUp = [&](char const* why)
         {
@@ -305,6 +376,19 @@ namespace DungeonRuntime
             DungeonRoster::MarkUnreachable(key, target.entry, UNREACHABLE_MS);
             DungeonEventExecutor::Forget(key);
             ResetProgress(key);
+            if (target.kind == DungeonAnchorKind::Objective)
+            {
+                uint32 count;
+                {
+                    std::lock_guard<std::mutex> lock(g_mutex);
+                    count = ++g_giveUps[{ key, target.entry }];
+                }
+                if (count >= OBJECTIVE_GIVE_UPS_BEFORE_WRITE_OFF)
+                {
+                    LOG_WARN("module.coa-playerbots.dungeon", "Objective '{}' ({}) failed {} times for '{}': written off so the run can go on.", target.name, target.entry, count, tank->GetName());
+                    DungeonRoster::MarkObjectiveDone(map, target.entry);
+                }
+            }
         };
 
         if (target.kind == DungeonAnchorKind::Objective)
@@ -394,6 +478,8 @@ namespace DungeonRuntime
             }
         }
 
+        if (tank->GetExactDist(x, y, z) < 90.0f)
+            TurnFriendlyBossHostile(tank, target.entry);
         note("heading for the next boss");
         if (FollowRouteHints(tank, key, target.entry))
             return true;

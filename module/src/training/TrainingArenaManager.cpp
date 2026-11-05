@@ -718,7 +718,7 @@ void DungeonProbe(ChatHandler* h, std::string const& verb, std::istringstream& i
             j["cmb"] = m->IsInCombat();
             j["moving"] = m->isMoving();
             if (Unit* v = m->GetVictim()) { j["tgt"] = v->GetName(); j["td"] = m->GetDistance(v); }
-            if (m != leader) j["dbg"] = BotAI::DebugState(m);
+            j["dbg"] = BotAI::DebugState(m);
             if (auto stats = probeStats.find(m->GetGUID()); stats != probeStats.end())
             {
                 j["dmg"] = stats->second.damage; j["heal"] = stats->second.healing; j["taken"] = stats->second.taken;

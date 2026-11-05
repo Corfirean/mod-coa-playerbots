@@ -2268,6 +2268,8 @@ bool RunToTankIfTargeted(Player* bot)
 // bosses near a decision boundary and wedge the tank between competing routes. Released the
 // instant the committed boss stops being a candidate (cleared, or no longer present).
 std::unordered_map<ObjectGuid, uint64> _autoDungeonCommittedBoss;
+// The last reason TryAutoPullInInstance gave for a tank (for the training probe, which reads it without waiting for a log line).
+std::unordered_map<ObjectGuid, std::string> _autoDungeonLastNote;
 
 // Bosses a group could not get to, per group leader and spawn id: the game time (ms) until which the next-boss choice leaves them out. Without it
 // the choice went straight back to the same boss in encounter order and the group stood at the same dead end (soak test: Gnomeregan, Scholomance,
@@ -2434,6 +2436,7 @@ void TryAutoPullInInstance(Player* bot)
     auto note = [bot](char const* reason)
     {
         static std::unordered_map<ObjectGuid, std::pair<std::string, uint32>> last;
+        _autoDungeonLastNote[bot->GetGUID()] = reason;
         auto& entry = last[bot->GetGUID()];
         uint32 now = getMSTime();
         if (entry.first == reason && now - entry.second < 5000)
@@ -5503,14 +5506,17 @@ void DungeonProgress(Map* map, Player* leader, uint32& total, uint32& done)
     {
         // The roster knows the wing the group is in; bosses and objectives together are what the run has to get through (a dungeon whose
         // encounters are all events, like the Culling of Stratholme, has no boss row at all).
+        // Same rule as the run's own "cleared" test (DungeonRoster::Remaining): an anchor left out on purpose (Maraudon's Rotgrip) or whose gate creature
+        // already stands (an objective that turned into its boss) is not part of the clear, so a finished run reads N/N.
         for (DungeonBossInfo const& anchor : DungeonRoster::Full(map, leader))
-        {
-            ++total;
-            if (DungeonRoster::IsDone(map, anchor))
-                ++done;
-        }
+            if (!anchor.skipByDesign)
+                ++total;
         if (total)
+        {
+            uint32 const left = uint32(DungeonRoster::Remaining(map, leader, ObjectGuid::Empty).size());
+            done = total > left ? total - left : 0;
             return;
+        }
     }
     for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
     {
@@ -5541,6 +5547,29 @@ std::string DebugState(Player* bot)
         " gen=" + std::to_string(int(bot->GetMotionMaster()->GetCurrentMovementGeneratorType())) +
         " cmb=" + std::to_string(bot->IsInCombat()) + " cast=" + std::to_string(bot->IsNonMeleeSpellCast(false)) +
         " stand=" + std::to_string(int(bot->getStandState())) + " mnt=" + std::to_string(bot->IsMounted());
+    if (auto note = _autoDungeonLastNote.find(bot->GetGUID()); note != _autoDungeonLastNote.end())
+        out += " note='" + note->second + "'";
+    if (Group* group = bot->GetGroup(); group && bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
+        out += " " + DungeonRuntime::Describe(bot, group);
+    // The nearest live creatures and why the pull scan would take them or not (a boss the tank stands next to and never attacks).
+    if (bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
+    {
+        std::list<Creature*> closeBy;
+        bot->GetDeadCreatureListInGrid(closeBy, 60.0f, false);
+        closeBy.remove_if([bot](Creature* c) { return !c || !c->IsAlive(); });
+        closeBy.sort([bot](Creature* a, Creature* b) { return bot->GetExactDist(a) < bot->GetExactDist(b); });
+        uint32 shown = 0;
+        for (Creature* c : closeBy)
+        {
+            if (shown++ >= 4)
+                break;
+            out += " | near '" + c->GetName() + "'(" + std::to_string(c->GetEntry()) + ") d=" + std::to_string(int(bot->GetExactDist(c))) +
+                " valid=" + std::to_string(bot->IsValidAttackTarget(c)) + " ign=" + std::to_string(IsIgnoredTarget(bot->GetGUID(), c->GetGUID())) +
+                " never=" + std::to_string(DcNeverTargetRegistry::IsNeverTarget(c->GetMapId(), c->GetEntry(), c->GetPositionX(), c->GetPositionY())) +
+                " los=" + std::to_string(bot->IsWithinLOSInMap(c)) + " uf=" + std::to_string(c->GetUInt32Value(UNIT_FIELD_FLAGS)) +
+                " cmb=" + std::to_string(c->IsInCombat()) + " evade=" + std::to_string(c->IsInEvadeMode()) + " z=" + std::to_string(int(c->GetPositionZ()));
+        }
+    }
     return out;
 }
 
