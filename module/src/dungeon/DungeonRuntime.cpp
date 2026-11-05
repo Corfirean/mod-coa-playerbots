@@ -169,7 +169,7 @@ namespace
             progress.best = distToHop;
             progress.sinceMs = now;
         }
-        else if (!progress.straight && now - progress.sinceMs > HOP_STALL_MS && !tank->IsInCombat())
+        else if (!progress.straight && now - progress.sinceMs > HOP_STALL_MS && !tank->IsInCombat() && distToHop <= 45.0f)
         {
             progress.straight = true;
             LOG_INFO("module.coa-playerbots.dungeon", "'{}' does not get closer to route hop {} of {} ({:.0f} yd away, z {:.0f} -> {:.0f}): walking it in a straight line.",
@@ -659,6 +659,16 @@ namespace DungeonRuntime
 
         if (tank->GetExactDist(x, y, z) < 90.0f)
             TurnFriendlyBossHostile(tank, target.entry);
+        // A group that walked off an edge (the Halls of Lightning's entrance ramp, a straight walk across a gap) stands on the floor far below every
+        // anchor of the dungeon and walks the route from there for good: the route follower never reports "no way there".
+        if (!tank->IsInCombat())
+        {
+            float lowest = 1.0e9f;
+            for (DungeonBossInfo const& anchor : DungeonRoster::Full(map, tank))
+                lowest = std::min(lowest, anchor.z);
+            if (tank->GetPositionZ() < lowest - 40.0f && RescueFromBelow(tank, group, z))
+                return true;
+        }
         note("heading for the next boss");
         if (FollowRouteHints(tank, key, target.entry))
             return true;
