@@ -181,8 +181,22 @@ namespace
     void GossipSelect(Player* bot, Creature* npc, int32 option)
     {
         uint32 const menuId = bot->PlayerTalkClass->GetGossipMenu().GetMenuId();
+        // The events name an option by its position in the menu. The menu keys its items by OptionID (37476 for Brann's menu 9669, not 0), and the
+        // select packet carries that key: sent raw, a position that is not a key is dropped without a word and the NPC never reacts (Brann, Thrall,
+        // Arthas stood next to the tank for good). Translate the position to the key of that item.
+        uint32 listId = uint32(option);
+        GossipMenuItemContainer const& items = bot->PlayerTalkClass->GetGossipMenu().GetMenuItems();
+        if (option >= 0 && uint32(option) < items.size() && !bot->PlayerTalkClass->GetGossipMenu().GetItem(uint32(option)))
+        {
+            auto it = items.begin();
+            std::advance(it, option);
+            listId = it->first;
+        }
+        else if (option >= 0 && !bot->PlayerTalkClass->GetGossipMenu().GetItem(uint32(option)))
+            LOG_WARN("module.coa-playerbots.dungeon", "'{}': gossip menu {} of '{}' has {} options, option {} does not exist.", bot->GetName(), menuId, npc->GetName(),
+                items.size(), option);
         WorldPacket packet(CMSG_GOSSIP_SELECT_OPTION, 8 + 4 + 4 + 1);
-        packet << npc->GetGUID() << menuId << uint32(option);
+        packet << npc->GetGUID() << menuId << listId;
         packet << std::string();
         bot->GetSession()->HandleGossipSelectOptionOpcode(packet);
     }

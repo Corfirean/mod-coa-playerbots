@@ -225,6 +225,32 @@ namespace
     }
 }
 
+namespace
+{
+    // --- The Halls of Stone (map 599) -----------------------------------------------------------------------------------------------------
+    // The Tribunal of Ages is a fixed 300 s survival fight beside Brann at the console: the party holds the hold point and fights what the three
+    // faces send at Brann. Nothing else is steered (the ordinary combat logic does the fighting); the step ends when the credit spell of the
+    // encounter lands (mask bit 2). Without these hooks the event was "blocked" and latched off for the instance.
+    Result HallsOfStoneTribunal(Player* tank)
+    {
+        using namespace DcHallsOfStone;
+        if (InstanceScript* inst = InstanceOf(tank))
+        {
+            if (inst->GetBossState(BOSS_TRIBUNAL_OF_AGES) == DONE || (inst->GetCompletedEncounterMask() & (1u << BIT_TRIBUNAL_OF_AGES)))
+                return Result::Done;
+        }
+        if (!tank->IsInCombat() && tank->GetExactDist(HOLD_X, HOLD_Y, HOLD_Z) > 6.0f)
+            BotMovement::MoveTo(tank, MoveOwner::AutoDungeon, HOLD_X, HOLD_Y, HOLD_Z);
+        return Result::Running;
+    }
+
+    // The wave event of the same fight: the adds go for Brann and the party; the combat logic takes them.
+    Result HallsOfStoneWave(Player* /*tank*/)
+    {
+        return Result::Done;
+    }
+}
+
 namespace DungeonHooks
 {
     void RegisterWaveHooks(std::unordered_map<uint32, Result (*)(Player*)>& table)
@@ -234,6 +260,8 @@ namespace DungeonHooks
         table[17] = &VioletHoldDefend2;
         table[18] = &VioletHoldDefend3;
         table[19] = &VioletHoldWave;
+        table[22] = &HallsOfStoneTribunal;
+        table[23] = &HallsOfStoneWave;
         table[24] = &LightningSlagTransit;
         table[25] = &SvalaAreaTrigger;
         table[26] = &SkadiAreaTrigger;

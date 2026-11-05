@@ -262,6 +262,16 @@ namespace
         return true;
     }
 
+    // Per group and repeatable event: how many ticks in a row it has finished at once. A repeatable event whose step yields on the spot (Halls of
+    // Lightning's slag furnace crossing hands the leg to the route hints) was "handled" every tick, so the route was never walked and the group
+    // stood at the top of the descent for good.
+    struct InstantDone
+    {
+        uint32 count = 0;
+        uint32 lastMs = 0;
+    };
+    std::map<std::pair<ObjectGuid, uint32>, InstantDone> g_instantDones;
+
     // inCombat: only the events that are meant to be driven during a fight (continuous wave encounters).
     bool RunConditionalEvents(Player* tank, Group* group, bool inCombat = false)
     {
@@ -280,12 +290,32 @@ namespace
             switch (DungeonEventExecutor::Drive(tank, group, *ev))
             {
                 case EventResult::Running:
+                {
+                    std::lock_guard<std::mutex> lock(g_mutex);
+                    g_instantDones.erase({ key, ev->id });
                     return true;
+                }
                 case EventResult::Done:
+                {
                     if (!ev->repeatable)
                         DungeonEventExecutor::Latch(map->GetInstanceId(), ev->mapId, ev->id);
                     DungeonEventExecutor::Forget(key);
+                    if (ev->repeatable)
+                    {
+                        uint32 streak;
+                        {
+                            std::lock_guard<std::mutex> lock(g_mutex);
+                            InstantDone& d = g_instantDones[{ key, ev->id }];
+                            uint32 const nowMs = getMSTime();
+                            d.count = (d.lastMs && nowMs - d.lastMs < 2000) ? d.count + 1 : 1;  // consecutive ticks only
+                            d.lastMs = nowMs;
+                            streak = d.count;
+                        }
+                        if (streak >= 3)
+                            return false;  // it only yields: let the ordinary approach (route hints, pulls) use this tick
+                    }
                     return true;
+                }
                 case EventResult::Blocked:
                     LOG_WARN("module.coa-playerbots.dungeon", "Conditional event '{}' is blocked; it will not be offered again in this instance.", ev->name);
                     DungeonEventExecutor::Latch(map->GetInstanceId(), ev->mapId, ev->id);
@@ -375,6 +405,8 @@ namespace DungeonRuntime
         g_musterSince.erase(key);
         for (auto it = g_giveUps.begin(); it != g_giveUps.end();)
             it = it->first.first == key ? g_giveUps.erase(it) : std::next(it);
+        for (auto it = g_instantDones.begin(); it != g_instantDones.end();)
+            it = it->first.first == key ? g_instantDones.erase(it) : std::next(it);
         for (auto it = g_hopProgress.begin(); it != g_hopProgress.end();)
             it = it->first.first == key ? g_hopProgress.erase(it) : std::next(it);
     }
