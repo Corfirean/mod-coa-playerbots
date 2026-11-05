@@ -4553,6 +4553,9 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         profileRole == BotRole::Dps)
         engageProfile.preferredDist = 20.0f;
     float preferredDist = engageProfile.preferredDist;
+    // A boss that hurts more the FARTHER a player stands from him (Loken's Pulsing Shockwave): everybody fights on him, casters and healers too.
+    if (target->GetTypeId() == TYPEID_UNIT && target->GetEntry() == 28923)
+        preferredDist = std::min(preferredDist, 8.0f);
     float distance = bot->GetDistance(target);
 
     // Positioning is handled once, up front, independent of whatever ends up castable this
@@ -5567,7 +5570,8 @@ std::string DebugState(Player* bot)
                 " valid=" + std::to_string(bot->IsValidAttackTarget(c)) + " ign=" + std::to_string(IsIgnoredTarget(bot->GetGUID(), c->GetGUID())) +
                 " never=" + std::to_string(DcNeverTargetRegistry::IsNeverTarget(c->GetMapId(), c->GetEntry(), c->GetPositionX(), c->GetPositionY())) +
                 " los=" + std::to_string(bot->IsWithinLOSInMap(c)) + " uf=" + std::to_string(c->GetUInt32Value(UNIT_FIELD_FLAGS)) +
-                " cmb=" + std::to_string(c->IsInCombat()) + " evade=" + std::to_string(c->IsInEvadeMode()) + " z=" + std::to_string(int(c->GetPositionZ()));
+                " cmb=" + std::to_string(c->IsInCombat()) + " evade=" + std::to_string(c->IsInEvadeMode()) + " z=" + std::to_string(int(c->GetPositionZ())) +
+                " mv=" + std::to_string(c->isMoving()) + " npcf=" + std::to_string(c->GetUInt32Value(UNIT_NPC_FLAGS));
         }
     }
     return out;

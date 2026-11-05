@@ -51,6 +51,11 @@ namespace
     // Per group and objective: how many times the group has given it up. A second time it is written off (see Advance), so the run goes on
     // instead of walking back to the same blocked objective every few minutes for good (Mechanar's cache chest, Old Hillsbrad's Lieutenant Drake).
     std::map<std::pair<ObjectGuid, uint32>, uint32> g_giveUps;
+
+    // Per group and boss: since when the way to it has been refused without a break. After two minutes of that (and no fight) the group is
+    // moved next to the boss, the way a summon does it: a mesh that does not connect two floors of a dungeon should not end the run.
+    std::map<std::pair<ObjectGuid, uint32>, uint32> g_unreachableSince;
+    constexpr uint32 BOSS_SUMMON_AFTER_MS = 120000;
     constexpr uint32 OBJECTIVE_GIVE_UPS_BEFORE_WRITE_OFF = 2;
 
     // Bosses that are friendly in the world database (faction of an NPC the quest line talks to) and have to be fought for the instance to count
@@ -255,6 +260,43 @@ namespace
         return true;
     }
 
+    // The last resort for an anchor the pathfinder cannot reach: the tank walks to it in a straight line for half a minute (a ledge to step off,
+    // a gap in the mesh that is not a wall), and only then is the anchor given up on. Per group and anchor; after a try it is not offered again
+    // for the time of the give-up, so a wall is not walked into forever.
+    struct StraightTry
+    {
+        uint32 until = 0;
+        uint32 notBefore = 0;
+    };
+    std::map<std::pair<ObjectGuid, uint32>, StraightTry> g_straightTries;
+
+    // True while the tank is walking (or has just been set walking) straight to the anchor. start: begin a try when none is running.
+    bool StraightToAnchor(Player* tank, ObjectGuid key, uint32 entry, float x, float y, float z, bool start)
+    {
+        uint32 const now = getMSTime();
+        std::lock_guard<std::mutex> lock(g_mutex);
+        StraightTry& t = g_straightTries[{ key, entry }];
+        if (t.until && int32(t.until - now) > 0)
+        {
+            BotMovement::MoveTo(tank, MoveOwner::AutoDungeon, x, y, z, true);
+            return true;
+        }
+        if (t.until)
+        {
+            t.until = 0;
+            t.notBefore = now + UNREACHABLE_MS + 60000;
+            return false;
+        }
+        // Only a short way: a gap in the mesh or a ledge is a few dozen yards; a straight walk of several hundred yards through a dungeon only
+        // ends against a wall, or on a ledge the rest of the group cannot follow it onto.
+        if (!start || int32(t.notBefore - now) > 0 || tank->GetExactDist(x, y, z) > 70.0f)
+            return false;
+        t.until = now + 30000;
+        LOG_INFO("module.coa-playerbots.dungeon", "'{}' finds no path to anchor {} ({:.0f} yd): walking it in a straight line for 30 s.", tank->GetName(), entry, tank->GetExactDist(x, y, z));
+        BotMovement::MoveTo(tank, MoveOwner::AutoDungeon, x, y, z, true);
+        return true;
+    }
+
     // A group that fell off a ledge (Hellfire Ramparts' zone-in room has a drop along its south-west side, the Halls of Lightning a pit under the
     // first walkway) stands on the floor far below the dungeon with no path back. The players of the group would run back or be summoned; the
     // group is put back at the dungeon's entrance, at most once a minute.
@@ -432,6 +474,10 @@ namespace DungeonRuntime
         g_musterSince.erase(key);
         for (auto it = g_giveUps.begin(); it != g_giveUps.end();)
             it = it->first.first == key ? g_giveUps.erase(it) : std::next(it);
+        for (auto it = g_unreachableSince.begin(); it != g_unreachableSince.end();)
+            it = it->first.first == key ? g_unreachableSince.erase(it) : std::next(it);
+        for (auto it = g_straightTries.begin(); it != g_straightTries.end();)
+            it = it->first.first == key ? g_straightTries.erase(it) : std::next(it);
         for (auto it = g_instantDones.begin(); it != g_instantDones.end();)
             it = it->first.first == key ? g_instantDones.erase(it) : std::next(it);
         for (auto it = g_hopProgress.begin(); it != g_hopProgress.end();)
@@ -473,6 +519,40 @@ namespace DungeonRuntime
             DungeonRoster::MarkUnreachable(key, target.entry, UNREACHABLE_MS);
             DungeonEventExecutor::Forget(key);
             ResetProgress(key);
+            if (target.kind == DungeonAnchorKind::Boss && !tank->IsInCombat())
+            {
+                uint32 const nowMs = getMSTime();
+                uint32 since;
+                {
+                    std::lock_guard<std::mutex> lock(g_mutex);
+                    uint32& at = g_unreachableSince[{ key, target.entry }];
+                    if (!at || nowMs - at > 600000)
+                        at = nowMs;
+                    since = at;
+                }
+                if (nowMs - since > BOSS_SUMMON_AFTER_MS)
+                {
+                    {
+                        std::lock_guard<std::mutex> lock(g_mutex);
+                        g_unreachableSince[{ key, target.entry }] = nowMs;
+                    }
+                    float tx = x, ty = y, tz = z;
+                    if (Creature* live = tank->FindNearestCreature(target.entry, 400.0f, true))
+                    {
+                        tx = live->GetPositionX();
+                        ty = live->GetPositionY();
+                        tz = live->GetPositionZ();
+                    }
+                    LOG_WARN("module.coa-playerbots.dungeon", "No way to '{}' ({}) for {} s: '{}' and the group are moved next to it ({:.0f}, {:.0f}, {:.0f}).", target.name, target.entry,
+                        BOSS_SUMMON_AFTER_MS / 1000, tank->GetName(), tx, ty, tz);
+                    // On the boss's own spot: that ground exists, and a point beside it may be a wall or the void.
+                    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                        if (Player* member = ref->GetSource(); member && member->IsInWorld() && member->IsAlive() && member->GetMapId() == map->GetId())
+                            member->NearTeleportTo(tx, ty, tz + 0.5f, member->GetOrientation());
+                    BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
+                    ResetProgress(key);
+                }
+            }
             if (target.kind == DungeonAnchorKind::Objective)
             {
                 uint32 count;
@@ -497,11 +577,13 @@ namespace DungeonRuntime
             if (!running && tank->GetExactDist(x, y, z) > arrive)
             {
                 note("heading for an objective");
+                if (StraightToAnchor(tank, key, target.entry, x, y, z, false))
+                    return true;
                 NavStatus const status = BotMovement::Navigate(tank, MoveOwner::AutoDungeon, uint64(target.entry) << 8 | 0xA1, x, y, z, std::max(2.0f, arrive * 0.6f));
                 if (status == NavStatus::Stuck)
-                    { if (!RescueFromBelow(tank, group, z)) giveUp("no way there"); }
+                    { if (!StraightToAnchor(tank, key, target.entry, x, y, z, true) && !RescueFromBelow(tank, group, z)) giveUp("no way there"); }
                 else if (Stalled(key, target.entry, tank->GetExactDist(x, y, z)))
-                    { if (!RescueFromBelow(tank, group, z)) giveUp("no progress"); }
+                    { if (!StraightToAnchor(tank, key, target.entry, x, y, z, true) && !RescueFromBelow(tank, group, z)) giveUp("no progress"); }
                 return true;
             }
 
@@ -581,11 +663,13 @@ namespace DungeonRuntime
         if (FollowRouteHints(tank, key, target.entry))
             return true;
         float const dist = tank->GetExactDist(x, y, z);
+        if (StraightToAnchor(tank, key, target.entry, x, y, z, false))
+            return true;
         NavStatus const status = BotMovement::Navigate(tank, MoveOwner::AutoDungeon, uint64(target.entry) << 8 | 0xA0, x, y, z, 8.0f);
         if (status == NavStatus::Stuck)
-            { if (!RescueFromBelow(tank, group, z)) giveUp("no way there"); }
+            { if (!StraightToAnchor(tank, key, target.entry, x, y, z, true) && !RescueFromBelow(tank, group, z)) giveUp("no way there"); }
         else if (!tank->IsInCombat() && Stalled(key, target.entry, dist))
-            { if (!RescueFromBelow(tank, group, z)) giveUp("no progress"); }
+            { if (!StraightToAnchor(tank, key, target.entry, x, y, z, true) && !RescueFromBelow(tank, group, z)) giveUp("no progress"); }
         return true;
     }
 }

@@ -489,6 +489,9 @@ namespace
                         LOG_WARN("module.coa-playerbots.dungeon", "Event '{}' step {}: '{}' cannot walk to the object, {:.0f} yd away; moving the party next to it.", ev.name, index,
                             tank->GetName(), tank->GetExactDist(go));
                         TeleportParty(tank, go->GetPositionX(), go->GetPositionY() - 3.0f, go->GetPositionZ() + 0.5f);
+                        LOG_INFO("module.coa-playerbots.dungeon", "'{}' is now at ({:.0f}, {:.0f}, {:.0f}), the object at ({:.0f}, {:.0f}, {:.0f}), {} cannot ack.", tank->GetName(),
+                            tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(),
+                            tank->IsBeingTeleported() ? "teleport pending:" : "no teleport pending:");
                     }
                     return StepResult::Running;
                 }
@@ -621,7 +624,11 @@ namespace
                 // The escortee offers its gossip again whenever it waits for the party (at the start and at each pause of the scripted escort):
                 // talk to it again every few seconds while the flag is up.
                 bool const wantsTalk = s.gossipOption >= 0 && escortee->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP);
-                if (s.gossipOption >= 0 && (!run.used || (wantsTalk && getMSTime() - run.stageAtMs > 5000)))
+                // The first choice is made when the escortee offers its gossip: Arthas of the Culling of Stratholme stands without the flag
+                // while his introduction plays, a choice made then is lost and was never repeated (his flag only comes up once, and the
+                // step had "used" its talk). Without the flag the tank waits up to 90 s, then tries anyway.
+                bool const mayTalk = wantsTalk || getMSTime() - run.stepStartedMs > 90000;
+                if (s.gossipOption >= 0 && mayTalk && (!run.used || (wantsTalk && getMSTime() - run.stageAtMs > 5000)))
                 {
                     if (tank->GetExactDist(escortee) > 4.5f)
                     {
