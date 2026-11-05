@@ -423,13 +423,17 @@ namespace
                 if (now - run.stageAtMs < 600)
                     return StepResult::Running;
                 GossipSelect(tank, npc, s.gossipOption);
-                // Chromie of the Culling of Stratholme (27915): her first menu (9610) leads to a second one (9612, "...you are going to fight alongside
-                // him"), and only choosing in THAT menu starts Arthas's introduction (npc_cos_chromie_middle::OnGossipSelect). One choice never did.
-                if (npc->GetEntry() == 27915 && tank->PlayerTalkClass->GetGossipMenu().GetMenuId() == 9612)
-                {
-                    LOG_INFO("module.coa-playerbots.dungeon", "'{}': Chromie's second menu (9612): choosing again.", tank->GetName());
-                    GossipSelect(tank, npc, 0);
-                }
+                // Chromie of the Culling of Stratholme (27915): her menus chain 9610 -> 9611 -> 9612, and only the choice made IN menu 9612 starts Arthas's
+                // introduction (npc_cos_chromie_middle::OnGossipSelect). One choice never did; each further menu is answered with its first option.
+                if (npc->GetEntry() == 27915)
+                    for (uint32 hop = 0; hop < 3; ++hop)
+                    {
+                        uint32 const menu = tank->PlayerTalkClass->GetGossipMenu().GetMenuId();
+                        if (menu != 9611 && menu != 9612)
+                            break;
+                        LOG_INFO("module.coa-playerbots.dungeon", "'{}': Chromie's menu {}: choosing again.", tank->GetName(), menu);
+                        GossipSelect(tank, npc, 0);
+                    }
                 AcceptOfferedQuests(tank, npc);
                 return StepResult::Done;
             }

@@ -2533,6 +2533,28 @@ void TryAutoPullInInstance(Player* bot)
             }
         }
 
+        // Loken (Halls of Lightning) shocks everybody for more the FARTHER they stand from him (Pulsing Shockwave), from the moment he is pulled: a
+        // group that trails the tank by sixty yards dies on the way up while the tank fights. He is not pulled until everybody is at the tank
+        // (45 s at most, so one member that cannot get there does not hold the run).
+        if (target->GetTypeId() == TYPEID_UNIT && target->GetEntry() == 28923)
+        {
+            static std::unordered_map<ObjectGuid, uint32> gatherSince;
+            uint32& since = gatherSince[bot->GetGUID()];
+            bool allClose = true;
+            for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member != bot && member->IsAlive() && member->GetMapId() == bot->GetMapId() && member->GetDistance(bot) > 12.0f)
+                    allClose = false;
+            if (!allClose && (!since || now - since < 45000))
+            {
+                if (!since)
+                    since = now;
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
+                note("gathering the group before Loken");
+                return;
+            }
+            since = 0;
+        }
+
         // 3. Evaluate group pull readiness
         BotAI::PullReadinessInfo pullInfo = BotAI::SpecStrategyRegistry::EvaluateGroupPullReadiness(bot, group);
         if (!pullInfo.IsReady())
