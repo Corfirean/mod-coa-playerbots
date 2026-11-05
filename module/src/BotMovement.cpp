@@ -295,8 +295,6 @@ namespace
         return ctx;
     }
 
-    bool RouteWaypoint(Player* bot, float gx, float gy, float gz, float& ox, float& oy, float& oz)
-
     // Detour query filter that makes the no-go volumes of dungeon/DcNavPenaltyRegistry expensive (a ledge face the mesh generator stitched into a
     // "ramp" that a player cannot climb). Never a hard rejection: if the boxed edge is the only way, the route still takes it. A route that
     // begins inside a volume ignores the volumes, so a party standing in one is never caged.
