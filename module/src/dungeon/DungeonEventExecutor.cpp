@@ -239,6 +239,16 @@ namespace
         else if (option >= 0 && !bot->PlayerTalkClass->GetGossipMenu().GetItem(uint32(option)))
             LOG_WARN("module.coa-playerbots.dungeon", "'{}': gossip menu {} of '{}' has {} options, option {} does not exist.", bot->GetName(), menuId, npc->GetName(),
                 items.size(), option);
+        {
+            static std::map<ObjectGuid, uint32> lastLog;
+            uint32& at = lastLog[npc->GetGUID()];
+            if (getMSTime() - at > 20000)
+            {
+                at = getMSTime();
+                LOG_INFO("module.coa-playerbots.dungeon", "'{}' selects gossip option {} (key {}) of menu {} with {} options at '{}' ({}), npc flags {}.", bot->GetName(), option, listId,
+                    menuId, items.size(), npc->GetName(), npc->GetEntry(), npc->GetUInt32Value(UNIT_NPC_FLAGS));
+            }
+        }
         WorldPacket packet(CMSG_GOSSIP_SELECT_OPTION, 8 + 4 + 4 + 1);
         packet << npc->GetGUID() << menuId << listId;
         packet << std::string();
@@ -466,7 +476,15 @@ namespace
                 if (tank->GetExactDist(go) > 6.0f)
                 {
                     StepResult const walked = WalkTo(tank, ev, index, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), 4.0f);
-                    return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                    if (walked == StepResult::Blocked)
+                    {
+                        // Neither the pathfinder nor a straight walk gets there (Old Hillsbrad's north-east houses, 170 yd of streets the mesh does not
+                        // connect): the party is put next to the object, the way the elevators of other dungeons are done.
+                        LOG_WARN("module.coa-playerbots.dungeon", "Event '{}' step {}: '{}' cannot walk to the object, {:.0f} yd away; moving the party next to it.", ev.name, index,
+                            tank->GetName(), tank->GetExactDist(go));
+                        TeleportParty(tank, go->GetPositionX(), go->GetPositionY() - 3.0f, go->GetPositionZ() + 0.5f);
+                    }
+                    return StepResult::Running;
                 }
                 if (tank->IsNonMeleeSpellCast(false))
                     return StepResult::Running;
