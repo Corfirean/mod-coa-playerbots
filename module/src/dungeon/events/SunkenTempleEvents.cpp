@@ -243,6 +243,11 @@ void RegisterSunkenTempleEvents(std::vector<DungeonEvent>& out)
                       .Anchored(18)
                       .Persistent()
                       .Optional()
+                      // The Shade of Eranikus stays unselectable until all seven wardens are dead and the Avatar of Hakkar is one of them
+                      // (instance_sunken_temple: IsEranikusAwake), so the Avatar has to die. The flame/suppressor orchestration that raises him was
+                      // never built: hook 70 summons him at the Sanctum's centre when the party stands there, and he is fought like any boss.
+                      .MoveTo(ST_SANCTUM_CX, ST_SANCTUM_CY, ST_SANCTUM_CZ, 8.0f).Timeout(60000)
+                      .Custom(70).Timeout(30000)
                       .WaitForSpawn(ST_AVATAR, /*wantAlive*/ true, ST_AVATAR_SPAWN_WAIT)
                       .KillCreatureEngage(ST_AVATAR, 1, ST_NORTH_SEARCH).Timeout(ST_BOSS_TIMEOUT)
                       .Build());
@@ -423,13 +428,11 @@ void RegisterSunkenTempleRoster(std::vector<BossRosterPatch>& t)
             // the tank INTO the room before the event starts.
             MakeObjective(OBJ(10), 18, 109, "Avatar of Hakkar",
                           -466.8f, 272.9f, -90.4f, 15.0f, /*gateEntry*/ 0,
-                          0, /*eventId*/ 9),
+                          0, /*eventId*/ 9, /*orderOverride*/ 7),
         };
-        // The Hakkar encounter (the egg, four flames, the suppressors) is optional and its in-combat orchestration was never written (see the
-        // GATE 3 note): the two anchors only ever sent the party to a pit rim it cannot get down from. The dungeon's last boss is the Shade of
-        // Eranikus; the Hakkar anchors are left out of the clear.
+        // The egg objective is replaced by the summon of the Avatar itself (event 9, hook 70); the egg is not used.
         for (DungeonBossInfo& a : p.add)
-            if (a.entry == OBJ(9) || a.entry == OBJ(10))
+            if (a.entry == OBJ(9))
                 a.skipByDesign = true;
         t.push_back(std::move(p));
     }

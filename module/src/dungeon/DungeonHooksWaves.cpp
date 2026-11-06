@@ -288,6 +288,20 @@ namespace
         return Result::Done;
     }
 
+    // --- Sunken Temple (map 109): the Avatar of Hakkar --------------------------------------------------------------------------------------
+    // Summoned at the centre of the Sanctum of the Fallen when the party stands there; his death counts toward waking the Shade of Eranikus.
+    Result SunkenTempleSummonAvatar(Player* tank)
+    {
+        constexpr uint32 AVATAR = 8443;
+        if (tank->FindNearestCreature(AVATAR, 250.0f, true) || tank->FindNearestCreature(AVATAR, 250.0f, false))
+            return Result::Done;  // he stands, or he already fell
+        if (tank->GetExactDist(-466.8f, 272.9f, -90.4f) > 25.0f)
+            return Result::Running;
+        tank->SummonCreature(AVATAR, -466.795f, 272.863f, -90.447f, 1.57f, TEMPSUMMON_CORPSE_TIMED_DESPAWN, 900000);
+        LOG_INFO("module.coa-playerbots.dungeon", "Sunken Temple: the Avatar of Hakkar is summoned for '{}'.", tank->GetName());
+        return Result::Done;
+    }
+
     // Svala's ritual: nothing to steer (the channelers are ordinary targets); the combat logic fights them.
     Result SvalaRitualHold(Player* /*tank*/)
     {
@@ -308,6 +322,7 @@ namespace DungeonHooks
         table[23] = &HallsOfStoneWave;
         table[24] = &LightningSlagTransit;
         table[27] = &GraufHarpoon;
+        table[70] = &SunkenTempleSummonAvatar;
         table[28] = &SvalaRitualHold;
         table[25] = &SvalaAreaTrigger;
         table[26] = &SkadiAreaTrigger;
