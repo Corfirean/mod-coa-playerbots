@@ -91,9 +91,9 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level)
     bool learnedFromDb = false;
 
     QueryResult res = CharacterDatabase.Query(
-        "SELECT s.spell_entry FROM coa_build_creator_spell s "
-        "JOIN coa_build_creator b ON s.entry = b.id "
-        "WHERE (b.role & {}) != 0 LIMIT 25", roleMask);
+        "SELECT s.spell FROM coa_build_creator_spell s "
+        "JOIN coa_build_creator b ON s.entry = b.entry "
+        "WHERE (b.roles & {}) != 0 LIMIT 25", roleMask);
 
     if (res)
     {
