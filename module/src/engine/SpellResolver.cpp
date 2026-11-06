@@ -1,4 +1,4 @@
-﻿/*
+/*
  * mod-coa-playerbots
  *
  * Data-Driven Combat AI Framework: SpellResolver implementation
@@ -44,6 +44,37 @@ namespace BotAI
             auto itr = spellMap.find(rootSpellId);
             if (itr != spellMap.end() && itr->second && itr->second->Active && itr->second->State != PLAYERSPELL_REMOVED)
                 resolved = rootSpellId;
+        }
+
+        // Support for Warcraft Reborn spell twins (1100000 offset) and crossovers
+        constexpr uint32 REBORN_SPELL_OFFSET = 1100000;
+        if (!resolved)
+        {
+            uint32 twin = rootSpellId >= REBORN_SPELL_OFFSET ? rootSpellId - REBORN_SPELL_OFFSET : rootSpellId + REBORN_SPELL_OFFSET;
+            auto itr = spellMap.find(twin);
+            if (itr != spellMap.end() && itr->second && itr->second->Active && itr->second->State != PLAYERSPELL_REMOVED)
+            {
+                resolved = twin;
+            }
+            else
+            {
+                uint32 twinLast = sSpellMgr->GetLastSpellInChain(twin);
+                uint32 tCurrent = twinLast ? twinLast : twin;
+                while (tCurrent)
+                {
+                    auto tItr = spellMap.find(tCurrent);
+                    if (tItr != spellMap.end() && tItr->second && tItr->second->Active && tItr->second->State != PLAYERSPELL_REMOVED)
+                    {
+                        resolved = tCurrent;
+                        break;
+                    }
+
+                    uint32 tPrev = sSpellMgr->GetPrevSpellInChain(tCurrent);
+                    if (!tPrev || tPrev == tCurrent)
+                        break;
+                    tCurrent = tPrev;
+                }
+            }
         }
 
         return resolved;

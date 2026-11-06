@@ -32,6 +32,8 @@
 #include "BotMgr.h"
 #include "BotNameData.h"
 #include "engine/BotDebugLog.h"
+#include "engine/BotRuleset.h"
+#include "SpellMgr.h"
 #include "BotProgression.h"
 #include "BotTaxi.h"
 #include "BotTalentBuilds.h"
@@ -64,6 +66,129 @@ namespace
 {
 // Defined further down in this same (TU-wide) unnamed namespace; forward-declared here so
 // ProcessPendingRandomBotSpawns can hand it to spawnrandom bots too, same as spawnleveled already does.
+void ApplyWildcardBotSetup(Player* bot, uint8 level)
+{
+    if (!bot)
+        return;
+
+    CharacterDatabase.DirectExecute(
+        "REPLACE INTO coa_character_gamemode (guid, gamemode_mask) VALUES ({}, 64)",
+        bot->GetGUID().GetCounter());
+
+    uint32 spec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+    if (!spec || spec > 5)
+    {
+        spec = (bot->GetGUID().GetCounter() % 5) + 1;
+        bot->UpdatePlayerSetting("core.ascension_active_spec", 0, spec);
+        CharacterDatabase.DirectExecute(
+            "REPLACE INTO character_settings (guid, source, data) VALUES ({}, 'core.ascension_active_spec', '{} ')",
+            bot->GetGUID().GetCounter(), spec);
+    }
+
+    bot->LearnDefaultSkills();
+
+    uint32 roleMask = (spec == 1) ? 2 : (spec == 2) ? 4 : 8;
+    bool learnedFromDb = false;
+
+    QueryResult res = CharacterDatabase.Query(
+        "SELECT s.spell_entry FROM coa_build_creator_spell s "
+        "JOIN coa_build_creator b ON s.entry = b.id "
+        "WHERE (b.role & {}) != 0 LIMIT 25", roleMask);
+
+    if (res)
+    {
+        do
+        {
+            uint32 spellId = (*res)[0].Get<uint32>();
+            if (spellId && sSpellMgr->GetSpellInfo(spellId))
+            {
+                bot->learnSpellHighRank(spellId);
+                learnedFromDb = true;
+            }
+        } while (res->NextRow());
+    }
+
+    if (!learnedFromDb)
+    {
+        static const std::vector<uint32> tankSpells = { 355, 7386, 23922, 6572, 71, 48263, 16252, 2565, 8198, 1160 };
+        static const std::vector<uint32> healSpells = { 2061, 8004, 139, 17, 2006, 5185, 774, 4987, 2060 };
+        static const std::vector<uint32> meleeSpells = { 2457, 78, 1752, 12294, 2098, 772, 5308, 5171, 23881 };
+        static const std::vector<uint32> rangedSpells = { 75, 3044, 1978, 19434, 1130, 5116, 2643, 13165 };
+        static const std::vector<uint32> casterSpells = { 133, 116, 686, 5143, 348, 172, 11366, 403 };
+
+        std::vector<uint32> const* list = &meleeSpells;
+        if (spec == 1) list = &tankSpells;
+        else if (spec == 2) list = &healSpells;
+        else if (spec == 3) list = &meleeSpells;
+        else if (spec == 4) list = &rangedSpells;
+        else if (spec == 5) list = &casterSpells;
+
+        for (uint32 sId : *list)
+            bot->learnSpellHighRank(sId);
+    }
+}
+
+void ApplyRebornBotSetup(Player* bot, uint8 level)
+{
+    if (!bot)
+        return;
+
+    bot->LearnDefaultSkills();
+
+    QueryResult res = WorldDatabase.Query(
+        "SELECT DISTINCT spell FROM trainer_spell ts "
+        "JOIN trainer t ON ts.trainerId = t.Id "
+        "WHERE (t.trainer_class = {} OR t.trainer_class = 0) AND ts.reqLevel <= {}",
+        uint32(bot->getClass()), uint32(level));
+
+    bool learnedFromTrainer = false;
+    if (res)
+    {
+        do
+        {
+            uint32 spellId = (*res)[0].Get<uint32>();
+            if (spellId && sSpellMgr->GetSpellInfo(spellId))
+            {
+                bot->learnSpellHighRank(spellId);
+                learnedFromTrainer = true;
+                uint32 twinId = spellId + 1100000;
+                if (sSpellMgr->GetSpellInfo(twinId))
+                    bot->learnSpell(twinId, false);
+            }
+        } while (res->NextRow());
+    }
+
+    if (!learnedFromTrainer)
+    {
+        static const std::unordered_map<uint8, std::vector<uint32>> baselineSpells = {
+            { 1, { 78, 772, 2457, 71, 355, 7386, 6572, 23922, 12294, 1680, 5308 } },
+            { 2, { 20154, 20271, 635, 19750, 853, 31935, 35395, 20473, 53408 } },
+            { 3, { 75, 3044, 1978, 19434, 53209, 53301, 1130, 13165 } },
+            { 4, { 1752, 2098, 5171, 8676, 1329, 1784, 1833, 1766 } },
+            { 5, { 585, 589, 2061, 139, 17, 2060, 15407, 8092, 34433, 47540 } },
+            { 6, { 49998, 45462, 45477, 47541, 49020, 49016, 55050, 49143, 49184, 48263, 48266, 48265 } },
+            { 7, { 403, 8042, 8004, 331, 1064, 17364, 60103, 51505, 421, 51886, 1040003 } },
+            { 8, { 133, 116, 5143, 30451, 11366, 44614, 120, 1449, 122 } },
+            { 9, { 686, 172, 348, 17962, 48181, 30108, 6215, 1454, 1040002 } },
+            { 11, { 5176, 8921, 5185, 774, 5487, 768, 6807, 779, 1082, 1822, 22568, 33876, 33878, 48438 } },
+        };
+
+        auto it = baselineSpells.find(bot->getClass());
+        if (it != baselineSpells.end())
+        {
+            for (uint32 sId : it->second)
+            {
+                bot->learnSpellHighRank(sId);
+                uint32 twinId = sId + 1100000;
+                if (sSpellMgr->GetSpellInfo(twinId))
+                    bot->learnSpell(twinId, false);
+            }
+        }
+    }
+
+    bot->InitTalentForLevel();
+}
+
 void ApplyFreshBotSetup(Player* bot, uint8 level);
 
 // Available races for bot spawning.
@@ -253,6 +378,9 @@ struct ClassTemplates
 // with only one, a class existed for one faction alone, and 311 Horde bots were split across the
 // five classes whose lowest-guid template happened to be Horde -- confirmed live at 52-75 bots each
 // for those against 12-25 for everything else.
+uint32 FindOrCreateBotAccount(std::string const& prefix, uint32 charactersPerAccount, ChatHandler* handler);
+std::string Zeros(uint32 count);
+
 std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster()
 {
     std::string prefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
@@ -267,24 +395,125 @@ std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster()
         } while (botAccountsResult->NextRow());
     }
 
-    std::unordered_map<uint8, ClassTemplates> roster;
-    QueryResult result = CharacterDatabase.Query(
-        "SELECT class, guid, race, account FROM characters WHERE account <> 1 AND level >= 80 "
-        "AND class BETWEEN 12 AND 32 ORDER BY guid");
-    if (!result)
-        return roster;
-    do
-    {
-        Field* fields = result->Fetch();
-        if (botAccounts.count(fields[3].Get<uint32>()))
-            continue;
+    BotAI::BotRuleset ruleset = BotAI::GetServerRuleset();
+    std::string classFilter;
+    std::vector<uint8> requiredClasses;
 
-        uint8 race = fields[2].Get<uint8>();
-        size_t team = Player::TeamIdForRace(race) == TEAM_ALLIANCE ? 0 : 1;
-        ClassTemplate& slot = roster[fields[0].Get<uint8>()].byTeam[team];
-        if (!slot.guid)
-            slot = ClassTemplate{ fields[1].Get<uint32>(), race };
-    } while (result->NextRow());
+    if (ruleset == BotAI::BotRuleset::Reborn)
+    {
+        classFilter = "((class BETWEEN 1 AND 9) OR class = 11)";
+        requiredClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 11 };
+    }
+    else if (ruleset == BotAI::BotRuleset::Wildcard)
+    {
+        classFilter = "class = 10";
+        requiredClasses = { 10 };
+    }
+    else // CoA
+    {
+        classFilter = "class BETWEEN 12 AND 32";
+        for (uint8 c = 12; c <= 32; ++c)
+            requiredClasses.push_back(c);
+    }
+
+    uint8 serverMaxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    uint32 targetLevel = std::min<uint32>(serverMaxLevel, 80);
+
+    std::unordered_map<uint8, ClassTemplates> roster;
+
+    // 1. High-level templates first
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT class, guid, race, account FROM characters WHERE account <> 1 AND level >= {} "
+        "AND " + classFilter + " ORDER BY guid", targetLevel);
+
+    // 2. Fallback: characters of any level
+    if (!result)
+    {
+        result = CharacterDatabase.Query(
+            "SELECT class, guid, race, account FROM characters WHERE account <> 1 "
+            "AND " + classFilter + " ORDER BY level DESC, guid ASC");
+    }
+
+    if (result)
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            if (botAccounts.count(fields[3].Get<uint32>()))
+                continue;
+
+            uint8 race = fields[2].Get<uint8>();
+            size_t team = Player::TeamIdForRace(race) == TEAM_ALLIANCE ? 0 : 1;
+            ClassTemplate& slot = roster[fields[0].Get<uint8>()].byTeam[team];
+            if (!slot.guid)
+                slot = ClassTemplate{ fields[1].Get<uint32>(), race };
+        } while (result->NextRow());
+    }
+
+    // 3. Self-bootstrapping template synthesis: ensure every required class has at least one template per team
+    uint32 charactersPerAccount = sWorld->getIntConfig(CONFIG_CHARACTERS_PER_ACCOUNT);
+    for (uint8 classId : requiredClasses)
+    {
+        for (size_t team = 0; team < 2; ++team)
+        {
+            if (roster[classId].byTeam[team].guid != 0)
+                continue;
+
+            uint8 race = (team == 0) ? RACE_HUMAN : RACE_ORC;
+            if (ruleset == BotAI::BotRuleset::CoA)
+            {
+                auto const validRaces = GetValidBotRaces();
+                for (uint8 r : validRaces)
+                {
+                    if ((Player::TeamIdForRace(r) == TEAM_ALLIANCE ? 0 : 1) == team)
+                    {
+                        race = r;
+                        break;
+                    }
+                }
+            }
+
+            uint32 botAccountId = FindOrCreateBotAccount(prefix, charactersPerAccount, nullptr);
+            if (!botAccountId)
+                continue;
+
+            ObjectGuid::LowType templateGuid = sObjectMgr->GetGenerator<HighGuid::Player>().Generate();
+            std::string tmplName = GenerateUniqueName(race, 0);
+            if (tmplName.empty())
+                tmplName = "Tmpl" + std::to_string(classId) + "T" + std::to_string(team) + "G" + std::to_string(templateGuid % 10000);
+
+            PlayerInfo const* pInfo = sObjectMgr->GetPlayerInfo(race, classId);
+            if (!pInfo)
+                pInfo = sObjectMgr->GetPlayerInfo(race, 1);
+
+            uint32 mapId = pInfo ? pInfo->mapId : 0;
+            uint32 zoneId = pInfo ? pInfo->areaId : 0;
+            float posX = pInfo ? pInfo->positionX : 0.0f;
+            float posY = pInfo ? pInfo->positionY : 0.0f;
+            float posZ = pInfo ? pInfo->positionZ : 0.0f;
+            float ori = pInfo ? pInfo->orientation : 0.0f;
+
+            CharacterDatabase.DirectExecute(
+                "INSERT INTO characters (guid, account, name, race, class, gender, level, xp, money, "
+                "position_x, position_y, position_z, map, orientation, taximask, exploredZones, knownTitles, innTriggerId) "
+                "VALUES ({}, {}, '{}', {}, {}, 0, 1, 0, 0, {}, {}, {}, {}, {}, '{}', '{}', '{}', 0)",
+                templateGuid, botAccountId, tmplName, uint32(race), uint32(classId),
+                posX, posY, posZ, mapId, ori, Zeros(14), Zeros(128), Zeros(6));
+
+            CharacterDatabase.DirectExecute(
+                "INSERT INTO character_homebind (guid, mapId, zoneId, posX, posY, posZ) "
+                "VALUES ({}, {}, {}, {}, {}, {})",
+                templateGuid, mapId, zoneId, posX, posY, posZ);
+
+            sCharacterCache->AddCharacterCacheEntry(ObjectGuid::Create<HighGuid::Player>(templateGuid),
+                botAccountId, tmplName, 0, race, classId, 1);
+
+            roster[classId].byTeam[team] = ClassTemplate{ templateGuid, race };
+            LOG_INFO("module.coa-playerbots", "BotMgr: synthesized starter template for class {} team {} race {} (guid {}).",
+                uint32(classId), uint32(team), uint32(race), templateGuid);
+        }
+    }
+
     return roster;
 }
 
@@ -568,7 +797,7 @@ void SpawnRandomBots(uint32 requestedCount, ChatHandler* handler)
     {
         if (handler)
             handler->PSendSysMessage(
-                "BotMgr: no usable template characters found (need at least one level 80+ character "
+                "BotMgr: no usable template characters found (need at least one template character "
                 "per class, not on account 1).");
         return;
     }
@@ -861,20 +1090,30 @@ void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
         return;
     }
 
-    // The 21 custom Ascension classes, ids 12-32 -- same range BuildClassTemplateRoster's own
-    // query uses (line ~165). Synchronous, not queued: this is 21 bots for a controlled debugging
-    // population, not a several-hundred-bot batch, so none of SpawnRandomBots/SpawnLeveledBots'
-    // gradual-throttle machinery (built after a synchronous 1000-bot burst crashed the worldserver
-    // outright) is needed here.
-    // Fresh registry every run -- a re-spawn after `.botcmd purgeall` must not keep logging a
-    // deleted bot's old GUID under a slot number a brand new bot is about to reuse.
     BotAI::BotDebugLog::Clear();
     GetClassTemplateRoster(true);
 
+    BotAI::BotRuleset ruleset = BotAI::GetServerRuleset();
+    std::vector<uint8> classesToSpawn;
+    if (ruleset == BotAI::BotRuleset::Reborn)
+    {
+        classesToSpawn = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 11 };
+    }
+    else if (ruleset == BotAI::BotRuleset::Wildcard)
+    {
+        classesToSpawn = { 10, 10, 10, 10, 10 };
+    }
+    else
+    {
+        for (uint8 c = 12; c <= 32; ++c)
+            classesToSpawn.push_back(c);
+    }
+
     uint32 created = 0;
     std::vector<uint8> failedClasses;
-    for (uint8 classId = 12; classId <= 32; ++classId)
+    for (size_t i = 0; i < classesToSpawn.size(); ++i)
     {
+        uint8 classId = classesToSpawn[i];
         ObjectGuid::LowType newGuid = CreateClassBot(classId, race, level, handler);
         if (!newGuid)
         {
@@ -882,17 +1121,28 @@ void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
             continue;
         }
 
-        uint8 slot = classId - 12 + 1;
+        uint8 slot = uint8(created + 1);
         BotAI::BotDebugLog::Register(ObjectGuid::Create<HighGuid::Player>(newGuid), slot);
 
         ++created;
-        sBotMgr->SpawnBot(newGuid, handler, [level](Player* bot) { ApplyFreshBotSetup(bot, level); });
+        sBotMgr->SpawnBot(newGuid, handler, [level, ruleset, i](Player* bot) {
+            if (ruleset == BotAI::BotRuleset::Wildcard)
+            {
+                // Assign archetypes 1..5 for Wildcard fleet bots
+                uint32 archetypeSpec = uint32((i % 5) + 1);
+                bot->UpdatePlayerSetting("core.ascension_active_spec", 0, archetypeSpec);
+                CharacterDatabase.DirectExecute(
+                    "REPLACE INTO character_settings (guid, source, data) VALUES ({}, 'core.ascension_active_spec', '{} ')",
+                    bot->GetGUID().GetCounter(), archetypeSpec);
+            }
+            ApplyFreshBotSetup(bot, level);
+        });
     }
 
     if (handler)
     {
-        handler->PSendSysMessage("BotMgr: spawnfleet created {} of 21 class bots (race {}, level {}).",
-            created, uint32(race), uint32(level));
+        handler->PSendSysMessage("BotMgr: spawnfleet created {} of {} class bots (race {}, level {}).",
+            created, uint32(classesToSpawn.size()), uint32(race), uint32(level));
         if (!failedClasses.empty())
         {
             std::string missing;
@@ -901,8 +1151,8 @@ void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
             handler->PSendSysMessage("BotMgr: spawnfleet -- no matching-faction template for class id(s): {}.", missing);
         }
     }
-    LOG_INFO("module.coa-playerbots", "BotMgr: spawnfleet created {} of 21 class bots (race {}, level {}, {} missing).",
-        created, race, level, failedClasses.size());
+    LOG_INFO("module.coa-playerbots", "BotMgr: spawnfleet created {} of {} class bots (race {}, level {}, {} missing).",
+        created, classesToSpawn.size(), race, level, failedClasses.size());
 }
 
 namespace
@@ -1242,20 +1492,32 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
     for (int i = 0; i < 4; ++i)
         bot->StoreNewItemInBestSlots(BAG_ITEM_ID, 1);
 
-    BotProgression::LearnAbilitiesFromBook(bot);
-
-    if (level >= 10)
+    BotAI::BotRuleset ruleset = BotAI::GetBotRuleset(bot);
+    if (ruleset == BotAI::BotRuleset::Wildcard || bot->getClass() == 10)
     {
-        uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
-        if (!activeSpec)
+        ApplyWildcardBotSetup(bot, level);
+    }
+    else if (ruleset == BotAI::BotRuleset::Reborn || (bot->getClass() >= 1 && bot->getClass() <= 11))
+    {
+        ApplyRebornBotSetup(bot, level);
+    }
+    else
+    {
+        BotProgression::LearnAbilitiesFromBook(bot);
+
+        if (level >= 10)
         {
-            activeSpec = BotTalentBuilds::ChooseSpecForBot(bot);
-            if (activeSpec)
-                sBotMgr->LearnSpecialization(bot->GetGUID().GetCounter(), activeSpec, nullptr);
-        }
-        else
-        {
-            BotTalentBuilds::ApplyBuildForLevel(bot, level);
+            uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+            if (!activeSpec)
+            {
+                activeSpec = BotTalentBuilds::ChooseSpecForBot(bot);
+                if (activeSpec)
+                    sBotMgr->LearnSpecialization(bot->GetGUID().GetCounter(), activeSpec, nullptr);
+            }
+            else
+            {
+                BotTalentBuilds::ApplyBuildForLevel(bot, level);
+            }
         }
     }
 

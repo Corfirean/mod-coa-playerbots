@@ -26,6 +26,20 @@
 #include "profiles/ProfileTinker.h"
 #include "profiles/ProfileVenomancer.h"
 #include "profiles/ProfileReaper.h"
+
+// Classic / Warcraft Reborn & Wildcard profiles
+#include "profiles/ProfileWarrior.h"
+#include "profiles/ProfilePaladin.h"
+#include "profiles/ProfileHunter.h"
+#include "profiles/ProfileRogue.h"
+#include "profiles/ProfilePriest.h"
+#include "profiles/ProfileDeathKnight.h"
+#include "profiles/ProfileShaman.h"
+#include "profiles/ProfileMage.h"
+#include "profiles/ProfileWarlock.h"
+#include "profiles/ProfileDruid.h"
+#include "profiles/ProfileHero.h"
+
 #include <vector>
 
 namespace BotAI
@@ -44,7 +58,20 @@ namespace BotAI
         s_initialized = true;
         s_profiles.clear();
 
-        // Register class profiles
+        // 1. Register Classic / Reborn profiles (Classes 1-9, 11) & Hero (10)
+        RegisterWarriorProfiles();
+        RegisterPaladinProfiles();
+        RegisterHunterProfiles();
+        RegisterRogueProfiles();
+        RegisterPriestProfiles();
+        RegisterDeathKnightProfiles();
+        RegisterShamanProfiles();
+        RegisterMageProfiles();
+        RegisterWarlockProfiles();
+        RegisterDruidProfiles();
+        RegisterHeroProfiles();
+
+        // 2. Register Conquest of Azeroth class profiles (Classes 12-32)
         RegisterWitchDoctorProfiles();
         RegisterSunClericProfiles();
         RegisterRunemasterProfiles();
@@ -77,11 +104,28 @@ namespace BotAI
     {
         Initialize();
 
-        // Exact match (class, spec, role) - retail-style fixed talent specializations
+        // 1. Exact match (class, spec, role) - retail-style fixed talent specializations
         for (CombatProfile const& p : s_profiles)
         {
             if (p.classId == classId && p.specId == specId && p.role == role)
                 return &p;
+        }
+
+        // 2. Class + Role fallback (when specId is 0 or an unmapped custom spec)
+        for (CombatProfile const& p : s_profiles)
+        {
+            if (p.classId == classId && p.role == role)
+                return &p;
+        }
+
+        // 3. Fallback for Hero (class 10) by role
+        if (classId == 10)
+        {
+            for (CombatProfile const& p : s_profiles)
+            {
+                if (p.classId == 10 && p.role == role)
+                    return &p;
+            }
         }
 
         return nullptr;

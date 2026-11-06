@@ -1,7 +1,8 @@
 /*
  * mod-coa-playerbots
  *
- * Mapping between Ascension custom ClassId (12-32) + SpecId and BotRole (Dps/Tank/Healer/Support).
+ * Mapping between Ascension custom ClassId (12-32), Classic / Reborn ClassId (1-9, 11),
+ * Wildcard ClassId (10) + SpecId and BotRole (Dps/Tank/Healer/Support).
  * Sourced from exiles-db community wiki scrape and exact spellId cross-referencing
  * against AscensionCoATalentData.h, live-validated against Ascension CoA core.
  */
@@ -20,6 +21,72 @@ struct SpecRoleEntry
 
 static constexpr SpecRoleEntry SPEC_ROLE_TABLE[] =
 {
+    // =========================================================================
+    // Classic / Warcraft Reborn Classes (1-9, 11) + Wildcard Hero (10)
+    // =========================================================================
+    // Class 1: Warrior
+    { 1, 1,    BotRole::Dps,    "Arms" },
+    { 1, 2,    BotRole::Dps,    "Fury" },
+    { 1, 3,    BotRole::Tank,   "Protection" },
+
+    // Class 2: Paladin
+    { 2, 1,    BotRole::Healer, "Holy" },
+    { 2, 2,    BotRole::Tank,   "Protection" },
+    { 2, 3,    BotRole::Dps,    "Retribution" },
+
+    // Class 3: Hunter
+    { 3, 1,    BotRole::Dps,    "Beast Mastery" },
+    { 3, 2,    BotRole::Dps,    "Marksmanship" },
+    { 3, 3,    BotRole::Dps,    "Survival" },
+
+    // Class 4: Rogue
+    { 4, 1,    BotRole::Dps,    "Assassination" },
+    { 4, 2,    BotRole::Dps,    "Combat" },
+    { 4, 3,    BotRole::Dps,    "Subtlety" },
+
+    // Class 5: Priest
+    { 5, 1,    BotRole::Healer, "Discipline" },
+    { 5, 2,    BotRole::Healer, "Holy" },
+    { 5, 3,    BotRole::Dps,    "Shadow" },
+
+    // Class 6: Death Knight
+    { 6, 1,    BotRole::Tank,   "Blood" },
+    { 6, 2,    BotRole::Dps,    "Frost" },
+    { 6, 3,    BotRole::Dps,    "Unholy" },
+
+    // Class 7: Shaman
+    { 7, 1,    BotRole::Dps,    "Elemental" },
+    { 7, 2,    BotRole::Dps,    "Enhancement" },
+    { 7, 3,    BotRole::Healer, "Restoration" },
+    { 7, 4,    BotRole::Tank,   "Spirit Guard" }, // Reborn Shaman Tank
+
+    // Class 8: Mage
+    { 8, 1,    BotRole::Dps,    "Arcane" },
+    { 8, 2,    BotRole::Dps,    "Fire" },
+    { 8, 3,    BotRole::Dps,    "Frost" },
+
+    // Class 9: Warlock
+    { 9, 1,    BotRole::Dps,    "Affliction" },
+    { 9, 2,    BotRole::Dps,    "Demonology" },
+    { 9, 3,    BotRole::Dps,    "Destruction" },
+    { 9, 4,    BotRole::Tank,   "Dark Apotheosis" }, // Reborn Warlock Tank
+
+    // Class 10: Hero (Wildcard / Classless)
+    { 10, 1,   BotRole::Tank,   "Hero Juggernaut" },
+    { 10, 2,   BotRole::Healer, "Hero Priest" },
+    { 10, 3,   BotRole::Dps,    "Hero Berserker" },
+    { 10, 4,   BotRole::Dps,    "Hero Ranger" },
+    { 10, 5,   BotRole::Dps,    "Hero Elementalist" },
+
+    // Class 11: Druid
+    { 11, 1,   BotRole::Dps,    "Balance" },
+    { 11, 2,   BotRole::Dps,    "Feral Combat" },
+    { 11, 3,   BotRole::Healer, "Restoration" },
+    { 11, 4,   BotRole::Tank,   "Guardian Bear" },
+
+    // =========================================================================
+    // Conquest of Azeroth Custom Classes (12-32)
+    // =========================================================================
     // Class 12: Barbarian
     { 12, 1,   BotRole::Dps,    "Headhunting" },
     { 12, 2,   BotRole::Dps,    "Brutality" },
