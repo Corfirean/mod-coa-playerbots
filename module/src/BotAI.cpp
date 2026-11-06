@@ -2542,15 +2542,19 @@ void TryAutoPullInInstance(Player* bot)
         if (target->GetTypeId() == TYPEID_UNIT && target->GetEntry() == 10440 && bot->GetMapId() == 329)
         {
             constexpr float STAGE_X = 4033.0f, STAGE_Y = -3359.0f, STAGE_Z = 115.5f;
-            constexpr float INSIDE_Y = -3362.0f;  // the door line is at -3365
+            constexpr float INSIDE_Y = -3367.0f;  // the door line is at -3365; a bot on the line counts as inside
             static std::unordered_map<ObjectGuid, uint32> baronGatherSince;
+            static std::unordered_map<ObjectGuid, uint32> baronReleasedUntil;
             uint32& since = baronGatherSince[bot->GetGUID()];
-            bool allInside = bot->GetPositionY() > INSIDE_Y;
+            uint32& released = baronReleasedUntil[bot->GetGUID()];
+            bool allInside = bot->GetPositionY() > INSIDE_Y || (released && int32(released - now) > 0);
             for (GroupReference const* ref = group->GetFirstMember(); ref && allInside; ref = ref->next())
                 if (Player* member = ref->GetSource(); member && member != bot && member->IsAlive() && member->GetMapId() == bot->GetMapId() &&
                     (member->GetPositionY() <= INSIDE_Y || member->GetDistance(bot) > 12.0f))
                     allInside = false;
-            if (!allInside && (!since || now - since < 60000))
+            if (!allInside && since && now - since >= 60000)
+                released = now + 180000;  // waited long enough: pull, and do not wait again for three minutes
+            if (!allInside && !(released && int32(released - now) > 0) && (!since || now - since < 60000))
             {
                 if (!since)
                     since = now;

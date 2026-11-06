@@ -425,6 +425,12 @@ void RegisterSunkenTempleRoster(std::vector<BossRosterPatch>& t)
                           -466.8f, 272.9f, -90.4f, 15.0f, /*gateEntry*/ 0,
                           0, /*eventId*/ 9),
         };
+        // The Hakkar encounter (the egg, four flames, the suppressors) is optional and its in-combat orchestration was never written (see the
+        // GATE 3 note): the two anchors only ever sent the party to a pit rim it cannot get down from. The dungeon's last boss is the Shade of
+        // Eranikus; the Hakkar anchors are left out of the clear.
+        for (DungeonBossInfo& a : p.add)
+            if (a.entry == OBJ(9) || a.entry == OBJ(10))
+                a.skipByDesign = true;
         t.push_back(std::move(p));
     }
 }
