@@ -72,7 +72,7 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level)
         return;
 
     CharacterDatabase.DirectExecute(
-        "REPLACE INTO coa_character_gamemode (guid, gamemode_mask) VALUES ({}, 64)",
+        "REPLACE INTO coa_character_gamemode (guid, gameMode) VALUES ({}, 64)",
         bot->GetGUID().GetCounter());
 
     uint32 spec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
