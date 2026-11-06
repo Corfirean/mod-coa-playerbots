@@ -2535,6 +2535,36 @@ void TryAutoPullInInstance(Player* bot)
             }
         }
 
+        // Baron Rivendare (Stratholme): his SmartAI shuts the door of his room (spawn 35848, at 4033 -3365) the moment he is engaged, and whoever stands
+        // outside is locked out of the fight; he also resets when the fight drifts toward the hall. So the party is pulled from INSIDE the room, all
+        // of it: the tank walks in to the first yards behind the door (26 yd short of him, outside his own aggro), everybody follows, and only then
+        // is he pulled (60 s at most, so one member that cannot get in does not hold the run).
+        if (target->GetTypeId() == TYPEID_UNIT && target->GetEntry() == 10440 && bot->GetMapId() == 329)
+        {
+            constexpr float STAGE_X = 4033.0f, STAGE_Y = -3359.0f, STAGE_Z = 115.5f;
+            constexpr float INSIDE_Y = -3362.0f;  // the door line is at -3365
+            static std::unordered_map<ObjectGuid, uint32> baronGatherSince;
+            uint32& since = baronGatherSince[bot->GetGUID()];
+            bool allInside = bot->GetPositionY() > INSIDE_Y;
+            for (GroupReference const* ref = group->GetFirstMember(); ref && allInside; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member != bot && member->IsAlive() && member->GetMapId() == bot->GetMapId() &&
+                    (member->GetPositionY() <= INSIDE_Y || member->GetDistance(bot) > 12.0f))
+                    allInside = false;
+            if (!allInside && (!since || now - since < 60000))
+            {
+                if (!since)
+                    since = now;
+                if (bot->GetPositionY() <= INSIDE_Y && bot->GetExactDist(STAGE_X, STAGE_Y, STAGE_Z) > 3.0f)
+                    BotMovement::MoveTo(bot, MoveOwner::AutoDungeon, STAGE_X, STAGE_Y, STAGE_Z);
+                else
+                    BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
+                note("gathering the group inside Baron's room");
+                return;
+            }
+            since = 0;
+        }
+
+        // Baron Rivendare (Stratholme) shuts the door of his room behind the party at the pull and resets when the fight drifts out of it.
         // Loken (Halls of Lightning) shocks everybody for more the FARTHER they stand from him (Pulsing Shockwave), from the moment he is pulled: a
         // group that trails the tank by sixty yards dies on the way up while the tank fights. He is not pulled until everybody is at the tank
         // (45 s at most, so one member that cannot get there does not hold the run).

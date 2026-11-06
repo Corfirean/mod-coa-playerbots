@@ -91,6 +91,11 @@ namespace BotAI
         float score = 100.0f;
         Group* group = bot->GetGroup();
 
+        // A boss that raises an endless stream of adds (Stratholme's Baron Rivendare: Raise Dead every ten seconds, six at a time) is the target of
+        // the fight, not the adds: a group that kills skeletons never kills him, and he resets when the fight drifts toward the hall.
+        if (candidate->GetTypeId() == TYPEID_UNIT && candidate->GetEntry() == 10440)
+            score += 400.0f;
+
         if (group)
         {
             // Marked/leader target: the group leader already fighting exactly this unit is the

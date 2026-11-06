@@ -722,7 +722,12 @@ namespace DungeonEventExecutor
         if (ev.completeGoEntry)
             if (GameObject* go = tank->FindNearestGameObject(ev.completeGoEntry, ev.completeGoRadius > 0.0f ? ev.completeGoRadius : 150.0f);
                 go && uint32(go->GetGoState()) == ev.completeGoState)
-                return EventResult::Done;
+        {
+            LOG_INFO("module.coa-playerbots.dungeon", "Event '{}' is complete: object {} (entry {}, spawn {}) at ({:.0f}, {:.0f}, {:.0f}) reads state {}; '{}' is {:.0f} yd from it.", ev.name,
+                go->GetGUID().ToString(), go->GetEntry(), go->GetSpawnId(), go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), uint32(go->GetGoState()), tank->GetName(),
+                tank->GetExactDist(go));
+            return EventResult::Done;
+        }
 
         for (int hops = 0; hops < 4; ++hops)
         {
