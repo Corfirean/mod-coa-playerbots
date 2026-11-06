@@ -135,54 +135,28 @@ void ApplyRebornBotSetup(Player* bot, uint8 level)
 
     bot->LearnDefaultSkills();
 
-    QueryResult res = WorldDatabase.Query(
-        "SELECT DISTINCT spell FROM trainer_spell ts "
-        "JOIN trainer t ON ts.trainerId = t.Id "
-        "WHERE (t.trainer_class = {} OR t.trainer_class = 0) AND ts.reqLevel <= {}",
-        uint32(bot->getClass()), uint32(level));
+    static const std::unordered_map<uint8, std::vector<uint32>> baselineSpells = {
+        { 1, { 78, 772, 2457, 71, 355, 7386, 6572, 23922, 12294, 1680, 5308 } },
+        { 2, { 20154, 20271, 635, 19750, 853, 31935, 35395, 20473, 53408 } },
+        { 3, { 75, 3044, 1978, 19434, 53209, 53301, 1130, 13165 } },
+        { 4, { 1752, 2098, 5171, 8676, 1329, 1784, 1833, 1766 } },
+        { 5, { 585, 589, 2061, 139, 17, 2060, 15407, 8092, 34433, 47540 } },
+        { 6, { 49998, 45462, 45477, 47541, 49020, 49016, 55050, 49143, 49184, 48263, 48266, 48265 } },
+        { 7, { 403, 8042, 8004, 331, 1064, 17364, 60103, 51505, 421, 51886, 1040003 } },
+        { 8, { 133, 116, 5143, 30451, 11366, 44614, 120, 1449, 122 } },
+        { 9, { 686, 172, 348, 17962, 48181, 30108, 6215, 1454, 1040002 } },
+        { 11, { 5176, 8921, 5185, 774, 5487, 768, 6807, 779, 1082, 1822, 22568, 33876, 33878, 48438 } },
+    };
 
-    bool learnedFromTrainer = false;
-    if (res)
+    auto it = baselineSpells.find(bot->getClass());
+    if (it != baselineSpells.end())
     {
-        do
+        for (uint32 sId : it->second)
         {
-            uint32 spellId = (*res)[0].Get<uint32>();
-            if (spellId && sSpellMgr->GetSpellInfo(spellId))
-            {
-                bot->learnSpellHighRank(spellId);
-                learnedFromTrainer = true;
-                uint32 twinId = spellId + 1100000;
-                if (sSpellMgr->GetSpellInfo(twinId))
-                    bot->learnSpell(twinId, false);
-            }
-        } while (res->NextRow());
-    }
-
-    if (!learnedFromTrainer)
-    {
-        static const std::unordered_map<uint8, std::vector<uint32>> baselineSpells = {
-            { 1, { 78, 772, 2457, 71, 355, 7386, 6572, 23922, 12294, 1680, 5308 } },
-            { 2, { 20154, 20271, 635, 19750, 853, 31935, 35395, 20473, 53408 } },
-            { 3, { 75, 3044, 1978, 19434, 53209, 53301, 1130, 13165 } },
-            { 4, { 1752, 2098, 5171, 8676, 1329, 1784, 1833, 1766 } },
-            { 5, { 585, 589, 2061, 139, 17, 2060, 15407, 8092, 34433, 47540 } },
-            { 6, { 49998, 45462, 45477, 47541, 49020, 49016, 55050, 49143, 49184, 48263, 48266, 48265 } },
-            { 7, { 403, 8042, 8004, 331, 1064, 17364, 60103, 51505, 421, 51886, 1040003 } },
-            { 8, { 133, 116, 5143, 30451, 11366, 44614, 120, 1449, 122 } },
-            { 9, { 686, 172, 348, 17962, 48181, 30108, 6215, 1454, 1040002 } },
-            { 11, { 5176, 8921, 5185, 774, 5487, 768, 6807, 779, 1082, 1822, 22568, 33876, 33878, 48438 } },
-        };
-
-        auto it = baselineSpells.find(bot->getClass());
-        if (it != baselineSpells.end())
-        {
-            for (uint32 sId : it->second)
-            {
-                bot->learnSpellHighRank(sId);
-                uint32 twinId = sId + 1100000;
-                if (sSpellMgr->GetSpellInfo(twinId))
-                    bot->learnSpell(twinId, false);
-            }
+            bot->learnSpellHighRank(sId);
+            uint32 twinId = sId + 1100000;
+            if (sSpellMgr->GetSpellInfo(twinId))
+                bot->learnSpell(twinId, false);
         }
     }
 
