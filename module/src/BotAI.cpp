@@ -5681,6 +5681,31 @@ void Update(Player* bot, uint32 diff)
 
     BotMovement::Update(bot, diff);
 
+    // "In combat" with nobody: a dungeon creature that cannot be attacked (Utgarde Pinnacle's Flame Breath Triggers, flagged not attackable, hostile
+    // and aggressive) keeps the whole party in combat for as long as it is near, and a tank in combat never goes on with the run. When nobody of the
+    // group has a victim or an attacker for ten seconds, the combat is ended; a creature that really fights the group is not affected.
+    if (bot->IsInCombat() && !bot->GetVictim() && bot->getAttackers().empty() && bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
+    {
+        static std::unordered_map<ObjectGuid, uint32> idleCombatSince;
+        uint32& since = idleCombatSince[bot->GetGUID()];
+        bool fighting = false;
+        if (Group* staleGroup = bot->GetGroup())
+            for (GroupReference const* ref = staleGroup->GetFirstMember(); ref && !fighting; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member->IsAlive() && member->GetMapId() == bot->GetMapId() &&
+                    (member->GetVictim() || !member->getAttackers().empty()))
+                    fighting = true;
+        uint32 const nowMs = getMSTime();
+        if (fighting)
+            since = 0;
+        else if (!since)
+            since = nowMs;
+        else if (nowMs - since > 10000)
+        {
+            since = 0;
+            bot->GetCombatManager().EndAllPvECombat();
+        }
+    }
+
     uint8 currentLevel = bot->GetLevel();
     if (state.lastLevel == 0)
     {
