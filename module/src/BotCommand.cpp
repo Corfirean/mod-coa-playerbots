@@ -68,6 +68,7 @@ public:
             { "guildwithdrawgold", HandleBotGuildWithdrawGoldCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "despawn",      HandleBotDespawnCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "despawnall",   HandleBotDespawnAllCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "loginall",     HandleBotLoginAllCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "spawncancel",  HandleBotSpawnCancelCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "purgeall",     HandleBotPurgeAllCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "listauras",    HandleBotListAurasCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -573,6 +574,21 @@ public:
     {
         uint32 n = sBotMgr->DespawnAllBots();
         handler->PSendSysMessage("BotMgr: {} bot(s) logged out; no bot character was deleted.", n);
+        return true;
+    }
+
+    // Queues all offline bots to log in gradually (see BotMgr::QueueAllBotsForAutoLogin).
+    static bool HandleBotLoginAllCommand(ChatHandler* handler)
+    {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
+        sBotMgr->QueueAllBotsForAutoLogin();
+        if (handler)
+            handler->SendSysMessage("BotMgr: queued offline bots for login.");
         return true;
     }
 

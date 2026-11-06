@@ -48,6 +48,8 @@
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "World.h"
+#include "AscensionFreepick.h"
+#include "AscensionMysticEnchant.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -71,10 +73,12 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level)
     if (!bot)
         return;
 
+    // 1. Ensure character game mode flag 64 (Wildcard) is set
     CharacterDatabase.DirectExecute(
         "REPLACE INTO coa_character_gamemode (guid, gameMode) VALUES ({}, 64)",
         bot->GetGUID().GetCounter());
 
+    // 2. Determine active specialization (1..5)
     uint32 spec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
     if (!spec || spec > 5)
     {
@@ -87,45 +91,147 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level)
 
     bot->LearnDefaultSkills();
 
+    // 3. Map spec to target role mask:
+    // spec 1 -> Tank (2), spec 2 -> Healer (4), spec 3/4/5 -> DPS (8)
     uint32 roleMask = (spec == 1) ? 2 : (spec == 2) ? 4 : 8;
-    bool learnedFromDb = false;
 
-    QueryResult res = CharacterDatabase.Query(
-        "SELECT s.spell FROM coa_build_creator_spell s "
-        "JOIN coa_build_creator b ON s.entry = b.entry "
-        "WHERE (b.roles & {}) != 0 LIMIT 25", roleMask);
+    // 4. Query coa_build_creator for single coherent build matching the requested role
+    // Filter by needs_repairs = 0 and owner_account = 0 to get curated official builds.
+    uint32 chosenEntry = 0;
+    std::string chosenId;
+    std::string chosenName;
+    uint32 chosenRoles = roleMask;
+    uint32 chosenPrimaryStat = (spec == 1) ? 1 : (spec == 2) ? 4 : (spec == 5) ? 3 : 0;
 
-    if (res)
+    QueryResult countRes = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM coa_build_creator WHERE (roles & {}) != 0 AND needs_repairs = 0 AND owner_account = 0",
+        roleMask);
+    uint32 totalMatches = (countRes) ? (*countRes)[0].Get<uint32>() : 0;
+
+    if (totalMatches > 0)
     {
-        do
+        uint32 offset = bot->GetGUID().GetCounter() % totalMatches;
+        QueryResult buildRes = CharacterDatabase.Query(
+            "SELECT entry, id, name, roles, primary_stat FROM coa_build_creator "
+            "WHERE (roles & {}) != 0 AND needs_repairs = 0 AND owner_account = 0 "
+            "ORDER BY entry ASC LIMIT {}, 1",
+            roleMask, offset);
+
+        if (buildRes)
         {
-            uint32 spellId = (*res)[0].Get<uint32>();
-            if (spellId && sSpellMgr->GetSpellInfo(spellId))
-            {
-                bot->learnSpellHighRank(spellId);
-                learnedFromDb = true;
-            }
-        } while (res->NextRow());
+            Field* fields = buildRes->Fetch();
+            chosenEntry = fields[0].Get<uint32>();
+            chosenId = fields[1].Get<std::string>();
+            chosenName = fields[2].Get<std::string>();
+            chosenRoles = fields[3].Get<uint32>();
+            chosenPrimaryStat = fields[4].Get<uint32>();
+        }
     }
 
-    if (!learnedFromDb)
+    // Fallback if no matching official build found
+    if (!chosenEntry)
     {
-        static const std::vector<uint32> tankSpells = { 355, 7386, 23922, 6572, 71, 48263, 16252, 2565, 8198, 1160 };
-        static const std::vector<uint32> healSpells = { 2061, 8004, 139, 17, 2006, 5185, 774, 4987, 2060 };
-        static const std::vector<uint32> meleeSpells = { 2457, 78, 1752, 12294, 2098, 772, 5308, 5171, 23881 };
-        static const std::vector<uint32> rangedSpells = { 75, 3044, 1978, 19434, 1130, 5116, 2643, 13165 };
-        static const std::vector<uint32> casterSpells = { 133, 116, 686, 5143, 348, 172, 11366, 403 };
+        QueryResult anyBuildRes = CharacterDatabase.Query(
+            "SELECT entry, id, name, roles, primary_stat FROM coa_build_creator "
+            "WHERE (roles & {}) != 0 ORDER BY entry ASC LIMIT 1",
+            roleMask);
+        if (anyBuildRes)
+        {
+            Field* fields = anyBuildRes->Fetch();
+            chosenEntry = fields[0].Get<uint32>();
+            chosenId = fields[1].Get<std::string>();
+            chosenName = fields[2].Get<std::string>();
+            chosenRoles = fields[3].Get<uint32>();
+            chosenPrimaryStat = fields[4].Get<uint32>();
+        }
+    }
 
-        std::vector<uint32> const* list = &meleeSpells;
-        if (spec == 1) list = &tankSpells;
-        else if (spec == 2) list = &healSpells;
-        else if (spec == 3) list = &meleeSpells;
-        else if (spec == 4) list = &rangedSpells;
-        else if (spec == 5) list = &casterSpells;
+    if (chosenEntry && !chosenId.empty())
+    {
+        // 5. Persist active build into coa_build_creator_active:
+        // (guid, spec, build_id, flag_1=1, flag_2=0)
+        CharacterDatabase.DirectExecute(
+            "REPLACE INTO coa_build_creator_active (guid, spec, build_id, flag_1, flag_2) VALUES ({}, {}, '{}', 1, 0)",
+            bot->GetGUID().GetCounter(), spec, chosenId);
 
-        for (uint32 sId : *list)
+        // 6. Persist primary stat
+        bot->UpdatePlayerSetting("core.primary_stat", 0, chosenPrimaryStat);
+        CharacterDatabase.DirectExecute(
+            "REPLACE INTO character_settings (guid, source, data) VALUES ({}, 'core.primary_stat', '{} ')",
+            bot->GetGUID().GetCounter(), chosenPrimaryStat);
+
+        // 7. Load all spells from this single chosen build only (DO NOT MIX!)
+        std::vector<AscensionFreepick::GuideSpell> guideSpells;
+        QueryResult spellRes = CharacterDatabase.Query(
+            "SELECT spell, level FROM coa_build_creator_spell WHERE entry = {} ORDER BY slot ASC",
+            chosenEntry);
+
+        if (spellRes)
+        {
+            do
+            {
+                Field* fields = spellRes->Fetch();
+                uint32 spellId = fields[0].Get<uint32>();
+                uint32 reqLevel = fields[1].Get<uint32>();
+
+                if (spellId && sSpellMgr->GetSpellInfo(spellId))
+                {
+                    guideSpells.push_back({ spellId, reqLevel });
+                    if (reqLevel <= level)
+                    {
+                        bot->learnSpellHighRank(spellId);
+                    }
+                }
+            } while (spellRes->NextRow());
+        }
+
+        // 8. Load enchants for this chosen build from coa_build_creator_enchant
+        std::vector<AscensionMysticEnchant::GuideEnchant> guideEnchants;
+        QueryResult enchantRes = CharacterDatabase.Query(
+            "SELECT enchant, stacks, level FROM coa_build_creator_enchant WHERE entry = {} ORDER BY slot ASC",
+            chosenEntry);
+
+        if (enchantRes)
+        {
+            do
+            {
+                Field* fields = enchantRes->Fetch();
+                uint32 enchantId = fields[0].Get<uint32>();
+                uint32 stacks = fields[1].Get<uint32>();
+                uint32 enchantLevel = fields[2].Get<uint32>();
+
+                if (enchantId && sSpellMgr->GetSpellInfo(enchantId))
+                {
+                    guideEnchants.push_back({ enchantId, std::max<uint32>(1, stacks), enchantLevel });
+                }
+            } while (enchantRes->NextRow());
+        }
+
+        // 9. Apply the validated server-side build application mechanism
+        if (!guideSpells.empty())
+        {
+            AscensionFreepick::ApplyGuide(bot, guideSpells, chosenPrimaryStat);
+        }
+
+        // 10. Apply enchants via validated mystic API if enchants exist for this archetype
+        if (!guideEnchants.empty())
+        {
+            AscensionMysticEnchant::ApplyGuide(bot, guideEnchants, true);
+        }
+
+        LOG_INFO("module.coa-playerbots", "BotMgr: Wildcard bot '{}' (guid {}) configured with archetype '{}' (id: {}, roleMask: {}, primaryStat: {}, {} spells, {} enchants at lvl {}).",
+            bot->GetName(), bot->GetGUID().GetCounter(), chosenName, chosenId, chosenRoles, chosenPrimaryStat, guideSpells.size(), guideEnchants.size(), level);
+    }
+    else
+    {
+        // Safe single archetype fallback if database has no builds (e.g. unseeded fresh db)
+        // Never mix spells! Apply a single integral starter kit
+        static const std::vector<uint32> starterSpells = { 2457, 78, 1752, 12294, 2098, 772, 5308, 5171, 23881 };
+        for (uint32 sId : starterSpells)
             bot->learnSpellHighRank(sId);
     }
+
+    bot->InitTalentForLevel();
 }
 
 void ApplyRebornBotSetup(Player* bot, uint8 level)
@@ -135,29 +241,170 @@ void ApplyRebornBotSetup(Player* bot, uint8 level)
 
     bot->LearnDefaultSkills();
 
-    static const std::unordered_map<uint8, std::vector<uint32>> baselineSpells = {
-        { 1, { 78, 772, 2457, 71, 355, 7386, 6572, 23922, 12294, 1680, 5308 } },
-        { 2, { 20154, 20271, 635, 19750, 853, 31935, 35395, 20473, 53408 } },
-        { 3, { 75, 3044, 1978, 19434, 53209, 53301, 1130, 13165 } },
-        { 4, { 1752, 2098, 5171, 8676, 1329, 1784, 1833, 1766 } },
-        { 5, { 585, 589, 2061, 139, 17, 2060, 15407, 8092, 34433, 47540 } },
-        { 6, { 49998, 45462, 45477, 47541, 49020, 49016, 55050, 49143, 49184, 48263, 48266, 48265 } },
-        { 7, { 403, 8042, 8004, 331, 1064, 17364, 60103, 51505, 421, 51886, 1040003 } },
-        { 8, { 133, 116, 5143, 30451, 11366, 44614, 120, 1449, 122 } },
-        { 9, { 686, 172, 348, 17962, 48181, 30108, 6215, 1454, 1040002 } },
-        { 11, { 5176, 8921, 5185, 774, 5487, 768, 6807, 779, 1082, 1822, 22568, 33876, 33878, 48438 } },
-    };
+    uint8 classId = bot->getClass();
 
-    auto it = baselineSpells.find(bot->getClass());
-    if (it != baselineSpells.end())
+    // 1. Level-aware class ability progression:
+    // Query trainer_spell joining trainer where t.Type = 0 (Class Trainer) and t.Requirement = classId
+    // and ts.ReqLevel <= level.
+    QueryResult trainerRes = WorldDatabase.Query(
+        "SELECT DISTINCT ts.SpellId, ts.ReqLevel FROM trainer_spell ts "
+        "JOIN trainer t ON t.Id = ts.TrainerId "
+        "WHERE t.Type = 0 AND t.Requirement = {} AND ts.ReqLevel <= {} "
+        "ORDER BY ts.ReqLevel ASC",
+        classId, level);
+
+    std::unordered_set<uint32> learnedSpells;
+    if (trainerRes)
     {
-        for (uint32 sId : it->second)
+        do
         {
-            bot->learnSpellHighRank(sId);
-            uint32 twinId = sId + 1100000;
-            if (sSpellMgr->GetSpellInfo(twinId))
-                bot->learnSpell(twinId, false);
+            Field* fields = trainerRes->Fetch();
+            uint32 spellId = fields[0].Get<uint32>();
+            if (spellId && sSpellMgr->GetSpellInfo(spellId))
+            {
+                bot->learnSpellHighRank(spellId);
+                learnedSpells.insert(spellId);
+
+                // Check and learn Reborn spell twins (+1100000 offset)
+                uint32 twinId = spellId + 1100000;
+                if (sSpellMgr->GetSpellInfo(twinId))
+                {
+                    bot->learnSpell(twinId, false);
+                    learnedSpells.insert(twinId);
+                }
+            }
+        } while (trainerRes->NextRow());
+    }
+
+    // 2. Reborn Class Specializations and Non-Standard Roles:
+    uint32 spec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+    if (!spec || spec > 3)
+    {
+        spec = (bot->GetGUID().GetCounter() % 3) + 1; // 1=Tank/Heal, 2=DPS1, 3=DPS2
+        bot->UpdatePlayerSetting("core.ascension_active_spec", 0, spec);
+    }
+
+    // Specialization coverage:
+    // A. Shaman Spirit Guard Tank (spec == 1)
+    if (classId == CLASS_SHAMAN && spec == 1)
+    {
+        static const std::vector<uint32> shamanTankSpells = {
+            8017, 8018, 8019, 10399, 16314, 16315, 16316, 25479, // Rockbiter Weapon ranks
+            8042, 8044, 8045, 8046, 10412, 10413, 10414, 25454,  // Earth Shock ranks
+            324, 325, 905, 945, 8134, 10431, 10432, 25469,       // Lightning Shield
+            8071, 8154, 8155, 10406, 10407, 10408, 25508,       // Stoneskin Totem
+            8160, 8161, 10442, 25359                            // Searing Totem
+        };
+        for (uint32 sId : shamanTankSpells)
+        {
+            if (sSpellMgr->GetSpellInfo(sId))
+            {
+                bot->learnSpellHighRank(sId);
+                uint32 twin = sId + 1100000;
+                if (sSpellMgr->GetSpellInfo(twin))
+                    bot->learnSpell(twin, false);
+            }
         }
+        bot->SetSheath(SHEATH_STATE_MELEE);
+    }
+    // B. Warlock Dark Apotheosis Tank (spec == 1)
+    else if (classId == CLASS_WARLOCK && spec == 1)
+    {
+        constexpr uint32 DARK_APOTHEOSIS_FORM = 1154321;
+        constexpr uint32 DEMONIC_SLASH = 1159674;
+        constexpr uint32 DEMONIC_LEAP = 1161363;
+        constexpr uint32 TWILIGHT_WARD = 1161294;
+        constexpr uint32 PASSIVE_1 = 1154322;
+        constexpr uint32 PASSIVE_2 = 1154323;
+
+        for (uint32 sId : { DARK_APOTHEOSIS_FORM, DEMONIC_SLASH, DEMONIC_LEAP, TWILIGHT_WARD, PASSIVE_1, PASSIVE_2 })
+        {
+            if (sSpellMgr->GetSpellInfo(sId))
+                bot->learnSpell(sId, false);
+        }
+
+        if (level >= 10 && !bot->HasAura(DARK_APOTHEOSIS_FORM))
+        {
+            bot->CastSpell(bot, DARK_APOTHEOSIS_FORM, true);
+        }
+    }
+    // C. Druid Guardian Bear Tank (spec == 1)
+    else if (classId == CLASS_DRUID && spec == 1)
+    {
+        static const std::vector<uint32> bearSpells = {
+            5487, 9634, // Bear Form, Dire Bear Form
+            6807, 779, 99, 6795, 5229, 22842 // Maul, Swipe, Demo Roar, Growl, Enrage, Frenzied Regen
+        };
+        for (uint32 sId : bearSpells)
+        {
+            if (sSpellMgr->GetSpellInfo(sId))
+            {
+                bot->learnSpellHighRank(sId);
+                uint32 twin = sId + 1100000;
+                if (sSpellMgr->GetSpellInfo(twin))
+                    bot->learnSpell(twin, false);
+            }
+        }
+        if (level >= 10 && !bot->HasAura(5487) && !bot->HasAura(9634))
+        {
+            bot->CastSpell(bot, level >= 40 ? 9634 : 5487, true);
+        }
+    }
+    // D. Paladin Protection (spec == 1)
+    else if (classId == CLASS_PALADIN && spec == 1)
+    {
+        static const std::vector<uint32> protSpells = { 25780, 20925, 26573, 20154, 465 }; // Righteous Fury, Holy Shield, Consecration, Seal of Righteousness, Devotion Aura
+        for (uint32 sId : protSpells)
+        {
+            if (sSpellMgr->GetSpellInfo(sId))
+            {
+                bot->learnSpellHighRank(sId);
+                uint32 twin = sId + 1100000;
+                if (sSpellMgr->GetSpellInfo(twin))
+                    bot->learnSpell(twin, false);
+            }
+        }
+        if (level >= 16 && !bot->HasAura(25780))
+            bot->CastSpell(bot, 25780, true);
+    }
+    // E. Warrior Protection (spec == 1)
+    else if (classId == CLASS_WARRIOR && spec == 1)
+    {
+        static const std::vector<uint32> protSpells = { 71, 355, 6572, 7386, 2565, 23922 }; // Defensive Stance, Taunt, Revenge, Sunder Armor, Shield Block, Shield Slam
+        for (uint32 sId : protSpells)
+        {
+            if (sSpellMgr->GetSpellInfo(sId))
+            {
+                bot->learnSpellHighRank(sId);
+                uint32 twin = sId + 1100000;
+                if (sSpellMgr->GetSpellInfo(twin))
+                    bot->learnSpell(twin, false);
+            }
+        }
+        if (level >= 10 && !bot->HasAura(71))
+            bot->CastSpell(bot, 71, true);
+    }
+
+    // 3. Mystic Enchants integration for Reborn:
+    std::vector<AscensionMysticEnchant::GuideEnchant> rebornEnchants;
+    QueryResult enchantRes = CharacterDatabase.Query(
+        "SELECT spell, slot FROM coa_mystic_enchant_slot WHERE guid = {}",
+        bot->GetGUID().GetCounter());
+
+    if (enchantRes)
+    {
+        do
+        {
+            Field* fields = enchantRes->Fetch();
+            uint32 sId = fields[0].Get<uint32>();
+            if (sId && sSpellMgr->GetSpellInfo(sId))
+                rebornEnchants.push_back({ sId, 1, uint32(level) });
+        } while (enchantRes->NextRow());
+    }
+
+    if (!rebornEnchants.empty())
+    {
+        AscensionMysticEnchant::ApplyGuide(bot, rebornEnchants, true);
     }
 
     bot->InitTalentForLevel();
@@ -1467,11 +1714,11 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
         bot->StoreNewItemInBestSlots(BAG_ITEM_ID, 1);
 
     BotAI::BotRuleset ruleset = BotAI::GetBotRuleset(bot);
-    if (ruleset == BotAI::BotRuleset::Wildcard || bot->getClass() == 10)
+    if (ruleset == BotAI::BotRuleset::Wildcard)
     {
         ApplyWildcardBotSetup(bot, level);
     }
-    else if (ruleset == BotAI::BotRuleset::Reborn || (bot->getClass() >= 1 && bot->getClass() <= 11))
+    else if (ruleset == BotAI::BotRuleset::Reborn)
     {
         ApplyRebornBotSetup(bot, level);
     }
