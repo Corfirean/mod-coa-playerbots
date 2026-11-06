@@ -266,9 +266,13 @@ namespace
         Creature* grauf = inst ? inst->GetCreature(DATA_GRAUF) : nullptr;
         if (!grauf || !grauf->IsAlive())
             return Result::Done;
-        if (!tank->IsInCombat() && tank->GetExactDist(POCKET_X, POCKET_Y, POCKET_Z) > POCKET_LEASH + 3.0f)
+        // The party is in combat from the first tick of the gauntlet (the add stream never lets go), so the walk to the pocket, 150 yd east down the
+        // hall, is made in combat: the tank takes the movement from the fight and the party follows it.
+        if (tank->GetExactDist(POCKET_X, POCKET_Y, POCKET_Z) > POCKET_LEASH + 3.0f)
         {
-            BotMovement::MoveTo(tank, MoveOwner::AutoDungeon, POCKET_X, POCKET_Y, POCKET_Z);
+            if (tank->IsInCombat())
+                BotMovement::ForceStopOwner(tank, MoveOwner::Combat);
+            BotMovement::MoveTo(tank, MoveOwner::AutoDungeon, POCKET_X, POCKET_Y, POCKET_Z, true);
             return Result::Running;
         }
         bool const overBreach = grauf->GetExactDist(BREACH_A_X, BREACH_A_Y, BREACH_A_Z) < BREACH_RADIUS || grauf->GetExactDist(BREACH_B_X, BREACH_B_Y, BREACH_B_Z) < BREACH_RADIUS;
