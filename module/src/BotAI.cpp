@@ -2541,8 +2541,8 @@ void TryAutoPullInInstance(Player* bot)
         // is he pulled (60 s at most, so one member that cannot get in does not hold the run).
         if (target->GetTypeId() == TYPEID_UNIT && target->GetEntry() == 10440 && bot->GetMapId() == 329)
         {
-            constexpr float STAGE_X = 4033.0f, STAGE_Y = -3359.0f, STAGE_Z = 115.5f;
-            constexpr float INSIDE_Y = -3367.0f;  // the door line is at -3365; a bot on the line counts as inside
+            constexpr float STAGE_X = 4033.0f, STAGE_Y = -3354.0f, STAGE_Z = 115.5f;
+            constexpr float INSIDE_Y = -3363.0f;  // the door line is at -3365: a member has to be two yards past it
             static std::unordered_map<ObjectGuid, uint32> baronGatherSince;
             static std::unordered_map<ObjectGuid, uint32> baronReleasedUntil;
             uint32& since = baronGatherSince[bot->GetGUID()];
@@ -2550,7 +2550,7 @@ void TryAutoPullInInstance(Player* bot)
             bool allInside = bot->GetPositionY() > INSIDE_Y || (released && int32(released - now) > 0);
             for (GroupReference const* ref = group->GetFirstMember(); ref && allInside; ref = ref->next())
                 if (Player* member = ref->GetSource(); member && member != bot && member->IsAlive() && member->GetMapId() == bot->GetMapId() &&
-                    (member->GetPositionY() <= INSIDE_Y || member->GetDistance(bot) > 12.0f))
+                    (member->GetPositionY() <= INSIDE_Y || member->GetDistance(bot) > 14.0f))
                     allInside = false;
             if (!allInside && since && now - since >= 60000)
                 released = now + 180000;  // waited long enough: pull, and do not wait again for three minutes
@@ -2558,7 +2558,8 @@ void TryAutoPullInInstance(Player* bot)
             {
                 if (!since)
                     since = now;
-                if (bot->GetPositionY() <= INSIDE_Y && bot->GetExactDist(STAGE_X, STAGE_Y, STAGE_Z) > 3.0f)
+                // The tank goes well in, so that the members trailing it stand inside too.
+                if (bot->GetPositionY() < STAGE_Y - 2.0f && bot->GetExactDist(STAGE_X, STAGE_Y, STAGE_Z) > 3.0f)
                     BotMovement::MoveTo(bot, MoveOwner::AutoDungeon, STAGE_X, STAGE_Y, STAGE_Z);
                 else
                     BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
