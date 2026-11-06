@@ -135,6 +135,10 @@ namespace
                 Creature* g = inst->GetCreature(DATA_GRAUF);
                 LOG_INFO("module.coa-playerbots.dungeon", "Utgarde Pinnacle: Skadi state {} (data {}), Grauf {}.", uint32(inst->GetBossState(DATA_SKADI)), inst->GetData(DATA_SKADI),
                     g ? (g->IsAlive() ? "alive" : "dead") : "missing");
+                if (Creature* sk = inst->GetCreature(DATA_SKADI))
+                    LOG_INFO("module.coa-playerbots.dungeon", "Utgarde Pinnacle: Skadi at ({:.0f} {:.0f} {:.0f}) {:.0f}% hp, alive {}, unit flags {:#x}, in combat {}, victim {}, on vehicle {}.",
+                        sk->GetPositionX(), sk->GetPositionY(), sk->GetPositionZ(), sk->GetHealthPct(), sk->IsAlive() ? 1 : 0, sk->GetUInt32Value(UNIT_FIELD_FLAGS),
+                        sk->IsInCombat() ? 1 : 0, sk->GetVictim() ? sk->GetVictim()->GetName() : "-", sk->GetVehicle() ? 1 : 0);
             }
         }
         if (!inst || inst->GetData(DATA_SKADI) != IN_PROGRESS)

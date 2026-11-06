@@ -276,6 +276,18 @@ namespace
             return Result::Running;
         }
         bool const overBreach = grauf->GetExactDist(BREACH_A_X, BREACH_A_Y, BREACH_A_Z) < BREACH_RADIUS || grauf->GetExactDist(BREACH_B_X, BREACH_B_Y, BREACH_B_Z) < BREACH_RADIUS;
+        {
+            static uint32 lastTelemetry = 0;
+            uint32 const nowMs = getMSTime();
+            if (nowMs - lastTelemetry > 4000)
+            {
+                lastTelemetry = nowMs;
+                GameObject* l = tank->FindNearestGameObject(GO_HARPOON_LAUNCHER, HARPOON_SEARCH);
+                LOG_INFO("module.coa-playerbots.dungeon", "Harpoon: tank at ({:.0f} {:.0f} {:.0f}) grauf ({:.0f} {:.0f} {:.0f}) overBreach {} launcher {} dist {:.1f} skadiHits {} graufHp {:.0f}.",
+                    tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), grauf->GetPositionX(), grauf->GetPositionY(), grauf->GetPositionZ(),
+                    overBreach ? 1 : 0, l ? 1 : 0, l ? tank->GetExactDist(l) : -1.0f, inst ? inst->GetData(30u) : 0u, grauf->GetHealthPct());
+            }
+        }
         if (overBreach)
         {
             static std::map<ObjectGuid, uint32> lastShot;
@@ -285,7 +297,11 @@ namespace
                 if (GameObject* launcher = tank->FindNearestGameObject(GO_HARPOON_LAUNCHER, HARPOON_SEARCH); launcher && tank->GetExactDist(launcher) < 6.0f)
                 {
                     at = now;
+                    // Launch Harpoon is a cone spell cast by the player: it hits what lies in front of the caster, so face Grauf first.
+                    tank->SetOrientation(tank->GetAngle(grauf));
+                    tank->SendMovementFlagUpdate();
                     launcher->Use(tank);
+                    LOG_INFO("module.coa-playerbots.dungeon", "Harpoon fired by {} at Grauf ({:.0f}% health).", tank->GetName(), grauf->GetHealthPct());
                     return Result::Running;
                 }
         }

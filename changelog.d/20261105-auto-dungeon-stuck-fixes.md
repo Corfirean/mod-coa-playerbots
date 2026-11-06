@@ -13,3 +13,5 @@ Talking to an NPC in a scripted event (Brann in the Halls of Stone, Thrall, Arth
 Old Hillsbrad's bomb steps look for the barrel of their own house instead of the one nearest the tank. A walk in a scripted event that stops getting closer (or that the pathfinder refuses) is finished in a straight line. A group thrown off the route (into the Halls of Lightning's slag pit) goes back to the nearest point of it, and the pit's Slags are no longer pulled from the route.
 
 When neither the pathfinder nor a straight walk reaches an object a scripted step needs (Old Hillsbrad's north-east barrels), the party is put next to it. The gossip choice of a scripted step is logged.
+
+- Utgarde Pinnacle: bots now turn towards Grauf before firing the harpoon launcher (the harpoon is a cone spell cast by the player), so each shot hits Grauf for 35 % of his health; the idle-combat reset no longer runs while Skadi's gauntlet is in progress (it made Skadi evade and reset the fight).
