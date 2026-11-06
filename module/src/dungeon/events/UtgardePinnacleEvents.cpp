@@ -5,6 +5,8 @@
  * and/or modify it under version 3 of the License, or (at your option), any later version.
  */
 
+#include "Log.h"
+#include "Timer.h"
 #include "dungeon/DcCompat.h"
 #include "dungeon/DungeonClearRouteRegistry.h"
 #include "dungeon/DungeonEventTables.h"
@@ -125,6 +127,16 @@ namespace
             return false;
 
         InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+        {
+            static uint32 lastLog = 0;
+            if (inst && getMSTime() - lastLog > 15000 && bot->GetExactDist(500.0f, -508.0f, 105.0f) < 400.0f)
+            {
+                lastLog = getMSTime();
+                Creature* g = inst->GetCreature(DATA_GRAUF);
+                LOG_INFO("module.coa-playerbots.dungeon", "Utgarde Pinnacle: Skadi state {} (data {}), Grauf {}.", uint32(inst->GetBossState(DATA_SKADI)), inst->GetData(DATA_SKADI),
+                    g ? (g->IsAlive() ? "alive" : "dead") : "missing");
+            }
+        }
         if (!inst || inst->GetData(DATA_SKADI) != IN_PROGRESS)
             return false;
 
