@@ -2558,6 +2558,17 @@ void TryAutoPullInInstance(Player* bot)
             {
                 if (!since)
                     since = now;
+                // Ten seconds at the door and still not all in (the hall behind keeps sending skeletons at the stragglers): the party is put in the
+                // room, on the staging point, the way a summon does it.
+                if (now - since > 10000 && bot->GetExactDist2d(STAGE_X, STAGE_Y) < 40.0f)
+                {
+                    LOG_INFO("module.coa-playerbots", "AutoDungeon: tank '{}' and the group are moved into Baron's room.", bot->GetName());
+                    for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+                        if (Player* member = ref->GetSource(); member && member->IsAlive() && member->IsInWorld() && member->GetMapId() == bot->GetMapId())
+                            member->NearTeleportTo(STAGE_X + frand(-2.5f, 2.5f), STAGE_Y + frand(-1.5f, 1.5f), STAGE_Z, member->GetOrientation());
+                    since = now - 5000;
+                    return;
+                }
                 // The tank goes well in, so that the members trailing it stand inside too.
                 if (bot->GetPositionY() < STAGE_Y - 2.0f && bot->GetExactDist(STAGE_X, STAGE_Y, STAGE_Z) > 3.0f)
                     BotMovement::MoveTo(bot, MoveOwner::AutoDungeon, STAGE_X, STAGE_Y, STAGE_Z);
