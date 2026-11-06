@@ -79,6 +79,8 @@ def srp6_salt_verifier(username: str, password: str) -> tuple[bytes, bytes]:
 # 17=2H, 21=mainhand-only, 22=offhand-only, 14=shield, 15/25/26=ranged.
 # --------------------------------------------------------------------------
 ARMOR_SUBCLASSES: dict[int, list[int]] = {
+    1: [1, 2, 3, 4], 2: [1, 2, 3, 4], 3: [1, 2, 3], 4: [1, 2], 5: [1],
+    6: [1, 2, 3, 4], 7: [1, 2, 3], 8: [1], 9: [1], 10: [1, 2, 3, 4], 11: [1, 2],
     12: [1, 2], 13: [1, 2, 3], 14: [1, 2], 15: [1, 2, 3], 16: [1],
     17: [1, 2, 3, 4], 18: [1, 2, 3, 4], 19: [1, 2, 3], 20: [1, 2],
     21: [1, 2], 22: [1], 23: [1], 24: [1], 25: [1, 2, 3, 4],
@@ -87,6 +89,17 @@ ARMOR_SUBCLASSES: dict[int, list[int]] = {
 }
 
 WEAPON_TYPES: dict[int, dict[int, list[int]]] = {
+    1: {13: [0, 4, 7, 13, 15], 14: [6], 17: [1, 5, 6, 8, 10], 26: [2, 3, 18, 19]},
+    2: {13: [0, 4, 7], 14: [6], 17: [1, 5, 6, 8]},
+    3: {13: [0, 4, 7, 15], 17: [1, 5, 6, 8, 10], 26: [2, 3, 18]},
+    4: {13: [0, 4, 7, 13, 15], 26: [2, 3, 18, 19]},
+    5: {13: [4, 15], 17: [10], 21: [15], 26: [19]},
+    6: {13: [0, 4, 7], 17: [1, 5, 6, 8]},
+    7: {13: [0, 4, 13, 15], 14: [6], 17: [1, 5, 10]},
+    8: {13: [7, 15], 17: [10], 21: [15], 26: [19]},
+    9: {13: [7, 15], 17: [10], 21: [15], 26: [19]},
+    10: {13: [0, 4, 7, 13, 15], 14: [6], 17: [1, 5, 6, 8, 10], 26: [2, 3, 18, 19]},
+    11: {13: [4, 15], 17: [5, 6, 10], 21: [15]},
     12: {13: [4, 7, 13, 15], 17: [1, 5, 8], 21: [7], 25: [16]},
     13: {13: [4, 13, 15], 15: [2], 17: [6, 10], 21: [0], 26: [18, 19]},
     14: {13: [0, 7, 15], 15: [2], 17: [1, 5, 6, 8, 10], 21: [0, 7], 22: [13, 15], 26: [19]},
@@ -403,12 +416,26 @@ def factory_race_policy(repack: Path):
     return lambda race: race not in excluded and (race in {1,2,3,4,5,6,7,8,10,11} or (custom and race not in disabled))
 
 
-def build_template_roster(mysql: MysqlClient, bot_account_ids: set[int], allowed_race=None) -> dict[int, dict[int, ClassTemplate]]:
+def build_template_roster(mysql: MysqlClient, bot_account_ids: set[int], allowed_race=None, target_db: str = "acore_characters") -> dict[int, dict[int, ClassTemplate]]:
+    # Multi-realm aware query:
+    if "reborn" in target_db:
+        class_cond = "((class BETWEEN 1 AND 9) OR class = 11) AND level >= 60"
+    elif "wildcard" in target_db:
+        class_cond = "class = 10"
+    else:
+        class_cond = "(class BETWEEN 12 AND 32) AND level >= 80"
+
     rows = mysql.run(
-        "SELECT class, guid, race, account FROM characters WHERE account <> 1 AND level >= 80 "
-        "AND class BETWEEN 12 AND 32 ORDER BY guid",
-        db="acore_characters",
+        f"SELECT class, guid, race, account FROM characters WHERE account <> 1 AND {class_cond} ORDER BY guid",
+        db=target_db,
     )
+    if not rows:
+        # Fallback without level restriction
+        fallback_cond = "class BETWEEN 1 AND 32"
+        rows = mysql.run(
+            f"SELECT class, guid, race, account FROM characters WHERE account <> 1 AND {fallback_cond} ORDER BY level DESC, guid ASC",
+            db=target_db,
+        )
     roster: dict[int, dict[int, ClassTemplate]] = {}
     for class_s, guid_s, race_s, account_s in rows:
         if int(account_s) in bot_account_ids:

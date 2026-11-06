@@ -840,8 +840,8 @@ KitWeaponDemand GetKitWeaponDemand(Player* bot)
 
 float WeaponKitFit(Player* bot, ItemTemplate const* proto)
 {
-    // Ascension classes only: the stock 1-11 classes are not built around these masks.
-    if (!bot || !proto || bot->getClass() < 12)
+    // Evaluates kit weapon fit across all realms (CoA, Reborn, Wildcard)
+    if (!bot || !proto || bot->getClass() < 1)
         return 0.0f;
     bool const isShield = proto->Class == ITEM_CLASS_ARMOR && proto->InventoryType == INVTYPE_SHIELD;
     if (proto->Class != ITEM_CLASS_WEAPON && !isShield)
@@ -893,7 +893,7 @@ float WeaponKitFit(Player* bot, ItemTemplate const* proto)
 
 bool KitGearMismatch(Player* bot)
 {
-    if (!bot || bot->getClass() < 12)
+    if (!bot || bot->getClass() < 1)
         return false;
     KitWeaponDemand const demand = GetKitWeaponDemand(bot);
     auto satisfied = [&](std::vector<uint32> const& masks, uint8 slot)
