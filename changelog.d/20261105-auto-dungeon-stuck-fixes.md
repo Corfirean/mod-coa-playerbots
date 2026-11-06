@@ -15,3 +15,5 @@ Old Hillsbrad's bomb steps look for the barrel of their own house instead of the
 When neither the pathfinder nor a straight walk reaches an object a scripted step needs (Old Hillsbrad's north-east barrels), the party is put next to it. The gossip choice of a scripted step is logged.
 
 - Utgarde Pinnacle: bots now turn towards Grauf before firing the harpoon launcher (the harpoon is a cone spell cast by the player), so each shot hits Grauf for 35 % of his health; the idle-combat reset no longer runs while Skadi's gauntlet is in progress (it made Skadi evade and reset the fight).
+
+- Gundrak: Drakkari Elemental and Drakkari Colossus got boss tuning in BotScaling (bots deal more, take less), since the elemental trash killed every level 60 group.
