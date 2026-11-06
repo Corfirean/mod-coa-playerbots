@@ -264,6 +264,9 @@ namespace
         // Halls of Lightning — the Slags of the slag pit (fourteen of them, a 20 s respawn). The tank that went after them from the route left the
         // ledge for the pit floor, came back, and went down again, for half an hour. Only the pit's own box: a Slag anywhere else is trash.
         { 602, 28585, 1260.0f, 1420.0f, -215.0f, -90.0f },
+        // Utgarde Pinnacle — Skadi at his spawn in front of the gauntlet. He stands passive until area trigger 4991 is tripped; a tank that attacks him
+        // there holds the whole party in a combat that never becomes the encounter, and the objective that fires the trigger is never reached.
+        { 575, 26693, 325.0f, 365.0f, -525.0f, -490.0f },
         { 469, 14022 },  // Blackwing Lair — Corrupted Red Whelp    (160 whelps, 30s respawn: infinite)
         { 469, 14023 },  // Blackwing Lair — Corrupted Green Whelp  (see the class-3 note above)
         { 469, 14024 },  // Blackwing Lair — Corrupted Blue Whelp

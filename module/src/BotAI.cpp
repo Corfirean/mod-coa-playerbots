@@ -5645,6 +5645,24 @@ std::string DebugState(Player* bot)
                 " mv=" + std::to_string(c->isMoving()) + " npcf=" + std::to_string(c->GetUInt32Value(UNIT_NPC_FLAGS));
         }
     }
+    // Who keeps a bot in combat, and what hurts it: combat references, attackers and harmful auras.
+    if (bot->IsInCombat())
+    {
+        out += " | combat with:";
+        uint32 listed = 0;
+        for (auto const& pair : bot->GetCombatManager().GetPvECombatRefs())
+            if (Unit* other = pair.second->GetOther(bot); other && listed++ < 6)
+                out += " '" + other->GetName() + "'(" + std::to_string(other->GetEntry()) + ")" + (other->IsAlive() ? "" : "dead");
+        out += " attackers=" + std::to_string(bot->getAttackers().size()) + " victim=" + (bot->GetVictim() ? bot->GetVictim()->GetName() : std::string("-"));
+        out += " auras:";
+        uint32 shownAuras = 0;
+        for (auto const& pair : bot->GetAppliedAuras())
+        {
+            Aura const* aura = pair.second->GetBase();
+            if (aura && !pair.second->IsPositive() && shownAuras++ < 6)
+                out += " " + std::to_string(aura->GetId()) + (aura->GetCaster() ? "<" + aura->GetCaster()->GetName() + ">" : std::string());
+        }
+    }
     return out;
 }
 

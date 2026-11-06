@@ -17,3 +17,6 @@ When neither the pathfinder nor a straight walk reaches an object a scripted ste
 - Utgarde Pinnacle: bots now turn towards Grauf before firing the harpoon launcher (the harpoon is a cone spell cast by the player), so each shot hits Grauf for 35 % of his health; the idle-combat reset no longer runs while Skadi's gauntlet is in progress (it made Skadi evade and reset the fight).
 
 - Gundrak: Drakkari Elemental and Drakkari Colossus got boss tuning in BotScaling (bots deal more, take less), since the elemental trash killed every level 60 group.
+
+- Utgarde Pinnacle: Skadi is not a target while he idles at his spawn in front of the gauntlet (DcNeverTargetRegistry row). Attacking him there kept the party in a combat that never became the encounter, so the objective that trips the gauntlet was never reached. With the harpoon facing fix the dungeon is now cleared 4 of 4 times in the sandbox.
+- Diagnostics: the bot debug state lists who a bot is in combat with, its attackers and its harmful auras.
