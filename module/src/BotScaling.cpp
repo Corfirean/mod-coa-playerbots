@@ -9,6 +9,7 @@
  *   CoaBots.Scaling.HealingDone     healing a bot casts
  *   CoaBots.Scaling.DamageTaken     damage a creature deals to a bot (below 1 = bots take less)
  *   CoaBots.Scaling.TankThreat      threat a bot tank generates (extra threat is added on top of the damage-based one)
+ *   CoaBots.Scaling.BossTuning      extra per-boss multipliers for a few bosses that the ordinary ones cannot carry (off by default)
  *
  * The multipliers apply on top of the group scaling of the content scaling module. Scripted lethal mechanics (instant kills, percentage
  * damage, huge scripted hits) are left alone. Each map kind has its own switch.
@@ -38,10 +39,10 @@ namespace
 {
     // The values a server gets without touching the configuration. Tuned on the soak runs of the dungeon passes: a group of five bots with
     // them gets through the dungeons of all three expansions without the bosses dying in a few seconds.
-    constexpr float DEFAULT_DAMAGE_DONE = 1.6f;
-    constexpr float DEFAULT_HEALING_DONE = 1.4f;
-    constexpr float DEFAULT_DAMAGE_TAKEN = 0.7f;
-    constexpr float DEFAULT_TANK_THREAT = 1.5f;
+    constexpr float DEFAULT_DAMAGE_DONE = 1.0f;
+    constexpr float DEFAULT_HEALING_DONE = 1.0f;
+    constexpr float DEFAULT_DAMAGE_TAKEN = 1.0f;
+    constexpr float DEFAULT_TANK_THREAT = 1.0f;
 
     // Bosses whose mechanic hurts every bot of the group wherever it stands, so the fight has to be short: Loken's Pulsing Shockwave (spell
     // 52942) reaches the whole instance and grows with the distance from him; a member that died (or trails the tank) is hit for 5000 every two
@@ -77,6 +78,7 @@ namespace
         bool raids = true;
         bool battlegrounds = false;
         bool world = false;
+        bool bossTuning = false;
         float damageDone = DEFAULT_DAMAGE_DONE;
         float healingDone = DEFAULT_HEALING_DONE;
         float damageTaken = DEFAULT_DAMAGE_TAKEN;
@@ -102,6 +104,7 @@ namespace
         cached.raids = sConfigMgr->GetOption<bool>("CoaBots.Scaling.Raids", true);
         cached.battlegrounds = sConfigMgr->GetOption<bool>("CoaBots.Scaling.Battlegrounds", false);
         cached.world = sConfigMgr->GetOption<bool>("CoaBots.Scaling.World", false);
+        cached.bossTuning = sConfigMgr->GetOption<bool>("CoaBots.Scaling.BossTuning", false);
         cached.damageDone = ClampMultiplier(sConfigMgr->GetOption<float>("CoaBots.Scaling.DamageDone", DEFAULT_DAMAGE_DONE), 0.1f, 10.0f);
         cached.healingDone = ClampMultiplier(sConfigMgr->GetOption<float>("CoaBots.Scaling.HealingDone", DEFAULT_HEALING_DONE), 0.1f, 10.0f);
         cached.damageTaken = ClampMultiplier(sConfigMgr->GetOption<float>("CoaBots.Scaling.DamageTaken", DEFAULT_DAMAGE_TAKEN), 0.1f, 10.0f);
@@ -188,7 +191,7 @@ namespace
             uint32 const before = damage;
             if (cfg.damageDone != 1.0f)
                 damage = uint32(Scaled(float(damage), cfg.damageDone));
-            if (BossTuning const* tuning = TuningFor(target))
+            if (BossTuning const* tuning = cfg.bossTuning ? TuningFor(target) : nullptr)
                 damage = uint32(Scaled(float(damage), tuning->damageDone));
             if (cfg.tankThreat > 1.0f && attacker == bot && BotAI::GetRole(bot->GetGUID()) == BotRole::Tank && target->IsCreature())
                 target->GetThreatMgr().AddThreat(bot, float(std::max(before, damage)) * (cfg.tankThreat - 1.0f), spellInfo, /*ignoreModifiers*/ true);
@@ -198,7 +201,7 @@ namespace
         // A creature hitting a bot (or its pet).
         if (cfg.damageTaken != 1.0f && attacker->IsCreature() && !PlayerBehind(attacker) && BotBehind(target))
             damage = std::max<uint32>(1, uint32(Scaled(float(damage), cfg.damageTaken)));
-        if (BossTuning const* tuning = TuningFor(attacker); tuning && attacker->IsCreature() && !PlayerBehind(attacker) && BotBehind(target))
+        if (BossTuning const* tuning = cfg.bossTuning ? TuningFor(attacker) : nullptr; tuning && attacker->IsCreature() && !PlayerBehind(attacker) && BotBehind(target))
             damage = std::max<uint32>(1, uint32(Scaled(float(damage), tuning->damageTaken)));
         NoteHit(target, attacker, damage, spellInfo);
     }

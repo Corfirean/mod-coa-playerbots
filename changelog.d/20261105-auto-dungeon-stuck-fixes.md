@@ -26,3 +26,5 @@ When neither the pathfinder nor a straight walk reaches an object a scripted ste
 - A member that drops far below the floor (a hole, or arriving before the floor collision is loaded) makes the group move to its current target once a minute, instead of waiting forever for a member below the world.
 - Diagnostics: 'Fall:' lines, a teleport watch for barrel moves, escort telemetry, a log line for every party move.
 - Gundrak: Gal'darah has boss tuning as well.
+
+- Bot scaling now defaults to no change (all multipliers 1) and the per-boss tuning has its own switch, CoaBots.Scaling.BossTuning (off by default). The sandbox keeps its old strong values in its own config.

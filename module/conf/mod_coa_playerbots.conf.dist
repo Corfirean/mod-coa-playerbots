@@ -590,10 +590,12 @@ BotAI.DynamicEncounters.Mystery.SpellVisualId = 0
 #    CoaBots.Scaling.Raids         Apply in raids. Default 1.
 #    CoaBots.Scaling.Battlegrounds Apply in battlegrounds and arenas. Default 0.
 #    CoaBots.Scaling.World         Apply in the open world. Default 0.
-#    CoaBots.Scaling.DamageDone    Damage a bot deals to creatures (1 = unchanged). Default 1.6, range 0.1 to 10.
-#    CoaBots.Scaling.HealingDone   Healing a bot casts (1 = unchanged). Default 1.4, range 0.1 to 10.
-#    CoaBots.Scaling.DamageTaken   Damage creatures deal to a bot (below 1 = bots take less). Default 0.7, range 0.1 to 10.
-#    CoaBots.Scaling.TankThreat    Threat a bot tank generates (1 = unchanged). Default 1.5, range 1 to 10.
+#    CoaBots.Scaling.DamageDone    Damage a bot deals to creatures (1 = unchanged). Default 1, range 0.1 to 10.
+#    CoaBots.Scaling.HealingDone   Healing a bot casts (1 = unchanged). Default 1, range 0.1 to 10.
+#    CoaBots.Scaling.DamageTaken   Damage creatures deal to a bot (below 1 = bots take less). Default 1, range 0.1 to 10.
+#    CoaBots.Scaling.TankThreat    Threat a bot tank generates (1 = unchanged). Default 1, range 1 to 10.
+#    CoaBots.Scaling.BossTuning    Extra multipliers for a few bosses that level 60 bots could not beat otherwise (Loken, Drakkari
+#                                  Elemental, Colossus and Gal'darah). Default 0.
 #
 #    Reloadable with .reload config (takes effect within a few seconds).
 ###################################################################################################
@@ -603,7 +605,8 @@ CoaBots.Scaling.Dungeons = 1
 CoaBots.Scaling.Raids = 1
 CoaBots.Scaling.Battlegrounds = 0
 CoaBots.Scaling.World = 0
-CoaBots.Scaling.DamageDone = 1.6
-CoaBots.Scaling.HealingDone = 1.4
-CoaBots.Scaling.DamageTaken = 0.7
-CoaBots.Scaling.TankThreat = 1.5
+CoaBots.Scaling.DamageDone = 1
+CoaBots.Scaling.HealingDone = 1
+CoaBots.Scaling.DamageTaken = 1
+CoaBots.Scaling.TankThreat = 1
+CoaBots.Scaling.BossTuning = 0
