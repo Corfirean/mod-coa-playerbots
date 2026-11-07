@@ -664,10 +664,32 @@ namespace
                 {
                     // Not in the scan radius: the escortee waits somewhere else (Arthas at the start of the Culling of Stratholme waits for the
                     // party to come and speak to him). Walk to him wherever he is on the map instead of waiting for him to appear.
-                    if (Creature* distant = tank->FindNearestCreature(s.creatureEntry, 450.0f, true))
+                    if (Creature* distant = tank->FindNearestCreature(s.creatureEntry, 1500.0f, true))
                     {
-                        WalkTo(tank, ev, index, distant->GetPositionX(), distant->GetPositionY(), distant->GetPositionZ(), 3.5f);
+                        static std::map<ObjectGuid, uint32> lastFar;
+                        uint32 const farNow = getMSTime();
+                        if (farNow - lastFar[tank->GetGUID()] > 20000)
+                        {
+                            lastFar[tank->GetGUID()] = farNow;
+                            LOG_INFO("module.coa-playerbots.dungeon", "Escortee '{}' is {:.0f} yd from '{}' (outside the scan radius), at ({:.0f}, {:.0f}, {:.0f}): walking to it.", distant->GetName(), tank->GetExactDist(distant),
+                                tank->GetName(), distant->GetPositionX(), distant->GetPositionY(), distant->GetPositionZ());
+                        }
+                        // Far beyond reach on foot (Thrall rode on to Tarren Mill): the party is put next to it.
+                        if (tank->GetExactDist(distant) > 200.0f)
+                            TeleportParty(tank, distant->GetPositionX(), distant->GetPositionY() - 2.0f, distant->GetPositionZ() + 0.5f);
+                        else
+                            WalkTo(tank, ev, index, distant->GetPositionX(), distant->GetPositionY(), distant->GetPositionZ(), 3.5f);
                         return StepResult::Running;
+                    }
+                    {
+                        static std::map<ObjectGuid, uint32> lastNone;
+                        uint32 const noneNow = getMSTime();
+                        if (noneNow - lastNone[tank->GetGUID()] > 30000)
+                        {
+                            lastNone[tank->GetGUID()] = noneNow;
+                            LOG_INFO("module.coa-playerbots.dungeon", "Escortee (entry {}) of '{}' is nowhere on the map (dead or not spawned); instance data {}.", s.creatureEntry, tank->GetName(),
+                                InstanceOf(tank) && s.instanceDataId >= 0 ? InstanceOf(tank)->GetData(uint32(s.instanceDataId)) : 0u);
+                        }
                     }
                     return StepResult::Running;
                 }
