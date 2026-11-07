@@ -87,6 +87,10 @@ ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatH
 // had no matching-faction template instead of silently skipping or substituting them.
 void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler = nullptr);
 ObjectGuid::LowType SpawnClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler = nullptr);
+
+void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requestedBuildId = "");
+void ApplyRebornBotSetup(Player* bot, uint8 level, uint32 forcedSpec = 0);
+void SpawnCustomBots(uint32 count, uint8 level, uint8 forcedClassId = 0, uint32 forcedSpec = 0, std::string const& requestedArchetype = "", ChatHandler* handler = nullptr);
 }
 
 #endif // COA_PLAYERBOTS_BOT_SPAWN_RANDOM_H

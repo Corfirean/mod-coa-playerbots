@@ -24,6 +24,9 @@
 #include "engine/SpecStrategyRegistry.h"
 #include "engine/SpellResolver.h"
 #include "engine/CombatUtility.h"
+#include "engine/BotRuleset.h"
+#include "BotSpawnRandom.h"
+#include "BotProgression.h"
 
 class coa_playerbots_worldscript : public WorldScript
 {
@@ -109,8 +112,16 @@ public:
 
     void OnPlayerLevelChanged(Player* player, uint8) override
     {
-        if (player && player->GetSession() && player->GetSession()->IsBot())
-            CoaBotScheduling::Notify(player->GetGUID(), true);
+        if (!player || !player->GetSession() || !player->GetSession()->IsBot())
+            return;
+        CoaBotScheduling::Notify(player->GetGUID(), true);
+        if (!sBotMgr->BotsEnabled())
+            return;
+        BotAI::BotRuleset const ruleset = BotAI::GetBotRuleset(player);
+        if (ruleset == BotAI::BotRuleset::Wildcard)
+            BotSpawn::ApplyWildcardBotSetup(player, player->GetLevel());
+        else if (ruleset == BotAI::BotRuleset::Reborn)
+            BotSpawn::ApplyRebornBotSetup(player, player->GetLevel());
     }
 
     void OnPlayerLogout(Player* player) override

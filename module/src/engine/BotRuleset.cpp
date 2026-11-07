@@ -5,6 +5,8 @@
  */
 
 #include "engine/BotRuleset.h"
+#include "AscensionWildcard.h"
+#include "AscensionWarcraftReborn.h"
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "Player.h"
@@ -66,10 +68,12 @@ namespace BotAI
         if (serverRuleset == BotRuleset::Reborn)
             return BotRuleset::Reborn;
 
-        // On a CoA server, characters operate under CoA ruleset by default.
-        // If a character specifically possesses Hero class (10), treat as Wildcard.
-        if (IsHeroClass(bot->getClass()))
+        // On a mixed/hybrid server, check native game mode & character state
+        if (AscensionWildcard::IsWildcardHero(bot) || IsHeroClass(bot->getClass()))
             return BotRuleset::Wildcard;
+
+        if (AscensionWarcraftReborn::IsRebornCharacter(bot))
+            return BotRuleset::Reborn;
 
         // Never let a stock class accidentally trigger Reborn mechanics on a CoA realm
         return BotRuleset::CoA;
