@@ -116,6 +116,12 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requeste
             chosenRoles = fields[3].Get<uint32>();
             chosenPrimaryStat = fields[4].Get<uint32>();
         }
+        else
+        {
+            LOG_ERROR("module.coa-playerbots", "BotMgr: requested archetype '{}' not found in coa_build_creator for bot '{}' (guid {})!",
+                requestedBuildId, bot->GetName(), bot->GetGUID().GetCounter());
+            return;
+        }
     }
 
     if (!chosenEntry)
@@ -203,14 +209,21 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requeste
         AscensionWildcard::WildcardArchetypeResult res = AscensionWildcard::ApplyArchetypeBuild(
             bot, specIndex, chosenPrimaryStat, buildSpells, chosenId);
 
+        if (!res.Success)
+        {
+            LOG_ERROR("module.coa-playerbots", "BotMgr: failed to apply archetype '{}' to bot '{}' (guid {}): {}",
+                chosenId, bot->GetName(), bot->GetGUID().GetCounter(), res.Reason);
+            return;
+        }
+
         LOG_INFO("module.coa-playerbots", "BotMgr: Wildcard bot '{}' (guid {}) applied archetype '{}' (id: {}, roleMask: {}, primaryStat: {}, {} spells applied at lvl {} - result: {}).",
             bot->GetName(), bot->GetGUID().GetCounter(), chosenName, chosenId, chosenRoles, res.PrimaryStat, res.AppliedSpells, level, res.Reason);
     }
     else
     {
-        static const std::vector<uint32> starterSpells = { 2457, 78, 1752, 12294, 2098, 772, 5308, 5171, 23881 };
-        for (uint32 sId : starterSpells)
-            bot->learnSpell(sId, false);
+        LOG_WARN("module.coa-playerbots", "BotMgr: no valid archetype found for Wildcard bot '{}' (guid {}) - aborting setup.",
+            bot->GetName(), bot->GetGUID().GetCounter());
+        return;
     }
 
     bot->InitTalentForLevel();
@@ -1289,10 +1302,22 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
             newGuid, spec);
         if (!requestedArchetype.empty())
         {
-            uint32 specIdx = (spec > 0) ? (spec - 1) : 0;
-            CharacterDatabase.DirectExecute(
-                "REPLACE INTO coa_build_creator_active (guid, spec, build_id, flag_1, flag_2) VALUES ({}, {}, '{}', 1, 0)",
-                newGuid, specIdx, requestedArchetype);
+            QueryResult checkRes = CharacterDatabase.Query(
+                "SELECT 1 FROM coa_build_creator WHERE id = '{}' LIMIT 1",
+                requestedArchetype);
+            if (checkRes)
+            {
+                uint32 specIdx = (spec > 0) ? (spec - 1) : 0;
+                CharacterDatabase.DirectExecute(
+                    "REPLACE INTO coa_build_creator_active (guid, spec, build_id, flag_1, flag_2) VALUES ({}, {}, '{}', 1, 0)",
+                    newGuid, specIdx, requestedArchetype);
+            }
+            else
+            {
+                LOG_ERROR("module.coa-playerbots",
+                    "BotMgr: requested archetype '{}' does not exist in coa_build_creator; skipping coa_build_creator_active record.",
+                    requestedArchetype);
+            }
         }
     }
 
