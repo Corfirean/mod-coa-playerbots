@@ -272,13 +272,23 @@ namespace
         }
     }
 
+    struct TeleportWatch { uint32 atMs; float x, y, z; uint32 logged; };
+    std::map<ObjectGuid, TeleportWatch> g_teleportWatch;
+
     void TeleportParty(Player* tank, float x, float y, float z)
     {
+        float const fromX = tank->GetPositionX(), fromY = tank->GetPositionY();
         tank->NearTeleportTo(x, y, z, tank->GetOrientation());
+        std::string members;
         if (Group* group = tank->GetGroup())
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                 if (Player* member = ref->GetSource(); member && member != tank && member->IsInWorld() && member->GetMapId() == tank->GetMapId())
+                {
                     member->NearTeleportTo(x, y, z, member->GetOrientation());
+                    members += std::string(" ") + (member->IsAlive() ? "alive" : "dead") + (member->IsBeingTeleported() ? "(teleporting)" : "");
+                }
+        LOG_INFO("module.coa-playerbots.dungeon", "Party move to ({:.0f}, {:.0f}, {:.0f}) from ({:.0f}, {:.0f}): tank (alive {}, now at {:.0f} {:.0f} {:.0f}, being teleported {}), members:{}.", x, y, z, fromX, fromY,
+            tank->IsAlive() ? 1 : 0, tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), tank->IsBeingTeleported() ? 1 : 0, members);
     }
 
     StepResult RunStep(Player* tank, Group* group, DungeonEvent const& ev, size_t index, EventStep const& s, Run& run)
@@ -459,6 +469,17 @@ namespace
                 // The object of THIS step is the one at the step's anchor (Old Hillsbrad: one barrel per house, a different spot per pool roll),
                 // not the one nearest to the tank: that is the same barrel for all five steps, and when it was already burning every step
                 // read "done" at once and no bomb was planted.
+                if (auto w = g_teleportWatch.find(tank->GetGUID()); w != g_teleportWatch.end())
+                {
+                    uint32 const sinceMs = getMSTime() - w->second.atMs;
+                    if (sinceMs < 40000 && sinceMs / 2000 >= w->second.logged)
+                    {
+                        w->second.logged = sinceMs / 2000 + 1;
+                        LOG_INFO("module.coa-playerbots.dungeon", "Teleport watch: '{}' {} s after the move is at ({:.0f}, {:.0f}, {:.0f}), {:.0f} yd from the target, teleporting {}, in combat {}.", tank->GetName(),
+                            sinceMs / 1000, tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), tank->GetExactDist(w->second.x, w->second.y, w->second.z),
+                            tank->IsBeingTeleported() ? 1 : 0, tank->IsInCombat() ? 1 : 0);
+                    }
+                }
                 GameObject* go = nullptr;
                 if (HasAnchor(s))
                 {
@@ -499,7 +520,25 @@ namespace
                         // connect): the party is put next to the object, the way the elevators of other dungeons are done.
                         LOG_WARN("module.coa-playerbots.dungeon", "Event '{}' step {}: '{}' cannot walk to the object, {:.0f} yd away; moving the party next to it.", ev.name, index,
                             tank->GetName(), tank->GetExactDist(go));
+                        // Old Hillsbrad's barrels: a party that could neither walk nor be moved to a barrel a second time sets it alight the way its bomb
+                        // would: the barrel burns and the instance counts one bomb (five of them bring Lieutenant Drake, and Thrall's gossip stays empty
+                        // until he is dead).
+                        static std::map<std::pair<ObjectGuid, uint64>, uint32> barrelTries;
+                        uint32& tries = barrelTries[{ tank->GetGUID(), go->GetGUID().GetRawValue() }];
+                        ++tries;
+                        if (tank->GetMapId() == 560 && s.goEntry == 182589 && tries >= 2)
+                        {
+                            if (InstanceScript* ins = InstanceOf(tank))
+                            {
+                                ins->SetData(10 /*DATA_BOMBS_PLACED*/, 1);
+                                go->SetGoState(GO_STATE_ACTIVE);
+                                LOG_WARN("module.coa-playerbots.dungeon", "Event '{}' step {}: the barrel at ({:.0f}, {:.0f}, {:.0f}) is set alight without the bomb for '{}' (no way to it).", ev.name, index,
+                                    go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), tank->GetName());
+                                return StepResult::Done;
+                            }
+                        }
                         TeleportParty(tank, go->GetPositionX(), go->GetPositionY() - 3.0f, go->GetPositionZ() + 0.5f);
+                        g_teleportWatch[tank->GetGUID()] = { nowMs, go->GetPositionX(), go->GetPositionY() - 3.0f, go->GetPositionZ() + 0.5f, 0 };
                         LOG_INFO("module.coa-playerbots.dungeon", "'{}' is now at ({:.0f}, {:.0f}, {:.0f}), the object at ({:.0f}, {:.0f}, {:.0f}), {} cannot ack.", tank->GetName(),
                             tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(),
                             tank->IsBeingTeleported() ? "teleport pending:" : "no teleport pending:");
@@ -635,6 +674,19 @@ namespace
                 // The escortee offers its gossip again whenever it waits for the party (at the start and at each pause of the scripted escort):
                 // talk to it again every few seconds while the flag is up.
                 bool const wantsTalk = s.gossipOption >= 0 && escortee->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP);
+                {
+                    static std::map<ObjectGuid, uint32> lastEscortLog;
+                    uint32 const logNow = getMSTime();
+                    if (logNow - lastEscortLog[tank->GetGUID()] > 20000)
+                    {
+                        lastEscortLog[tank->GetGUID()] = logNow;
+                        InstanceScript* ins = InstanceOf(tank);
+                        LOG_INFO("module.coa-playerbots.dungeon", "Escort of '{}' by '{}': instance data {} = {} (done at {}), escortee at ({:.0f}, {:.0f}, {:.0f}), {:.0f} yd away, gossip flag {}, moving {}, tank in combat {}.",
+                            escortee->GetName(), tank->GetName(), s.instanceDataId, ins && s.instanceDataId >= 0 ? ins->GetData(uint32(s.instanceDataId)) : 0u, s.instanceDataMin,
+                            escortee->GetPositionX(), escortee->GetPositionY(), escortee->GetPositionZ(), tank->GetExactDist(escortee), wantsTalk ? 1 : 0, escortee->isMoving() ? 1 : 0,
+                            tank->IsInCombat() ? 1 : 0);
+                    }
+                }
                 // The first choice is made when the escortee offers its gossip: Arthas of the Culling of Stratholme stands without the flag
                 // while his introduction plays, a choice made then is lost and was never repeated (his flag only comes up once, and the
                 // step had "used" its talk). Without the flag the tank waits up to 90 s, then tries anyway.
@@ -648,6 +700,14 @@ namespace
                     }
                     GossipHello(tank, escortee);
                     GossipSelect(tank, escortee, s.gossipOption);
+                    // Some resume menus take two clicks (Arthas at the Town Hall, Thrall after Skarloc): the first option opens a second menu, and the
+                    // escortee only moves on when its option is chosen too. A hello for every click would start from the first menu again, for good.
+                    for (int hop = 0; hop < 3 && tank->PlayerTalkClass && tank->PlayerTalkClass->GetGossipMenu().GetMenuItemCount() > 0; ++hop)
+                    {
+                        LOG_INFO("module.coa-playerbots.dungeon", "'{}': '{}' opened a second menu ({} options): choosing its first option.", tank->GetName(), escortee->GetName(),
+                            uint32(tank->PlayerTalkClass->GetGossipMenu().GetMenuItemCount()));
+                        GossipSelect(tank, escortee, 0);
+                    }
                     run.used = true;
                     run.stageAtMs = getMSTime();
                     return StepResult::Running;

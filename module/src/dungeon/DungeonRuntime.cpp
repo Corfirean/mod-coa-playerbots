@@ -47,6 +47,8 @@ namespace
 
     // Since when the tank waits for the group to gather before a sealed room (per group).
     std::map<ObjectGuid, uint32> g_musterSince;
+    std::map<ObjectGuid, uint32> g_fallAt;
+    std::map<ObjectGuid, uint32> g_fallRescueAt;
 
     // Per group and objective: how many times the group has given it up. A second time it is written off (see Advance), so the run goes on
     // instead of walking back to the same blocked objective every few minutes for good (Mechanar's cache chest, Old Hillsbrad's Lieutenant Drake).
@@ -462,6 +464,14 @@ namespace DungeonRuntime
         return out;
     }
 
+    void NoteFall(Group* group)
+    {
+        if (!group)
+            return;
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_fallAt[group->GetGUID()] = getMSTime();
+    }
+
     void Forget(Group* group)
     {
         if (!group)
@@ -511,6 +521,36 @@ namespace DungeonRuntime
                     y = live->GetPositionY();
                     z = live->GetPositionZ();
                 }
+
+        // The group (or part of it) fell through a hole in the floor and stands far below the target: put it at the target, once a minute.
+        {
+            uint32 fellAt = 0, rescuedAt = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_mutex);
+                if (auto it = g_fallAt.find(key); it != g_fallAt.end())
+                    fellAt = it->second;
+                if (auto it = g_fallRescueAt.find(key); it != g_fallRescueAt.end())
+                    rescuedAt = it->second;
+            }
+            uint32 const nowMs = getMSTime();
+            if (fellAt && nowMs - fellAt > 4000 && nowMs - fellAt < 120000 && (!rescuedAt || nowMs - rescuedAt > 60000) &&
+                tank->GetPositionZ() < z - 40.0f && tank->GetExactDist2d(x, y) < 150.0f)
+            {
+                {
+                    std::lock_guard<std::mutex> lock(g_mutex);
+                    g_fallRescueAt[key] = nowMs;
+                    g_fallAt.erase(key);
+                }
+                LOG_WARN("module.coa-playerbots.dungeon", "'{}' and the group fell to z {:.0f}, {:.0f} yd below '{}': they are moved to it ({:.0f}, {:.0f}, {:.0f}).", tank->GetName(), tank->GetPositionZ(),
+                    z - tank->GetPositionZ(), target.name, x, y, z);
+                for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                    if (Player* member = ref->GetSource(); member && member->IsInWorld() && member->IsAlive() && member->GetMapId() == map->GetId())
+                        member->NearTeleportTo(x, y, z + 0.5f, member->GetOrientation());
+                BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
+                ResetProgress(key);
+                return true;
+            }
+        }
 
         auto giveUp = [&](char const* why)
         {

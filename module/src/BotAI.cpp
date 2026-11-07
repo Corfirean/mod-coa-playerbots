@@ -5703,6 +5703,25 @@ void Update(Player* bot, uint32 diff)
     // "In combat" with nobody: a dungeon creature that cannot be attacked (Utgarde Pinnacle's Flame Breath Triggers, flagged not attackable, hostile
     // and aggressive) keeps the whole party in combat for as long as it is near, and a tank in combat never goes on with the run. When nobody of the
     // group has a victim or an attacker for ten seconds, the combat is ended; a creature that really fights the group is not affected.
+    // A bot that drops far below where it stood a moment ago has fallen through the floor or off a ledge: log where, and what drove it.
+    if (bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
+    {
+        static std::unordered_map<ObjectGuid, std::pair<uint32, float>> zSamples;
+        uint32 const sampleNow = getMSTime();
+        auto& sample = zSamples[bot->GetGUID()];
+        if (sampleNow - sample.first >= 1000)
+        {
+            if (sample.first && sampleNow - sample.first < 4000 && sample.second - bot->GetPositionZ() > 25.0f)
+                LOG_WARN("module.coa-playerbots.dungeon", "Fall: '{}' went from z {:.0f} to z {:.0f} within {} ms at ({:.0f}, {:.0f}), owner {}, mode {}, in combat {}, falling {}.", bot->GetName(),
+                    sample.second, bot->GetPositionZ(), sampleNow - sample.first, bot->GetPositionX(), bot->GetPositionY(), int(BotMovement::CurrentOwner(bot)),
+                    int(BotMovement::CurrentMode(bot)), bot->IsInCombat() ? 1 : 0, bot->IsFalling() ? 1 : 0);
+            if (sample.first && sampleNow - sample.first < 4000 && sample.second - bot->GetPositionZ() > 25.0f)
+                if (Group* fallGroup = bot->GetGroup())
+                    DungeonRuntime::NoteFall(fallGroup);
+            sample = { sampleNow, bot->GetPositionZ() };
+        }
+    }
+
     // Skadi's gauntlet (data 2 of Utgarde Pinnacle in progress) is the exception: the party's combat with Skadi and his adds is what keeps the
     // encounter alive, and ending it makes him evade and reset the whole fight.
     bool const skadiRunning = bot->GetMapId() == 575 && bot->GetInstanceScript() && bot->GetInstanceScript()->GetData(2) == IN_PROGRESS;

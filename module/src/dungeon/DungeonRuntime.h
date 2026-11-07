@@ -45,6 +45,8 @@ namespace DungeonRuntime
 
     // Drops everything the run remembers about this group.
     void Forget(Group* group);
+    // A member of the group dropped far below where it stood (a hole in the floor): the next Advance puts the group at its target, on the far side.
+    void NoteFall(Group* group);
 }
 
 #endif

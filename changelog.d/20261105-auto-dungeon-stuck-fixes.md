@@ -20,3 +20,9 @@ When neither the pathfinder nor a straight walk reaches an object a scripted ste
 
 - Utgarde Pinnacle: Skadi is not a target while he idles at his spawn in front of the gauntlet (DcNeverTargetRegistry row). Attacking him there kept the party in a combat that never became the encounter, so the objective that trips the gauntlet was never reached. With the harpoon facing fix the dungeon is now cleared 4 of 4 times in the sandbox.
 - Diagnostics: the bot debug state lists who a bot is in combat with, its attackers and its harmful auras.
+
+- Escort steps now choose the first option of a second gossip menu that the first click opens. Arthas at the Town Hall of the Culling of Stratholme and Thrall after Captain Skarloc in Old Hillsbrad only move on after two clicks in one conversation; the bots opened the first menu again every five seconds. Culling of Stratholme now clears 8/8, Old Hillsbrad 3/3 in the sandbox.
+- Old Hillsbrad: a barrel the party can neither walk to nor be moved to is set alight directly (the instance counts the bomb), so Lieutenant Drake spawns; Thrall's gossip stays empty until he is dead.
+- A member that drops far below the floor (a hole, or arriving before the floor collision is loaded) makes the group move to its current target once a minute, instead of waiting forever for a member below the world.
+- Diagnostics: 'Fall:' lines, a teleport watch for barrel moves, escort telemetry, a log line for every party move.
+- Gundrak: Gal'darah has boss tuning as well.

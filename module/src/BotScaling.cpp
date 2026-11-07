@@ -57,6 +57,7 @@ namespace
         { 28923, 2.0f, 0.4f },  // Halls of Lightning: Loken
         { 29573, 1.6f, 0.5f },  // Gundrak: Drakkari Elemental (trash that wiped every level 60 group)
         { 29307, 1.5f, 0.6f },  // Gundrak: Drakkari Colossus
+        { 29306, 1.6f, 0.6f },  // Gundrak: Gal'darah (last boss; groups reached him with 5 deaths and never won)
     };
 
     BossTuning const* TuningFor(Unit* creature)
