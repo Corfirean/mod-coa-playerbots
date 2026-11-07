@@ -56,6 +56,7 @@ public:
             { "spawnrandom",  HandleBotSpawnRandomCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "spawnleveled", HandleBotSpawnLeveledCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "spawnfleet",   HandleBotSpawnFleetCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "spawncustom",  HandleBotSpawnCustomCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "acceptinvite",      HandleBotAcceptInviteCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "acceptguildinvite", HandleBotAcceptGuildInviteCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "invite",            HandleBotInviteCommand,            rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -191,6 +192,18 @@ public:
             return true;
         }
         BotSpawn::SpawnClassFleet(race, level, handler);
+        return true;
+    }
+
+    static bool HandleBotSpawnCustomCommand(ChatHandler* handler, uint32 count, uint8 level, Optional<uint8> classId, Optional<uint32> specId, Optional<std::string> archetypeId)
+    {
+        if (!sBotMgr->BotsEnabled())
+        {
+            if (handler)
+                handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
+            return true;
+        }
+        BotSpawn::SpawnCustomBots(count, level, classId.value_or(0), specId.value_or(0), archetypeId.value_or(""), handler);
         return true;
     }
 

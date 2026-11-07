@@ -17,6 +17,9 @@
 #include "ScriptMgr.h"
 #include "WorldScript.h"
 #include "engine/SpecStrategyRegistry.h"
+#include "engine/BotRuleset.h"
+#include "BotSpawnRandom.h"
+#include "BotProgression.h"
 
 class coa_playerbots_worldscript : public WorldScript
 {
@@ -70,7 +73,29 @@ public:
 class coa_playerbots_playerscript : public PlayerScript
 {
 public:
-    coa_playerbots_playerscript() : PlayerScript("coa_playerbots_playerscript", { PLAYERHOOK_ON_REWARD_KILL_REWARDER, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE, PLAYERHOOK_ON_PLAYER_JUST_DIED }) { }
+    coa_playerbots_playerscript() : PlayerScript("coa_playerbots_playerscript", { PLAYERHOOK_ON_REWARD_KILL_REWARDER, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE, PLAYERHOOK_ON_PLAYER_JUST_DIED, PLAYERHOOK_ON_LEVEL_CHANGED }) { }
+
+    void OnPlayerLevelChanged(Player* player, uint8 /*oldLevel*/) override
+    {
+        if (!sBotMgr->BotsEnabled() || !player || !BotMgr::IsBotAccountId(player->GetSession()->GetAccountId()))
+            return;
+
+        BotAI::BotRuleset ruleset = BotAI::GetBotRuleset(player);
+        if (ruleset == BotAI::BotRuleset::Wildcard)
+        {
+            BotSpawn::ApplyWildcardBotSetup(player, player->GetLevel());
+        }
+        else if (ruleset == BotAI::BotRuleset::Reborn)
+        {
+            BotSpawn::ApplyRebornBotSetup(player, player->GetLevel());
+        }
+        else
+        {
+            BotProgression::LearnAbilitiesFromBook(player);
+            if (player->GetLevel() >= 10)
+                BotTalentBuilds::ApplyBuildForLevel(player, player->GetLevel());
+        }
+    }
 
     void OnPlayerLogout(Player* player) override
     {
