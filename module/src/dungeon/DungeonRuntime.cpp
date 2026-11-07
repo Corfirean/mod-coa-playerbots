@@ -559,7 +559,8 @@ namespace DungeonRuntime
             DungeonRoster::MarkUnreachable(key, target.entry, UNREACHABLE_MS);
             DungeonEventExecutor::Forget(key);
             ResetProgress(key);
-            if (!tank->IsInCombat() && tank->GetExactDist(x, y, z) > 30.0f)
+            // Also a target close by but a floor above or below (Gundrak's Moorabi on his ledge, seen from the ramp under it): no way up is no way.
+            if (!tank->IsInCombat() && (tank->GetExactDist(x, y, z) > 30.0f || (std::fabs(tank->GetPositionZ() - z) > 6.0f && tank->GetExactDist(x, y, z) > 12.0f)))
             {
                 uint32 const nowMs = getMSTime();
                 uint32 since;

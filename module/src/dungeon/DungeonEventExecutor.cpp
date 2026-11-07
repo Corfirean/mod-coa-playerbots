@@ -685,6 +685,18 @@ namespace
                             escortee->GetName(), tank->GetName(), s.instanceDataId, ins && s.instanceDataId >= 0 ? ins->GetData(uint32(s.instanceDataId)) : 0u, s.instanceDataMin,
                             escortee->GetPositionX(), escortee->GetPositionY(), escortee->GetPositionZ(), tank->GetExactDist(escortee), wantsTalk ? 1 : 0, escortee->isMoving() ? 1 : 0,
                             tank->IsInCombat() ? 1 : 0);
+                        // What the escortee is doing: in combat with whom, and which creatures stand around it.
+                        std::string around;
+                        std::list<Creature*> nearThem;
+                        escortee->GetDeadCreatureListInGrid(nearThem, 35.0f, false);
+                        nearThem.remove_if([escortee](Creature* c) { return !c || c == escortee || !c->IsAlive(); });
+                        uint32 shown = 0;
+                        for (Creature* c : nearThem)
+                            if (shown++ < 5)
+                                around += " '" + c->GetName() + "'(" + std::to_string(c->GetEntry()) + ") " + std::to_string(int(escortee->GetExactDist(c))) + "yd" + (c->IsInCombat() ? " cmb" : "") +
+                                    (tank->IsValidAttackTarget(c) ? " atk" : "");
+                        LOG_INFO("module.coa-playerbots.dungeon", "  '{}' hp {:.0f}%, in combat {}, victim {}, flags {:#x}, near:{}.", escortee->GetName(), escortee->GetHealthPct(), escortee->IsInCombat() ? 1 : 0,
+                            escortee->GetVictim() ? escortee->GetVictim()->GetName() : std::string("-"), escortee->GetUInt32Value(UNIT_FIELD_FLAGS), around);
                     }
                 }
                 // The first choice is made when the escortee offers its gossip: Arthas of the Culling of Stratholme stands without the flag
@@ -711,6 +723,27 @@ namespace
                     run.used = true;
                     run.stageAtMs = getMSTime();
                     return StepResult::Running;
+                }
+                // An escortee that runs ahead (Thrall mounted, or fighting an ambush alone far down the road) must not be left behind: a party that
+                // has been far away from it for a while is put next to it.
+                {
+                    static std::map<ObjectGuid, uint32> farSince;
+                    uint32 const farNow = getMSTime();
+                    uint32& since = farSince[tank->GetGUID()];
+                    if (tank->GetExactDist(escortee) > 70.0f && tank->IsAlive())
+                    {
+                        if (!since)
+                            since = farNow;
+                        else if (farNow - since > 15000)
+                        {
+                            since = 0;
+                            LOG_WARN("module.coa-playerbots.dungeon", "Escort of '{}': '{}' is {:.0f} yd behind; the party is moved next to it.", escortee->GetName(), tank->GetName(), tank->GetExactDist(escortee));
+                            TeleportParty(tank, escortee->GetPositionX(), escortee->GetPositionY() - 2.0f, escortee->GetPositionZ() + 0.5f);
+                            return StepResult::Running;
+                        }
+                    }
+                    else
+                        since = 0;
                 }
                 // Follow the escortee; the pull logic fights what attacks it.
                 if (!tank->IsInCombat() && tank->GetExactDist(escortee) > (s.escortStandoff > 0.0f ? s.escortStandoff : 8.0f))
