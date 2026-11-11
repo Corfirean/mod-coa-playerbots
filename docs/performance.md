@@ -360,3 +360,43 @@ Reproduction artifacts remain local in `bot-performance-artifacts-20261102/runti
 and the corresponding run directories, including source archives, core patch, symbols, verification,
 configuration fingerprints and raw histograms. The runner retains the native activation check for
 replaying those archived binaries; requesting that retired feature on an unsupported binary fails.
+
+For a rare wait, diagnostic cases accept `--stack-after 480 --stack-seconds 120 --watch-waits`
+alongside `--stack-profiler`. The CPU capture starts near the selected measurement offset;
+`cpu-profile-start.json` records the actual offset. Completed captures promptly restore the profiler
+preferences. These cases remain excluded from performance comparisons.
+
+The wait monitor requests a read-only Windows WCT snapshot after two seconds below 0.05 world CPU
+cores, with a 30-second cooldown and at most six captures. It examines up to sixteen highest-CPU
+threads after checking their process ownership. It does not enable privileges or follow chains into
+other processes. Failed or unsupported observations remain explicit. Low CPU alone does not prove
+a stopped tick, and unsupported waits may be reported as running by the
+[Windows API](https://learn.microsoft.com/en-us/windows/win32/api/wct/nf-wct-getthreadwaitchain).
+An owned blocked-mutex test validates the native structure layout, ownership guard and supported
+wait observations without changing privileges.
+
+New runs archive the controller's Python sources in `controller-source.zip`, record individual file
+hashes and Python version, and import deferred diagnostic helpers from the run's frozen source copy.
+Earlier runs without this archive retain their native build artifacts and observed metrics; a source
+archive is not retroactively asserted for their intermediate controller versions.
+
+The retired r19 runtime field-read prototype passed 6453 native tests, including current values,
+overlapping GUID/word writes, invalid-index failure paths and concurrent mode changes. Its 500-bot
+probe matched twenty persistence samples. On 3000 bots, enabled p95/p99 were 215/246 ms versus
+185/207.5 ms in the disabled same-binary control. Shutdown took 82.062/84.063 seconds and both
+matched twenty persistence samples. Enabled kills changed +0.3%, deaths -7.5%, quest turn-ins +1.7%
+and tasks +6.3%. This single pair did not justify keeping the extra accessor path; its runtime
+configuration, field wrappers and native tests were removed. Exact r19 sources and symbols remain
+in `runtime-hardening-r19-fields` for reproduction and investigation.
+
+The enabled r19 case also recorded an 8302.618 ms processing tick, with 8037.47 ms in map visibility.
+Around measurement seconds 503–511, world CPU was nearly idle while working set/private bytes stayed
+near 8.93/9.08 GB and available RAM near 12.7 GB. The observed interval did not establish the cause
+of the wait. The disabled case had maximum 277.078 ms. The enabled case fails the pause criterion;
+the difference does not prove that field reads caused the wait.
+
+A zero-warmup diagnostic smoke exposed stale reset acknowledgements: an older epoch's status could
+arrive after output clearing. The controller now obtains the previous epoch and accepts only a newer
+reset acknowledgement. A regression reproduces that ordering. The corrected 500-bot diagnostic smoke
+started its profile at the requested two-second offset, captured 3.016 seconds with no minidump,
+and shut down cleanly in 21.016 seconds. This validates the diagnostic controller, not load capacity.

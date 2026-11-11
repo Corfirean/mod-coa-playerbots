@@ -51,7 +51,7 @@ def main():
             subprocess.run([str(regression)], check=True)
     subprocess.run([sys.executable, "-B", str(module / "tests/test_training_reports.py")], check=True)
     subprocess.run([sys.executable, "-B", str(module / "tests/test_ci_compare.py")], check=True)
-    for name in ["benchmark", "matrix", "stack_report", "windows"]:
+    for name in ["benchmark", "matrix", "stack_report", "windows", "wait_chains"]:
         subprocess.run([sys.executable, "-B", str(module / ("tests/test_performance_" + name + ".py"))],
                        check=True)
 

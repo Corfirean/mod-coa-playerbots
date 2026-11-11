@@ -13,12 +13,15 @@ import shutil
 import socket
 import statistics
 import subprocess
+import sys
 import threading
 import time
+import zipfile
 
 PREFIX = 'CoaPerf'
 HIDDEN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-SCRIPT_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+SCRIPT_SOURCE = Path(__file__).read_bytes()
+SCRIPT_SHA256 = hashlib.sha256(SCRIPT_SOURCE).hexdigest()
 
 
 def write_json(path, value):
@@ -32,6 +35,24 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 
 
+def valid_stack_window(measurement, capture, after):
+    return capture > 0 and after >= 0 and after + capture <= measurement
+
+
+def archive_controller(folder):
+    source = folder / 'controller-source'
+    source.mkdir()
+    identities = {}
+    archive = folder / 'controller-source.zip'
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
+        for path in sorted(Path(__file__).parent.glob('*.py')):
+            data = SCRIPT_SOURCE if path.name == 'benchmark.py' else path.read_bytes()
+            (source / path.name).write_bytes(data)
+            output.writestr(path.name, data)
+            identities[path.name] = hashlib.sha256(data).hexdigest()
+    return dict(sha256=digest(archive), files=identities), source
+
+
 def verify_native_features(folder, options):
     if options.get('World.Performance.DirectRankLookup'):
         with (folder / 'console.log').open('rb') as console:
@@ -41,6 +62,10 @@ def verify_native_features(folder, options):
 
 def verify_native_schedule(snapshot, options):
     gauges = snapshot.get('gauges', {})
+    if options.get('World.Performance.DirectFieldReads') and gauges.get('direct_object_field_reads_enabled') != 1:
+        raise RuntimeError('Selected world did not activate direct object field reads')
+    if options.get('World.Performance.AuraSelfTargetFastPath') and gauges.get('aura_self_target_fast_path_enabled') != 1:
+        raise RuntimeError('Selected world did not activate the aura self-target fast path')
     if options.get('World.Performance.FilterSpellCandidates') and gauges.get('spell_candidate_filter_enabled') != 1:
         raise RuntimeError('Selected world did not activate spell candidate filtering')
     if options.get('World.Performance.InterleaveWorldObjects') and not gauges.get('interleaved_world_maps', 0):
@@ -467,15 +492,17 @@ class World:
                     raise RuntimeError('No metric progress for 30 seconds')
 
     def reset_metrics(self):
+        previous_epoch = self.dump_metrics()['epoch']
         with self.lock:
             self.text = ''
         self.command('botcmd perf reset')
         until = time.monotonic() + 30
         while time.monotonic() < until:
             with self.lock:
-                match = re.search(r'CoaBotPerf enabled=[01] epoch=(\d+)', self.text)
-            if match:
-                return int(match[1])
+                epochs = [int(value) for value in re.findall(r'CoaBotPerf enabled=[01] epoch=(\d+)', self.text)]
+            acknowledged = [value for value in epochs if value > previous_epoch]
+            if acknowledged:
+                return max(acknowledged)
             time.sleep(.1)
         raise RuntimeError('Metric reset did not acknowledge')
 
@@ -791,14 +818,18 @@ def run_owned(args):
         if frozen and frozen['binary_sha256'] != binary_sha:
             raise RuntimeError('Frozen binary differs from its build manifest')
         world = World(fixture, args.binary, folder, args.population, options, args.scenario, args.instrumentation)
+        controller_archive, controller_source = archive_controller(folder)
+        sys.path.insert(0, str(controller_source))
         write_json(folder / 'manifest.json', dict(binary_sha256=binary_sha, binary=str(args.binary.resolve()),
                    benchmark_script_sha256=SCRIPT_SHA256, build=frozen,
+                   controller_source=controller_archive, python_version=sys.version,
                    population=args.population, warmup=args.warmup, seconds=args.seconds, label=args.label,
                    restored_seed=bool(args.restore),
                    seed_manifest_sha256=digest(args.root / 'seed-population.json') if (args.root / 'seed-population.json').exists() else None,
                    scenario=args.scenario, options=options, host=inventory(),
                    instrumentation=args.instrumentation,
                    external_cpu_profile=bool(args.stack_profiler),
+                   cpu_profile_start_after=args.stack_after, wait_chain_diagnostics=args.watch_waits,
                    host_observed_utc=dt.datetime.now(dt.timezone.utc).isoformat(),
                    randomness='Native random engines are not seeded by this runner; independent repeats are required.',
                    module_source=frozen['module'] if frozen else source_identity(Path(__file__).resolve().parents[2]),
@@ -836,7 +867,8 @@ def run_owned(args):
         login_seconds = 0 if args.seed else world.await_population(args.population)
         if not args.seed and args.instrumentation != 'reference' and (
                 options.get('CoaBots.Spells.CacheLearnedRanks') or options.get('CoaBots.Scheduling.FarIdleIntervalMs') or
-                options.get('World.Performance.FilterSpellCandidates') or
+                options.get('World.Performance.FilterSpellCandidates') or options.get('World.Performance.AuraSelfTargetFastPath') or
+                options.get('World.Performance.DirectFieldReads') or
                 (args.population and options.get('World.Performance.InterleaveWorldObjects'))):
             verify_native_schedule(world.dump_metrics(), options)
         event(args.root, 'population_ready', label=args.label, online=args.population, login_seconds=login_seconds)
@@ -860,11 +892,10 @@ def run_owned(args):
                 raise RuntimeError('Scenario driver did not initialize')
         started = time.monotonic()
         next_sample = started
-        if args.stack_profiler:
-            from stack_profile import StackCapture
-            cpu_profile = StackCapture(world.proc, world.binary, args.stack_profiler,
-                                       folder / 'private-cpu/world.sleepy', args.stack_seconds,
-                                       args.binary.parent)
+        cpu_profile_result = None
+        if args.watch_waits:
+            from wait_chains import StallWatch, capture as capture_waits
+            stall_watch = StallWatch()
         low_since = None
         last_metric_progress = started
         latest_metric = None
@@ -876,6 +907,24 @@ def run_owned(args):
                     raise RuntimeError('World exited during measurement')
                 row = dict(t=time.monotonic() - started, world=resources(world.proc.pid), mysql=resources(fixture.db_pid))
                 row['world_threads'] = thread_resources(world.proc.pid)
+                if args.stack_profiler and cpu_profile is None and row['t'] >= args.stack_after:
+                    from stack_profile import StackCapture
+                    cpu_profile = StackCapture(world.proc, world.binary, args.stack_profiler,
+                                               folder / 'private-cpu/world.sleepy', args.stack_seconds,
+                                               args.binary.parent)
+                    write_json(folder / 'cpu-profile-start.json', dict(requested_after=args.stack_after,
+                               actual_after=row['t'], capture_seconds=args.stack_seconds))
+                if cpu_profile and cpu_profile_result is None and cpu_profile.proc.poll() is not None:
+                    cpu_profile_result = cpu_profile.finish(check=world.check_stop)
+                    write_json(folder / 'cpu-profile.json', cpu_profile_result)
+                if args.watch_waits and stall_watch.update(row['t'], row['world']['cpu_seconds']):
+                    threads = sorted(row['world_threads'], key=lambda value: value['cpu_seconds'], reverse=True)[:16]
+                    try:
+                        waits = capture_waits(world.proc.pid, [thread['id'] for thread in threads])
+                    except (OSError, AttributeError, ValueError) as exc:
+                        waits = dict(error=str(exc))
+                    write_json(folder / ('wait-chains-' + str(stall_watch.captures) + '.json'),
+                               dict(t=row['t'], resources=row['world'], wait_chains=waits))
                 row['disk_free_bytes'] = shutil.disk_usage(args.root).free
                 if row['disk_free_bytes'] < 5 * 1024 ** 3:
                     raise RuntimeError('Less than 5 GiB disk space remains for safe persistence')
@@ -910,7 +959,7 @@ def run_owned(args):
             if metrics['epoch'] != epoch:
                 raise RuntimeError('Metric epoch changed during measurement')
             write_json(folder / 'measurement-final.json', metrics)
-        if cpu_profile:
+        if cpu_profile and cpu_profile_result is None:
             write_json(folder / 'cpu-profile.json', cpu_profile.finish(check=world.check_stop))
         world.command('botcmd worldstats')
         shutdown = world.stop()
@@ -995,6 +1044,8 @@ def main():
     case.add_argument('--instrumentation', choices=['full', 'reference'], default='full')
     case.add_argument('--stack-profiler', type=Path)
     case.add_argument('--stack-seconds', type=int, default=60)
+    case.add_argument('--stack-after', type=int, default=0)
+    case.add_argument('--watch-waits', action='store_true')
     case.add_argument('--wait-for-idle', type=int, default=0)
     args = parser.parse_args()
     if args.command == 'prepare':
@@ -1006,7 +1057,10 @@ def main():
             args.verify_persistence = True
         if args.instrumentation == 'reference' and (args.verify_persistence or args.seed or args.scenario != 'distributed'):
             parser.error('Reference instrumentation is restricted to distributed overhead runs without persistence readback')
-        if args.stack_profiler and (args.instrumentation == 'reference' or args.stack_seconds < 1 or args.stack_seconds > args.seconds):
+        if (args.stack_after or args.watch_waits) and not args.stack_profiler:
+            parser.error('Delayed capture and wait diagnostics require an explicitly selected stack profiler')
+        if args.stack_profiler and (args.instrumentation == 'reference' or
+                                   not valid_stack_window(args.seconds, args.stack_seconds, args.stack_after)):
             parser.error('Stack profiles require full mode and a positive capture duration within the diagnostic measurement')
         run(args)
 

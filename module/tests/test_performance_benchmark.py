@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 SCRIPT = Path(__file__).resolve().parents[2] / 'tools/performance/benchmark.py'
 SPEC = importlib.util.spec_from_file_location('coa_benchmark', SCRIPT)
@@ -13,6 +14,58 @@ SPEC.loader.exec_module(benchmark)
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_reset_ignores_an_old_status_arriving_after_output_is_cleared(self):
+        class World:
+            lock = benchmark.threading.Lock()
+            text = ''
+
+            def dump_metrics(self):
+                return {'epoch': 7}
+
+            def command(self, value):
+                self.command_sent = value
+                self.text = 'CoaBotPerf enabled=1 epoch=7 samples=400\n'
+
+        world = World()
+
+        def acknowledge(_):
+            world.text += 'CoaBotPerf enabled=1 epoch=8 samples=0\n'
+
+        with patch.object(benchmark.time, 'sleep', side_effect=acknowledge):
+            self.assertEqual(benchmark.World.reset_metrics(world), 8)
+        self.assertEqual(world.command_sent, 'botcmd perf reset')
+
+    def test_controller_archive_keeps_the_loaded_script_and_lazy_imports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            identity, source = benchmark.archive_controller(folder)
+            self.assertEqual(identity['sha256'], benchmark.digest(folder / 'controller-source.zip'))
+            self.assertEqual(identity['files']['benchmark.py'], benchmark.SCRIPT_SHA256)
+            with zipfile.ZipFile(folder / 'controller-source.zip') as archive:
+                self.assertEqual(archive.read('benchmark.py'), benchmark.SCRIPT_SOURCE)
+                self.assertEqual(archive.read('wait_chains.py'), (source / 'wait_chains.py').read_bytes())
+                self.assertEqual(archive.read('stack_profile.py'), (source / 'stack_profile.py').read_bytes())
+
+    def test_delayed_stack_capture_stays_within_the_selected_window(self):
+        self.assertTrue(benchmark.valid_stack_window(900, 120, 480))
+        self.assertTrue(benchmark.valid_stack_window(60, 60, 0))
+        for capture, after in [(0, 0), (60, -1), (61, 0), (30, 31)]:
+            self.assertFalse(benchmark.valid_stack_window(60, capture, after))
+
+    def test_direct_field_reads_require_native_activation(self):
+        options = {'World.Performance.DirectFieldReads': 1}
+        for gauges in [{}, {'direct_object_field_reads_enabled': 0}]:
+            with self.assertRaises(RuntimeError):
+                benchmark.verify_native_schedule({'gauges': gauges}, options)
+        benchmark.verify_native_schedule({'gauges': {'direct_object_field_reads_enabled': 1}}, options)
+
+    def test_aura_fast_path_requires_native_activation(self):
+        options = {'World.Performance.AuraSelfTargetFastPath': 1}
+        for gauges in [{}, {'aura_self_target_fast_path_enabled': 0}]:
+            with self.assertRaises(RuntimeError):
+                benchmark.verify_native_schedule({'gauges': gauges}, options)
+        benchmark.verify_native_schedule({'gauges': {'aura_self_target_fast_path_enabled': 1}}, options)
+
     def test_candidate_filter_requires_native_activation(self):
         options = {'World.Performance.FilterSpellCandidates': 1}
         for gauges in [{}, {'spell_candidate_filter_enabled': 0}]:
