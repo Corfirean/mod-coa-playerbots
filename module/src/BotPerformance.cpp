@@ -3,6 +3,10 @@
 #include "Config.h"
 #include "Log.h"
 #include "UpdateTime.h"
+#if __has_include("SpellCandidateFilter.h")
+#include "SpellCandidateFilter.h"
+#define COA_SPELL_CANDIDATE_FILTER 1
+#endif
 #if __has_include("WorldTickObserver.h")
 #include "WorldTickObserver.h"
 #define COA_WORLD_PERIOD_OBSERVER 1
@@ -284,6 +288,9 @@ namespace CoaBotPerf
         Gauge("instrumentation_reference", 0);
         Gauge("profile_combat_enabled", CombatProfileEnabled());
         Gauge("learned_rank_cache_enabled", BotAI::SpellResolver::LearnedRankCacheEnabled());
+#ifdef COA_SPELL_CANDIDATE_FILTER
+        Gauge("spell_candidate_filter_enabled", SpellCandidateFilter::Enabled());
+#endif
         uint32 configuredRate = sConfigMgr->GetOption<uint32>("World.Performance.EntitySampleRate", 0);
         Gauge("profile_entity_sample_rate", configuredRate ? std::clamp(configuredRate, 64u, 65536u) : 0u);
 #ifdef COA_WORLD_PERIOD_OBSERVER

@@ -309,3 +309,29 @@ unqualified. Do not enable these controls by default or advertise stable 3000-bo
 Further substantial reductions need measured changes to native player/NPC/visibility work and AI costs;
 running the existing stateful `BotAI::Update` concurrently remains unsafe. A parallel design requires
 explicit ownership and immutable inputs rather than placing existing updates in a thread pool.
+
+`World.Performance.FilterSpellCandidates = 0` is an additional experimental native candidate, requiring
+the updated core patch. In eleven loops for Tinker, Xoroth and Cultist it checks rank-chain eligibility
+before calling the existing `Player::HasSpell`. Nonmatching candidates avoid that membership lookup;
+matching candidates still use the live native method, including spec/removed-state and copied-spell
+fallback behavior. No spellbook, metadata or decision is cached. When disabled, the original short-circuit
+order remains. Three native tests check all boolean combinations, call order, current membership/copy
+changes and query elimination for unrelated candidates. `spell_candidate_filter_enabled` acknowledges
+the native configuration; the runner rejects a requested but unsupported feature. Runtime comparisons
+for this subsequent candidate require repeats and the same-binary disabled control.
+
+The first r17 enabled 3000-bot case recorded p50 149 ms, p95 209.75 ms, p99 233.25 ms,
+maximum 302.652 ms and no processing ticks above one second. Shutdown took 76.063 seconds;
+all twenty persistence samples matched. Against the single r16 case, p95 decreased 13.3%, but
+deaths per bot-hour increased 17.1%, exceeding the behavioral allowance. Kills decreased 2.3%,
+quest turn-ins 6.9% and completed tasks 8.9%. This case fails acceptance and cannot establish
+a causal performance benefit. The disabled control uses the identical r17 binary, compiler flags,
+fixture snapshot, warmup and measurement durations; its only changed option is the filter switch.
+
+The disabled r17 control completed with p50 172.75 ms, p95 228 ms, p99 250 ms and maximum
+314.086 ms. Shutdown took 79.063 seconds and all twenty persistence samples matched. In this
+same-binary pair, enabling the filter reduced p95 by 8.0% and p99 by 6.7%; kills changed -2.8%,
+quest turn-ins -4.6%, tasks -5.3%, and deaths +4.1%. These behavioral proxies stay inside the
+10% allowance for this pair, but three independent repeats and the timing targets remain missing.
+The discrepancy against the earlier r16 comparison must not be treated as proof of a causal
+mortality regression or ignored when reporting variability. The filter stays disabled by default.

@@ -188,6 +188,7 @@ CoaBots.Perf.ProfileCombat = 0
 World.Performance.EntitySampleRate = 0
 World.Performance.DirectRankLookup = 0
 World.Performance.InterleaveWorldObjects = 0
+World.Performance.FilterSpellCandidates = 0
 CoaBots.Perf.OutputDir = "bot-performance"
 
 CoaBots.Spells.OptimizeRankLookup = 0

@@ -13,6 +13,13 @@ SPEC.loader.exec_module(benchmark)
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_candidate_filter_requires_native_activation(self):
+        options = {'World.Performance.FilterSpellCandidates': 1}
+        for gauges in [{}, {'spell_candidate_filter_enabled': 0}]:
+            with self.assertRaises(RuntimeError):
+                benchmark.verify_native_schedule({'gauges': gauges}, options)
+        benchmark.verify_native_schedule({'gauges': {'spell_candidate_filter_enabled': 1}}, options)
+
     @unittest.skipUnless(os.name == 'nt', 'Windows process snapshot')
     def test_runtime_inventory_detects_process_and_excludes_owned_pid(self):
         with patch.object(benchmark, 'contaminating_process', return_value=True):

@@ -41,6 +41,8 @@ def verify_native_features(folder, options):
 
 def verify_native_schedule(snapshot, options):
     gauges = snapshot.get('gauges', {})
+    if options.get('World.Performance.FilterSpellCandidates') and gauges.get('spell_candidate_filter_enabled') != 1:
+        raise RuntimeError('Selected world did not activate spell candidate filtering')
     if options.get('World.Performance.InterleaveWorldObjects') and not gauges.get('interleaved_world_maps', 0):
         raise RuntimeError('Selected world did not activate interleaved world object updates')
     if options.get('CoaBots.Spells.CacheLearnedRanks') and gauges.get('learned_rank_cache_enabled') != 1:
@@ -834,6 +836,7 @@ def run_owned(args):
         login_seconds = 0 if args.seed else world.await_population(args.population)
         if not args.seed and args.instrumentation != 'reference' and (
                 options.get('CoaBots.Spells.CacheLearnedRanks') or options.get('CoaBots.Scheduling.FarIdleIntervalMs') or
+                options.get('World.Performance.FilterSpellCandidates') or
                 (args.population and options.get('World.Performance.InterleaveWorldObjects'))):
             verify_native_schedule(world.dump_metrics(), options)
         event(args.root, 'population_ready', label=args.label, online=args.population, login_seconds=login_seconds)

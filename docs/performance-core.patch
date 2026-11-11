@@ -23,6 +23,153 @@ index cf9ed5795..d634c8b78 100644
          realPrevTime = realCurrTime;
  
  #ifdef _WIN32
+diff --git a/src/server/coa/AscensionCultist.cpp b/src/server/coa/AscensionCultist.cpp
+index 2b8a3583b..2dd8871b9 100644
+--- a/src/server/coa/AscensionCultist.cpp
++++ b/src/server/coa/AscensionCultist.cpp
+@@ -13,6 +13,7 @@
+ #include "SpellAuraEffects.h"
+ #include "SpellAuras.h"
+ #include "SpellMgr.h"
++#include "SpellCandidateFilter.h"
+ #include "WorldPacket.h"
+ #include "WorldSession.h"
+ #include <algorithm>
+@@ -124,7 +125,8 @@ uint32 Highest(Player* player, uint32 root)
+ {
+     uint32 result = root;
+     for (auto const& pair : player->GetSpellMap())
+-        if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first), root) &&
++        if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first), root); }) &&
+             sSpellMgr->GetSpellInfo(pair.first)->SpellLevel >= sSpellMgr->GetSpellInfo(result)->SpellLevel)
+             result = pair.first;
+     return result;
+@@ -132,7 +134,8 @@ uint32 Highest(Player* player, uint32 root)
+ void Reduce(Player* player, uint32 root, int32 milliseconds)
+ {
+     for (auto const& pair : player->GetSpellMap())
+-        if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first), root))
++        if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first), root); }))
+         {
+             if (milliseconds == INT32_MAX)
+                 player->RemoveSpellCooldown(pair.first, true);
+@@ -277,7 +280,8 @@ void Refresh(Player* player)
+         if (active && !player->HasSpell(replacement))
+             player->learnSpell(replacement, true);
+         for (auto const& pair : player->GetSpellMap())
+-            if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first), root))
++            if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first), root); }))
+                 player->SetTemporarySpellReplacement(pair.first, active ? replacement : 0);
+         if (!active)
+             player->removeSpell(replacement, SPEC_MASK_ALL, true);
+diff --git a/src/server/coa/AscensionTinker.cpp b/src/server/coa/AscensionTinker.cpp
+index 16dd9ffb6..f2d293a02 100644
+--- a/src/server/coa/AscensionTinker.cpp
++++ b/src/server/coa/AscensionTinker.cpp
+@@ -16,6 +16,7 @@
+ #include "SpellAuraEffects.h"
+ #include "SpellAuras.h"
+ #include "SpellMgr.h"
++#include "SpellCandidateFilter.h"
+ #include <algorithm>
+ #include <memory>
+ #include <mutex>
+@@ -136,7 +137,8 @@ uint32 Highest(Player* player, uint32 root)
+ {
+     uint32 result = root;
+     for (auto const& pair : player->GetSpellMap())
+-        if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first), root) &&
++        if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first), root); }) &&
+             sSpellMgr->GetSpellInfo(pair.first)->SpellLevel >= sSpellMgr->GetSpellInfo(result)->SpellLevel)
+             result = pair.first;
+     return result;
+@@ -144,7 +146,8 @@ uint32 Highest(Player* player, uint32 root)
+ void Reduce(Player* player, uint32 root, int32 milliseconds)
+ {
+     for (auto const& pair : player->GetSpellMap())
+-        if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first), root))
++        if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first), root); }))
+         {
+             if (milliseconds == INT32_MAX)
+                 player->RemoveSpellCooldown(pair.first, true);
+@@ -351,7 +354,8 @@ void Refresh(Player* player)
+         player->removeSpell(GatlingGun,SPEC_MASK_ALL,false);
+     uint32 shot = Highest(player,500549);
+     for (auto const& pair : player->GetSpellMap())
+-        if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first),500549))
++        if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first),500549); }))
+             player->SetTemporarySpellReplacement(pair.first,mech && suit && pair.first == shot ? GatlingGun : 0);
+     if (!mech)
+     {
+@@ -362,8 +366,8 @@ void Refresh(Player* player)
+         FillMechsuitBar(player);
+     bool mines = player->HasAura(803074);
+     for (auto const& pair : player->GetSpellMap())
+-        mines |= player->HasSpell(pair.first) &&
+-            Any(sSpellMgr->GetSpellInfo(pair.first),{801718,805354,704463,706647});
++        mines |= SpellCandidateFilter::Known(player, pair.first, [&] {
++            return Any(sSpellMgr->GetSpellInfo(pair.first),{801718,805354,704463,706647}); });
+     if (mines && !player->HasSpell(801798))
+         player->learnSpell(801798);
+     else if (!mines && player->HasSpell(801798))
+@@ -375,7 +379,8 @@ void Refresh(Player* player)
+     if (gear && !player->HasSpell(504594))
+         player->learnSpell(504594,true);
+     for (auto const& pair : player->GetSpellMap())
+-        if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first),504527))
++        if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first),504527); }))
+             player->SetTemporarySpellReplacement(pair.first,gear ? 504594 : 0);
+     if (!gear)
+         player->removeSpell(504594,SPEC_MASK_ALL,true);
+diff --git a/src/server/coa/AscensionXoroth.cpp b/src/server/coa/AscensionXoroth.cpp
+index 35b92cdf1..d869507de 100644
+--- a/src/server/coa/AscensionXoroth.cpp
++++ b/src/server/coa/AscensionXoroth.cpp
+@@ -12,6 +12,7 @@
+ #include "SpellAuraEffects.h"
+ #include "SpellAuras.h"
+ #include "SpellMgr.h"
++#include "SpellCandidateFilter.h"
+ #include <algorithm>
+ #include <memory>
+ #include <mutex>
+@@ -55,7 +56,8 @@ std::list<Unit*> Nearby(Unit* center, float range)
+ void Reduce(Player* player, uint32 root, int32 milliseconds)
+ {
+     for (auto const& pair : player->GetSpellMap())
+-        if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first), root))
++        if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first), root); }))
+             if (milliseconds == INT32_MAX)
+                 player->RemoveSpellCooldown(pair.first, true);
+             else
+@@ -69,7 +71,8 @@ void Replace(Player* player, uint32 root, uint32 replacement)
+                 sSpellMgr->GetSpellRank(id) > sSpellMgr->GetSpellRank(replacement))
+                 replacement = id;
+     for (auto const& pair : player->GetSpellMap())
+-        if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first), root))
++        if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first), root); }))
+             player->SetTemporarySpellReplacement(pair.first, replacement);
+ }
+ 
+@@ -115,7 +118,8 @@ uint32 Highest(Player* player, uint32 root)
+ {
+     uint32 id = root;
+     for (auto const& pair : player->GetSpellMap())
+-        if (player->HasSpell(pair.first) && Named(sSpellMgr->GetSpellInfo(pair.first), root) &&
++        if (SpellCandidateFilter::Known(player, pair.first,
++                [&] { return Named(sSpellMgr->GetSpellInfo(pair.first), root); }) &&
+             sSpellMgr->GetSpellInfo(pair.first)->SpellLevel >= sSpellMgr->GetSpellInfo(id)->SpellLevel)
+             id = pair.first;
+     return id;
 diff --git a/src/server/game/Entities/Creature/Creature.cpp b/src/server/game/Entities/Creature/Creature.cpp
 index af1828823..090ad86f5 100644
 --- a/src/server/game/Entities/Creature/Creature.cpp
@@ -494,20 +641,21 @@ index fccc8bce4..55ee2bb30 100644
      bool _hasBeenStalled{};
      std::optional<int32> _pauseTime;
 diff --git a/src/server/game/Spells/SpellMgr.cpp b/src/server/game/Spells/SpellMgr.cpp
-index 85ccb6385..207939ee3 100644
+index 85ccb6385..7082b4af6 100644
 --- a/src/server/game/Spells/SpellMgr.cpp
 +++ b/src/server/game/Spells/SpellMgr.cpp
-@@ -16,6 +16,9 @@
+@@ -16,6 +16,10 @@
   */
  
  #include "SpellMgr.h"
 +#include "SpellRankLookup.h"
 +#include "SpellBookRevision.h"
 +#include "Config.h"
++#include "SpellCandidateFilter.h"
  #include "Log.h"
  #include "BattlefieldMgr.h"
  #include "BattlegroundIC.h"
-@@ -34,10 +37,30 @@
+@@ -34,10 +38,30 @@
  #include "World.h"
  
  #include <algorithm>
@@ -538,7 +686,7 @@ index 85ccb6385..207939ee3 100644
  bool IsValidSpellProcFamily(uint32 family)
  {
      // CoA class spell families follow the class ID with an offset of six.
-@@ -47,6 +70,18 @@ bool IsValidSpellProcFamily(uint32 family)
+@@ -47,6 +71,27 @@ bool IsValidSpellProcFamily(uint32 family)
  }
  }
  
@@ -546,6 +694,15 @@ index 85ccb6385..207939ee3 100644
 +{
 +uint64 MetadataEpoch() { return rankMetadataEpoch.load(std::memory_order_relaxed); }
 +void MetadataChanged() { rankMetadataEpoch.fetch_add(1, std::memory_order_relaxed); }
++}
++
++namespace SpellCandidateFilter
++{
++bool Enabled()
++{
++    static bool const enabled = sConfigMgr->GetOption<bool>("World.Performance.FilterSpellCandidates", false);
++    return enabled;
++}
 +}
 +
 +namespace SpellBookRevision
@@ -557,7 +714,7 @@ index 85ccb6385..207939ee3 100644
  bool IsPrimaryProfessionSkill(uint32 skill)
  {
      SkillLineEntry const* pSkill = sSkillLineStore.LookupEntry(skill);
-@@ -621,11 +656,8 @@ SpellInfo const* SpellMgr::GetSpellForDifficultyFromSpell(SpellInfo const* spell
+@@ -621,11 +666,8 @@ SpellInfo const* SpellMgr::GetSpellForDifficultyFromSpell(SpellInfo const* spell
  
  SpellChainNode const* SpellMgr::GetSpellChainNode(uint32 spell_id) const
  {
@@ -571,7 +728,7 @@ index 85ccb6385..207939ee3 100644
  }
  
  uint32 SpellMgr::GetFirstSpellInChain(uint32 spell_id) const
-@@ -1252,6 +1284,8 @@ bool SpellArea::IsFitToRequirements(Player const* player, uint32 newZone, uint32
+@@ -1252,6 +1294,8 @@ bool SpellArea::IsFitToRequirements(Player const* player, uint32 newZone, uint32
  
  void SpellMgr::UnloadSpellInfoChains()
  {
@@ -580,7 +737,7 @@ index 85ccb6385..207939ee3 100644
      for (SpellChainMap::iterator itr = mSpellChains.begin(); itr != mSpellChains.end(); ++itr)
          mSpellInfoMap[itr->first]->ChainEntry = nullptr;
  
-@@ -1333,6 +1367,7 @@ void SpellMgr::LoadSpellRanks()
+@@ -1333,6 +1377,7 @@ void SpellMgr::LoadSpellRanks()
      {
          LOG_WARN("server.loading", ">> Loaded 0 spell rank records. DB table `spell_ranks` is empty.");
          LOG_INFO("server.loading", " ");
@@ -588,7 +745,7 @@ index 85ccb6385..207939ee3 100644
          return;
      }
  
-@@ -1428,10 +1463,12 @@ void SpellMgr::LoadSpellRanks()
+@@ -1428,10 +1473,12 @@ void SpellMgr::LoadSpellRanks()
  
      LOG_INFO("server.loading", ">> Loaded {} spell rank records in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
      LOG_INFO("server.loading", " ");
@@ -601,7 +758,7 @@ index 85ccb6385..207939ee3 100644
      if (!_addedSpellRanks)
          return;
  
-@@ -3404,11 +3441,14 @@ SpellInfo* SpellMgr::RegisterRuntimeSpell(SpellEntry const& entry)
+@@ -3404,11 +3451,14 @@ SpellInfo* SpellMgr::RegisterRuntimeSpell(SpellEntry const& entry)
          mSpellInfoMap.resize(std::size_t(entry.Id) + 1, nullptr);
      SpellInfo* result = spellInfo.release();
      mSpellInfoMap[entry.Id] = result;
@@ -890,6 +1047,51 @@ new file mode 100644
 +}
 +
 +#endif
+diff --git a/src/server/game/Spells/SpellCandidateFilter.h b/src/server/game/Spells/SpellCandidateFilter.h
+new file mode 100644
+--- /dev/null
++++ b/src/server/game/Spells/SpellCandidateFilter.h
+@@ -0,0 +1,40 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef SPELL_CANDIDATE_FILTER_H
++#define SPELL_CANDIDATE_FILTER_H
++
++#include "Define.h"
++
++namespace SpellCandidateFilter
++{
++    AC_GAME_API bool Enabled();
++
++    template<class Known, class Match>
++    bool Accept(bool enabled, Known const& known, Match const& match)
++    {
++        return enabled ? match() && known() : known() && match();
++    }
++
++    template<class Player, class Match>
++    bool Known(Player const* player, uint32 id, Match const& match)
++    {
++        return Accept(Enabled(), [player, id] { return player->HasSpell(id); }, match);
++    }
++}
++
++#endif
 diff --git a/src/server/game/Spells/SpellRankLookup.h b/src/server/game/Spells/SpellRankLookup.h
 new file mode 100644
 --- /dev/null
@@ -1077,6 +1279,74 @@ new file mode 100644
 +    auto before = SpellRankLookup::MetadataEpoch();
 +    SpellRankLookup::MetadataChanged();
 +    EXPECT_GT(SpellRankLookup::MetadataEpoch(), before);
++}
+diff --git a/src/test/server/game/Spells/SpellCandidateFilterTest.cpp b/src/test/server/game/Spells/SpellCandidateFilterTest.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/test/server/game/Spells/SpellCandidateFilterTest.cpp
+@@ -0,0 +1,63 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "SpellCandidateFilter.h"
++#include <gtest/gtest.h>
++#include <vector>
++
++TEST(SpellCandidateFilter, PreservesAllBooleanResultsAndShortCircuitOrder)
++{
++    for (bool enabled : {false, true})
++        for (bool known : {false, true})
++            for (bool match : {false, true})
++            {
++                std::vector<unsigned> calls;
++                bool accepted = SpellCandidateFilter::Accept(enabled,
++                    [&] { calls.push_back(1); return known; },
++                    [&] { calls.push_back(2); return match; });
++                EXPECT_EQ(accepted, known && match);
++                std::vector<unsigned> expected = enabled ? std::vector<unsigned>{2} : std::vector<unsigned>{1};
++                if (enabled ? match : known) expected.push_back(enabled ? 1 : 2);
++                EXPECT_EQ(calls, expected);
++            }
++}
++
++TEST(SpellCandidateFilter, ChecksCurrentMembershipAndCopyFallbackEveryTime)
++{
++    bool active = true, copy = false, matches = true;
++    auto known = [&] { return active || copy; };
++    auto match = [&] { return matches; };
++    EXPECT_TRUE(SpellCandidateFilter::Accept(true, known, match));
++    active = false;
++    EXPECT_FALSE(SpellCandidateFilter::Accept(true, known, match));
++    copy = true;
++    EXPECT_TRUE(SpellCandidateFilter::Accept(true, known, match));
++    matches = false;
++    EXPECT_FALSE(SpellCandidateFilter::Accept(true, known, match));
++}
++
++TEST(SpellCandidateFilter, AvoidsMembershipQueriesOnlyForUnrelatedCandidates)
++{
++    unsigned queries = 0;
++    for (unsigned id = 0; id < 1000; ++id)
++        SpellCandidateFilter::Accept(true, [&] { ++queries; return true; }, [&] { return id == 507; });
++    EXPECT_EQ(queries, 1u);
++    queries = 0;
++    for (unsigned id = 0; id < 1000; ++id)
++        SpellCandidateFilter::Accept(false, [&] { ++queries; return true; }, [&] { return id == 507; });
++    EXPECT_EQ(queries, 1000u);
 +}
 diff --git a/src/test/server/game/Spells/SpellRankLookupTest.cpp b/src/test/server/game/Spells/SpellRankLookupTest.cpp
 new file mode 100644

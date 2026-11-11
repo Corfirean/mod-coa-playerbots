@@ -14,7 +14,7 @@ PROFILES = {
     'baseline': {'CoaBots.Scheduling.Enable': 0, 'CoaBots.Budgets.Enable': 0, 'CoaBots.Spells.OptimizeRankLookup': 0,
                  'CoaBots.Spells.LazyCleanseScan': 0, 'World.Performance.DirectRankLookup': 0,
                  'CoaBots.Spells.CacheLearnedRanks': 0,
-                 'World.Performance.InterleaveWorldObjects': 0,
+                 'World.Performance.InterleaveWorldObjects': 0, 'World.Performance.FilterSpellCandidates': 0,
                  'CoaBots.Scheduling.FarIdleIntervalMs': 0,
                  'CoaBots.Navigation.ReuseValidatedPath': 0},
     'reuse': {'CoaBots.Scheduling.Enable': 0, 'CoaBots.Navigation.ReuseValidatedPath': 1},
