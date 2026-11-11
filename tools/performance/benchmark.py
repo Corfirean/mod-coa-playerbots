@@ -106,6 +106,22 @@ def powershell(command):
     return result.stdout.strip()
 
 
+def thread_wait_states(pid):
+    if int(pid) <= 0:
+        raise ValueError('A positive owned process ID is required')
+    command = 'Get-Process -Id ' + str(int(pid)) + ''' -ErrorAction Stop | ForEach-Object {
+        foreach ($thread in $_.Threads) {
+            try {
+                $state = $thread.ThreadState.ToString()
+                $reason = if ($state -eq 'Wait') { $thread.WaitReason.ToString() } else { $null }
+            } catch { $state = 'unavailable'; $reason = $null }
+            [pscustomobject]@{id=$thread.Id;state=$state;wait_reason=$reason}
+        }
+    } | ConvertTo-Json -Compress'''
+    result = json.loads(powershell(command))
+    return [result] if isinstance(result, dict) else result
+
+
 def digest(path):
     with path.open('rb') as src:
         return hashlib.file_digest(src, 'sha256').hexdigest()
@@ -923,6 +939,10 @@ def run_owned(args):
                         waits = capture_waits(world.proc.pid, [thread['id'] for thread in threads])
                     except (OSError, AttributeError, ValueError) as exc:
                         waits = dict(error=str(exc))
+                    try:
+                        waits['thread_states'] = thread_wait_states(world.proc.pid)
+                    except (RuntimeError, OSError, ValueError) as exc:
+                        waits['thread_states_error'] = str(exc)
                     write_json(folder / ('wait-chains-' + str(stall_watch.captures) + '.json'),
                                dict(t=row['t'], resources=row['world'], wait_chains=waits))
                 row['disk_free_bytes'] = shutil.disk_usage(args.root).free

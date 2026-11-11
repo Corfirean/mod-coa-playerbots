@@ -400,3 +400,15 @@ arrive after output clearing. The controller now obtains the previous epoch and 
 reset acknowledgement. A regression reproduces that ordering. The corrected 500-bot diagnostic smoke
 started its profile at the requested two-second offset, captured 3.016 seconds with no minidump,
 and shut down cleanly in 21.016 seconds. This validates the diagnostic controller, not load capacity.
+
+The bounded diagnostic case `hardening-r19-waits-3000-r1` completed with 600 seconds warmup and
+900 seconds observation. Its delayed CPU capture started at 480 seconds, lasted 120.031 seconds
+and collected 428688 samples. The longest processing tick was 293.371 ms; no low-CPU wait snapshot
+was triggered. Shutdown was clean in 82.062 seconds. The earlier eight-second pause did not recur,
+so its cause remains unresolved. These profile-case timings are excluded from performance comparisons.
+The capture still points to native map/player/nonplayer work; overlapping sampled thread-wall weights
+do not establish a new optimization or a population limit.
+
+On a future triggered diagnostic snapshot, the controller also records the selected process's managed
+thread states and wait reasons alongside WCT results. This read-only query is covered by a PID-scope
+test and a live query of the controller's own process. No extra run is implied by adding this support.

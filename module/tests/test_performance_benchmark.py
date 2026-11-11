@@ -14,6 +14,14 @@ SPEC.loader.exec_module(benchmark)
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_wait_state_query_is_limited_to_the_selected_process(self):
+        with patch.object(benchmark, 'powershell', return_value='{"id":4,"state":"Wait","wait_reason":"Suspended"}') as query:
+            self.assertEqual(benchmark.thread_wait_states(123),
+                             [{'id': 4, 'state': 'Wait', 'wait_reason': 'Suspended'}])
+            self.assertIn('Get-Process -Id 123 -ErrorAction Stop', query.call_args[0][0])
+        with self.assertRaises(ValueError):
+            benchmark.thread_wait_states(0)
+
     def test_reset_ignores_an_old_status_arriving_after_output_is_cleared(self):
         class World:
             lock = benchmark.threading.Lock()
