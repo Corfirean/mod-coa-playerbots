@@ -335,3 +335,28 @@ quest turn-ins -4.6%, tasks -5.3%, and deaths +4.1%. These behavioral proxies st
 10% allowance for this pair, but three independent repeats and the timing targets remain missing.
 The discrepancy against the earlier r16 comparison must not be treated as proof of a causal
 mortality regression or ignored when reporting variability. The filter stays disabled by default.
+
+The retired local r18 prototype used `World.Performance.AuraSelfTargetFastPath`. An existing
+unit aura may keep its current target map when it has exactly one application on its owner,
+all active effects are ordinary `APPLY_AURA`, the complete application mask still matches,
+the aura is not an area aura and no aura scripts are loaded. Live applicability is still checked.
+Mixed/area effects, other owners, partial masks, application lifecycle changes and scripted auras
+retain the original path. Periodic effects and duration updates continue in the normal owner update.
+No target, mask or applicability result is retained between updates. This avoids temporary target
+containers only for an unchanged ordinary application; it does not reduce aura update frequency.
+The archived native activation gauge was `aura_self_target_fast_path_enabled`. Four focused tests and
+native source/build/unit verification passed. The 500-bot viability case exited cleanly in 22.015 seconds
+and matched twenty persistence samples; this did not establish a speedup.
+
+On 3000 bots, the enabled r18 case produced p50 180.5 ms, p95 226.75 ms, p99 250.5 ms and maximum
+309.916 ms. The disabled same-binary control produced p50 163.75 ms, p95 223 ms, p99 250.5 ms and
+maximum 545.595 ms. Shutdown took 80.063 and 82.063 seconds respectively, with twenty matching
+persistence samples in both cases. Enabled versus disabled, kills changed -0.2%, deaths +2.2%, quest
+turn-ins -6.0% and completed tasks +4.3%. This single pair showed no timing benefit, so the candidate,
+its configuration entry and native tests were removed from the current source and core patch.
+This is not proof of a general regression; it is insufficient evidence to retain this extra path.
+
+Reproduction artifacts remain local in `bot-performance-artifacts-20261102/runtime-hardening-r18-aura-safe`
+and the corresponding run directories, including source archives, core patch, symbols, verification,
+configuration fingerprints and raw histograms. The runner retains the native activation check for
+replaying those archived binaries; requesting that retired feature on an unsupported binary fails.
