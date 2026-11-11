@@ -34,8 +34,26 @@ def main():
                         str(module / "tests/combat_decisions_tests.cpp"), "/Fe:" + str(decisions)],
                        cwd=directory, check=True)
         subprocess.run([str(decisions)], check=True)
+        performance = Path(directory) / "performance_tests.exe"
+        subprocess.run([compiler, "/nologo", "/std:c++20", "/EHsc", "/utf-8", "/O2",
+                        "/I" + str(module / "src"), str(module / "tests/performance_tests.cpp"),
+                        "/Fe:" + str(performance)], cwd=directory, check=True)
+        subprocess.run([str(performance)], check=True)
+        for name in ["locomotion", "world_logic", "encounter"]:
+            regression = Path(directory) / (name + "_tests.exe")
+            subprocess.run([compiler, "/nologo", "/std:c++20", "/EHsc", "/utf-8", "/O2",
+                            "/I" + str(module / "tests/stub"),
+                            "/I" + str(module / "src/world"),
+                            "/I" + str(module / "src/world/encounters"),
+                            "/I" + str(module / "src"),
+                            str(module / "tests" / (name + "_tests.cpp")),
+                            "/Fe:" + str(regression)], cwd=directory, check=True)
+            subprocess.run([str(regression)], check=True)
     subprocess.run([sys.executable, "-B", str(module / "tests/test_training_reports.py")], check=True)
     subprocess.run([sys.executable, "-B", str(module / "tests/test_ci_compare.py")], check=True)
+    for name in ["benchmark", "matrix", "stack_report", "windows"]:
+        subprocess.run([sys.executable, "-B", str(module / ("tests/test_performance_" + name + ".py"))],
+                       check=True)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,6 @@
+#include "BotPerformance.h"
+#include "BotWorkBudget.h"
+#include "Config.h"
 #include "BotMovement.h"
 #include "AscensionCollectibleSpellData.h"
 #include "Optional.h"
@@ -719,6 +722,7 @@ namespace BotMovement
                 std::fabs(cached->second.z - groundZ) <= SAME_POINT_YARDS * 3.0f)
             {
                 setFailure(NavFailureKind::NoPath);
+                CoaBotPerf::Increment("path_cache_hits");
                 NoteMoveRefusal(bot, owner, "no path to this point (cached)", x, y);
                 return {};
             }
@@ -741,13 +745,23 @@ namespace BotMovement
 
         // Step 2: Outside shard state lock AND outside dispatch gate: compute PathGenerator!
         // This ensures unrelated bots sharing the striped dispatch gate are not blocked during pathfinding.
+        static bool const reusePath = sConfigMgr->GetOption<bool>("CoaBots.Navigation.ReuseValidatedPath", false);
+        Movement::PointsArray validatedPath;
+        uint32 const sourceMap = bot->GetMapId(), sourceInstance = bot->GetInstanceId(), sourcePhase = bot->GetPhaseMask();
         bool pathValid = true;
         uint32 failedPathType = 0;
         if (!bot->CanFly())
         {
             _stats.pathQueries.fetch_add(1, std::memory_order_relaxed);
             PathGenerator path(bot);
-            path.CalculatePath(x, y, groundZ, forceDestination);
+            {
+                CoaBotPerf::Scope scope(CoaBotPerf::Metric::Navigation);
+                path.CalculatePath(x, y, groundZ, forceDestination);
+            }
+            CoaBotPerf::Increment("path_requests");
+            if (reusePath && !forceDestination && (path.GetPathType() & PATHFIND_NORMAL) &&
+                !(path.GetPathType() & PATHFIND_INCOMPLETE))
+                validatedPath = path.GetPath();
             if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH))
             {
                 pathValid = false;
@@ -758,6 +772,7 @@ namespace BotMovement
         // Step 3: Handle path result under shard state lock
         if (!pathValid)
         {
+            CoaBotPerf::Increment("path_failures");
             setFailure(NavFailureKind::NoPath);
             LocomotionStateStore::RecordSharedCorridorFailure(noPathCtx, startX, startY, startZ, x, y, groundZ, now);
             std::lock_guard<std::mutex> lock(shard.mutex);
@@ -783,6 +798,14 @@ namespace BotMovement
 
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
+
+            if (reusePath && (bot->GetMapId() != sourceMap || bot->GetInstanceId() != sourceInstance ||
+                bot->GetPhaseMask() != sourcePhase))
+            {
+                CoaBotPerf::Increment("path_context_cancelled");
+                setFailure(NavFailureKind::ExternallyControlled);
+                return {};
+            }
 
             // Revalidate CanClaim in case state changed during PathGenerator calculation
             if (!LocomotionStateStore::CanClaimLocked(shard, bot->GetGUID(), owner, false))
@@ -837,8 +860,15 @@ namespace BotMovement
 
         // Step 5: Dispatch MotionMaster MovePoint outside shard state lock (under dispatch gate)
         ClearAuthorizedMovement(bot);
-        bot->GetMotionMaster()->MovePoint(uint32(owner), x, y, groundZ, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
-            /*generatePath=*/true, forceDestination);
+        bool reused = false;
+#ifdef COA_VALIDATED_POINT_PATH
+        if (reusePath && validatedPath.size() >= 2)
+            reused = bot->GetMotionMaster()->MovePointWithValidatedPath(uint32(owner), x, y, groundZ, validatedPath);
+#endif
+        if (reused) CoaBotPerf::Increment("validated_paths_reused");
+        else
+            bot->GetMotionMaster()->MovePoint(uint32(owner), x, y, groundZ, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
+                /*generatePath=*/true, forceDestination);
         _stats.issued.fetch_add(1, std::memory_order_relaxed);
 
         return token;
@@ -1017,6 +1047,27 @@ namespace BotMovement
             }
         }
 
+        std::optional<CoaBotScheduling::WorkScope> navigationWork;
+        NavStatus deferredStatus = NavStatus::Moving;
+        auto admitNavigation = [&]()
+        {
+            if (navigationWork) return bool(*navigationWork);
+            navigationWork.emplace(CoaBotScheduling::Work::Navigation, bot, expectedRequestGen);
+            if (*navigationWork) return true;
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            auto pending = shard.requests.find(bot->GetGUID());
+            if (pending != shard.requests.end() && pending->second.requestGeneration == expectedRequestGen &&
+                pending->second.goalId == goalId && pending->second.owner == owner &&
+                pending->second.movementCommandId == reqCopy.movementCommandId)
+            {
+                pending->second.progress.Hold(now);
+                pending->second.holdReason = NavHoldReason::WorkBudget;
+            }
+            else deferredStatus = NavStatus::Superseded;
+            return false;
+        };
+        reqCopy.holdReason = NavHoldReason::None;
+
         // Step 2: Handle First Leg (or retry after unissued first-leg failure)
         if (isNewRequest)
         {
@@ -1028,6 +1079,7 @@ namespace BotMovement
                 return NavStatus::Moving;
             }
 
+            if (!admitNavigation()) return deferredStatus;
             uint64 previousMovementCommandId = reqCopy.movementCommandId;
             LocomotionToken token = IssueLeg(bot, reqCopy);
             if (token.IsValid())
@@ -1110,6 +1162,7 @@ namespace BotMovement
             float distToBacktrack = Dist2d(bx, by, reqCopy.backtrackX, reqCopy.backtrackY);
             if (distToBacktrack <= 3.5f)
             {
+                if (!admitNavigation()) return deferredStatus;
                 // Arrived at backtrack safe position! Rebase progress and resume journey toward original goal
                 reqCopy.recoveryMode = RecoveryMode::None;
                 reqCopy.backtrackAttempts = 0;
@@ -1146,6 +1199,7 @@ namespace BotMovement
 
                 if (safeTarget && reqCopy.backtrackAttempts < 3)
                 {
+                    if (!admitNavigation()) return deferredStatus;
                     _stats.backtracks.fetch_add(1, std::memory_order_relaxed);
                     reqCopy.backtrackX = safeTarget->x;
                     reqCopy.backtrackY = safeTarget->y;
@@ -1216,6 +1270,7 @@ namespace BotMovement
 
                 if (safeTarget)
                 {
+                    if (!admitNavigation()) return deferredStatus;
                     _stats.backtracks.fetch_add(1, std::memory_order_relaxed);
                     reqCopy.recoveryMode = RecoveryMode::Backtrack;
                     reqCopy.backtrackAttempts++;
@@ -1279,6 +1334,7 @@ namespace BotMovement
         }
         else if (recovery == NavRecovery::Repath)
         {
+            if (!admitNavigation()) return deferredStatus;
             _stats.stuckEvents.fetch_add(1, std::memory_order_relaxed);
             _stats.repaths.fetch_add(1, std::memory_order_relaxed);
             reqCopy.recoveryMode = RecoveryMode::Repath;
@@ -1304,6 +1360,7 @@ namespace BotMovement
         }
         else if (recovery == NavRecovery::DetourLeft || recovery == NavRecovery::DetourRight)
         {
+            if (!admitNavigation()) return deferredStatus;
             _stats.stuckEvents.fetch_add(1, std::memory_order_relaxed);
             _stats.detours.fetch_add(1, std::memory_order_relaxed);
             reqCopy.recoveryMode = (recovery == NavRecovery::DetourLeft) ? RecoveryMode::DetourLeft : RecoveryMode::DetourRight;
@@ -1338,6 +1395,7 @@ namespace BotMovement
 
                 if (safeTarget && reqCopy.backtrackAttempts < 3)
                 {
+                    if (!admitNavigation()) return deferredStatus;
                     _stats.backtracks.fetch_add(1, std::memory_order_relaxed);
                     reqCopy.recoveryMode = RecoveryMode::Backtrack;
                     reqCopy.backtrackAttempts++;
@@ -1405,6 +1463,7 @@ namespace BotMovement
             float const distToDetour = Dist2d(bx, by, reqCopy.detourX, reqCopy.detourY);
             if (distToDetour <= 4.0f)
             {
+                if (!admitNavigation()) return deferredStatus;
                 // Completed detour leg! Resume normal pathing toward original goal from this new vantage point.
                 reqCopy.recoveryMode = RecoveryMode::None;
                 reqCopy.detour = false;
@@ -1438,6 +1497,7 @@ namespace BotMovement
 
                 if (safeTarget && reqCopy.backtrackAttempts < 3)
                 {
+                    if (!admitNavigation()) return deferredStatus;
                     _stats.backtracks.fetch_add(1, std::memory_order_relaxed);
                     reqCopy.backtrackAttempts++;
                     reqCopy.recoveryMode = RecoveryMode::Backtrack;
@@ -1491,6 +1551,7 @@ namespace BotMovement
                 (reqCopy.recoveryMode == RecoveryMode::None && now - reqCopy.lastIssueAt >= 1500);
             if (legReachedOrInterrupted && !NavigateTransaction::IsWithin3dArrival(distToGoal, acceptRadius, distZ))
             {
+                if (!admitNavigation()) return deferredStatus;
                 uint64 previousMovementCommandId = reqCopy.movementCommandId;
                 LocomotionToken token = IssueLeg(bot, reqCopy);
                 if (token.IsValid())

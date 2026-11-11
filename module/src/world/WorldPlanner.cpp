@@ -1,3 +1,4 @@
+#include "BotPerformance.h"
 #include "WorldPlanner.h"
 #include "CreatureData.h"
 #include "DangerMap.h"
@@ -387,6 +388,7 @@ namespace WorldPlanner
 
     WorldTask ChooseTask(Player* bot, BrainState& state)
     {
+        CoaBotPerf::Scope scope(CoaBotPerf::Metric::Planner);
         WorldTask none;
         if (!QuestKB::IsReady())
             return none;

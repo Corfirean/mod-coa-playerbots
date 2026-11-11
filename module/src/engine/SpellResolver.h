@@ -18,6 +18,10 @@ namespace BotAI
     class SpellResolver
     {
     public:
+        static void SetRankLookupOptimization(bool enabled);
+        static bool RankLookupOptimized();
+        static void SetLearnedRankCache(bool enabled);
+        static bool LearnedRankCacheEnabled();
         // Returns the highest currently active learned rank, including runtime changes.
         static uint32 ResolveSpell(Player* bot, uint32 rootSpellId);
 
@@ -25,7 +29,7 @@ namespace BotAI
         static uint32 EffectiveSpell(Player* bot, uint32 learnedSpellId);
         static uint32 ResolveCastSpell(Player* bot, uint32 rootSpellId);
 
-        // Lifecycle compatibility; live resolution needs no cache invalidation.
+        // Core revisions invalidate membership; active ranks are always read live.
         static void Invalidate(ObjectGuid botGuid);
 
         // World-reload compatibility.

@@ -8,20 +8,110 @@
 #include "Player.h"
 #include "SpellMgr.h"
 #include "SpellInfo.h"
+#if __has_include("SpellBookRevision.h") && __has_include("SpellRankLookup.h")
+#include "SpellBookRevision.h"
+#include "SpellRankLookup.h"
+#if defined(COA_SPELL_BOOK_REVISION) && defined(COA_SPELL_RANK_METADATA_EPOCH)
+#define COA_LEARNED_RANK_CACHE 1
+#endif
+#endif
+#include <unordered_map>
+#include <vector>
 
 namespace BotAI
 {
+    namespace
+    {
+        bool optimizeRankLookup = false;
+        bool cacheLearnedRanks = false;
+#ifdef COA_LEARNED_RANK_CACHE
+        struct LearnedRanks : DataMap::Base
+        {
+            uint64 book = 0, metadata = 0;
+            std::unordered_map<uint32, std::vector<uint32>> roots;
+        };
+
+        uint32 ResolveCached(Player* bot, uint32 root)
+        {
+            auto* cache = bot->CustomData.GetDefault<LearnedRanks>("bot_rank_cache");
+            uint64 book = SpellBookRevision::Get(bot->CustomData);
+            uint64 metadata = SpellRankLookup::MetadataEpoch();
+            if (cache->book != book || cache->metadata != metadata)
+            {
+                cache->roots.clear();
+                cache->book = book;
+                cache->metadata = metadata;
+            }
+            if (cache->roots.size() >= 256 && !cache->roots.count(root)) cache->roots.clear();
+            auto [itr, fresh] = cache->roots.try_emplace(root);
+            auto const& spells = bot->GetSpellMap();
+            if (fresh)
+            {
+                uint32 current = sSpellMgr->GetLastSpellInChain(root);
+                if (!current) current = root;
+                while (current)
+                {
+                    if (spells.count(current)) itr->second.push_back(current);
+                    uint32 prev = sSpellMgr->GetPrevSpellInChain(current);
+                    if (!prev || prev == current) break;
+                    current = prev;
+                }
+            }
+            for (uint32 id : itr->second)
+            {
+                auto learned = spells.find(id);
+                if (learned != spells.end() && learned->second && learned->second->Active && learned->second->State != PLAYERSPELL_REMOVED)
+                    return id;
+            }
+            auto fallback = spells.find(root);
+            return fallback != spells.end() && fallback->second && fallback->second->Active &&
+                fallback->second->State != PLAYERSPELL_REMOVED && bot->HasSpell(root) ? root : 0;
+        }
+#endif
+    }
+
+    void SpellResolver::SetRankLookupOptimization(bool enabled) { optimizeRankLookup = enabled; }
+    bool SpellResolver::RankLookupOptimized() { return optimizeRankLookup; }
+    void SpellResolver::SetLearnedRankCache(bool enabled)
+    {
+#ifdef COA_LEARNED_RANK_CACHE
+        cacheLearnedRanks = enabled;
+        if (enabled) SpellBookRevision::EnableTracking();
+#else
+        static_cast<void>(enabled);
+        cacheLearnedRanks = false;
+#endif
+    }
+    bool SpellResolver::LearnedRankCacheEnabled() { return cacheLearnedRanks; }
+
     uint32 SpellResolver::ResolveSpell(Player* bot, uint32 rootSpellId)
     {
         if (!bot || !rootSpellId)
             return 0;
+#ifdef COA_LEARNED_RANK_CACHE
+        if (cacheLearnedRanks) return ResolveCached(bot, rootSpellId);
+#endif
 
         // Native talents, temporary grants and specialization changes can mutate
         // active learned ranks without a level change. Walk the short native rank
         // chain against the live book rather than retaining a stale rank or zero.
         PlayerSpellMap const& spellMap = bot->GetSpellMap();
-        uint32 lastInChain = sSpellMgr->GetLastSpellInChain(rootSpellId);
-        uint32 current = lastInChain ? lastInChain : rootSpellId;
+        SpellInfo const* currentInfo = nullptr;
+        uint32 current = rootSpellId;
+        if (optimizeRankLookup)
+        {
+            currentInfo = sSpellMgr->GetSpellInfo(rootSpellId);
+            if (currentInfo)
+            {
+                if (SpellInfo const* last = currentInfo->GetLastRankSpell()) currentInfo = last;
+                current = currentInfo->Id;
+            }
+        }
+        else
+        {
+            uint32 lastInChain = sSpellMgr->GetLastSpellInChain(rootSpellId);
+            current = lastInChain ? lastInChain : rootSpellId;
+        }
 
         uint32 resolved = 0;
         while (current)
@@ -33,7 +123,13 @@ namespace BotAI
                 break;
             }
 
-            uint32 prev = sSpellMgr->GetPrevSpellInChain(current);
+            uint32 prev = 0;
+            if (optimizeRankLookup)
+            {
+                currentInfo = currentInfo ? currentInfo->GetPrevRankSpell() : nullptr;
+                if (currentInfo) prev = currentInfo->Id;
+            }
+            else prev = sSpellMgr->GetPrevSpellInChain(current);
             if (!prev || prev == current)
                 break;
             current = prev;
@@ -64,10 +160,13 @@ namespace BotAI
 
     void SpellResolver::Invalidate(ObjectGuid /*botGuid*/)
     {
-        // Compatibility for lifecycle callers: resolution now reads the live book.
+        // Core revisions cover structural changes; active flags are checked on every decision.
     }
 
     void SpellResolver::ClearAll()
     {
+#ifdef COA_LEARNED_RANK_CACHE
+        SpellRankLookup::MetadataChanged();
+#endif
     }
 }

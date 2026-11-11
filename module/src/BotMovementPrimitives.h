@@ -219,6 +219,7 @@ enum class NavHoldReason : uint8
     Casting,
     MountCasting,
     HigherPriorityOwner,
+    WorkBudget,
 };
 
 inline char const* NavHoldReasonName(NavHoldReason r)
@@ -231,6 +232,7 @@ inline char const* NavHoldReasonName(NavHoldReason r)
         case NavHoldReason::Casting:             return "Casting";
         case NavHoldReason::MountCasting:        return "MountCasting";
         case NavHoldReason::HigherPriorityOwner: return "HigherPriorityOwner";
+        case NavHoldReason::WorkBudget:          return "WorkBudget";
         default:                                 return "Unknown";
     }
 }

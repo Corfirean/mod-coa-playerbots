@@ -577,3 +577,35 @@ BotAI.DynamicEncounters.Mystery.MorphDisplayId = 0
 BotAI.DynamicEncounters.Mystery.RuneGameObjectEntry = 0
 BotAI.DynamicEncounters.Mystery.SpellVisualId = 0
 
+
+
+###################################################################################################
+# Experimental population scheduling. All optimization switches stay off until runtime qualification.
+# Metrics include pooled histogram bins in microseconds; scopes are inclusive, not additive.
+CoaBots.Perf.Enable = 0
+CoaBots.Perf.Detailed = 1
+CoaBots.Perf.ProfileCombat = 0
+World.Performance.EntitySampleRate = 0
+World.Performance.DirectRankLookup = 0
+World.Performance.InterleaveWorldObjects = 0
+CoaBots.Perf.OutputDir = "bot-performance"
+
+CoaBots.Spells.OptimizeRankLookup = 0
+CoaBots.Spells.LazyCleanseScan = 0
+CoaBots.Spells.CacheLearnedRanks = 0
+CoaBots.Scheduling.Enable = 0
+CoaBots.Scheduling.Adaptive = 0
+CoaBots.Scheduling.IdleIntervalMs = 200
+CoaBots.Scheduling.SoloIntervalMs = 500
+CoaBots.Scheduling.FarIdleIntervalMs = 0
+CoaBots.Scheduling.DamageWake = 1
+
+# Admission budgets for background work, in microseconds per world update.
+# Combat and avoidance are never deferred. A single operation may exceed its budget.
+CoaBots.Budgets.Enable = 0
+CoaBots.Budgets.PlannerUs = 3000
+CoaBots.Budgets.ScanUs = 2000
+CoaBots.Budgets.NavigationUs = 4000
+
+
+CoaBots.Navigation.ReuseValidatedPath = 0

@@ -1,3 +1,4 @@
+#include "BotPerformance.h"
 /*
  * mod-coa-playerbots
  *
@@ -36,6 +37,7 @@ namespace BotAI
 
     CombatContext CombatContext::Build(Player* bot, Unit* explicitVictim)
     {
+        CoaBotPerf::Scope profile(CoaBotPerf::Metric::CombatContext, CoaBotPerf::CombatProfileEnabled());
         CombatContext ctx;
         if (!bot || !bot->IsInWorld())
             return ctx;

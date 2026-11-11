@@ -41,6 +41,7 @@ namespace BotAI
 {
     namespace
     {
+        bool lazyCleanseScan = false;
         constexpr uint32 UTILITY_REACTION_GATE_MS = 150;
         constexpr uint32 UTILITY_RETRY_GATE_MS = 500;
         // Floor/ceiling on how long an interrupt reservation lives -- floor covers a cast whose
@@ -202,21 +203,33 @@ namespace BotAI
             CleansePlan plan;
 
             std::vector<uint32> knownDispelSpells;
-            for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+            bool spellsPrepared = false;
+            auto prepareSpells = [&]
             {
-                if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
-                    continue;
-                uint32 root = sSpellMgr->GetFirstSpellInChain(spellId);
-                uint32 highest = SpellResolver::ResolveSpell(bot, root ? root : spellId);
-                if (highest != spellId)
-                    continue;
-                uint32 effective = SpellResolver::EffectiveSpell(bot, highest);
-                if (IsUsableDispelSpell(sSpellMgr->GetSpellInfo(effective)) &&
-                    std::find(knownDispelSpells.begin(), knownDispelSpells.end(), effective) == knownDispelSpells.end())
-                    knownDispelSpells.push_back(effective);
+                if (spellsPrepared) return;
+                spellsPrepared = true;
+                for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+                {
+                    if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+                        continue;
+                    if (SpellResolver::RankLookupOptimized() && !IsUsableDispelSpell(
+                        sSpellMgr->GetSpellInfo(SpellResolver::EffectiveSpell(bot, spellId))))
+                        continue;
+                    uint32 root = sSpellMgr->GetFirstSpellInChain(spellId);
+                    uint32 highest = SpellResolver::ResolveSpell(bot, root ? root : spellId);
+                    if (highest != spellId)
+                        continue;
+                    uint32 effective = SpellResolver::EffectiveSpell(bot, highest);
+                    if (IsUsableDispelSpell(sSpellMgr->GetSpellInfo(effective)) &&
+                        std::find(knownDispelSpells.begin(), knownDispelSpells.end(), effective) == knownDispelSpells.end())
+                        knownDispelSpells.push_back(effective);
+                }
+            };
+            if (!lazyCleanseScan)
+            {
+                prepareSpells();
+                if (knownDispelSpells.empty()) return plan;
             }
-            if (knownDispelSpells.empty())
-                return plan;
 
             auto considerAlly = [&](Unit* ally) -> bool
             {
@@ -232,6 +245,8 @@ namespace BotAI
                     if (healFirst && !IsUrgentDebuff(bot, ally, aura))
                         continue;
 
+                    prepareSpells();
+                    if (knownDispelSpells.empty()) return false;
                     for (uint32 dispelSpellId : knownDispelSpells)
                     {
                         SpellInfo const* dispelInfo = sSpellMgr->GetSpellInfo(dispelSpellId);
@@ -493,6 +508,8 @@ namespace BotAI
             return false;
         }
     }
+
+    void CombatUtility::SetLazyCleanseScan(bool enabled) { lazyCleanseScan = enabled; }
 
     std::vector<uint32> CombatUtility::ListManaRestoreSpells(Player* bot)
     {

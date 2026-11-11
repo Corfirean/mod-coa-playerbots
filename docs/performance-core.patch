@@ -1,0 +1,1241 @@
+diff --git a/src/server/apps/worldserver/Main.cpp b/src/server/apps/worldserver/Main.cpp
+index cf9ed5795..d634c8b78 100644
+--- a/src/server/apps/worldserver/Main.cpp
++++ b/src/server/apps/worldserver/Main.cpp
+@@ -29,6 +29,8 @@
+ #include "CoAScriptLoader.h"
+ #include "Common.h"
+ #include "Config.h"
++#include "UpdateTime.h"
++#include "WorldTickObserver.h"
+ #include "DatabaseEnv.h"
+ #include "DatabaseLoader.h"
+ #include "GameTime.h"
+@@ -623,7 +625,11 @@ void WorldUpdateLoop()
+             continue;
+         }
+ 
++        WorldTickObserver::UpdateStarted();
++        auto const processingStarted = std::chrono::steady_clock::now();
+         sWorld->Update(worldDiff);
++        sWorldUpdateTime.ObserveProcessingTime(uint64(std::chrono::duration_cast<std::chrono::microseconds>(
++            std::chrono::steady_clock::now() - processingStarted).count()));
+         realPrevTime = realCurrTime;
+ 
+ #ifdef _WIN32
+diff --git a/src/server/game/Entities/Creature/Creature.cpp b/src/server/game/Entities/Creature/Creature.cpp
+index af1828823..090ad86f5 100644
+--- a/src/server/game/Entities/Creature/Creature.cpp
++++ b/src/server/game/Entities/Creature/Creature.cpp
+@@ -15,6 +15,7 @@
+  * with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "WorldEntityProfiler.h"
+ #include "Creature.h"
+ #include "DungeonHealth.h"
+ #include "BattlegroundMgr.h"
+@@ -740,6 +741,7 @@ bool Creature::UpdateEntry(uint32 Entry, CreatureData const* data, bool changele
+ 
+ void Creature::Update(uint32 diff)
+ {
++    auto profileSample = WorldEntityProfiler::Sample("Creature sample");
+     if (IsAIEnabled && TriggerJustRespawned && getDeathState() != DeathState::Dead)
+     {
+         TriggerJustRespawned = false;
+diff --git a/src/server/game/Entities/Player/Player.cpp b/src/server/game/Entities/Player/Player.cpp
+index fa30a28a1..080e9fcaf 100644
+--- a/src/server/game/Entities/Player/Player.cpp
++++ b/src/server/game/Entities/Player/Player.cpp
+@@ -15,6 +15,7 @@
+  * with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "SpellBookRevision.h"
+ #include "Player.h"
+ #include "CoaCustomRacials.h"
+ #include "AscensionSpellCopy.h"
+@@ -3463,6 +3464,7 @@ bool Player::_addSpell(uint32 spellId, uint8 addSpecMask, bool temporary, bool l
+         newspell->specMask = addSpecMask;
+ 
+         m_spells[spellId] = newspell;
++        SpellBookRevision::Changed(CustomData);
+     }
+ 
+     // pussywizard: return if spell not in current spec
+@@ -3475,6 +3477,7 @@ bool Player::_addSpell(uint32 spellId, uint8 addSpecMask, bool temporary, bool l
+     {
+         LOG_INFO("entities.player", "TRYING TO LEARN SPELL WITH EFFECT LEARN 2: {}, PLAYER: {}", spellId, GetGUID().ToString());
+         m_spells.erase(spellInfo->Id); // mem leak, but should never happen
++        SpellBookRevision::Changed(CustomData);
+         return false;
+         //ABORT();
+     }
+@@ -3770,6 +3773,7 @@ void Player::removeSpell(uint32 spell_id, uint8 removeSpecMask, bool onlyTempora
+         {
+             delete itr->second;
+             m_spells.erase(itr);
++            SpellBookRevision::Changed(CustomData);
+         }
+         else
+             itr->second->State = PLAYERSPELL_REMOVED;
+diff --git a/src/server/game/Entities/Player/PlayerStorage.cpp b/src/server/game/Entities/Player/PlayerStorage.cpp
+index 6eff29cd1..c5015a105 100644
+--- a/src/server/game/Entities/Player/PlayerStorage.cpp
++++ b/src/server/game/Entities/Player/PlayerStorage.cpp
+@@ -15,6 +15,7 @@
+  * with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "SpellBookRevision.h"
+ #include "AscensionItemRecovery.h"
+ #include "AccountMgr.h"
+ #include "AchievementMgr.h"
+@@ -8027,6 +8028,7 @@ void Player::_SaveSpells(CharacterDatabaseTransaction trans)
+         {
+             delete itr->second;
+             m_spells.erase(itr++);
++            SpellBookRevision::Changed(CustomData);
+         }
+         else
+         {
+diff --git a/src/server/game/Entities/Player/PlayerUpdates.cpp b/src/server/game/Entities/Player/PlayerUpdates.cpp
+index 55ab68579..d7f2df4e5 100644
+--- a/src/server/game/Entities/Player/PlayerUpdates.cpp
++++ b/src/server/game/Entities/Player/PlayerUpdates.cpp
+@@ -15,6 +15,7 @@
+  * with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "WorldEntityProfiler.h"
+ #include "AchievementMgr.h"
+ #include "AscensionQuestMarkers.h"
+ #include "BattlefieldMgr.h"
+@@ -56,6 +57,7 @@ constexpr int32 XP_SOURCE_MASK_PROFESSION = 4;
+ 
+ void Player::Update(uint32 p_time)
+ {
++    auto profileSample = WorldEntityProfiler::Sample("Player sample");
+     if (!IsInWorld())
+         return;
+ 
+diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
+index 8005ba85a..7af18fc72 100644
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ -15,6 +15,7 @@
+  * with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "WorldEntityProfiler.h"
+ #include "Unit.h"
+ #include "AscensionSpellCopy.h"
+ #include "AscensionIncarnation.h"
+@@ -598,6 +599,7 @@ Unit::~Unit()
+ 
+ void Unit::Update(uint32 p_time)
+ {
++    auto profileSample = WorldEntityProfiler::Sample(GetTypeId() == TYPEID_PLAYER ? "Player unit sample" : "Creature unit sample");
+     sScriptMgr->OnUnitUpdate(this, p_time);
+ 
+     // WARNING! Order of execution here is important, do not change.
+diff --git a/src/server/game/Maps/Map.cpp b/src/server/game/Maps/Map.cpp
+index d13efd94c..d9359b265 100644
+--- a/src/server/game/Maps/Map.cpp
++++ b/src/server/game/Maps/Map.cpp
+@@ -16,6 +16,8 @@
+  */
+ 
+ #include "Map.h"
++#include "Config.h"
++#include "UpdateTime.h"
+ #include "Battleground.h"
+ #include "CellImpl.h"
+ #include "Chat.h"
+@@ -448,8 +450,27 @@ void Map::UpdatePlayerZoneStats(uint32 oldZone, uint32 newZone)
+         ++_zonePlayerCountMap[newZone];
+ }
+ 
++namespace
++{
++bool InterleaveWorldObjects(Map const* map)
++{
++    static bool const enabled = sConfigMgr->GetOption<bool>("World.Performance.InterleaveWorldObjects", false);
++    return enabled && !GameTime::IsSimulated() && !map->Instanceable() && !map->IsScriptedPrivateInstance();
++}
++}
++
+ void Map::Update(const uint32 t_diff, const uint32 s_diff, bool  /*thread*/)
+ {
++    auto processingPhase = sWorldUpdateTime.MeasurePhase("Map total");
++    bool interleaved = InterleaveWorldObjects(this);
++    if (interleaved)
++    {
++        bool compatible = _interleavedObjects.Compatible();
++        _interleavedObjects.Advance(s_diff, t_diff != 0);
++        if (compatible && !_interleavedObjects.Compatible())
++            LOG_WARN("maps", "Interleaved updates disabled for map {}: unexpected full-update cadence", GetId());
++        interleaved = _interleavedObjects.Compatible();
++    }
+     if (t_diff)
+         _mapCollisionData.GetDynamicTree().update(t_diff);
+ 
+@@ -462,18 +483,32 @@ void Map::Update(const uint32 t_diff, const uint32 s_diff, bool  /*thread*/)
+             // Update session
+             WorldSession* session = player->GetSession();
+             MapSessionFilter updater(session);
++            {
++                auto playerPhase = sWorldUpdateTime.MeasurePhase("Map sessions");
+             session->Update(s_diff, updater);
++            }
+ 
+             // update players at tick
+             if (!t_diff)
++            {
++                auto playerPhase = sWorldUpdateTime.MeasurePhase("Map players");
+                 player->Update(s_diff);
++            }
+         }
+     }
+ 
+-    Events.Update(t_diff);
++    Events.Update(interleaved ? s_diff : t_diff);
+ 
+     if (!t_diff)
+     {
++        if (interleaved && _interleavedObjects.HasWork())
++        {
++            UpdateNonPlayerObjects(s_diff, true);
++            SendObjectUpdates();
++            MoveAllCreaturesInMoveList();
++            MoveAllGameObjectsInMoveList();
++            MoveAllDynamicObjectsInMoveList();
++        }
+         HandleDelayedVisibility();
+         return;
+     }
+@@ -501,7 +536,10 @@ void Map::Update(const uint32 t_diff, const uint32 s_diff, bool  /*thread*/)
+         if (!player || !player->IsInWorld())
+             continue;
+ 
+-        player->Update(s_diff);
++        {
++            auto playerPhase = sWorldUpdateTime.MeasurePhase("Map players");
++            player->Update(s_diff);
++        }
+ 
+         if (_updatableObjectListRecheckTimer.Passed())
+         {
+@@ -518,7 +556,7 @@ void Map::Update(const uint32 t_diff, const uint32 s_diff, bool  /*thread*/)
+         }
+     }
+ 
+-    UpdateNonPlayerObjects(t_diff);
++    UpdateNonPlayerObjects(t_diff, interleaved);
+ 
+     SendObjectUpdates();
+ 
+@@ -552,8 +590,9 @@ void Map::Update(const uint32 t_diff, const uint32 s_diff, bool  /*thread*/)
+         METRIC_TAG("map_instanceid", std::to_string(GetInstanceId())));
+ }
+ 
+-void Map::UpdateNonPlayerObjects(uint32 const diff)
++void Map::UpdateNonPlayerObjects(uint32 const diff, bool interleaved)
+ {
++    auto processingPhase = sWorldUpdateTime.MeasurePhase("Map nonplayers");
+     for (WorldObject* obj : _pendingAddUpdatableObjectList)
+         _AddObjectToUpdateList(obj);
+     _pendingAddUpdatableObjectList.clear();
+@@ -564,6 +603,18 @@ void Map::UpdateNonPlayerObjects(uint32 const diff)
+         return simulatedPhases && !(obj->GetPhaseMask() & simulatedPhases);
+     };
+ 
++    auto update = [&](WorldObject* obj)
++    {
++        if (interleaved)
++        {
++            auto elapsed = _interleavedObjects.Due(reinterpret_cast<std::uintptr_t>(obj), obj->GetGUID().GetRawValue());
++            if (!elapsed) return false;
++            obj->Update(*elapsed);
++        }
++        else obj->Update(diff);
++        return true;
++    };
++
+     if (_updatableObjectListRecheckTimer.Passed())
+     {
+         for (uint32 i = 0; i < _updatableObjectList.size();)
+@@ -575,7 +626,9 @@ void Map::UpdateNonPlayerObjects(uint32 const diff)
+                 continue;
+             }
+ 
+-            obj->Update(diff);
++            bool updated = update(obj);
++            if (interleaved && !updated && !obj->IsUpdateNeeded())
++                obj->Update(_interleavedObjects.Force(reinterpret_cast<std::uintptr_t>(obj)));
+ 
+             if (!obj->IsUpdateNeeded())
+             {
+@@ -596,7 +649,7 @@ void Map::UpdateNonPlayerObjects(uint32 const diff)
+             if (!obj->IsInWorld() || skipped(obj))
+                 continue;
+ 
+-            obj->Update(diff);
++            update(obj);
+         }
+     }
+ }
+@@ -628,6 +681,7 @@ void Map::_AddObjectToUpdateList(WorldObject* obj)
+ // Internal use only
+ void Map::_RemoveObjectFromUpdateList(WorldObject* obj)
+ {
++    _interleavedObjects.Forget(reinterpret_cast<std::uintptr_t>(obj));
+     UpdatableMapObject* mapUpdatableObject = dynamic_cast<UpdatableMapObject*>(obj);
+     ASSERT(mapUpdatableObject && mapUpdatableObject->GetUpdateState() == UpdatableMapObject::UpdateState::Updating);
+ 
+@@ -718,6 +772,7 @@ ZoneWideVisibleWorldObjectsSet const* Map::GetZoneWideVisibleWorldObjectsForZone
+ 
+ void Map::HandleDelayedVisibility()
+ {
++    auto processingPhase = sWorldUpdateTime.MeasurePhase("Map visibility");
+     while (!i_objectsForDelayedVisibility.empty())
+     {
+         Unit* unit = *i_objectsForDelayedVisibility.begin();
+@@ -1736,6 +1791,7 @@ void Map::SendRemoveTransports(Player* player)
+ 
+ void Map::SendObjectUpdates()
+ {
++    auto processingPhase = sWorldUpdateTime.MeasurePhase("Map packets");
+     UpdateDataMapType update_players;
+ 
+     while (!_updateObjects.empty())
+diff --git a/src/server/game/Maps/Map.h b/src/server/game/Maps/Map.h
+index c9589253e..c828fd3bf 100644
+--- a/src/server/game/Maps/Map.h
++++ b/src/server/game/Maps/Map.h
+@@ -18,6 +18,7 @@
+ #ifndef ACORE_MAP_H
+ #define ACORE_MAP_H
+ 
++#include "InterleavedUpdateClock.h"
+ #include "Cell.h"
+ #include "DBCStructure.h"
+ #include "DataMap.h"
+@@ -572,6 +573,7 @@ public:
+     }
+ 
+     size_t GetUpdatableObjectsCount() const { return _updatableObjectList.size(); }
++    bool UsesInterleavedWorldUpdates() const { return _interleavedObjects.Started() && _interleavedObjects.Compatible(); }
+ 
+     // Only used while GameTime runs a simulated clock (gameplay test harness): objects that share no phase with
+     // these bits are invisible to every test player, so the fast-forwarded world skips their updates.
+@@ -688,7 +690,7 @@ private:
+     template<class T>
+     void DeleteFromWorld(T*);
+ 
+-    void UpdateNonPlayerObjects(uint32 const diff);
++    void UpdateNonPlayerObjects(uint32 const diff, bool interleaved = false);
+ 
+     void _AddObjectToUpdateList(WorldObject* obj);
+     void _RemoveObjectFromUpdateList(WorldObject* obj);
+@@ -748,6 +750,7 @@ private:
+     std::unordered_set<Object*> _updateObjects;
+ 
+     UpdatableObjectList _updatableObjectList;
++    InterleavedUpdateClock _interleavedObjects;
+     static inline std::atomic<uint32> _simulatedUpdatePhases{0};
+     PendingAddUpdatableObjectList _pendingAddUpdatableObjectList;
+     IntervalTimer _updatableObjectListRecheckTimer;
+diff --git a/src/server/game/Movement/MotionMaster.cpp b/src/server/game/Movement/MotionMaster.cpp
+index 1449c4ed5..0677b6441 100644
+--- a/src/server/game/Movement/MotionMaster.cpp
++++ b/src/server/game/Movement/MotionMaster.cpp
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "MotionMaster.h"
++#include <cmath>
+ #include "ConfusedMovementGenerator.h"
+ #include "Creature.h"
+ #include "CreatureAISelector.h"
+@@ -506,6 +507,27 @@ void MotionMaster::MovePoint(uint32 id, float x, float y, float z, ForcedMovemen
+     }
+ }
+ 
++bool MotionMaster::MovePointWithValidatedPath(uint32 id, float x, float y, float z, Movement::PointsArray const& path)
++{
++    Player* player = _owner->ToPlayer();
++    if (!player || !player->IsBot() || path.size() < 2 || player->CanFly() || player->GetDirectTransport() ||
++        player->HasUnitFlag(UNIT_FLAG_DISABLE_MOVE) || player->HasUnitState(UNIT_STATE_NOT_MOVE) ||
++        player->IsMovementPreventedByCasting() || id == EVENT_CHARGE || id == EVENT_CHARGE_PREPATH)
++        return false;
++
++    G3D::Vector3 const position(player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
++    G3D::Vector3 const destination(x, y, z);
++    if ((position - path.front()).squaredLength() > 1.0f || (destination - path.back()).squaredLength() > 1.0f)
++        return false;
++    for (G3D::Vector3 const& point : path)
++        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
++            return false;
++
++    Mutate(new PointMovementGenerator<Player>(id, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, &path,
++        true, false, std::nullopt, ObjectGuid::Empty, false, ObjectGuid::Empty, true), MOTION_SLOT_ACTIVE);
++    return true;
++}
++
+ void MotionMaster::MoveSplinePath(Movement::PointsArray* path, ForcedMovement forcedMovement)
+ {
+     // Xinef: do not allow to move with UNIT_FLAG_DISABLE_MOVE
+diff --git a/src/server/game/Movement/MotionMaster.h b/src/server/game/Movement/MotionMaster.h
+index 75f0dc384..e06edea13 100644
+--- a/src/server/game/Movement/MotionMaster.h
++++ b/src/server/game/Movement/MotionMaster.h
+@@ -17,6 +17,7 @@
+ 
+ #ifndef ACORE_MOTIONMASTER_H
+ #define ACORE_MOTIONMASTER_H
++#define COA_VALIDATED_POINT_PATH 1
+ 
+ #include "Common.h"
+ #include "ObjectGuid.h"
+@@ -240,6 +241,8 @@ public:
+     void MovePoint(uint32 id, Position const& pos, ForcedMovement forcedMovement = FORCED_MOVEMENT_NONE, float speed = 0.f, bool generatePath = true, bool forceDestination = true, std::optional<AnimTier> animTier = std::nullopt)
+     { MovePoint(id, pos.m_positionX, pos.m_positionY, pos.m_positionZ, forcedMovement, speed, pos.GetOrientation(), generatePath, forceDestination, MOTION_SLOT_ACTIVE, animTier); }
+     void MovePoint(uint32 id, float x, float y, float z, ForcedMovement forcedMovement = FORCED_MOVEMENT_NONE, float speed = 0.f, float orientation = 0.0f, bool generatePath = true, bool forceDestination = true, MovementSlot slot = MOTION_SLOT_ACTIVE, std::optional<AnimTier> animTier = std::nullopt);
++    bool MovePointWithValidatedPath(uint32 id, float x, float y, float z, Movement::PointsArray const& path);
++
+     void MoveSplinePath(Movement::PointsArray* path, ForcedMovement forcedMovement = FORCED_MOVEMENT_NONE);
+     void MovePath(uint32 path_id, ForcedMovement forcedMovement = FORCED_MOVEMENT_NONE, PathSource pathSource = PathSource::WAYPOINT_MGR);
+ 
+diff --git a/src/server/game/Movement/MovementGenerators/PathGenerator.cpp b/src/server/game/Movement/MovementGenerators/PathGenerator.cpp
+index a1df19ae1..71beb29e6 100644
+--- a/src/server/game/Movement/MovementGenerators/PathGenerator.cpp
++++ b/src/server/game/Movement/MovementGenerators/PathGenerator.cpp
+@@ -15,6 +15,7 @@
+  * with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "WorldEntityProfiler.h"
+ #include "PathGenerator.h"
+ #include "Creature.h"
+ #include "DetourCommon.h"
+@@ -161,6 +162,7 @@ bool PathGenerator::CalculatePath(float destX, float destY, float destZ, bool fo
+ 
+ bool PathGenerator::CalculatePath(float x, float y, float z, float destX, float destY, float destZ, bool forceDest)
+ {
++    auto profileSample = WorldEntityProfiler::Sample("Core path sample");
+     if (!Acore::IsValidMapCoord(destX, destY, destZ) || !Acore::IsValidMapCoord(x, y, z))
+         return false;
+ 
+diff --git a/src/server/game/Movement/MovementGenerators/PointMovementGenerator.cpp b/src/server/game/Movement/MovementGenerators/PointMovementGenerator.cpp
+index 3a7d5eac5..e6fbe368b 100644
+--- a/src/server/game/Movement/MovementGenerators/PointMovementGenerator.cpp
++++ b/src/server/game/Movement/MovementGenerators/PointMovementGenerator.cpp
+@@ -37,6 +37,11 @@ void PointMovementGenerator<T>::DoInitialize(T* unit)
+     {
+         // the next line is to ensure that a new spline is created in DoUpdate() once the unit is no longer rooted/stunned
+         /// @todo: rename this flag to something more appropriate since it is set to true even without speed change now.
++        if (_trustedInitialPath)
++        {
++            m_precomputedPath.clear();
++            _trustedInitialPath = false;
++        }
+         i_recalculateSpeed = true;
+         return;
+     }
+@@ -66,7 +71,16 @@ void PointMovementGenerator<T>::DoInitialize(T* unit)
+     if (_reverseOrientation)
+         init.SetOrientationInversed();
+ 
+-    if (m_precomputedPath.size() > 2) // pussywizard: for charge
++    if (_trustedInitialPath && !m_precomputedPath.empty() &&
++        (G3D::Vector3(unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ()) - m_precomputedPath.front()).squaredLength() > 1.0f)
++    {
++        m_precomputedPath.clear();
++        _trustedInitialPath = false;
++    }
++
++    if (_trustedInitialPath && m_precomputedPath.size() >= 2)
++        init.MovebyPath(m_precomputedPath);
++    else if (m_precomputedPath.size() > 2) // pussywizard: for charge
+         init.MovebyPath(m_precomputedPath);
+     else if (_generatePath)
+     {
+@@ -136,6 +150,7 @@ void PointMovementGenerator<T>::DoInitialize(T* unit)
+         init.SetAnimation(*_animTier);
+ 
+     init.Launch();
++    _trustedInitialPath = false;
+ }
+ 
+ template<class T>
+diff --git a/src/server/game/Movement/MovementGenerators/PointMovementGenerator.h b/src/server/game/Movement/MovementGenerators/PointMovementGenerator.h
+index fccc8bce4..55ee2bb30 100644
+--- a/src/server/game/Movement/MovementGenerators/PointMovementGenerator.h
++++ b/src/server/game/Movement/MovementGenerators/PointMovementGenerator.h
+@@ -28,9 +28,9 @@ class PointMovementGenerator : public MovementGeneratorMedium< T, PointMovementG
+ {
+ public:
+     PointMovementGenerator(uint32 _id, float _x, float _y, float _z, ForcedMovement forcedMovement, float _speed = 0.0f, float orientation = 0.0f, Movement::PointsArray const* _path = nullptr,
+-        bool generatePath = false, bool forceDestination = false, std::optional<AnimTier> animTier = std::nullopt, ObjectGuid chargeTargetGUID = ObjectGuid::Empty, bool reverseOrientation = false, ObjectGuid facingTargetGuid = ObjectGuid())
++        bool generatePath = false, bool forceDestination = false, std::optional<AnimTier> animTier = std::nullopt, ObjectGuid chargeTargetGUID = ObjectGuid::Empty, bool reverseOrientation = false, ObjectGuid facingTargetGuid = ObjectGuid(), bool trustedInitialPath = false)
+         : id(_id), i_x(_x), i_y(_y), i_z(_z), speed(_speed), i_orientation(orientation), _generatePath(generatePath), _forceDestination(forceDestination), _reverseOrientation(reverseOrientation),
+-        _chargeTargetGUID(chargeTargetGUID), _forcedMovement(forcedMovement), _facingTargetGuid(facingTargetGuid), _animTier(animTier)
++        _chargeTargetGUID(chargeTargetGUID), _forcedMovement(forcedMovement), _facingTargetGuid(facingTargetGuid), _animTier(animTier), _trustedInitialPath(trustedInitialPath)
+     {
+         if (_path)
+             m_precomputedPath = *_path;
+@@ -66,6 +66,7 @@ private:
+     ForcedMovement _forcedMovement;
+     ObjectGuid _facingTargetGuid;
+     std::optional<AnimTier> _animTier;
++    bool _trustedInitialPath = false;
+     bool _stalled{};
+     bool _hasBeenStalled{};
+     std::optional<int32> _pauseTime;
+diff --git a/src/server/game/Spells/SpellMgr.cpp b/src/server/game/Spells/SpellMgr.cpp
+index 85ccb6385..207939ee3 100644
+--- a/src/server/game/Spells/SpellMgr.cpp
++++ b/src/server/game/Spells/SpellMgr.cpp
+@@ -16,6 +16,9 @@
+  */
+ 
+ #include "SpellMgr.h"
++#include "SpellRankLookup.h"
++#include "SpellBookRevision.h"
++#include "Config.h"
+ #include "Log.h"
+ #include "BattlefieldMgr.h"
+ #include "BattlegroundIC.h"
+@@ -34,10 +37,30 @@
+ #include "World.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <memory>
+ 
+ namespace
+ {
++std::atomic<bool> directRankLookup{false};
++std::atomic<uint64> rankMetadataEpoch{1};
++std::atomic<bool> trackSpellBookChanges{false};
++
++void ConfigureDirectRankLookup(SpellInfoMap const& store, SpellChainMap const& chains)
++{
++    directRankLookup.store(false, std::memory_order_relaxed);
++    if (!sConfigMgr->GetOption<bool>("World.Performance.DirectRankLookup", false))
++        return;
++
++    if (auto id = SpellRankLookup::FirstInconsistent(store, chains))
++    {
++        LOG_ERROR("server.loading", "Direct spell rank lookup disabled: inconsistent chain {}", *id);
++        return;
++    }
++    directRankLookup.store(true, std::memory_order_relaxed);
++    LOG_INFO("server.loading", "Direct spell rank lookup enabled after validating {} chain entries", chains.size());
++}
++
+ bool IsValidSpellProcFamily(uint32 family)
+ {
+     // CoA class spell families follow the class ID with an offset of six.
+@@ -47,6 +70,18 @@ bool IsValidSpellProcFamily(uint32 family)
+ }
+ }
+ 
++namespace SpellRankLookup
++{
++uint64 MetadataEpoch() { return rankMetadataEpoch.load(std::memory_order_relaxed); }
++void MetadataChanged() { rankMetadataEpoch.fetch_add(1, std::memory_order_relaxed); }
++}
++
++namespace SpellBookRevision
++{
++bool TrackingEnabled() { return trackSpellBookChanges.load(std::memory_order_relaxed); }
++void EnableTracking() { trackSpellBookChanges.store(true, std::memory_order_relaxed); }
++}
++
+ bool IsPrimaryProfessionSkill(uint32 skill)
+ {
+     SkillLineEntry const* pSkill = sSkillLineStore.LookupEntry(skill);
+@@ -621,11 +656,8 @@ SpellInfo const* SpellMgr::GetSpellForDifficultyFromSpell(SpellInfo const* spell
+ 
+ SpellChainNode const* SpellMgr::GetSpellChainNode(uint32 spell_id) const
+ {
+-    SpellChainMap::const_iterator itr = mSpellChains.find(spell_id);
+-    if (itr == mSpellChains.end())
+-        return nullptr;
+-
+-    return &itr->second;
++    return SpellRankLookup::Find(mSpellInfoMap, mSpellChains, spell_id,
++        directRankLookup.load(std::memory_order_relaxed));
+ }
+ 
+ uint32 SpellMgr::GetFirstSpellInChain(uint32 spell_id) const
+@@ -1252,6 +1284,8 @@ bool SpellArea::IsFitToRequirements(Player const* player, uint32 newZone, uint32
+ 
+ void SpellMgr::UnloadSpellInfoChains()
+ {
++    SpellRankLookup::MetadataChanged();
++    directRankLookup.store(false, std::memory_order_relaxed);
+     for (SpellChainMap::iterator itr = mSpellChains.begin(); itr != mSpellChains.end(); ++itr)
+         mSpellInfoMap[itr->first]->ChainEntry = nullptr;
+ 
+@@ -1333,6 +1367,7 @@ void SpellMgr::LoadSpellRanks()
+     {
+         LOG_WARN("server.loading", ">> Loaded 0 spell rank records. DB table `spell_ranks` is empty.");
+         LOG_INFO("server.loading", " ");
++        ConfigureDirectRankLookup(mSpellInfoMap, mSpellChains);
+         return;
+     }
+ 
+@@ -1428,10 +1463,12 @@ void SpellMgr::LoadSpellRanks()
+ 
+     LOG_INFO("server.loading", ">> Loaded {} spell rank records in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
+     LOG_INFO("server.loading", " ");
++    ConfigureDirectRankLookup(mSpellInfoMap, mSpellChains);
+ }
+ 
+ void SpellMgr::LoadAddedSpellRanks()
+ {
++    SpellRankLookup::MetadataChanged();
+     if (!_addedSpellRanks)
+         return;
+ 
+@@ -3404,11 +3441,14 @@ SpellInfo* SpellMgr::RegisterRuntimeSpell(SpellEntry const& entry)
+         mSpellInfoMap.resize(std::size_t(entry.Id) + 1, nullptr);
+     SpellInfo* result = spellInfo.release();
+     mSpellInfoMap[entry.Id] = result;
++    SpellRankLookup::MetadataChanged();
+     return result;
+ }
+ 
+ void SpellMgr::UnloadSpellInfoStore()
+ {
++    SpellRankLookup::MetadataChanged();
++    directRankLookup.store(false, std::memory_order_relaxed);
+     for (uint32 i = 0; i < GetSpellInfoStoreSize(); ++i)
+         delete mSpellInfoMap[i];
+ 
+diff --git a/src/server/game/Time/UpdateTime.cpp b/src/server/game/Time/UpdateTime.cpp
+index d555ce2e0..a8e98dfb4 100644
+--- a/src/server/game/Time/UpdateTime.cpp
++++ b/src/server/game/Time/UpdateTime.cpp
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "UpdateTime.h"
++#include "WorldTickObserver.h"
+ #include "Config.h"
+ #include "Log.h"
+ #include "Timer.h"
+@@ -26,6 +27,32 @@
+ // create instance
+ WorldUpdateTime sWorldUpdateTime;
+ 
++namespace WorldTickObserver
++{
++    namespace
++    {
++        Observer periodObserver = nullptr;
++        std::chrono::steady_clock::time_point previousStart;
++        bool haveStart = false;
++    }
++
++    void SetPeriodObserver(Observer observer)
++    {
++        periodObserver = observer;
++        haveStart = false;
++    }
++
++    void UpdateStarted()
++    {
++        if (!periodObserver) return;
++        auto const now = std::chrono::steady_clock::now();
++        if (haveStart)
++            periodObserver(uint64(std::chrono::duration_cast<std::chrono::microseconds>(now - previousStart).count()));
++        previousStart = now;
++        haveStart = true;
++    }
++}
++
+ UpdateTime::UpdateTime()
+ {
+     _averageUpdateTime = 0;
+diff --git a/src/server/game/Time/UpdateTime.h b/src/server/game/Time/UpdateTime.h
+index 8d163dc7b..f970770d4 100644
+--- a/src/server/game/Time/UpdateTime.h
++++ b/src/server/game/Time/UpdateTime.h
+@@ -17,6 +17,7 @@
+ 
+ #ifndef __UPDATETIME_H
+ #define __UPDATETIME_H
++#define COA_WORLD_PROCESSING_OBSERVER 1
+ 
+ #include "Define.h"
+ #include "Duration.h"
+@@ -65,12 +66,43 @@ class AC_GAME_API WorldUpdateTime : public UpdateTime
+ {
+ public:
+     WorldUpdateTime() : UpdateTime(), _recordUpdateTimeInverval(0), _recordUpdateTimeMin(0), _lastRecordTime(0) { }
++    using PhaseObserver = void (*)(char const*, uint64);
++    void SetPhaseObserver(PhaseObserver observer) { _phaseObserver = observer; }
++    class PhaseScope
++    {
++    public:
++        PhaseScope(PhaseObserver observer, char const* name) : _observer(observer), _name(name)
++        {
++            if (_observer) _start = std::chrono::steady_clock::now();
++        }
++        ~PhaseScope()
++        {
++            if (_observer)
++                _observer(_name, uint64(std::chrono::duration_cast<std::chrono::microseconds>(
++                    std::chrono::steady_clock::now() - _start).count()));
++        }
++        PhaseScope(PhaseScope const&) = delete;
++        PhaseScope& operator=(PhaseScope const&) = delete;
++    private:
++        PhaseObserver _observer;
++        char const* _name;
++        std::chrono::steady_clock::time_point _start;
++    };
++    PhaseScope MeasurePhase(char const* name) const { return PhaseScope(_phaseObserver, name); }
++    using ProcessingObserver = void (*)(uint64);
++    void SetProcessingObserver(ProcessingObserver observer) { _processingObserver = observer; }
++    void ObserveProcessingTime(uint64 microseconds) const
++    {
++        if (_processingObserver) _processingObserver(microseconds);
++    }
+     void LoadFromConfig();
+     void SetRecordUpdateTimeInterval(Milliseconds t);
+     void RecordUpdateTime(Milliseconds gameTimeMs, uint32 diff, uint32 sessionCount);
+     void RecordUpdateTimeDuration(std::string const& text);
+ 
+ private:
++    ProcessingObserver _processingObserver = nullptr;
++    PhaseObserver _phaseObserver = nullptr;
+     Milliseconds _recordUpdateTimeInverval;
+     Milliseconds _recordUpdateTimeMin;
+     Milliseconds _lastRecordTime;
+diff --git a/src/server/game/World/World.cpp b/src/server/game/World/World.cpp
+index 8af6fccf3..6a95cf827 100644
+--- a/src/server/game/World/World.cpp
++++ b/src/server/game/World/World.cpp
+@@ -1223,6 +1223,7 @@ void World::Update(uint32 diff)
+ 
+     {
+         METRIC_TIMER("world_update_time", METRIC_TAG("type", "Update sessions"));
++        auto processingPhase = sWorldUpdateTime.MeasurePhase("Update sessions");
+         sWorldSessionMgr->UpdateSessions(diff);
+     }
+ 
+@@ -1250,6 +1251,7 @@ void World::Update(uint32 diff)
+     {
+         ///- Update objects when the timer has passed (maps, transport, creatures, ...)
+         METRIC_TIMER("world_update_time", METRIC_TAG("type", "Update maps"));
++        auto processingPhase = sWorldUpdateTime.MeasurePhase("Update maps");
+         sMapMgr->Update(diff);
+     }
+ 
+@@ -1290,6 +1292,7 @@ void World::Update(uint32 diff)
+ 
+     {
+         METRIC_TIMER("world_update_time", METRIC_TAG("type", "Process query callbacks"));
++        auto processingPhase = sWorldUpdateTime.MeasurePhase("Process query callbacks");
+         // execute callbacks from sql queries that were queued recently
+         ProcessQueryCallbacks();
+     }
+@@ -1351,6 +1354,7 @@ void World::Update(uint32 diff)
+ 
+     {
+         METRIC_TIMER("world_update_time", METRIC_TAG("type", "Update world scripts"));
++        auto processingPhase = sWorldUpdateTime.MeasurePhase("Update world scripts");
+         sScriptMgr->OnWorldUpdate(diff);
+     }
+ 
+diff --git a/src/server/game/Maps/InterleavedUpdateClock.h b/src/server/game/Maps/InterleavedUpdateClock.h
+new file mode 100644
+--- /dev/null
++++ b/src/server/game/Maps/InterleavedUpdateClock.h
+@@ -0,0 +1,83 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef INTERLEAVED_UPDATE_CLOCK_H
++#define INTERLEAVED_UPDATE_CLOCK_H
++
++#define COA_INTERLEAVED_WORLD_UPDATES 1
++#include <algorithm>
++#include <cstdint>
++#include <limits>
++#include <optional>
++#include <unordered_map>
++
++class InterleavedUpdateClock
++{
++public:
++    void Advance(std::uint32_t diff, bool full)
++    {
++        _time += diff;
++        _diff = diff;
++        if (full)
++        {
++            if (_started && _phase < 2) _compatible = false;
++            _started = true;
++            _phase = 0;
++        }
++        else if (_started && _phase < 3) ++_phase;
++    }
++
++    bool Compatible() const { return _compatible; }
++    bool Started() const { return _started; }
++    bool HasWork() const { return _started && _compatible && _phase < 3; }
++
++    std::optional<std::uint32_t> Due(std::uintptr_t key, std::uint64_t identity)
++    {
++        if (!HasWork()) return std::nullopt;
++        auto [itr, fresh] = _entries.try_emplace(key, Entry{identity, _time, unsigned(identity % 3)});
++        if (!fresh && itr->second.identity != identity)
++        {
++            itr->second = Entry{identity, _time, unsigned(identity % 3)};
++            fresh = true;
++        }
++        if (fresh) return _diff;
++        if (!HasWork() || itr->second.phase != _phase || itr->second.last == _time) return std::nullopt;
++        return Force(key);
++    }
++
++    std::uint32_t Force(std::uintptr_t key)
++    {
++        auto itr = _entries.find(key);
++        if (itr == _entries.end()) return _diff;
++        auto elapsed = std::min<std::uint64_t>(_time - itr->second.last, std::numeric_limits<std::uint32_t>::max());
++        itr->second.last = _time;
++        return std::uint32_t(elapsed);
++    }
++
++    void Forget(std::uintptr_t key) { _entries.erase(key); }
++    std::size_t Size() const { return _entries.size(); }
++
++private:
++    struct Entry { std::uint64_t identity, last; unsigned phase; };
++    std::unordered_map<std::uintptr_t, Entry> _entries;
++    std::uint64_t _time = 0;
++    std::uint32_t _diff = 0;
++    unsigned _phase = 3;
++    bool _started = false, _compatible = true;
++};
++
++#endif
+diff --git a/src/server/game/Spells/SpellBookRevision.h b/src/server/game/Spells/SpellBookRevision.h
+new file mode 100644
+--- /dev/null
++++ b/src/server/game/Spells/SpellBookRevision.h
+@@ -0,0 +1,44 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef SPELL_BOOK_REVISION_H
++#define SPELL_BOOK_REVISION_H
++
++#define COA_SPELL_BOOK_REVISION 1
++#include "DataMap.h"
++#include "Define.h"
++
++namespace SpellBookRevision
++{
++    AC_GAME_API bool TrackingEnabled();
++    AC_GAME_API void EnableTracking();
++    struct State : DataMap::Base { uint64 value = 1; };
++
++    inline uint64 Get(DataMap const& data)
++    {
++        auto state = data.Get<State>("spell_revision");
++        return state ? state->value : 0;
++    }
++
++    inline void Changed(DataMap& data)
++    {
++        if (!TrackingEnabled()) return;
++        ++data.GetDefault<State>("spell_revision")->value;
++    }
++}
++
++#endif
+diff --git a/src/server/game/Spells/SpellRankLookup.h b/src/server/game/Spells/SpellRankLookup.h
+new file mode 100644
+--- /dev/null
++++ b/src/server/game/Spells/SpellRankLookup.h
+@@ -0,0 +1,51 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef SPELL_RANK_LOOKUP_H
++#define SPELL_RANK_LOOKUP_H
++
++#include "SpellInfo.h"
++#include "SpellMgr.h"
++#include <optional>
++#define COA_SPELL_RANK_METADATA_EPOCH 1
++
++namespace SpellRankLookup
++{
++    AC_GAME_API uint64 MetadataEpoch();
++    AC_GAME_API void MetadataChanged();
++
++    inline SpellChainNode const* Find(SpellInfoMap const& store, SpellChainMap const& chains, uint32 id, bool direct)
++    {
++        if (direct)
++            return id < store.size() && store[id] ? store[id]->ChainEntry : nullptr;
++        auto itr = chains.find(id);
++        return itr != chains.end() ? &itr->second : nullptr;
++    }
++
++    inline std::optional<uint32> FirstInconsistent(SpellInfoMap const& store, SpellChainMap const& chains)
++    {
++        for (auto const& [id, node] : chains)
++            if (id >= store.size() || !store[id] || store[id]->ChainEntry != &node)
++                return id;
++        for (uint32 id = 0; id < store.size(); ++id)
++            if (store[id] && store[id]->ChainEntry && Find(store, chains, id, false) != store[id]->ChainEntry)
++                return id;
++        return std::nullopt;
++    }
++}
++
++#endif
+diff --git a/src/server/game/Time/WorldEntityProfiler.h b/src/server/game/Time/WorldEntityProfiler.h
+new file mode 100644
+--- /dev/null
++++ b/src/server/game/Time/WorldEntityProfiler.h
+@@ -0,0 +1,46 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef WORLD_ENTITY_PROFILER_H
++#define WORLD_ENTITY_PROFILER_H
++
++#include "Config.h"
++#include "UpdateTime.h"
++#include <algorithm>
++#include <memory>
++
++namespace WorldEntityProfiler
++{
++    inline std::unique_ptr<WorldUpdateTime::PhaseScope> Sample(char const* name)
++    {
++        static uint32 const rate = []
++        {
++            uint32 configured = sConfigMgr->GetOption<uint32>("World.Performance.EntitySampleRate", 0);
++            return configured ? std::clamp(configured, 64u, 65536u) : 0u;
++        }();
++        if (!rate) return {};
++        thread_local uint32 state = 0x9e3779b9u;
++        state ^= state << 13;
++        state ^= state >> 17;
++        state ^= state << 5;
++        if (state % rate) return {};
++        return std::unique_ptr<WorldUpdateTime::PhaseScope>(
++            new WorldUpdateTime::PhaseScope(sWorldUpdateTime.MeasurePhase(name)));
++    }
++}
++
++#endif
+diff --git a/src/server/game/Time/WorldTickObserver.h b/src/server/game/Time/WorldTickObserver.h
+new file mode 100644
+--- /dev/null
++++ b/src/server/game/Time/WorldTickObserver.h
+@@ -0,0 +1,31 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef WORLD_TICK_OBSERVER_H
++#define WORLD_TICK_OBSERVER_H
++
++#include "Define.h"
++
++// Registered and invoked on the world thread. The period is measured between update starts.
++namespace WorldTickObserver
++{
++    using Observer = void (*)(uint64);
++    AC_GAME_API void SetPeriodObserver(Observer observer);
++    AC_GAME_API void UpdateStarted();
++}
++
++#endif
+diff --git a/src/test/server/game/Spells/SpellBookRevisionTest.cpp b/src/test/server/game/Spells/SpellBookRevisionTest.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/test/server/game/Spells/SpellBookRevisionTest.cpp
+@@ -0,0 +1,40 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "SpellBookRevision.h"
++#include "SpellRankLookup.h"
++#include <gtest/gtest.h>
++
++TEST(SpellBookRevision, StructuralChangesAdvancePerPlayerState)
++{
++    DataMap first, second;
++    SpellBookRevision::EnableTracking();
++    EXPECT_EQ(SpellBookRevision::Get(first), 0u);
++    SpellBookRevision::Changed(first);
++    auto learned = SpellBookRevision::Get(first);
++    EXPECT_GT(learned, 0u);
++    SpellBookRevision::Changed(first);
++    EXPECT_GT(SpellBookRevision::Get(first), learned);
++    EXPECT_EQ(SpellBookRevision::Get(second), 0u);
++}
++
++TEST(SpellBookRevision, MetadataChangesAdvanceSharedEpoch)
++{
++    auto before = SpellRankLookup::MetadataEpoch();
++    SpellRankLookup::MetadataChanged();
++    EXPECT_GT(SpellRankLookup::MetadataEpoch(), before);
++}
+diff --git a/src/test/server/game/Spells/SpellRankLookupTest.cpp b/src/test/server/game/Spells/SpellRankLookupTest.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/test/server/game/Spells/SpellRankLookupTest.cpp
+@@ -0,0 +1,62 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "SpellRankLookup.h"
++#include "SpellInfoTestHelper.h"
++#include <gtest/gtest.h>
++#include <limits>
++
++TEST(SpellRankLookup, NativeAndDirectAgreeAcrossReloadAndMissingMetadata)
++{
++    auto first = SpellInfoBuilder().WithId(1).BuildUnique();
++    auto last = SpellInfoBuilder().WithId(2).BuildUnique();
++    auto standalone = SpellInfoBuilder().WithId(3).BuildUnique();
++    SpellInfoMap store{nullptr, first.get(), last.get(), standalone.get()};
++    SpellChainMap chains;
++    auto populate = [&]
++    {
++        chains[1] = {nullptr, last.get(), first.get(), last.get(), 1};
++        chains[2] = {first.get(), nullptr, first.get(), last.get(), 2};
++        first->ChainEntry = &chains.at(1);
++        last->ChainEntry = &chains.at(2);
++    };
++    auto compare = [&]
++    {
++        EXPECT_FALSE(SpellRankLookup::FirstInconsistent(store, chains));
++        for (uint32 id : {0u, 1u, 2u, 3u, 4u, std::numeric_limits<uint32>::max()})
++            EXPECT_EQ(SpellRankLookup::Find(store, chains, id, true),
++                SpellRankLookup::Find(store, chains, id, false));
++    };
++    populate();
++    compare();
++    EXPECT_EQ(SpellRankLookup::Find(store, chains, 1, true)->last, last.get());
++    first->ChainEntry = nullptr;
++    EXPECT_EQ(SpellRankLookup::FirstInconsistent(store, chains), 1u);
++    first->ChainEntry = &chains.at(1);
++    store[2] = nullptr;
++    EXPECT_EQ(SpellRankLookup::FirstInconsistent(store, chains), 2u);
++    store[2] = last.get();
++    standalone->ChainEntry = first->ChainEntry;
++    EXPECT_EQ(SpellRankLookup::FirstInconsistent(store, chains), 3u);
++    standalone->ChainEntry = nullptr;
++    first->ChainEntry = last->ChainEntry = nullptr;
++    chains.clear();
++    compare();
++    populate();
++    compare();
++    first->ChainEntry = last->ChainEntry = nullptr;
++}
+diff --git a/src/test/server/game/Time/InterleavedUpdateClockTest.cpp b/src/test/server/game/Time/InterleavedUpdateClockTest.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/test/server/game/Time/InterleavedUpdateClockTest.cpp
+@@ -0,0 +1,89 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "InterleavedUpdateClock.h"
++#include <gtest/gtest.h>
++#include <array>
++
++TEST(InterleavedUpdateClock, SpreadsSteadyWorkAndPreservesElapsedTime)
++{
++    InterleavedUpdateClock clock;
++    std::array<unsigned, 3> calls{}, elapsed{};
++    for (unsigned frame = 0; frame < 30; ++frame)
++    {
++        clock.Advance(10, frame % 3 == 0);
++        unsigned steadyCalls = 0;
++        for (unsigned key = 0; key < 3; ++key)
++            if (auto diff = clock.Due(key, key))
++            {
++                ++calls[key]; elapsed[key] += *diff;
++                if (frame >= 3) { ++steadyCalls; EXPECT_EQ(*diff, 30u); }
++                EXPECT_FALSE(clock.Due(key, key));
++            }
++        if (frame >= 3) EXPECT_EQ(steadyCalls, 1u);
++    }
++    EXPECT_TRUE(clock.Compatible());
++    EXPECT_EQ(elapsed[0], 280u);
++    EXPECT_EQ(elapsed[1], 290u);
++    EXPECT_EQ(elapsed[2], 300u);
++}
++
++TEST(InterleavedUpdateClock, DoesNotUpdateDuringIdleCycleAndHandlesLifecycle)
++{
++    InterleavedUpdateClock clock;
++    clock.Advance(10, true);
++    EXPECT_EQ(clock.Due(5, 5), 10u);
++    clock.Advance(10, false); clock.Advance(10, false); clock.Advance(10, false);
++    EXPECT_FALSE(clock.HasWork());
++    EXPECT_FALSE(clock.Due(5, 5));
++    clock.Forget(5);
++    EXPECT_EQ(clock.Size(), 0u);
++    clock.Advance(10, true);
++    EXPECT_EQ(clock.Due(5, 8), 10u);
++    clock.Advance(10, false);
++    EXPECT_EQ(clock.Due(5, 11), 10u);
++}
++
++TEST(InterleavedUpdateClock, RejectsUnexpectedFullUpdateCadence)
++{
++    InterleavedUpdateClock clock;
++    clock.Advance(10, true);
++    clock.Advance(10, true);
++    EXPECT_FALSE(clock.Compatible());
++    EXPECT_FALSE(clock.HasWork());
++}
++
++TEST(InterleavedUpdateClock, IrregularTicksDoNotLoseOrReplayElapsedTime)
++{
++    InterleavedUpdateClock clock;
++    std::array<unsigned, 3> elapsed{};
++    unsigned time = 0;
++    for (unsigned frame = 0; frame < 60; ++frame)
++    {
++        unsigned diff = 1 + (frame * 73) % 250;
++        time += diff;
++        clock.Advance(diff, frame % 3 == 0);
++        for (unsigned key = 0; key < 3; ++key)
++            if (auto due = clock.Due(key, key))
++            {
++                elapsed[key] += *due;
++                EXPECT_EQ(elapsed[key], time);
++                EXPECT_FALSE(clock.Due(key, key));
++            }
++    }
++    EXPECT_TRUE(clock.Compatible());
++}
