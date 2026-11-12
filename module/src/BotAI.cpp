@@ -28,6 +28,9 @@
  */
 
 #include "BotAI.h"
+#include "dungeon/DcNeverTargetRegistry.h"
+#include "dungeon/DungeonRoster.h"
+#include "dungeon/DungeonRuntime.h"
 #include "BotSpecStats.h"
 #include "AscensionCollectibleSpellData.h"
 #include "BotClassRotations.h"
@@ -65,6 +68,7 @@
 #include "engine/ThreatEvaluator.h"
 #include "ClassSpecRoles.h"
 #include "CombatManager.h"
+#include "StringFormat.h"
 #include "Config.h"
 #include "Bag.h"
 #include "CellImpl.h"
@@ -108,6 +112,7 @@
 #include "CharmInfo.h"
 #include "PetitionMgr.h"
 #include "Player.h"
+#include "InstanceScript.h"
 #include "PlayerScript.h"
 #include "QuestDef.h"
 #include "ScriptMgr.h"
@@ -1724,6 +1729,9 @@ public:
             return false;
         if (IsIgnoredTarget(_me->GetGUID(), u->GetGUID()))
             return false;
+        // Creatures a dungeon run must never go after (scripted never to die, encounter staging, endless respawns): dungeon/DcNeverTargetRegistry.h.
+        if (u->GetMap() && u->GetMap()->IsDungeon() && DcNeverTargetRegistry::IsNeverTarget(u->GetMapId(), u->GetEntry(), u->GetPositionX(), u->GetPositionY()))
+            return false;
         if (u->GetLevel() > _maxLevel)
             return false;
         // Training/practice dummies -- every creature using the `npc_training_dummy` AI script
@@ -2023,9 +2031,9 @@ bool TryRestIfNeeded(Player* bot, uint32 diff, BotRole role, BotAIState& state)
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         state.isResting = true;
 
-        if (needsHp && !bot->HasAura(433))
+        if (needsHp && !BotEconomy::HasRestAura(bot, true))
             BotEconomy::StartRestAura(bot, true);
-        if (needsMana && !bot->HasAura(431))
+        if (needsMana && !BotEconomy::HasRestAura(bot, false))
             BotEconomy::StartRestAura(bot, false);
 
         return true;
@@ -2037,15 +2045,14 @@ bool TryRestIfNeeded(Player* bot, uint32 diff, BotRole role, BotAIState& state)
     if (doneHp && doneMana)
     {
         bot->SetStandState(UNIT_STAND_STATE_STAND);
-        bot->RemoveAurasDueToSpell(433);
-        bot->RemoveAurasDueToSpell(431);
+        BotEconomy::StopRestAuras(bot);
         state.isResting = false;
         return false;
     }
 
-    if (hpPct < endHpPct && !bot->HasAura(433))
+    if (hpPct < endHpPct && !BotEconomy::HasRestAura(bot, true))
         BotEconomy::StartRestAura(bot, true);
-    if (usesMana && manaPct < endManaPct && !bot->HasAura(431))
+    if (usesMana && manaPct < endManaPct && !BotEconomy::HasRestAura(bot, false))
         BotEconomy::StartRestAura(bot, false);
 
     return true;
@@ -2158,6 +2165,7 @@ std::string AutoDungeonWaitReason(Player* tank, Group* group)
     float const hpLimit = st.waiting ? 90.0f : 70.0f;
 
     std::string reason;
+    Player* straggler = nullptr;
     for (GroupReference const* ref = group->GetFirstMember(); ref && reason.empty(); ref = ref->next())
     {
         Player* member = ref->GetSource();
@@ -2167,7 +2175,10 @@ std::string AutoDungeonWaitReason(Player* tank, Group* group)
         if (!member->IsAlive())
             reason = member->GetName() + " is dead and on the way back";
         else if (member->GetMap() != tank->GetMap() || tank->GetDistance(member) > farLimit)
+        {
             reason = member->GetName() + " is too far behind";
+            straggler = member;
+        }
         else if (member->getPowerType() == POWER_MANA && member->GetMaxPower(POWER_MANA) > 0 &&
                  member->GetPower(POWER_MANA) * 100.0f / member->GetMaxPower(POWER_MANA) < manaLimit)
             reason = member->GetName() + " is low on mana";
@@ -2183,6 +2194,16 @@ std::string AutoDungeonWaitReason(Player* tank, Group* group)
     if (!st.waiting)
     {
         st.waiting = true;
+        st.sinceMs = now;
+    }
+    else if (straggler && now - st.sinceMs > 45000 && straggler->GetMap() == tank->GetMap())
+    {
+        // A member that has been left behind for good (it died and came back at the entrance, or lost the way) is called to the tank, the way
+        // a meeting stone or a summon would: waiting for it costs two and a half minutes every few minutes of the run. Soak test: Blood Furnace.
+        LOG_INFO("module.coa-playerbots", "AutoDungeon: tank '{}' calls '{}' to the group ({:.0f} yd behind; it stands at {:.0f} {:.0f} {:.0f}, the tank at {:.0f} {:.0f} {:.0f}, teleport pending {}).",
+            tank->GetName(), straggler->GetName(), tank->GetDistance(straggler), straggler->GetPositionX(), straggler->GetPositionY(), straggler->GetPositionZ(),
+            tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), straggler->IsBeingTeleported());
+        straggler->NearTeleportTo(tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ() + 0.5f, straggler->GetOrientation());
         st.sinceMs = now;
     }
     else if (now - st.sinceMs > 150000)
@@ -2250,6 +2271,8 @@ bool RunToTankIfTargeted(Player* bot)
 // bosses near a decision boundary and wedge the tank between competing routes. Released the
 // instant the committed boss stops being a candidate (cleared, or no longer present).
 std::unordered_map<ObjectGuid, uint64> _autoDungeonCommittedBoss;
+// The last reason TryAutoPullInInstance gave for a tank (for the training probe, which reads it without waiting for a log line).
+std::unordered_map<ObjectGuid, std::string> _autoDungeonLastNote;
 
 // Bosses a group could not get to, per group leader and spawn id: the game time (ms) until which the next-boss choice leaves them out. Without it
 // the choice went straight back to the same boss in encounter order and the group stood at the same dead end (soak test: Gnomeregan, Scholomance,
@@ -2309,6 +2332,102 @@ bool IsDungeonFullyCleared(Map* map, Player* leader)
     return true;
 }
 
+// A fight that goes nowhere: the same creatures keep a group in combat, their health does not move and nobody of the group is hurt (a pack
+// that cannot be reached across water or a ledge, creatures that keep evading). Soak test: a group stood in such a fight in Blackfathom Deeps
+// for 42 minutes. After a long time without any change the group gives those creatures up for five minutes and drops the combat.
+struct StalemateWatch
+{
+    uint32 lastTickMs = 0;
+    uint32 lastProgressMs = 0;
+    float lastMobHp = -1.0f;
+    float lastMemberHp = -1.0f;
+};
+std::unordered_map<ObjectGuid, StalemateWatch> s_stalemate;
+constexpr uint32 STALEMATE_MS = 150 * 1000;
+constexpr uint32 STALEMATE_BOSS_MS = 420 * 1000;
+
+void BreakGroupStalemate(Player* tank, Group* group)
+{
+    uint32 const now = getMSTime();
+    StalemateWatch& w = s_stalemate[group->GetGUID()];
+    if (!w.lastProgressMs || now - w.lastTickMs > 8000)
+    {
+        w = StalemateWatch{};
+        w.lastProgressMs = now;
+    }
+    w.lastTickMs = now;
+
+    std::vector<Unit*> mobs;
+    float memberHp = 0.0f;
+    bool boss = false;
+    auto addMob = [&](Unit* u)
+    {
+        if (!u || !u->IsAlive() || u->GetTypeId() != TYPEID_UNIT || std::find(mobs.begin(), mobs.end(), u) != mobs.end())
+            return;
+        mobs.push_back(u);
+        if (Creature* c = u->ToCreature(); c && (c->IsDungeonBoss() || c->isWorldBoss()))
+            boss = true;
+    };
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || !member->IsAlive() || member->GetMapId() != tank->GetMapId())
+            continue;
+        memberHp += float(member->GetHealth());
+        for (Unit* attacker : member->getAttackers())
+            addMob(attacker);
+        addMob(member->GetVictim());
+        // Creatures the member is in combat with without being attacked or attacking (behind a gate, out of reach, evading): they keep the group
+        // "in combat" all the same. Soak test: a group stood in such a fight in the Nexus for 38 minutes.
+        for (auto const& [guid, combatRef] : member->GetCombatManager().GetPvECombatRefs())
+            if (combatRef)
+                addMob(combatRef->GetOther(member));
+    }
+    if (mobs.empty())
+    {
+        w.lastProgressMs = now;
+        w.lastMobHp = -1.0f;
+        return;
+    }
+    float mobHp = 0.0f;
+    for (Unit* m : mobs)
+        mobHp += float(m->GetHealth());
+
+    bool const moved = w.lastMobHp < 0.0f || std::fabs(mobHp - w.lastMobHp) > 0.01f * w.lastMobHp || memberHp < w.lastMemberHp * 0.97f;
+    if (moved)
+    {
+        w.lastProgressMs = now;
+        w.lastMobHp = mobHp;
+        w.lastMemberHp = memberHp;
+        return;
+    }
+    if (now - w.lastProgressMs < (boss ? STALEMATE_BOSS_MS : STALEMATE_MS))
+        return;
+
+    std::string names;
+    for (Unit* m : mobs)
+        names += Acore::StringFormat("{}({}) at {:.0f},{:.0f},{:.0f} {:.0f}yd; ", m->GetName(), m->GetEntry(), m->GetPositionX(), m->GetPositionY(), m->GetPositionZ(), tank->GetExactDist(m));
+    LOG_WARN("module.coa-playerbots.dungeon", "Group of '{}': a fight with {} creature(s) made no progress for {} s; breaking it off: {}", tank->GetName(), mobs.size(),
+        (now - w.lastProgressMs) / 1000, names);
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member)
+            continue;
+        for (Unit* m : mobs)
+            IgnoreTargetFor(member->GetGUID(), m->GetGUID(), 300000);
+        member->AttackStop();
+        BotMovement::ForceStopOwner(member, MoveOwner::Combat);
+    }
+    for (Unit* m : mobs)
+    {
+        m->CombatStop(true);
+        if (Creature* c = m->ToCreature(); c && c->AI())
+            c->AI()->EnterEvadeMode();
+    }
+    w = StalemateWatch{};
+}
+
 // Opt-in "Auto Dungeon Mode" (BotMgr::SetAutoDungeonMode, toggled via .botcmd autodungeon on/off
 // or the addon's AUTODUNGEON verb) lets a Tank bot run point through an instance on its own.
 // It engages nearby hostile packs and pathfinds sequentially to uncleared bosses using real
@@ -2320,6 +2439,7 @@ void TryAutoPullInInstance(Player* bot)
     auto note = [bot](char const* reason)
     {
         static std::unordered_map<ObjectGuid, std::pair<std::string, uint32>> last;
+        _autoDungeonLastNote[bot->GetGUID()] = reason;
         auto& entry = last[bot->GetGUID()];
         uint32 now = getMSTime();
         if (entry.first == reason && now - entry.second < 5000)
@@ -2331,12 +2451,22 @@ void TryAutoPullInInstance(Player* bot)
     Group* group = bot->GetGroup();
     if (!group)
         return;
+    bool const isPointRunnerTank = BotAI::GetRole(bot->GetGUID()) == BotRole::Tank;
 
     Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
     if (!leader)
         return note("group leader not found");
     if (leader->IsInCombat())
+    {
+        if (isPointRunnerTank && DungeonRuntime::Enabled())
+        {
+            Map* combatMap = bot->GetMap();
+            if (combatMap && (combatMap->IsDungeon() || combatMap->IsRaid()) && DungeonRuntime::AdvanceInCombat(bot, group))
+                return note("driving a wave event in combat");
+            BreakGroupStalemate(bot, group);
+        }
         return note("leader is in combat, waiting");
+    }
 
     Map* map = bot->GetMap();
     if (!map || (!map->IsDungeon() && !map->IsRaid()))
@@ -2350,7 +2480,8 @@ void TryAutoPullInInstance(Player* bot)
     if (!isPointRunner)
         return;
 
-    if (IsDungeonFullyCleared(map, leader))
+    bool const rosterDriven = DungeonRuntime::Enabled() && DungeonRuntime::HasRoster(map, bot);
+    if (rosterDriven ? DungeonRuntime::IsCleared(map, bot) : IsDungeonFullyCleared(map, leader))
     {
         note("every boss on this map counts as cleared");
         if (sBotMgr->IsAutoDungeonModeEnabled(leader->GetGUID()))
@@ -2405,6 +2536,74 @@ void TryAutoPullInInstance(Player* bot)
             }
         }
 
+        // Baron Rivendare (Stratholme): his SmartAI shuts the door of his room (spawn 35848, at 4033 -3365) the moment he is engaged, and whoever stands
+        // outside is locked out of the fight; he also resets when the fight drifts toward the hall. So the party is pulled from INSIDE the room, all
+        // of it: the tank walks in to the first yards behind the door (26 yd short of him, outside his own aggro), everybody follows, and only then
+        // is he pulled (60 s at most, so one member that cannot get in does not hold the run).
+        if (target->GetTypeId() == TYPEID_UNIT && target->GetEntry() == 10440 && bot->GetMapId() == 329)
+        {
+            constexpr float STAGE_X = 4033.0f, STAGE_Y = -3354.0f, STAGE_Z = 115.5f;
+            constexpr float INSIDE_Y = -3363.0f;  // the door line is at -3365: a member has to be two yards past it
+            static std::unordered_map<ObjectGuid, uint32> baronGatherSince;
+            static std::unordered_map<ObjectGuid, uint32> baronReleasedUntil;
+            uint32& since = baronGatherSince[bot->GetGUID()];
+            uint32& released = baronReleasedUntil[bot->GetGUID()];
+            bool allInside = bot->GetPositionY() > INSIDE_Y || (released && int32(released - now) > 0);
+            for (GroupReference const* ref = group->GetFirstMember(); ref && allInside; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member != bot && member->IsAlive() && member->GetMapId() == bot->GetMapId() &&
+                    (member->GetPositionY() <= INSIDE_Y || member->GetDistance(bot) > 14.0f))
+                    allInside = false;
+            if (!allInside && since && now - since >= 60000)
+                released = now + 180000;  // waited long enough: pull, and do not wait again for three minutes
+            if (!allInside && !(released && int32(released - now) > 0) && (!since || now - since < 60000))
+            {
+                if (!since)
+                    since = now;
+                // Ten seconds at the door and still not all in (the hall behind keeps sending skeletons at the stragglers): the party is put in the
+                // room, on the staging point, the way a summon does it.
+                if (now - since > 10000 && bot->GetExactDist2d(STAGE_X, STAGE_Y) < 40.0f)
+                {
+                    LOG_INFO("module.coa-playerbots", "AutoDungeon: tank '{}' and the group are moved into Baron's room.", bot->GetName());
+                    for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+                        if (Player* member = ref->GetSource(); member && member->IsAlive() && member->IsInWorld() && member->GetMapId() == bot->GetMapId())
+                            member->NearTeleportTo(STAGE_X + frand(-2.5f, 2.5f), STAGE_Y + frand(-1.5f, 1.5f), STAGE_Z, member->GetOrientation());
+                    since = now - 5000;
+                    return;
+                }
+                // The tank goes well in, so that the members trailing it stand inside too.
+                if (bot->GetPositionY() < STAGE_Y - 2.0f && bot->GetExactDist(STAGE_X, STAGE_Y, STAGE_Z) > 3.0f)
+                    BotMovement::MoveTo(bot, MoveOwner::AutoDungeon, STAGE_X, STAGE_Y, STAGE_Z);
+                else
+                    BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
+                note("gathering the group inside Baron's room");
+                return;
+            }
+            since = 0;
+        }
+
+        // Baron Rivendare (Stratholme) shuts the door of his room behind the party at the pull and resets when the fight drifts out of it.
+        // Loken (Halls of Lightning) shocks everybody for more the FARTHER they stand from him (Pulsing Shockwave), from the moment he is pulled: a
+        // group that trails the tank by sixty yards dies on the way up while the tank fights. He is not pulled until everybody is at the tank
+        // (45 s at most, so one member that cannot get there does not hold the run).
+        if (target->GetTypeId() == TYPEID_UNIT && target->GetEntry() == 28923)
+        {
+            static std::unordered_map<ObjectGuid, uint32> gatherSince;
+            uint32& since = gatherSince[bot->GetGUID()];
+            bool allClose = true;
+            for (GroupReference const* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member != bot && member->IsAlive() && member->GetMapId() == bot->GetMapId() && member->GetDistance(bot) > 12.0f)
+                    allClose = false;
+            if (!allClose && (!since || now - since < 45000))
+            {
+                if (!since)
+                    since = now;
+                BotMovement::ForceReleaseOwner(bot, MoveOwner::AutoDungeon);
+                note("gathering the group before Loken");
+                return;
+            }
+            since = 0;
+        }
+
         // 3. Evaluate group pull readiness
         BotAI::PullReadinessInfo pullInfo = BotAI::SpecStrategyRegistry::EvaluateGroupPullReadiness(bot, group);
         if (!pullInfo.IsReady())
@@ -2434,7 +2633,14 @@ void TryAutoPullInInstance(Player* bot)
         return;
     }
 
-    // 2. Head toward the next uncleared dungeon encounter boss, in real encounter order where
+    // 2. The roster-driven path: scripted events, objectives, wings, room clears (dungeon/DungeonRuntime.cpp).
+    if (rosterDriven)
+    {
+        DungeonRuntime::Advance(bot, group, note);
+        return;
+    }
+
+    // 2b. Fallback for a map without a roster: head toward the next uncleared dungeon encounter boss, in real encounter order where
     // that data exists (BotDungeonEncounters, backed by the same DungeonEncounter/DBC data the
     // client tracks), falling back to nearest-distance only for a boss with no encounter row at
     // all (a plain CREATURE_FLAG_EXTRA_DUNGEON_BOSS flag with nothing formally tracked).
@@ -4418,6 +4624,9 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
         profileRole == BotRole::Dps)
         engageProfile.preferredDist = 20.0f;
     float preferredDist = engageProfile.preferredDist;
+    // A boss that hurts more the FARTHER a player stands from him (Loken's Pulsing Shockwave): everybody fights on him, casters and healers too.
+    if (target->GetTypeId() == TYPEID_UNIT && target->GetEntry() == 28923)
+        preferredDist = std::min(preferredDist, 8.0f);
     float distance = bot->GetDistance(target);
 
     // Positioning is handled once, up front, independent of whatever ends up castable this
@@ -5367,6 +5576,22 @@ void DungeonProgress(Map* map, Player* leader, uint32& total, uint32& done)
     total = done = 0;
     if (!map || !leader)
         return;
+    if (DungeonRuntime::Enabled())
+    {
+        // The roster knows the wing the group is in; bosses and objectives together are what the run has to get through (a dungeon whose
+        // encounters are all events, like the Culling of Stratholme, has no boss row at all).
+        // Same rule as the run's own "cleared" test (DungeonRoster::Remaining): an anchor left out on purpose (Maraudon's Rotgrip) or whose gate creature
+        // already stands (an objective that turned into its boss) is not part of the clear, so a finished run reads N/N.
+        for (DungeonBossInfo const& anchor : DungeonRoster::Full(map, leader))
+            if (!anchor.skipByDesign)
+                ++total;
+        if (total)
+        {
+            uint32 const left = uint32(DungeonRoster::Remaining(map, leader, ObjectGuid::Empty).size());
+            done = total > left ? total - left : 0;
+            return;
+        }
+    }
     for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
     {
         if (data.mapid != map->GetId())
@@ -5396,6 +5621,48 @@ std::string DebugState(Player* bot)
         " gen=" + std::to_string(int(bot->GetMotionMaster()->GetCurrentMovementGeneratorType())) +
         " cmb=" + std::to_string(bot->IsInCombat()) + " cast=" + std::to_string(bot->IsNonMeleeSpellCast(false)) +
         " stand=" + std::to_string(int(bot->getStandState())) + " mnt=" + std::to_string(bot->IsMounted());
+    if (auto note = _autoDungeonLastNote.find(bot->GetGUID()); note != _autoDungeonLastNote.end())
+        out += " note='" + note->second + "'";
+    if (Group* group = bot->GetGroup(); group && bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
+        out += " " + DungeonRuntime::Describe(bot, group);
+    // The nearest live creatures and why the pull scan would take them or not (a boss the tank stands next to and never attacks).
+    if (bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
+    {
+        std::list<Creature*> closeBy;
+        bot->GetDeadCreatureListInGrid(closeBy, 60.0f, false);
+        closeBy.remove_if([bot](Creature* c) { return !c || !c->IsAlive(); });
+        closeBy.sort([bot](Creature* a, Creature* b) { return bot->GetExactDist(a) < bot->GetExactDist(b); });
+        uint32 shown = 0;
+        for (Creature* c : closeBy)
+        {
+            if (shown++ >= 4)
+                break;
+            out += " | near '" + c->GetName() + "'(" + std::to_string(c->GetEntry()) + ") d=" + std::to_string(int(bot->GetExactDist(c))) +
+                " valid=" + std::to_string(bot->IsValidAttackTarget(c)) + " ign=" + std::to_string(IsIgnoredTarget(bot->GetGUID(), c->GetGUID())) +
+                " never=" + std::to_string(DcNeverTargetRegistry::IsNeverTarget(c->GetMapId(), c->GetEntry(), c->GetPositionX(), c->GetPositionY())) +
+                " los=" + std::to_string(bot->IsWithinLOSInMap(c)) + " uf=" + std::to_string(c->GetUInt32Value(UNIT_FIELD_FLAGS)) +
+                " cmb=" + std::to_string(c->IsInCombat()) + " evade=" + std::to_string(c->IsInEvadeMode()) + " z=" + std::to_string(int(c->GetPositionZ())) +
+                " mv=" + std::to_string(c->isMoving()) + " npcf=" + std::to_string(c->GetUInt32Value(UNIT_NPC_FLAGS));
+        }
+    }
+    // Who keeps a bot in combat, and what hurts it: combat references, attackers and harmful auras.
+    if (bot->IsInCombat())
+    {
+        out += " | combat with:";
+        uint32 listed = 0;
+        for (auto const& pair : bot->GetCombatManager().GetPvECombatRefs())
+            if (Unit* other = pair.second->GetOther(bot); other && listed++ < 6)
+                out += " '" + other->GetName() + "'(" + std::to_string(other->GetEntry()) + ")" + (other->IsAlive() ? "" : "dead");
+        out += " attackers=" + std::to_string(bot->getAttackers().size()) + " victim=" + (bot->GetVictim() ? bot->GetVictim()->GetName() : std::string("-"));
+        out += " auras:";
+        uint32 shownAuras = 0;
+        for (auto const& pair : bot->GetAppliedAuras())
+        {
+            Aura const* aura = pair.second->GetBase();
+            if (aura && !pair.second->IsPositive() && shownAuras++ < 6)
+                out += " " + std::to_string(aura->GetId()) + (aura->GetCaster() ? "<" + aura->GetCaster()->GetName() + ">" : std::string());
+        }
+    }
     return out;
 }
 
@@ -5432,6 +5699,53 @@ void Update(Player* bot, uint32 diff)
         return;
 
     BotMovement::Update(bot, diff);
+
+    // "In combat" with nobody: a dungeon creature that cannot be attacked (Utgarde Pinnacle's Flame Breath Triggers, flagged not attackable, hostile
+    // and aggressive) keeps the whole party in combat for as long as it is near, and a tank in combat never goes on with the run. When nobody of the
+    // group has a victim or an attacker for ten seconds, the combat is ended; a creature that really fights the group is not affected.
+    // A bot that drops far below where it stood a moment ago has fallen through the floor or off a ledge: log where, and what drove it.
+    if (bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
+    {
+        static std::unordered_map<ObjectGuid, std::pair<uint32, float>> zSamples;
+        uint32 const sampleNow = getMSTime();
+        auto& sample = zSamples[bot->GetGUID()];
+        if (sampleNow - sample.first >= 1000)
+        {
+            if (sample.first && sampleNow - sample.first < 4000 && sample.second - bot->GetPositionZ() > 25.0f)
+                LOG_WARN("module.coa-playerbots.dungeon", "Fall: '{}' went from z {:.0f} to z {:.0f} within {} ms at ({:.0f}, {:.0f}), owner {}, mode {}, in combat {}, falling {}.", bot->GetName(),
+                    sample.second, bot->GetPositionZ(), sampleNow - sample.first, bot->GetPositionX(), bot->GetPositionY(), int(BotMovement::CurrentOwner(bot)),
+                    int(BotMovement::CurrentMode(bot)), bot->IsInCombat() ? 1 : 0, bot->IsFalling() ? 1 : 0);
+            if (sample.first && sampleNow - sample.first < 4000 && sample.second - bot->GetPositionZ() > 25.0f)
+                if (Group* fallGroup = bot->GetGroup())
+                    DungeonRuntime::NoteFall(fallGroup);
+            sample = { sampleNow, bot->GetPositionZ() };
+        }
+    }
+
+    // Skadi's gauntlet (data 2 of Utgarde Pinnacle in progress) is the exception: the party's combat with Skadi and his adds is what keeps the
+    // encounter alive, and ending it makes him evade and reset the whole fight.
+    bool const skadiRunning = bot->GetMapId() == 575 && bot->GetInstanceScript() && bot->GetInstanceScript()->GetData(2) == IN_PROGRESS;
+    if (!skadiRunning && bot->IsInCombat() && !bot->GetVictim() && bot->getAttackers().empty() && bot->GetMap() && (bot->GetMap()->IsDungeon() || bot->GetMap()->IsRaid()))
+    {
+        static std::unordered_map<ObjectGuid, uint32> idleCombatSince;
+        uint32& since = idleCombatSince[bot->GetGUID()];
+        bool fighting = false;
+        if (Group* staleGroup = bot->GetGroup())
+            for (GroupReference const* ref = staleGroup->GetFirstMember(); ref && !fighting; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member->IsAlive() && member->GetMapId() == bot->GetMapId() &&
+                    (member->GetVictim() || !member->getAttackers().empty()))
+                    fighting = true;
+        uint32 const nowMs = getMSTime();
+        if (fighting)
+            since = 0;
+        else if (!since)
+            since = nowMs;
+        else if (nowMs - since > 10000)
+        {
+            since = 0;
+            bot->GetCombatManager().EndAllPvECombat();
+        }
+    }
 
     uint8 currentLevel = bot->GetLevel();
     if (state.lastLevel == 0)

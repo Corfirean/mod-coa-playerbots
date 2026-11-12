@@ -1,6 +1,7 @@
 #include "training/TrainingArenaManager.h"
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "BotScaling.h"
 #include "BotTalentBuilds.h"
 #include "BotWorldBehavior.h"
 #include "WorldBrain.h"
@@ -87,10 +88,10 @@ public:
 
         CreatureTemplate const* cinfo = killer->GetCreatureTemplate();
         Group const* group = killed->GetGroup();
-        LOG_INFO("module.coa-playerbots", "BotDeath: '{}' (class {}, level {}, {} max hp) killed by '{}' (entry {}, level {}, rank {}, {} attackers) on map {} zone {} at ({:.0f} {:.0f} {:.0f}), group of {}, in combat {}.",
+        LOG_INFO("module.coa-playerbots", "BotDeath: '{}' (class {}, level {}, {} max hp) killed by '{}' (entry {}, level {}, rank {}, {} attackers) on map {} zone {} at ({:.0f} {:.0f} {:.0f}), group of {}, in combat {}. Last hits: {}",
             killed->GetName(), uint32(killed->getClass()), uint32(killed->GetLevel()), killed->GetMaxHealth(), killer->GetName(), killer->GetEntry(),
             uint32(killer->GetLevel()), cinfo ? uint32(cinfo->rank) : 0u, killed->getAttackers().size(), killed->GetMapId(), killed->GetZoneId(),
-            killed->GetPositionX(), killed->GetPositionY(), killed->GetPositionZ(), group ? group->GetMembersCount() : 1u, killed->IsInCombat());
+            killed->GetPositionX(), killed->GetPositionY(), killed->GetPositionZ(), group ? group->GetMembersCount() : 1u, killed->IsInCombat(), BotScaling::RecentHits(killed->GetGUID()));
     }
 
     void OnPlayerJustDied(Player* player) override

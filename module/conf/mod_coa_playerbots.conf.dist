@@ -577,3 +577,36 @@ BotAI.DynamicEncounters.Mystery.MorphDisplayId = 0
 BotAI.DynamicEncounters.Mystery.RuneGameObjectEntry = 0
 BotAI.DynamicEncounters.Mystery.SpellVisualId = 0
 
+###################################################################################################
+# Bot strength scaling (dungeons and raids)
+#
+#    Bots play with the gear and the rotation of a bot, which is weaker than a person at the same character. Instead of weakening
+#    the creatures, the bots get a configurable help while they are in dungeons and raids. Pets, totems and guardians of a bot count
+#    as the bot. The multipliers stack on top of the group scaling of the content scaling module. Scripted lethal mechanics
+#    (instant kills, percentage damage, huge scripted hits) are not scaled.
+#
+#    CoaBots.Scaling.Enable        Switch for everything below. Default 1.
+#    CoaBots.Scaling.Dungeons      Apply in 5-player dungeons. Default 1.
+#    CoaBots.Scaling.Raids         Apply in raids. Default 1.
+#    CoaBots.Scaling.Battlegrounds Apply in battlegrounds and arenas. Default 0.
+#    CoaBots.Scaling.World         Apply in the open world. Default 0.
+#    CoaBots.Scaling.DamageDone    Damage a bot deals to creatures (1 = unchanged). Default 1, range 0.1 to 10.
+#    CoaBots.Scaling.HealingDone   Healing a bot casts (1 = unchanged). Default 1, range 0.1 to 10.
+#    CoaBots.Scaling.DamageTaken   Damage creatures deal to a bot (below 1 = bots take less). Default 1, range 0.1 to 10.
+#    CoaBots.Scaling.TankThreat    Threat a bot tank generates (1 = unchanged). Default 1, range 1 to 10.
+#    CoaBots.Scaling.BossTuning    Extra multipliers for a few bosses that level 60 bots could not beat otherwise (Loken, Drakkari
+#                                  Elemental, Colossus and Gal'darah). Default 0.
+#
+#    Reloadable with .reload config (takes effect within a few seconds).
+###################################################################################################
+
+CoaBots.Scaling.Enable = 1
+CoaBots.Scaling.Dungeons = 1
+CoaBots.Scaling.Raids = 1
+CoaBots.Scaling.Battlegrounds = 0
+CoaBots.Scaling.World = 0
+CoaBots.Scaling.DamageDone = 1
+CoaBots.Scaling.HealingDone = 1
+CoaBots.Scaling.DamageTaken = 1
+CoaBots.Scaling.TankThreat = 1
+CoaBots.Scaling.BossTuning = 0

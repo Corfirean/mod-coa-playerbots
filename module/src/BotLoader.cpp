@@ -8,6 +8,7 @@ void AddSC_coa_bot_addon_chat_script();
 void AddSC_coa_bot_bg_fill_script();
 void AddSC_coa_bot_lfg_fill_script();
 void AddSC_coa_bot_petition_script();
+void AddSC_coa_bot_scaling_script();
 void AddSC_coa_bot_restore_group_script();
 void AddSC_coa_bot_leaderless_group_script();
 void AddSC_coa_bot_spellbook_script();
@@ -23,6 +24,7 @@ void Addmod_coa_playerbotsScripts()
     AddSC_coa_bot_bg_fill_script();
     AddSC_coa_bot_lfg_fill_script();
     AddSC_coa_bot_petition_script();
+    AddSC_coa_bot_scaling_script();
     AddSC_coa_bot_restore_group_script();
     AddSC_coa_bot_leaderless_group_script();
     AddSC_coa_bot_spellbook_script();

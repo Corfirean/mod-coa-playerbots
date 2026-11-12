@@ -378,6 +378,8 @@ bool BotAvoidance::HasCriticalBossMechanic(Player* bot, Unit* target)
     SpellInfo const* spellInfo = spell->GetSpellInfo();
     if (!spellInfo || !spellInfo->IsChanneled())
         return false;
+    if (spellInfo->GetDuration() <= 0 || spellInfo->GetDuration() > 12000)
+        return false;  // a channel for the whole fight (Loken's Pulsing Shockwave) is not something to stop casting for
 
     return HasCasterCenteredAreaEffect(spellInfo);
 }
@@ -455,7 +457,27 @@ bool BotAvoidance::TryAvoidBossTelegraphedAttacks(Player* bot, Unit* target)
         if (spell)
         {
             SpellInfo const* spellInfo = spell->GetSpellInfo();
-            if (spellInfo && (spellInfo->IsChanneled() || spell == boss->GetCurrentSpell(CURRENT_CHANNELED_SPELL)) &&
+            // A channel that lasts the whole fight (Loken's Pulsing Shockwave, 59414) cannot be walked out of: it hurts more the FARTHER a player
+            // stands from the boss, so the retreat below killed the bots that took it. Only the short channels are dodged.
+            bool const wholeFightChannel = spellInfo && (spellInfo->GetDuration() <= 0 || spellInfo->GetDuration() > 12000);
+            // A big burst around the boss with a cast time (Loken's Lightning Nova: 20 yd, "run away when the emote shows") is dodged by running
+            // out of its radius, which the 12 yd / 16 yd rule below would not do.
+            float burstRadius = 0.0f;
+            if (spellInfo && !wholeFightChannel && !spellInfo->IsChanneled() && spellInfo->CalcCastTime() >= 1500 && HasCasterCenteredAreaEffect(spellInfo))
+                for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                    if (spellInfo->Effects[i].TargetA.GetTarget() == TARGET_SRC_CASTER || spellInfo->Effects[i].TargetA.GetTarget() == TARGET_UNIT_SRC_AREA_ENEMY)
+                        burstRadius = std::max(burstRadius, spellInfo->Effects[i].CalcRadius(boss));
+            if (burstRadius >= 15.0f && burstRadius <= 45.0f && bot->GetDistance(boss) < burstRadius + 1.0f)
+            {
+                float dx = bot->GetPositionX() - boss->GetPositionX();
+                float dy = bot->GetPositionY() - boss->GetPositionY();
+                float dist = std::sqrt(dx * dx + dy * dy);
+                if (dist < 0.1f) { dx = 1.0f; dy = 0.0f; dist = 1.0f; }
+                if (BotMovement::MoveTo(bot, MoveOwner::Avoidance, boss->GetPositionX() + (dx / dist) * (burstRadius + 4.0f),
+                        boss->GetPositionY() + (dy / dist) * (burstRadius + 4.0f), boss->GetPositionZ()))
+                    return true;
+            }
+            if (spellInfo && !wholeFightChannel && (spellInfo->IsChanneled() || spell == boss->GetCurrentSpell(CURRENT_CHANNELED_SPELL)) &&
                 HasCasterCenteredAreaEffect(spellInfo) && bot->GetDistance(boss) < 12.0f)
             {
                 float dx = bot->GetPositionX() - boss->GetPositionX();
