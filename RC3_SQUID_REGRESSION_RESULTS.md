@@ -48,7 +48,7 @@ This document records the empirical results of the **Three-Configuration Regress
   - `CoaBots.AutoLoginOnStartup = 0`
   - `CoaBots.RandomSpawn.AutoLogin = 0`
   - `AiPlayerbot.Enabled = 1` (`AC_AI_PLAYERBOT_ENABLED=1`)
-  - `PlayerbotsDatabaseInfo = "127.0.0.1;64187;acore;61a1f4b8dc4742bc8681c747ae94bc8875f8a6e46517482f;acore_playerbots"`
+  - `PlayerbotsDatabaseInfo = "127.0.0.1;64187;acore;<redacted>;acore_playerbots"`
 - **Execution Evidence**:
   - `DatabasePool 'acore_playerbots'` opened successfully (2 total connections running).
   - SQUID configuration parser loaded 3,574 configuration lines in 3,223 ms.
