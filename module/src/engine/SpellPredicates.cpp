@@ -575,6 +575,17 @@ namespace BotAI
             if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
                 continue;
 
+            if (uint32 nextRank = sSpellMgr->GetNextSpellInChain(spellId))
+            {
+                auto nextItr = bot->GetSpellMap().find(nextRank);
+                if (nextItr != bot->GetSpellMap().end() && nextItr->second && nextItr->second->Active && nextItr->second->State != PLAYERSPELL_REMOVED)
+                    continue;
+            }
+
+            SpellInfo const* candidateInfo = sSpellMgr->GetSpellInfo(spellId);
+            if (!candidateInfo || candidateInfo->IsPassive() || !predicate(candidateInfo))
+                continue;
+
             uint32 first = sSpellMgr->GetFirstSpellInChain(spellId);
             uint32 highest = SpellResolver::ResolveSpell(bot, first ? first : spellId);
             if (highest != spellId)

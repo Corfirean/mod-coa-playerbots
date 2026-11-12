@@ -930,6 +930,8 @@ struct LevelItemCandidate
     uint32 itemLevel;
     uint32 entry;
     uint32 quality;
+    uint8 pvePower;
+    uint8 pvpPower;
 };
 
 // Index the already-loaded item templates once; repairing a bot never scans the item SQL table.
@@ -946,11 +948,14 @@ std::vector<LevelItemCandidate> const& CandidatePool(uint32 itemClass, uint32 su
                 item.Quality < ITEM_QUALITY_NORMAL || item.Quality > ITEM_QUALITY_EPIC ||
                 item.AllowableClass != uint32(-1) || item.RequiredSkill || item.RequiredSpell ||
                 item.RequiredHonorRank || item.RequiredCityRank || item.RequiredReputationFaction ||
-                item.Map || item.Area || item.HolidayId ||
+                item.Map || item.Area || item.HolidayId || BotAI::IsProfessionTool(&item) ||
                 (item.AllowableRace != uint32(-1) && (item.AllowableRace & 1791) != 1791))
                 continue;
+            if (!BotGear::HasValidNameAndDisplay(&item))
+                continue;
+            auto [pve, pvp] = BotGear::ItemPowers(&item);
             uint64 key = (uint64(item.Class) << 40) | (uint64(item.SubClass) << 24) | item.InventoryType;
-            cache[key].push_back({item.RequiredLevel, item.ItemLevel, entry, item.Quality});
+            cache[key].push_back({item.RequiredLevel, item.ItemLevel, entry, item.Quality, pve, pvp});
         }
     }
     uint64 key = (uint64(itemClass) << 40) | (uint64(subclass) << 24) | inventoryType;
@@ -986,16 +991,18 @@ std::vector<uint32> GearPool(Player* bot, uint32 itemClass, uint32 subclass, uin
     {
         for (LevelItemCandidate const& candidate : CandidatePool(itemClass, subclass, inventoryType))
             if (candidate.requiredLevel <= level && candidate.requiredLevel + window >= level &&
-                candidate.quality <= qualityCap && BotGear::Allowed(bot, sObjectMgr->GetItemTemplate(candidate.entry)))
+                candidate.quality <= qualityCap &&
+                BotGear::AllowedCandidate(bot, sObjectMgr->GetItemTemplate(candidate.entry), candidate.pvePower, candidate.pvpPower))
                 matches.push_back(candidate);
         if (!matches.empty())
             break;
     }
 
-    std::sort(matches.begin(), matches.end(), [bot](LevelItemCandidate const& a, LevelItemCandidate const& b)
+    bool const pvp = bot->InBattleground() || bot->InArena() || bot->GetPlayerSetting("coa.bot.gear", 0).value == 1;
+    std::sort(matches.begin(), matches.end(), [pvp](LevelItemCandidate const& a, LevelItemCandidate const& b)
     {
-        float aPower = BotGear::PowerScore(bot, sObjectMgr->GetItemTemplate(a.entry));
-        float bPower = BotGear::PowerScore(bot, sObjectMgr->GetItemTemplate(b.entry));
+        float aPower = (float(pvp ? a.pvpPower : a.pvePower) - float(pvp ? a.pvePower : a.pvpPower)) * 10.0f;
+        float bPower = (float(pvp ? b.pvpPower : b.pvePower) - float(pvp ? b.pvePower : b.pvpPower)) * 10.0f;
         if (aPower != bPower)
             return aPower > bPower;
         if (a.quality != b.quality)

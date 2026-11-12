@@ -370,13 +370,8 @@ BotMgr* BotMgr::instance()
 
 WorldSession* BotMgr::FindBotSession(ObjectGuid::LowType charLowGuid) const
 {
-    for (WorldSession* session : _botSessions)
-    {
-        if (Player* bot = session->GetPlayer())
-            if (bot->GetGUID().GetCounter() == charLowGuid)
-                return session;
-    }
-    return nullptr;
+    auto itr = _botSessionByLowGuid.find(charLowGuid);
+    return itr != _botSessionByLowGuid.end() ? itr->second : nullptr;
 }
 
 namespace
@@ -487,6 +482,7 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
     }
 
     _botSessions.push_back(botSession);
+    _botSessionByLowGuid[charLowGuid] = botSession;
     auto& callbacks = _pendingBotLogins[charLowGuid];
     if (onReady) callbacks.push_back(std::move(onReady));
 
@@ -2088,20 +2084,20 @@ void BotMgr::Kill(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
 
 void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
 {
-    auto itr = std::find_if(_botSessions.begin(), _botSessions.end(), [charLowGuid](WorldSession* session)
-    {
-        Player* bot = session->GetPlayer();
-        return bot && bot->GetGUID().GetCounter() == charLowGuid;
-    });
-
-    if (itr == _botSessions.end())
+    auto mapItr = _botSessionByLowGuid.find(charLowGuid);
+    if (mapItr == _botSessionByLowGuid.end())
     {
         if (handler)
             handler->PSendSysMessage("BotMgr: no active bot session for guid {}.", charLowGuid);
         return;
     }
 
-    WorldSession* session = *itr;
+    WorldSession* session = mapItr->second;
+    _botSessionByLowGuid.erase(mapItr);
+    auto itr = std::find(_botSessions.begin(), _botSessions.end(), session);
+    if (itr != _botSessions.end())
+        _botSessions.erase(itr);
+
     std::string name = session->GetPlayer() ? session->GetPlayer()->GetName() : "?";
 
     // Same shape as the failure-path cleanup already used in SpawnBot: LogoutPlayer
@@ -2111,7 +2107,6 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
 
     session->LogoutPlayer(true);
     delete session;
-    _botSessions.erase(itr);
     _aiWaitMs.erase(botGuid);
     CoaBotScheduling::Forget(botGuid);
     // Also drop it from the pending-teleport-ack queue if it's there -- otherwise
@@ -2127,6 +2122,7 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
 uint32 BotMgr::LogoutAllBots()
 {
     _pendingAutoLoginQueue.clear();
+    _botSessionByLowGuid.clear();
     uint32 saved = 0;
     // The sessions themselves are left alone: a login still in flight holds a pointer to its session, and the
     // process is about to end anyway.
@@ -3438,20 +3434,6 @@ void BotMgr::Update(uint32 diff)
     // lands, possibly ticks after whatever triggered it, so the caller cannot queue the ack itself.
     // Without one a null-socket bot stays IsBeingTeleported forever (see FinishPendingTeleport).
     // Queued here it is finished next tick, keeping the one-tick separation that function needs.
-    for (WorldSession* session : _botSessions)
-    {
-        Player* bot = session->GetPlayer();
-        if (!bot || !(bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar()))
-            continue;
-        if (std::find(_pendingTeleportAck.begin(), _pendingTeleportAck.end(), session) == _pendingTeleportAck.end())
-            _pendingTeleportAck.push_back(session);
-    }
-
-    // See QueueBotGroupLeave/the new GroupScript hook -- a real player leaving/being removed
-    // from a group with no other real player left in it means the remaining bots have no one
-    // left to command, so send each one through the same real "leave party" call a client's own
-    // button triggers (Player::RemoveFromGroup), letting them fall back to their normal
-    // idle/solo behavior (TryGrindWhenSolo etc.) instead of standing around in a bot-only group.
     if (!_pendingGroupLeaves.empty())
     {
         std::vector<ObjectGuid> due;
@@ -3467,13 +3449,17 @@ void BotMgr::Update(uint32 diff)
         }
     }
 
-    // Auto-accept: checked every tick, not throttled. A bot with a real Player
-    // and a pending group or guild invite accepts it immediately, same as a human would.
     for (WorldSession* session : _botSessions)
     {
         Player* bot = session->GetPlayer();
         if (!bot)
             continue;
+
+        if (bot->IsBeingTeleportedNear() || bot->IsBeingTeleportedFar())
+        {
+            if (std::find(_pendingTeleportAck.begin(), _pendingTeleportAck.end(), session) == _pendingTeleportAck.end())
+                _pendingTeleportAck.push_back(session);
+        }
 
         if (bot->GetGroupInvite())
         {
@@ -3487,53 +3473,34 @@ void BotMgr::Update(uint32 diff)
                 bot->GetName(), bot->GetGuildIdInvited());
             DoAcceptGuildInvite(session);
         }
-    }
 
-    // Cross-map/instance follow: checked every tick, throttled implicitly by
-    // TryFollowLeaderAcrossMaps' own early-out once map+instance already match. Keeps a bot
-    // with the group leader through dungeon/raid/BG transfers a real client would otherwise
-    // have to walk through a portal for.
-    for (WorldSession* session : _botSessions)
-        TryFollowLeaderAcrossMaps(session);
-
-    // Ghost-stranded-off-corpse-map recovery: see TryReturnGhostToCorpseMap's comment.
-    for (WorldSession* session : _botSessions)
-        TryReturnGhostToCorpseMap(session);
-
-    // Loot rolls: also checked every tick. Greeds on anything except the 4 basic armor types /
-    // 6 basic melee weapon types this bot's class can't wear or doesn't prefer
-    // (MatchesGearPreference, see docs/addon-protocol.md's GETGEAR/SETGEARPREF verbs) --
-    // everything else (shields/jewelry/ranged weapons/relics/consumables/etc.) still always
-    // Greeds, unchanged from before.
-    for (WorldSession* session : _botSessions)
-    {
-        Player* bot = session->GetPlayer();
-        if (!bot)
-            continue;
-
-        Group* group = bot->GetGroup();
-        if (!group)
-            continue;
-
-        for (Roll* roll : group->GetRolls())
+        if (Group* group = bot->GetGroup())
         {
-            auto voteItr = roll->playerVote.find(bot->GetGUID());
-            if (voteItr != roll->playerVote.end() && voteItr->second == NOT_EMITED_YET)
+            TryFollowLeaderAcrossMaps(session);
+
+            for (Roll* roll : group->GetRolls())
             {
-                if (MatchesGearPreference(bot, roll->itemid))
+                auto voteItr = roll->playerVote.find(bot->GetGUID());
+                if (voteItr != roll->playerVote.end() && voteItr->second == NOT_EMITED_YET)
                 {
-                    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Greed on item {} (slot {}).",
-                        bot->GetName(), roll->itemid, roll->itemSlot);
-                    DoRollGreed(session, roll);
-                }
-                else
-                {
-                    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Pass on item {} (slot {}) -- wrong armor/weapon type for its class/preference.",
-                        bot->GetName(), roll->itemid, roll->itemSlot);
-                    DoRollPass(session, roll);
+                    if (MatchesGearPreference(bot, roll->itemid))
+                    {
+                        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Greed on item {} (slot {}).",
+                            bot->GetName(), roll->itemid, roll->itemSlot);
+                        DoRollGreed(session, roll);
+                    }
+                    else
+                    {
+                        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotMgr: bot '{}' rolling Pass on item {} (slot {}) -- wrong armor/weapon type for its class/preference.",
+                            bot->GetName(), roll->itemid, roll->itemSlot);
+                        DoRollPass(session, roll);
+                    }
                 }
             }
         }
+
+        if (!bot->IsAlive())
+            TryReturnGhostToCorpseMap(session);
     }
 
     // Combat AI: chase/engage/cast for every active bot. See BotAI.cpp for why this is a

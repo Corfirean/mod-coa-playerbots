@@ -25,15 +25,49 @@ namespace BotAI
         bool optimizeRankLookup = false;
         bool cacheLearnedRanks = false;
 #ifdef COA_LEARNED_RANK_CACHE
+        struct RankChainEntry
+        {
+            static constexpr uint8 MAX_INLINE_RANKS = 16;
+            uint8 count = 0;
+            uint32 ids[MAX_INLINE_RANKS]{};
+            std::vector<uint32> overflow;
+
+            void push_back(uint32 id)
+            {
+                if (count < MAX_INLINE_RANKS)
+                    ids[count++] = id;
+                else
+                    overflow.push_back(id);
+            }
+        };
+
+        struct LearnedRanks;
+        thread_local Player const* tlsCachedBot = nullptr;
+        thread_local LearnedRanks* tlsCachedRanks = nullptr;
+
         struct LearnedRanks : DataMap::Base
         {
             uint64 book = 0, metadata = 0;
-            std::unordered_map<uint32, std::vector<uint32>> roots;
+            std::unordered_map<uint32, RankChainEntry> roots;
+
+            LearnedRanks() { roots.reserve(64); }
+            ~LearnedRanks() override
+            {
+                if (tlsCachedRanks == this)
+                {
+                    tlsCachedBot = nullptr;
+                    tlsCachedRanks = nullptr;
+                }
+            }
         };
 
         uint32 ResolveCached(Player* bot, uint32 root)
         {
-            auto* cache = bot->CustomData.GetDefault<LearnedRanks>("bot_rank_cache");
+            LearnedRanks* cache = (tlsCachedBot == bot && tlsCachedRanks)
+                ? tlsCachedRanks
+                : bot->CustomData.GetDefault<LearnedRanks>("bot_rank_cache");
+            tlsCachedBot = bot;
+            tlsCachedRanks = cache;
             uint64 book = SpellBookRevision::Get(bot->CustomData);
             uint64 metadata = SpellRankLookup::MetadataEpoch();
             if (cache->book != book || cache->metadata != metadata)
@@ -57,7 +91,14 @@ namespace BotAI
                     current = prev;
                 }
             }
-            for (uint32 id : itr->second)
+            for (uint8 i = 0; i < itr->second.count; ++i)
+            {
+                uint32 id = itr->second.ids[i];
+                auto learned = spells.find(id);
+                if (learned != spells.end() && learned->second && learned->second->Active && learned->second->State != PLAYERSPELL_REMOVED)
+                    return id;
+            }
+            for (uint32 id : itr->second.overflow)
             {
                 auto learned = spells.find(id);
                 if (learned != spells.end() && learned->second && learned->second->Active && learned->second->State != PLAYERSPELL_REMOVED)

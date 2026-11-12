@@ -2387,7 +2387,37 @@ namespace BotMovement
         float bx = bot->GetPositionX();
         float by = bot->GetPositionY();
         float bz = bot->GetPositionZ();
-        float groundZ = ResolveGroundZ(bot, bx, by, bz);
+        uint32 curMap = bot->GetMapId();
+        bool const moving = bot->isMoving();
+
+        float groundZ = bz;
+        bool needsResolve = false;
+
+        {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            uint32 lastSafe = shard.lastSafeCheck[bot->GetGUID()];
+            uint32 airTime = shard.airborneMs[bot->GetGUID()];
+            auto const& gCache = shard.groundCache[bot->GetGUID()];
+
+            if (gCache.mapId != curMap || std::abs(bx - gCache.x) > 0.1f || std::abs(by - gCache.y) > 0.1f || std::abs(bz - gCache.z) > 0.1f)
+            {
+                if (now - lastSafe >= 500 || (!moving && airTime > 0) || bot->IsFalling())
+                    needsResolve = true;
+                else
+                    groundZ = gCache.groundZ;
+            }
+            else
+            {
+                groundZ = gCache.groundZ;
+            }
+        }
+
+        if (needsResolve)
+        {
+            groundZ = ResolveGroundZ(bot, bx, by, bz);
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            shard.groundCache[bot->GetGUID()] = { bx, by, bz, groundZ, curMap, now };
+        }
 
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
@@ -2398,7 +2428,6 @@ namespace BotMovement
             if (now - lastSafe >= 500)
             {
                 lastSafe = now;
-                uint32 curMap = bot->GetMapId();
                 if (shard.lastRecordedMap[bot->GetGUID()] != curMap)
                 {
                     shard.safeHistories[bot->GetGUID()].Clear();
@@ -2419,7 +2448,7 @@ namespace BotMovement
             if (!bot->CanFly() && !bot->IsInFlight() && !bot->IsInWater() && !bot->GetVehicle())
             {
                 bool isSuspended = (bz - groundZ > 5.0f);
-                if (isSuspended && !bot->isMoving())
+                if (isSuspended && !moving)
                 {
                     airTime += diff;
                     if (airTime >= 1500)

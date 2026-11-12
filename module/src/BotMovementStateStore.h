@@ -21,6 +21,16 @@ struct LocomotionShard
     std::unordered_map<ObjectGuid, uint32> lastSafeCheck;
     std::unordered_map<ObjectGuid, uint32> lastRecordedMap;
     std::unordered_map<ObjectGuid, uint32> airborneMs;
+    struct GroundZCacheEntry
+    {
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        float groundZ = 0.0f;
+        uint32 mapId = 0;
+        uint32 checkTime = 0;
+    };
+    std::unordered_map<ObjectGuid, GroundZCacheEntry> groundCache;
     std::unordered_map<ObjectGuid, HistoryBuffer> histories;
     std::unordered_map<ObjectGuid, NopathCacheEntry> nopathCache;
     std::unordered_map<ObjectGuid, uint64> nextRequestGen;

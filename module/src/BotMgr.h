@@ -555,6 +555,7 @@ private:
     void ProcessCraftOrders();
 
     std::vector<WorldSession*> _botSessions;
+    std::unordered_map<ObjectGuid::LowType, WorldSession*> _botSessionByLowGuid;
     // One detached login per GUID; concurrent callers share its completion.
     std::unordered_map<ObjectGuid::LowType, std::vector<std::function<void(Player*)>>> _pendingBotLogins;
     std::vector<WorldSession*> _pendingTeleportAck;

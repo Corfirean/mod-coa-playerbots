@@ -154,6 +154,52 @@ bool Ready()
     return LoadCatalogue();
 }
 
+std::pair<uint8, uint8> ItemPowers(ItemTemplate const* item)
+{
+    if (!item) return {0, 0};
+    uint8 pve = 0, pvp = 0;
+    for (auto const& spell : item->Spells)
+    {
+        if (spell.SpellTrigger == ITEM_SPELLTRIGGER_ON_EQUIP)
+        {
+            pve += static_cast<uint8>(BotGearPolicy::PvePower(spell.SpellId));
+            pvp += static_cast<uint8>(BotGearPolicy::PvpPower(spell.SpellId));
+        }
+    }
+    return {pve, pvp};
+}
+
+bool HasValidNameAndDisplay(ItemTemplate const* item)
+{
+    if (!item || !LoadCatalogue() || excluded.count(item->ItemId))
+        return false;
+    if ((item->InventoryType == INVTYPE_HEAD || item->InventoryType == INVTYPE_SHOULDERS) &&
+        (!item->DisplayInfoID || missingEquipmentDisplays.count(item->DisplayInfoID)))
+        return false;
+    std::string name = item->Name1;
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
+    for (char const* marker : {"rpgitem", "[ph]", " ph ", "test", "monster - ", "deprecated", "[dnd]", "npc "})
+        if (name.find(marker) != std::string::npos)
+            return false;
+    return true;
+}
+
+bool AllowedCandidate(Player* bot, ItemTemplate const* item, uint8 pvePower, uint8 pvpPower)
+{
+    if (!bot || !item)
+        return false;
+    uint8 level = bot->GetLevel();
+    if (!BotGearPolicy::FitsLevel(level, item->RequiredLevel, item->ItemLevel, item->Quality))
+        return false;
+    unsigned powerCap = level < 60 ? 0 : level < 80 ? 15 : 25;
+    if (pvePower > powerCap || pvpPower > powerCap)
+        return false;
+    if (bot->CanUseItem(item) != EQUIP_ERR_OK)
+        return false;
+    bool pvp = bot->InBattleground() || bot->InArena() || bot->GetPlayerSetting("coa.bot.gear", 0).value == 1;
+    return !(pvp ? pvePower : pvpPower) || (pvp ? pvpPower : pvePower);
+}
+
 bool AllowedAtLevel(uint8 level, ItemTemplate const* item)
 {
     if (!item || !BotGearPolicy::FitsLevel(level, item->RequiredLevel, item->ItemLevel, item->Quality) ||

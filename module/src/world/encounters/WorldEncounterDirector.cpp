@@ -96,14 +96,14 @@ namespace
     {
         if (!p || !p->IsInWorld() || !p->GetSession())
             return false;
-        return !sBotMgr->IsBotAccountId(p->GetSession()->GetAccountId());
+        return !p->GetSession()->IsBot();
     }
 
     bool IsBotPlayer(Player const* p)
     {
         if (!p || !p->IsInWorld() || !p->GetSession())
             return false;
-        return sBotMgr->IsBotAccountId(p->GetSession()->GetAccountId());
+        return p->GetSession()->IsBot();
     }
 
     bool IsSanctuaryArea(Player const* p)
@@ -1337,12 +1337,17 @@ namespace
         // 7.7 Road Duel (2 friendly bots)
         if (type == EncounterType::RoadDuel)
         {
+            std::vector<CandidateBotSnapshot> baseSnaps;
+            baseSnaps.reserve(freeBots.size());
+            for (Player* b : freeBots)
+                baseSnaps.push_back(BuildCandidateBotSnapshot(b));
+
             for (size_t i = 0; i < freeBots.size(); ++i)
             {
-                CandidateBotSnapshot snapA = BuildCandidateBotSnapshot(freeBots[i]);
+                CandidateBotSnapshot const& snapA = baseSnaps[i];
                 for (size_t j = i + 1; j < freeBots.size(); ++j)
                 {
-                    CandidateBotSnapshot snapB = BuildCandidateBotSnapshot(freeBots[j]);
+                    CandidateBotSnapshot const& snapB = baseSnaps[j];
                     if (!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::RoadDuel, snapA, snapB, cfg, bypassBudgetAndCooldown))
                         continue;
 
@@ -1418,12 +1423,19 @@ namespace
             Player* bestPrey = nullptr;
             float bestPairScore = -1.0f;
 
+            std::vector<CandidateBotSnapshot> baseSnaps;
+            baseSnaps.reserve(freeBots.size());
+            for (Player* b : freeBots)
+                baseSnaps.push_back(BuildCandidateBotSnapshot(b));
+
             for (size_t i = 0; i < freeBots.size(); ++i)
             {
                 for (size_t j = i + 1; j < freeBots.size(); ++j)
                 {
-                    CandidateBotSnapshot snapA = BuildCandidateBotSnapshot(freeBots[i], freeBots[j]);
-                    CandidateBotSnapshot snapB = BuildCandidateBotSnapshot(freeBots[j], freeBots[i]);
+                    CandidateBotSnapshot snapA = baseSnaps[i];
+                    snapA.canLegallyAttackTarget = freeBots[i]->IsValidAttackTarget(freeBots[j]);
+                    CandidateBotSnapshot snapB = baseSnaps[j];
+                    snapB.canLegallyAttackTarget = freeBots[j]->IsValidAttackTarget(freeBots[i]);
                     if (!EncounterEligibility::AreBotsCompatibleForPair(EncounterType::HunterAndPrey, snapA, snapB, cfg, bypassBudgetAndCooldown))
                         continue;
 

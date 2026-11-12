@@ -48,7 +48,7 @@ def main():
                             "/I" + str(module / "src"),
                             str(module / "tests" / (name + "_tests.cpp")),
                             "/Fe:" + str(regression)], cwd=directory, check=True)
-            subprocess.run([str(regression)], check=True)
+            subprocess.run([str(regression)], cwd=str(module.parent), check=True)
     subprocess.run([sys.executable, "-B", str(module / "tests/test_training_reports.py")], check=True)
     subprocess.run([sys.executable, "-B", str(module / "tests/test_ci_compare.py")], check=True)
     for name in ["benchmark", "matrix", "stack_report", "windows", "wait_chains"]:
