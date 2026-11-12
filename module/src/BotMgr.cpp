@@ -597,52 +597,11 @@ void BotMgr::EnsureBotBankRights(Player* bot, Guild* guild)
     if (!guild || !bot)
         return;
 
-    // If guild has no tabs yet, create initial tab 0 regardless of who's asking -- gating this on
-    // "only if the calling bot happens to be the Guild Master" meant a guild led by the real human
-    // player (the normal case) could never get its first tab from bot activity at all: every
-    // GuildDepositItem/GuildGather call would silently deposit 0 forever, with no error anywhere,
-    // until the human manually bought a tab in the real bank UI. Confirmed live 2026-09-29: a
-    // freshly bot-populated guild with a human leader had zero bank tabs and every one of 21
-    // guildgather orders "completed" by depositing nothing. BotMgr is a declared friend of Guild
-    // (see Guild.h) specifically so this self-heal can create the tab on any member's behalf.
-    if (guild->_GetPurchasedTabsSize() == 0)
-        guild->_CreateNewBankTab();
-
-    uint8 rankId = bot->GetRank();
-    Guild::RankInfo* rankInfo = guild->GetRankInfo(rankId);
-    if (!rankInfo)
-        return;
-
-    for (uint8 tabId = 0; tabId < guild->_GetPurchasedTabsSize(); ++tabId)
-    {
-        int8 currentRights = rankInfo->GetBankTabRights(tabId);
-        int32 currentSlots = rankInfo->GetBankTabSlotsPerDay(tabId);
-
-        bool needsUpdate = false;
-        uint8 newRights = currentRights;
-        uint32 newSlots = currentSlots > 0 ? uint32(currentSlots) : 50;
-
-        if ((currentRights & GUILD_BANK_RIGHT_DEPOSIT_ITEM) != GUILD_BANK_RIGHT_DEPOSIT_ITEM)
-        {
-            newRights |= GUILD_BANK_RIGHT_DEPOSIT_ITEM | GUILD_BANK_RIGHT_VIEW_TAB;
-            needsUpdate = true;
-        }
-
-        if (currentSlots == 0)
-        {
-            newSlots = 50;
-            needsUpdate = true;
-        }
-
-        if (needsUpdate)
-        {
-            GuildBankRightsAndSlots rightsAndSlots(tabId, newRights, newSlots);
-            rankInfo->SetBankTabSlotsAndRights(rightsAndSlots, true);
-        }
-    }
-
-    if (rankInfo->GetBankMoneyPerDay() == 0)
-        rankInfo->SetBankMoneyPerDay(50 * GOLD);
+    guild->EnsureFirstBankTab();
+    guild->EnsureRankBankRights(bot->GetRank(),
+        GUILD_BANK_RIGHT_DEPOSIT_ITEM | GUILD_BANK_RIGHT_VIEW_TAB,
+        50,
+        50 * GOLD);
 }
 
 void BotMgr::DoAcceptGuildInvite(WorldSession* session)
@@ -1080,7 +1039,7 @@ uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntr
 
     EnsureBotBankRights(bot, guild);
 
-    if (guild->_GetPurchasedTabsSize() == 0)
+    if (guild->GetPurchasedTabsSize() == 0)
     {
         if (handler)
             handler->PSendSysMessage("BotMgr: guild '{}' has no bank tabs.", guild->GetName());
@@ -1151,7 +1110,7 @@ uint32 BotMgr::GuildDepositItem(ObjectGuid::LowType charLowGuid, uint32 itemEntr
         // after tab 0 untouched just because tab 0 personally happens to be full. Stops at the
         // first tab that actually accepts it.
         bool moved = false;
-        for (uint8 tabId = 0; tabId < guild->_GetPurchasedTabsSize(); ++tabId)
+        for (uint8 tabId = 0; tabId < guild->GetPurchasedTabsSize(); ++tabId)
         {
             guild->SwapItemsWithInventory(bot, false, tabId, NULL_SLOT, foundBag, foundSlot, moveAmount);
 
@@ -1201,13 +1160,10 @@ std::unordered_map<uint32, uint32> BotMgr::GuildBankTradeGoods(uint32 guildId) c
     Guild* guild = sGuildMgr->GetGuildById(guildId);
     if (!guild)
         return counts;
-    for (uint8 tabId = 0; tabId < guild->_GetPurchasedTabsSize(); ++tabId)
+    for (uint8 tabId = 0; tabId < guild->GetPurchasedTabsSize(); ++tabId)
     {
-        Guild::BankTab const* tab = guild->GetBankTab(tabId);
-        if (!tab)
-            continue;
         for (uint8 slotId = 0; slotId < GUILD_BANK_MAX_SLOTS; ++slotId)
-            if (Item const* item = tab->GetItem(slotId))
+            if (Item const* item = guild->GetBankItem(tabId, slotId))
                 if (ItemTemplate const* proto = item->GetTemplate(); proto && proto->Class == ITEM_CLASS_TRADE_GOODS)
                     counts[item->GetEntry()] += item->GetCount();
     }
@@ -1245,15 +1201,11 @@ uint32 BotMgr::GuildWithdrawItem(ObjectGuid::LowType charLowGuid, uint32 itemEnt
     uint32 totalWithdrawn = 0;
     uint32 targetToWithdraw = (count == 0) ? 1 : count;
 
-    for (uint8 tabId = 0; tabId < guild->_GetPurchasedTabsSize() && totalWithdrawn < targetToWithdraw; ++tabId)
+    for (uint8 tabId = 0; tabId < guild->GetPurchasedTabsSize() && totalWithdrawn < targetToWithdraw; ++tabId)
     {
-        Guild::BankTab const* tab = guild->GetBankTab(tabId);
-        if (!tab)
-            continue;
-
         for (uint8 slotId = 0; slotId < GUILD_BANK_MAX_SLOTS && totalWithdrawn < targetToWithdraw; ++slotId)
         {
-            Item const* bankItem = tab->GetItem(slotId);
+            Item const* bankItem = guild->GetBankItem(tabId, slotId);
             if (!bankItem || bankItem->GetEntry() != itemEntry)
                 continue;
 
