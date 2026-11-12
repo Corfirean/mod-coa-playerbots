@@ -31,3 +31,6 @@ dist/bin/
 # Python
 __pycache__/
 *.py[cod]
+
+# Cache
+.cache/
