@@ -288,6 +288,9 @@ namespace CoaBotPerf
         Gauge("instrumentation_reference", 0);
         Gauge("profile_combat_enabled", CombatProfileEnabled());
         Gauge("learned_rank_cache_enabled", BotAI::SpellResolver::LearnedRankCacheEnabled());
+#ifdef COA_DIRECT_OBJECT_FIELD_READS
+        Gauge("direct_object_field_reads_enabled", Object::DirectFieldReadsEnabled());
+#endif
 #ifdef COA_SPELL_CANDIDATE_FILTER
         Gauge("spell_candidate_filter_enabled", SpellCandidateFilter::Enabled());
 #endif

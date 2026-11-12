@@ -2396,12 +2396,19 @@ namespace BotMovement
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
             uint32 lastSafe = shard.lastSafeCheck[bot->GetGUID()];
-            uint32 airTime = shard.airborneMs[bot->GetGUID()];
             auto const& gCache = shard.groundCache[bot->GetGUID()];
 
-            if (gCache.mapId != curMap || std::abs(bx - gCache.x) > 0.1f || std::abs(by - gCache.y) > 0.1f || std::abs(bz - gCache.z) > 0.1f)
+            bool const invalidCache = (gCache.mapId != curMap) || (gCache.checkTime == 0);
+            bool const posChanged = invalidCache ||
+                (std::abs(bx - gCache.x) > 0.1f) || (std::abs(by - gCache.y) > 0.1f) || (std::abs(bz - gCache.z) > 0.1f);
+
+            if (invalidCache)
             {
-                if (now - lastSafe >= 500 || (!moving && airTime > 0) || bot->IsFalling())
+                needsResolve = true;
+            }
+            else if (posChanged)
+            {
+                if (now - lastSafe >= 500 || (!moving) || bot->IsFalling())
                     needsResolve = true;
                 else
                     groundZ = gCache.groundZ;

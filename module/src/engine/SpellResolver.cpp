@@ -41,33 +41,19 @@ namespace BotAI
             }
         };
 
-        struct LearnedRanks;
-        thread_local Player const* tlsCachedBot = nullptr;
-        thread_local LearnedRanks* tlsCachedRanks = nullptr;
-
         struct LearnedRanks : DataMap::Base
         {
             uint64 book = 0, metadata = 0;
             std::unordered_map<uint32, RankChainEntry> roots;
 
             LearnedRanks() { roots.reserve(64); }
-            ~LearnedRanks() override
-            {
-                if (tlsCachedRanks == this)
-                {
-                    tlsCachedBot = nullptr;
-                    tlsCachedRanks = nullptr;
-                }
-            }
         };
+
+        static std::string const botRankCacheKey = "bot_rank_cache";
 
         uint32 ResolveCached(Player* bot, uint32 root)
         {
-            LearnedRanks* cache = (tlsCachedBot == bot && tlsCachedRanks)
-                ? tlsCachedRanks
-                : bot->CustomData.GetDefault<LearnedRanks>("bot_rank_cache");
-            tlsCachedBot = bot;
-            tlsCachedRanks = cache;
+            LearnedRanks* cache = bot->CustomData.GetDefault<LearnedRanks>(botRankCacheKey);
             uint64 book = SpellBookRevision::Get(bot->CustomData);
             uint64 metadata = SpellRankLookup::MetadataEpoch();
             if (cache->book != book || cache->metadata != metadata)
