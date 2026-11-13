@@ -577,7 +577,6 @@ BotAI.DynamicEncounters.Mystery.MorphDisplayId = 0
 BotAI.DynamicEncounters.Mystery.RuneGameObjectEntry = 0
 BotAI.DynamicEncounters.Mystery.SpellVisualId = 0
 
-<<<<<<< HEAD
 ###################################################################################################
 # Bot strength scaling (dungeons and raids)
 #
@@ -611,7 +610,6 @@ CoaBots.Scaling.HealingDone = 1
 CoaBots.Scaling.DamageTaken = 1
 CoaBots.Scaling.TankThreat = 1
 CoaBots.Scaling.BossTuning = 0
-=======
 
 
 ###################################################################################################
@@ -645,4 +643,3 @@ CoaBots.Budgets.NavigationUs = 4000
 
 
 CoaBots.Navigation.ReuseValidatedPath = 0
->>>>>>> origin/perf/population-with-world-hardening-20261103
