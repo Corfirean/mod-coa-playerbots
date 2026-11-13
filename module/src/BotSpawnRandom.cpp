@@ -27,6 +27,7 @@
 
 #include "BotSpawnRandom.h"
 #include "BotGear.h"
+#include "BotPerformance.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
 #include "BotMgr.h"
@@ -979,6 +980,7 @@ uint32 RollQualityCap(uint8 level)
 std::vector<uint32> GearPool(Player* bot, uint32 itemClass, uint32 subclass, uint32 inventoryType, uint8 level,
     uint32 qualityCap, size_t maxCount = 64)
 {
+    CoaBotPerf::Scope scope(CoaBotPerf::Metric::GearPool);
     std::vector<LevelItemCandidate> matches;
     for (uint32 window : { 5u, 255u })
     {
@@ -1016,6 +1018,7 @@ bool repairingGear = false;
 
 bool TryEquipBestOf(Player* bot, uint8 slot, std::vector<uint32> const& candidates, uint8 level)
 {
+    CoaBotPerf::Scope scope(CoaBotPerf::Metric::GearEquip);
     if (repairingGear)
         if (Item* existing = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
             if (BotGear::Allowed(bot, existing->GetTemplate()) || BotAI::IsProfessionTool(existing->GetTemplate()))

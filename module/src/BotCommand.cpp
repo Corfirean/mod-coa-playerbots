@@ -1,6 +1,7 @@
 #include "training/TrainingArenaManager.h"
 #include "BotGear.h"
 #include "BotAI.h"
+#include "BotPerformance.h"
 #include "BotMovement.h"
 #include "BotBattlegroundFill.h"
 #include "BotEconomy.h"
@@ -71,6 +72,7 @@ public:
             { "resources",    HandleBotResourcesCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "strategy",     HandleBotStrategyCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "brain",        HandleBotBrainCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "perf", HandleBotPerfCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "worldstats",   HandleBotWorldStatsCommand,   rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "encounter",    HandleBotEncounterCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "dialogue",     HandleBotDialogueCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -111,6 +113,17 @@ public:
         };
 
         return commandTable;
+    }
+
+    static bool HandleBotPerfCommand(ChatHandler* handler, Tail args)
+    {
+        std::string action(args);
+        if (action == "reset") CoaBotPerf::Reset();
+        else if (action == "dump")
+            handler->SendSysMessage(CoaBotPerf::RequestDump() ? "CoaBotPerf dump queued" : "CoaBotPerf disabled or dump pending");
+        else if (!action.empty() && action != "status") return false;
+        handler->SendSysMessage(CoaBotPerf::Status());
+        return true;
     }
 
     static bool HandleTrainingCommand(ChatHandler* handler, Tail args)

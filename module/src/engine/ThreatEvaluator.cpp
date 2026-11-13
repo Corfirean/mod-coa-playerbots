@@ -1,3 +1,4 @@
+#include "BotPerformance.h"
 /*
  * mod-coa-playerbots
  *
@@ -73,6 +74,7 @@ namespace BotAI
 
     ThreatDecision ThreatEvaluator::SelectThreatDecision(Player* tank, float range)
     {
+        CoaBotPerf::Scope profile(CoaBotPerf::Metric::ThreatSelection, CoaBotPerf::CombatProfileEnabled());
         ThreatDecision decision;
         if (!tank || !tank->GetGroup())
             return decision;

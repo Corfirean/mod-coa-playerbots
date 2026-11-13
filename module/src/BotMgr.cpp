@@ -1,3 +1,6 @@
+#include "BotPerformance.h"
+#include "BotScheduling.h"
+#include "BotWorkBudget.h"
 #include "training/TrainingArenaManager.h"
 #include "engine/BotDebugLog.h"
 #include "BotMgr.h"
@@ -432,6 +435,12 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
         if (handler) handler->PSendSysMessage("BotMgr: login for guid {} is already pending.", charLowGuid);
         return;
     }
+    uint32 const benchmarkCap = sConfigMgr->GetOption<uint32>("CoaBots.Benchmark.MaxOnline", 0);
+    if (benchmarkCap && _botSessions.size() >= benchmarkCap)
+    {
+        if (handler) handler->SendSysMessage("Benchmark population cap reached");
+        return;
+    }
     if (ObjectAccessor::FindPlayer(playerGuid))
     {
         if (handler) handler->PSendSysMessage("BotMgr: guid {} is already online outside the companion manager.", charLowGuid);
@@ -503,7 +512,15 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
                 // Ensure all newly spawned bots relocate to appropriate zones (fixes bots clustering at spawn points).
                 // This is called for all spawn paths; if onReady also relocates (e.g., ApplyFreshBotSetup),
                 // calling it twice is safe and idempotent.
-                BotZoneProgression::RelocateBot(bot, true /*force initial relocation*/);
+                bool const readback = sConfigMgr->GetOption<bool>("CoaBots.Benchmark.SuspendOnLogin", false);
+                if (readback)
+                {
+                    bot->SetGameMaster(true);
+                    bot->SetGMVisible(false);
+                    BotAI::SetSuspended(bot->GetGUID(), true);
+                }
+                else if (!sConfigMgr->GetOption<bool>("CoaBots.Benchmark.PreserveLoginPosition", false))
+                    BotZoneProgression::RelocateBot(bot, true /*force initial relocation*/);
 
                 for (auto& onReady : callbacks)
                     if (onReady) onReady(bot);
@@ -2048,6 +2065,7 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
     delete session;
     _botSessions.erase(itr);
     _aiWaitMs.erase(botGuid);
+    CoaBotScheduling::Forget(botGuid);
     // Also drop it from the pending-teleport-ack queue if it's there -- otherwise
     // the next Update() tick would call FinishPendingTeleport on a freed session.
     _pendingTeleportAck.erase(std::remove(_pendingTeleportAck.begin(), _pendingTeleportAck.end(), session), _pendingTeleportAck.end());
@@ -2072,6 +2090,7 @@ uint32 BotMgr::LogoutAllBots()
         ++saved;
     }
     _aiWaitMs.clear();
+    CoaBotScheduling::Clear();
     LOG_INFO("module.coa-playerbots", "BotMgr: saved and logged out {} companion(s) for shutdown.", saved);
     return saved;
 }
@@ -3278,12 +3297,18 @@ void BotMgr::UpdateTrades(uint32 diff)
 
 void BotMgr::Update(uint32 diff)
 {
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::Manager);
     if (!BotsEnabled())
     {
         if (!_botSessions.empty() || !_pendingAutoLoginQueue.empty())
             DespawnAllBots();
         return;
     }
+
+    // Readback inspects loaded persistent state before durable gear orders or other maintenance
+    // can legitimately change it. Login query callbacks and map updates still run in the core.
+    static bool const benchmarkReadback = sConfigMgr->GetOption<bool>("CoaBots.Benchmark.SuspendOnLogin", false);
+    if (benchmarkReadback) return;
 
     static uint32 capCheckTimer = 0;
     capCheckTimer += diff;
@@ -3295,16 +3320,29 @@ void BotMgr::Update(uint32 diff)
                 break;
     }
     ProcessKillEvents();
-    BotGear::Update(diff);
+    {
+        CoaBotPerf::Scope scope(CoaBotPerf::Metric::ManagerGear);
+        BotGear::Update(diff);
+    }
 
     // Must run even with zero bots currently online (e.g. right after a fresh restart, before
     // anything has spawned yet) -- otherwise a `.botcmd spawnrandom` issued at that point would
     // queue a batch that never starts draining until some unrelated bot happens to log in.
-    BotSpawn::ProcessPendingRandomBotSpawns(diff);
-    BotSpawn::ProcessPendingLeveledBotSpawns(diff);
-    BotZoneProgression::ProcessPendingRelocations(diff);
-    WorldBrain::GlobalUpdate(diff);
-    WorldEncounterDirector::Update(diff);
+    {
+        CoaBotPerf::Scope scope(CoaBotPerf::Metric::ManagerPopulation);
+        BotSpawn::ProcessPendingRandomBotSpawns(diff);
+        BotSpawn::ProcessPendingLeveledBotSpawns(diff);
+        BotZoneProgression::ProcessPendingRelocations(diff);
+    }
+    {
+        CoaBotPerf::Scope scope(CoaBotPerf::Metric::ManagerWorld);
+        WorldBrain::GlobalUpdate(diff);
+    }
+    {
+        CoaBotPerf::Scope scope(CoaBotPerf::Metric::ManagerEncounters);
+        WorldEncounterDirector::Update(diff);
+    }
+    CoaBotPerf::Scope sessionMaintenance(CoaBotPerf::Metric::ManagerSessions);
 
     // See QueueAllBotsForAutoLogin -- gradual login for every known bot character, throttled the
     // same way SpawnRandomBots/SpawnLeveledBots throttle bulk creation (login itself is much
@@ -3459,6 +3497,7 @@ void BotMgr::Update(uint32 diff)
     // costs a fraction of the world thread (a thousand bots made this loop most of the tick). The time a bot waited
     // is handed to the AI as its `diff`, so every timer inside it keeps running at the right speed, and the first
     // decision of each bot is offset by its guid so they do not all think on the same tick.
+    sessionMaintenance.Stop();
     _aiConfigAgeMs += diff;
     if (_aiConfigAgeMs >= 10000)
     {
@@ -3468,27 +3507,61 @@ void BotMgr::Update(uint32 diff)
         _tradeEnabled = sConfigMgr->GetOption<bool>("CoaBots.Trade.Enable", true);
         _autoLootInGroup = sConfigMgr->GetOption<bool>("CoaBots.Loot.AutoLootInGroup", false);
     }
-    UpdateTrades(diff);
-    BotEconomy::Update(diff, _botSessions);
+    {
+        CoaBotPerf::Scope scope(CoaBotPerf::Metric::ManagerTrades);
+        UpdateTrades(diff);
+    }
+    {
+        CoaBotPerf::Scope scope(CoaBotPerf::Metric::Economy);
+        BotEconomy::Update(diff, _botSessions);
+    }
+    CoaBotPerf::Gauge("sessions", _botSessions.size());
     uint32 const combatIntervalMs = _aiCombatIntervalMs;
     uint32 const idleIntervalMs = _aiIdleIntervalMs;
-    for (WorldSession* session : _botSessions)
+    if (CoaBotScheduling::Enabled())
+        CoaBotScheduling::Update(_botSessions, [](Player* bot, uint32 elapsed) { BotAI::Update(bot, elapsed); });
+    else
     {
-        Player* bot = session->GetPlayer();
-        if (!bot)
-            continue;
+        struct ReadyUpdate
+        {
+            ObjectGuid guid;
+            uint32 elapsed, interval;
+            bool background;
+            CoaBotScheduling::WorkOrder workOrder;
+        };
+        std::vector<ReadyUpdate> ready;
+        for (WorldSession* session : _botSessions)
+        {
+            Player* bot = session->GetPlayer();
+            if (!bot)
+                continue;
 
-        uint32 const interval = (bot->IsInCombat() || bot->GetGroup() || bot->InBattleground()) ? combatIntervalMs : idleIntervalMs;
-        auto [waiting, isNew] = _aiWaitMs.try_emplace(bot->GetGUID(), 0u);
-        if (isNew && interval)
-            waiting->second = uint32(bot->GetGUID().GetCounter() * 37u) % interval;
-        waiting->second += diff;
-        if (waiting->second < interval)
-            continue;
+            uint32 const interval = (bot->IsInCombat() || bot->GetGroup() || bot->InBattleground()) ? combatIntervalMs : idleIntervalMs;
+            auto [waiting, isNew] = _aiWaitMs.try_emplace(bot->GetGUID(), 0u);
+            if (isNew && interval)
+                waiting->second = uint32(bot->GetGUID().GetCounter() * 37u) % interval;
+            waiting->second += diff;
+            if (waiting->second < interval)
+                continue;
 
-        uint32 const elapsed = waiting->second;
-        waiting->second = 0;
-        BotAI::Update(bot, elapsed);
+            uint32 const elapsed = waiting->second;
+            waiting->second = 0;
+            if (CoaBotScheduling::BudgetsEnabled())
+                ready.push_back({bot->GetGUID(), elapsed, interval, !bot->IsInCombat() && !CoaBotScheduling::Protected(bot),
+                                 CoaBotScheduling::PendingWorkOrder(bot->GetGUID())});
+            else BotAI::Update(bot, elapsed);
+        }
+        std::stable_sort(ready.begin(), ready.end(), [](ReadyUpdate const& a, ReadyUpdate const& b)
+        {
+            return std::tie(a.background, a.workOrder) < std::tie(b.background, b.workOrder);
+        });
+        for (auto const& update : ready)
+            if (Player* bot = ObjectAccessor::FindPlayer(update.guid))
+            {
+                if (!update.background) CoaBotScheduling::CancelWork(bot->GetGUID());
+                BotAI::Update(bot, update.elapsed);
+                CoaBotScheduling::DeferWorkFor(bot->GetGUID(), update.interval);
+            }
     }
 
     // Active guild gather orders: check if bot collected the requested item, deposit into guild bank

@@ -1,3 +1,4 @@
+#include "BotPerformance.h"
 #include "training/TrainingArenaManager.h"
 /*
  * mod-coa-playerbots
@@ -749,6 +750,7 @@ namespace BotAI
 
     BotAction ActionEvaluator::EvaluateBestAction(CombatContext const& ctx, std::vector<AbilityDescriptor> const& abilities, SpecStrategy const* strategy)
     {
+        CoaBotPerf::Scope profile(CoaBotPerf::Metric::ActionEvaluation, CoaBotPerf::CombatProfileEnabled());
         CoaTraining::BeginDecision(ctx);
         struct DecisionEnd
         {

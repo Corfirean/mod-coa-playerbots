@@ -1,4 +1,5 @@
 #include "BotGear.h"
+#include "BotPerformance.h"
 #include "BotGearPolicy.h"
 #include "BotAI.h"
 #include "BotMgr.h"
@@ -189,6 +190,7 @@ float PowerScore(Player* bot, ItemTemplate const* item)
 
 bool PreserveSlot(Player* bot, uint8 slot)
 {
+    CoaBotPerf::Scope scope(CoaBotPerf::Metric::GearArchive);
     Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
     if (!item)
         return true;
@@ -353,12 +355,16 @@ void Update(uint32 diff)
         pending.push_back(guid);
         return;
     }
-    BotSpawn::RepairGear(bot);
+    {
+        CoaBotPerf::Scope scope(CoaBotPerf::Metric::GearRepair);
+        BotSpawn::RepairGear(bot);
+    }
     bool remaining = false;
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
             if (!BotAI::IsProfessionTool(item->GetTemplate()) && !Allowed(bot, item->GetTemplate()))
                 remaining = true;
+    CoaBotPerf::Scope saveScope(CoaBotPerf::Metric::GearSave);
     CharacterDatabaseTransaction transaction = CharacterDatabase.BeginTransaction();
     bot->SaveToDB(transaction, false, false);
     if (remaining)
