@@ -1,3 +1,5 @@
+#include "BotScheduling.h"
+#include "BotWorkBudget.h"
 #include "engine/BotDebugLog.h"
 #include "ObjectTargetHandler.h"
 #include "GameObject.h"
@@ -81,7 +83,9 @@ ObjectiveResult ObjectTargetHandler::Update(ObjectiveContext& ctx)
         {
             if (ObjectiveCommon::InArea(ctx, EARLY_SCAN_SLACK) && ctx.now >= task.nextScanMs)
             {
-                task.nextScanMs = ctx.now + RollRange(ctx.state, 0x0b5c, ctx.cfg.scanMinMs, ctx.cfg.scanMaxMs);
+                CoaBotScheduling::WorkScope scanWork(CoaBotScheduling::Work::Scan, ctx.bot, ctx.task.quest.questId);
+                if (!scanWork) return ObjectiveResult::Running;
+                task.nextScanMs = ctx.now + (CoaBotScheduling::Far(ctx.bot) ? 1500 : RollRange(ctx.state, 0x0b5c, ctx.cfg.scanMinMs, ctx.cfg.scanMaxMs));
                 if (GameObject* go = Scan(ctx))
                 {
                     StartApproach(ctx, go);
@@ -100,7 +104,9 @@ ObjectiveResult ObjectTargetHandler::Update(ObjectiveContext& ctx)
             }
             if (ctx.now >= task.nextScanMs)
             {
-                task.nextScanMs = ctx.now + RollRange(ctx.state, 0x0b5c, ctx.cfg.scanMinMs, ctx.cfg.scanMaxMs);
+                CoaBotScheduling::WorkScope scanWork(CoaBotScheduling::Work::Scan, ctx.bot, ctx.task.quest.questId);
+                if (!scanWork) return ObjectiveResult::Running;
+                task.nextScanMs = ctx.now + (CoaBotScheduling::Far(ctx.bot) ? 1500 : RollRange(ctx.state, 0x0b5c, ctx.cfg.scanMinMs, ctx.cfg.scanMaxMs));
                 if (GameObject* go = Scan(ctx))
                 {
                     StartApproach(ctx, go);

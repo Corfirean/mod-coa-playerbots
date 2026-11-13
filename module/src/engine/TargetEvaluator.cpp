@@ -1,3 +1,4 @@
+#include "BotPerformance.h"
 /*
  * mod-coa-playerbots
  *
@@ -146,6 +147,7 @@ namespace BotAI
 
     Unit* TargetEvaluator::RefineTarget(Player* bot, Unit* currentTarget, float scanRange)
     {
+        CoaBotPerf::Scope profile(CoaBotPerf::Metric::TargetRefinement, CoaBotPerf::CombatProfileEnabled());
         if (!bot)
             return nullptr;
 

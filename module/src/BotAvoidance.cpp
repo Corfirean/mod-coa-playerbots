@@ -1,3 +1,4 @@
+#include "BotPerformance.h"
 #include "BotAvoidance.h"
 #include "BotBossKnowledge.h"
 #include "BotMovement.h"
@@ -386,6 +387,7 @@ bool BotAvoidance::HasCriticalBossMechanic(Player* bot, Unit* target)
 
 bool BotAvoidance::TryAvoidGroundHazards(Player* bot)
 {
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::Avoidance);
     if (!bot || !bot->IsAlive() || bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_ROOT))
         return false;
 
@@ -419,6 +421,7 @@ bool BotAvoidance::TryAvoidGroundHazards(Player* bot)
 
 bool BotAvoidance::TryAvoidBossTelegraphedAttacks(Player* bot, Unit* target)
 {
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::Avoidance);
     if (!bot || !bot->IsAlive() || !target || !target->IsAlive() || bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_ROOT))
         return false;
 

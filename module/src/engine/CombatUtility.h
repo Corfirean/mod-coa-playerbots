@@ -35,6 +35,7 @@ namespace BotAI
     class CombatUtility
     {
     public:
+        static void SetLazyCleanseScan(bool enabled);
         // Tries taunt, then interrupt, then cleanse, in that order, against ctx. Returns true
         // (and sets nextCastAllowedMs) if it cast something this tick -- the caller should treat
         // that exactly like a role-engine cast (consume the tick, skip everything below it).

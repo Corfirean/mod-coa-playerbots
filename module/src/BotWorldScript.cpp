@@ -1,5 +1,10 @@
 #include "training/TrainingArenaManager.h"
 #include "BotAI.h"
+#include "BotPerformance.h"
+#include "BotCheckpoint.h"
+#include "BotBenchmarkDriver.h"
+#include "BotScheduling.h"
+#include "BotWorkBudget.h"
 #include "BotMgr.h"
 #include "BotScaling.h"
 #include "BotTalentBuilds.h"
@@ -16,7 +21,10 @@
 #include "PlayerScript.h"
 #include "ScriptMgr.h"
 #include "WorldScript.h"
+#include "WorldSession.h"
 #include "engine/SpecStrategyRegistry.h"
+#include "engine/SpellResolver.h"
+#include "engine/CombatUtility.h"
 
 class coa_playerbots_worldscript : public WorldScript
 {
@@ -25,8 +33,11 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        CoaBotScheduling::BeginBudgetFrame();
+        CoaBotPerf::Tick();
         CoaTraining::Update(diff);
         sBotMgr->Update(diff);
+        CoaBotBenchmark::Update(diff);
     }
 
     // Called by the world server's main function as soon as the world loop has ended, while the databases are still
@@ -36,10 +47,13 @@ public:
     void OnShutdown() override
     {
         CoaTraining::Shutdown();
-        if (!sBotMgr->BotsEnabled())
-            return;
-        WorldEncounterDirector::ResetAll();
-        sBotMgr->LogoutAllBots();
+        if (sBotMgr->BotsEnabled())
+        {
+            WorldEncounterDirector::ResetAll();
+            CoaBotPerf::WriteCheckpoint();
+            sBotMgr->LogoutAllBots();
+        }
+        CoaBotPerf::Shutdown();
     }
 
     // User-requested standing behavior: every known bot character logs itself back in on
@@ -48,6 +62,13 @@ public:
     // dev/test session can still boot clean (no bots) when that's what's actually wanted.
     void OnStartup() override
     {
+        CoaBotPerf::Configure();
+        BotAI::SpellResolver::SetRankLookupOptimization(sConfigMgr->GetOption<bool>("CoaBots.Spells.OptimizeRankLookup", false));
+        BotAI::CombatUtility::SetLazyCleanseScan(sConfigMgr->GetOption<bool>("CoaBots.Spells.LazyCleanseScan", false));
+        BotAI::SpellResolver::SetLearnedRankCache(sConfigMgr->GetOption<bool>("CoaBots.Spells.CacheLearnedRanks", false));
+        CoaBotScheduling::Configure();
+        CoaBotScheduling::ConfigureBudgets();
+        CoaBotBenchmark::Configure();
         CoaTraining::Initialize();
         if (!sBotMgr->BotsEnabled())
             return;
@@ -70,7 +91,28 @@ public:
 class coa_playerbots_playerscript : public PlayerScript
 {
 public:
-    coa_playerbots_playerscript() : PlayerScript("coa_playerbots_playerscript", { PLAYERHOOK_ON_REWARD_KILL_REWARDER, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE, PLAYERHOOK_ON_PLAYER_JUST_DIED }) { }
+    coa_playerbots_playerscript() : PlayerScript("coa_playerbots_playerscript", { PLAYERHOOK_ON_REWARD_KILL_REWARDER, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE, PLAYERHOOK_ON_PLAYER_JUST_DIED, PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_LEVEL_CHANGED }) { }
+
+    void OnPlayerLootItem(Player* player, Item*, uint32 count, ObjectGuid lootGuid) override
+    {
+        if (player && player->GetSession() && player->GetSession()->IsBot())
+        {
+            CoaBotScheduling::Notify(player->GetGUID(), true);
+            CoaBotPerf::Increment(lootGuid.IsGameObject() ? "gathered_items" : "looted_items", count);
+        }
+    }
+
+    void OnPlayerLearnSpell(Player* player, uint32) override
+    {
+        if (player && player->GetSession() && player->GetSession()->IsBot())
+            CoaBotScheduling::Notify(player->GetGUID(), true);
+    }
+
+    void OnPlayerLevelChanged(Player* player, uint8) override
+    {
+        if (player && player->GetSession() && player->GetSession()->IsBot())
+            CoaBotScheduling::Notify(player->GetGUID(), true);
+    }
 
     void OnPlayerLogout(Player* player) override
     {
@@ -99,6 +141,7 @@ public:
         if (!player || !BotMgr::IsBotAccountId(player->GetSession()->GetAccountId()))
             return;
 
+        CoaBotPerf::Increment("bot_deaths");
         DangerMap::NoteDeath(player->GetMapId(), player->GetPositionX(), player->GetPositionY());
         LOG_INFO("module.coa-playerbots", "BotDeath: '{}' (class {}, level {}) died on map {} zone {} at ({:.0f} {:.0f} {:.0f}), underwater {}, attackers {}, in combat {}.",
             player->GetName(), uint32(player->getClass()), uint32(player->GetLevel()), player->GetMapId(), player->GetZoneId(),
@@ -110,6 +153,7 @@ public:
         if (!sBotMgr->BotsEnabled() || !player || !rewarder)
             return;
 
+        if (player->GetSession() && player->GetSession()->IsBot()) CoaBotPerf::Increment("bot_kills");
         Unit* victim = rewarder->GetVictim();
         if (!victim)
             return;

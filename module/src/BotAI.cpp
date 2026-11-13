@@ -1,3 +1,6 @@
+#include "BotPerformance.h"
+#include "BotScheduling.h"
+#include "BotWorkBudget.h"
 #include "training/TrainingArenaManager.h"
 #include "BotGear.h"
 /*
@@ -310,6 +313,7 @@ struct BotAIState
 
     // The spell tools (totems, standards) are checked once, then again whenever the bot learns or forgets a spell
     // (BotProgression::SpellbookRevision counts those events; the size of the spellbook would miss a replaced spell).
+    uint32 nextFollowCheckAtMs = 0;
     bool toolsChecked = false;
     uint32 toolCheckRevision = 0;
 
@@ -1428,12 +1432,15 @@ void TryAutoSignLeaderPetition(Player* bot)
 // bag scan and spellbook scan only run once every PROGRESSION_CHECK_INTERVAL_MS.
 void TryMaintainProgression(Player* bot, uint32 diff, BotAIState& state)
 {
-    if (state.nextProgressionCheckMs > diff)
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::Progression);
+    bool dirty = CoaBotScheduling::Enabled() && CoaBotScheduling::ConsumeMaintenance(bot->GetGUID());
+    if (!dirty && state.nextProgressionCheckMs > diff)
     {
         state.nextProgressionCheckMs -= diff;
         return;
     }
-    state.nextProgressionCheckMs = PROGRESSION_CHECK_INTERVAL_MS;
+    state.nextProgressionCheckMs = CoaBotScheduling::Enabled() ?
+        CoaBotScheduling::MaintenanceInterval(bot) : PROGRESSION_CHECK_INTERVAL_MS;
 
     EnsureBotHasMount(bot);
     if (!state.flightPathsGranted)
@@ -3521,6 +3528,13 @@ void ClearActiveFollow(Player* bot)
 
 void ResumeFollowingLeader(Player* bot, BotAIState& state)
 {
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::Follow);
+    if (CoaBotScheduling::Enabled())
+    {
+        uint32 now = getMSTime();
+        if (state.nextFollowCheckAtMs && int32(now - state.nextFollowCheckAtMs) < 0) return;
+        state.nextFollowCheckAtMs = now + 200;
+    }
     // Suppress follow movement while a mount attempt is pending or the bot is actively casting
     // a non-melee spell (such as a 1.5s mount cast). Issuing movement while casting immediately
     // aborts the spell cast.
@@ -3890,6 +3904,7 @@ void TryMaintainBuff(Player* bot, uint32 diff, BotAIState& state)
 // specifically to the party leader.
 Unit* FindGroupCombatTarget(Player* bot, Group* group)
 {
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::TargetScan);
     if (!group)
         return nullptr;
 
@@ -4046,6 +4061,7 @@ WorldPersona MakeWorldPersona(Player* bot, BotAIState& state)
 // one of them runs per tick, the one the brain chose.
 void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
 {
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::SoloWorld);
     // Active guild gather order: travel to target area and gather the requested resource
     BotMgr::GuildGatherOrder const* gatherOrder = sBotMgr->GetGuildGatherOrder(bot->GetGUID());
     if (gatherOrder && gatherOrder->remainingCount > 0)
@@ -4235,6 +4251,7 @@ void UpdateSoloWorld(Player* bot, uint32 diff, BotAIState& state)
 // generic spellbook chain forever.
 void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profileRole, BotAIState& state)
 {
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::Offensive);
     bool groupedFollower = bot->GetGroup() && !WorldParties::IsLeader(bot->GetGUID());
     if (bot->IsInCombat() || groupedFollower || state.manualCommand == BotManualCommand::Stay)
     {
@@ -4944,6 +4961,7 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
 
 void UpdateHealer(Player* bot, uint32 diff, BotAIState& state)
 {
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::Healer);
     if (!bot || !bot->IsAlive() || !bot->IsInWorld())
         return;
 
@@ -5668,6 +5686,8 @@ std::string DebugState(Player* bot)
 
 void Update(Player* bot, uint32 diff)
 {
+    CoaBotPerf::Scope perfScope(CoaBotPerf::Metric::AI);
+    if (bot) CoaBotPerf::MarkDispatch(bot->GetGUID().GetRawValue());
     if (!bot || !bot->IsInWorld())
         return;
 
@@ -5763,6 +5783,7 @@ void Update(Player* bot, uint32 diff)
     else if (currentLevel > state.lastLevel)
     {
         state.lastLevel = currentLevel;
+        state.nextProgressionCheckMs = 0;
         // Abilities first: this realm hands them out through the Book of Ascension rather than on
         // level-up, and a talent pick can depend on an ability the book only just taught.
         BotProgression::OnLevelUp(bot, currentLevel);
@@ -5876,6 +5897,8 @@ void LoadGatherLootData()
 
 void Forget(ObjectGuid botGuid)
 {
+    CoaBotScheduling::Forget(botGuid);
+    CoaBotScheduling::CancelWork(botGuid);
     states.erase(botGuid);
     BotAI::ForgetRotationState(botGuid);
     SpellResolver::Invalidate(botGuid);
@@ -6207,7 +6230,10 @@ void ClearRoleOverride(ObjectGuid botGuid)
 
 void SetManualCommand(ObjectGuid botGuid, BotManualCommand command, ObjectGuid pullTarget)
 {
+    CoaBotPerf::MarkCommand(botGuid.GetRawValue());
+    CoaBotScheduling::Notify(botGuid);
     BotAIState& state = states[botGuid];
+    state.nextFollowCheckAtMs = 0;
     state.manualCommand = command;
     state.pullTargetGuid = (command == BotManualCommand::Pull) ? pullTarget : ObjectGuid::Empty;
 

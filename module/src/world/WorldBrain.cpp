@@ -1,4 +1,6 @@
 #include "WorldBrain.h"
+#include "BotScheduling.h"
+#include "BotWorkBudget.h"
 #include "engine/BotDebugLog.h"
 #include "BotMovement.h"
 #include "BotZoneProgression.h"
@@ -678,6 +680,8 @@ namespace WorldBrain
 
         if (now >= state.nextPlanMs)
         {
+            CoaBotScheduling::WorkScope work(CoaBotScheduling::Work::Planner, bot, (uint64(bot->GetMapId()) << 32) | bot->GetInstanceId());
+            if (!work) return ChooseActivity(bot, state);
             if (now >= state.nextLogCleanupMs)
             {
                 state.nextLogCleanupMs = now + LOG_CLEANUP_MS;
@@ -689,7 +693,8 @@ namespace WorldBrain
             // Nothing found: back off exponentially while the bot does something else meanwhile.
             uint32 backoff = std::min<uint32>(MAX_EMPTY_PLAN_BACKOFF_MS,
                 cfg.plannerMaxMs << std::min<uint32>(state.emptyPlans, 5));
-            state.nextPlanMs = now + (task.IsValid() ? RollRange(state, 0x91a0, cfg.plannerMinMs, cfg.plannerMaxMs)
+            bool distant = CoaBotScheduling::Far(bot);
+            state.nextPlanMs = now + (task.IsValid() ? RollRange(state, 0x91a0, distant ? 5000 : cfg.plannerMinMs, distant ? 15000 : cfg.plannerMaxMs)
                                                      : RollRange(state, 0x91a1, backoff / 2, backoff));
             if (!task.IsValid())
                 ++state.emptyPlans;
