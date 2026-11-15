@@ -13,6 +13,7 @@
 
 #include "Define.h"
 #include "ObjectGuid.h"
+#include <string>
 
 class ChatHandler;
 class Player;
@@ -88,6 +89,8 @@ ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatH
 void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler = nullptr);
 ObjectGuid::LowType SpawnClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler = nullptr);
 
+bool IsValidBuildUuid(std::string const& id);
+bool ValidateCustomSpawnParams(uint32 count, uint8 level, uint8 forcedClassId, uint32 forcedSpec, std::string const& requestedArchetype, std::string& errorOut);
 void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requestedBuildId = "");
 void ApplyRebornBotSetup(Player* bot, uint8 level, uint32 forcedSpec = 0);
 void SpawnCustomBots(uint32 count, uint8 level, uint8 forcedClassId = 0, uint32 forcedSpec = 0, std::string const& requestedArchetype = "", ChatHandler* handler = nullptr);

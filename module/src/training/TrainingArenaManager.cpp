@@ -30,6 +30,7 @@
 #include "SpellMgr.h"
 #include "ThreatManager.h"
 #include "WorldSession.h"
+#include "engine/BotRuleset.h"
 #include "engine/CombatContext.h"
 #include "engine/SpecStrategyRegistry.h"
 #include "engine/SpellPredicates.h"
@@ -993,7 +994,8 @@ void Command(ChatHandler* h, std::string const& args)
                 throw std::runtime_error("Participant " + std::to_string(memberGuid.GetCounter()) +
                     " must be unguilded, outside BG/taxi/teleport");
             uint32 spec = p->GetPlayerSetting("core.ascension_active_spec", 0).value;
-            if (!spec || !BotTalentBuilds::GetBuild(p->getClass(), spec))
+            BotAI::BotRuleset const ruleset = BotAI::GetBotRuleset(p);
+            if (!spec || (ruleset == BotAI::BotRuleset::CoA && !BotTalentBuilds::GetBuild(p->getClass(), spec)))
                 throw std::runtime_error("Participant needs an existing curated specialization build");
             if (p->GetGroup() && (!scenario.group || p->GetGroup() != bot->GetGroup() || p->GetGroup()->GetMembersCount() != 5))
                 throw std::runtime_error("Use an ungrouped candidate or an existing five-bot training party");
@@ -1018,9 +1020,17 @@ void Command(ChatHandler* h, std::string const& args)
             BotAI::ClearRoleOverride(m.guid);
             BotAI::SetRole(m.guid, BotAI::GetRoleForClassSpec(p->getClass(), m.spec));
             m.role = Role(p);
-            p->GiveLevel(uint8(sConfigMgr->GetOption<uint32>("CoaBots.Training.DefaultLevel", 60)));
-            BotProgression::LearnAbilitiesFromBook(p);
-            BotTalentBuilds::ApplyBuildForLevel(p, p->GetLevel());
+            BotAI::BotRuleset const ruleset = BotAI::GetBotRuleset(p);
+            if (ruleset == BotAI::BotRuleset::CoA)
+            {
+                p->GiveLevel(uint8(sConfigMgr->GetOption<uint32>("CoaBots.Training.DefaultLevel", 60)));
+                BotProgression::LearnAbilitiesFromBook(p);
+                BotTalentBuilds::ApplyBuildForLevel(p, p->GetLevel());
+            }
+            else if (ruleset == BotAI::BotRuleset::Reborn)
+            {
+                BotSpawn::ApplyRebornBotSetup(p, p->GetLevel(), m.spec);
+            }
             p->UpdateSkillsForLevel();
             m.level = p->GetLevel();
             for (auto const& [spellId, state] : p->GetSpellMap())

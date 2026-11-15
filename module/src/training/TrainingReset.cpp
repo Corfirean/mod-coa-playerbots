@@ -1,4 +1,5 @@
 #include "training/TrainingSession.h"
+#include "AscensionMysticEnchant.h"
 #include "BotAI.h"
 #include "CharmInfo.h"
 #include "Item.h"
@@ -62,6 +63,14 @@ void Reset(Player* bot)
         if (Aura* aura = bot->GetAura(id)) aura->Remove();
     if (bot->getClass() == 28 && bot->HasSpell(92141) && !bot->HasAura(92141))
         bot->AddAura(92141, bot);
+    std::vector<AscensionMysticEnchant::GuideEnchant> const recommended =
+        AscensionMysticEnchant::RecommendEnchants(bot, 7);
+    if (!recommended.empty())
+    {
+        for (auto const& ge : recommended)
+            if (ge.Spell && !bot->HasAura(ge.Spell))
+                bot->AddAura(ge.Spell, bot);
+    }
     if (!bot->IsAlive()) bot->ResurrectPlayer(1.0f, false);
     bot->RemoveAllSpellCooldown();
     for (auto const& [id, spell] : bot->GetSpellMap())

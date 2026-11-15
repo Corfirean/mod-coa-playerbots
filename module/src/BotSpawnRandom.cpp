@@ -67,15 +67,154 @@
 
 namespace BotSpawn
 {
+bool IsValidBuildUuid(std::string const& id)
+{
+    if (id.size() != 36)
+        return false;
+    for (std::size_t i = 0; i < 36; ++i)
+    {
+        char const c = id[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23)
+        {
+            if (c != '-')
+                return false;
+        }
+        else
+        {
+            bool const hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!hex)
+                return false;
+        }
+    }
+    return true;
+}
+
+bool ValidateCustomSpawnParams(uint32 count, uint8 level, uint8 forcedClassId, uint32 forcedSpec,
+    std::string const& requestedArchetype, std::string& errorOut)
+{
+    uint32 const maxCount = sConfigMgr->GetOption<uint32>("CoaBots.RandomSpawn.MaxCount", 1000) * 2;
+    if (count == 0 || count > maxCount)
+    {
+        errorOut = Acore::StringFormat("invalid count {} (must be 1..{})", count, maxCount);
+        return false;
+    }
+
+    uint8 const serverMaxLevel = uint8(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL));
+    if (level == 0 || level > serverMaxLevel)
+    {
+        errorOut = Acore::StringFormat("invalid level {} (must be 1..{})", uint32(level), uint32(serverMaxLevel));
+        return false;
+    }
+
+    BotAI::BotRuleset const ruleset = BotAI::GetServerRuleset();
+
+    if (ruleset == BotAI::BotRuleset::Wildcard)
+    {
+        if (forcedClassId != 0 && forcedClassId != 10)
+        {
+            errorOut = Acore::StringFormat("class {} is not valid on Wildcard realm (only class 0 or 10 allowed)", uint32(forcedClassId));
+            return false;
+        }
+        if (forcedSpec > 5)
+        {
+            errorOut = Acore::StringFormat("spec {} is not valid on Wildcard realm (must be 0..5)", forcedSpec);
+            return false;
+        }
+        if (!requestedArchetype.empty())
+        {
+            if (!IsValidBuildUuid(requestedArchetype))
+            {
+                errorOut = Acore::StringFormat("malformed archetype UUID '{}'", requestedArchetype);
+                return false;
+            }
+            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_COA_BUILD_CREATOR_BY_ID);
+            stmt->SetData(0, requestedArchetype);
+            PreparedQueryResult checkRes = CharacterDatabase.Query(stmt);
+            if (!checkRes)
+            {
+                errorOut = Acore::StringFormat("archetype UUID '{}' not found in coa_build_creator", requestedArchetype);
+                return false;
+            }
+        }
+    }
+    else if (ruleset == BotAI::BotRuleset::Reborn)
+    {
+        if (!requestedArchetype.empty())
+        {
+            errorOut = "Wildcard archetype UUID is not valid on Warcraft Reborn realm";
+            return false;
+        }
+        if (forcedClassId != 0 && ((forcedClassId < 1 || forcedClassId > 11) || forcedClassId == 10))
+        {
+            errorOut = Acore::StringFormat("class {} is not valid on Warcraft Reborn realm (only stock classes 1..9, 11 allowed)", uint32(forcedClassId));
+            return false;
+        }
+        if (forcedSpec != 0)
+        {
+            if (forcedClassId == 0)
+            {
+                if (forcedSpec > 4)
+                {
+                    errorOut = Acore::StringFormat("spec {} is not valid on Warcraft Reborn realm (must be 1..4)", forcedSpec);
+                    return false;
+                }
+            }
+            else
+            {
+                uint32 const maxSpecs = (forcedClassId == CLASS_SHAMAN || forcedClassId == CLASS_WARLOCK || forcedClassId == CLASS_DRUID) ? 4 : 3;
+                if (forcedSpec > maxSpecs)
+                {
+                    errorOut = Acore::StringFormat("spec {} is not valid for class {} on Warcraft Reborn realm (must be 1..{})", forcedSpec, uint32(forcedClassId), maxSpecs);
+                    return false;
+                }
+            }
+        }
+    }
+    else
+    {
+        if (!requestedArchetype.empty())
+        {
+            errorOut = "Wildcard archetype UUID is not valid on Conquest of Azeroth realm";
+            return false;
+        }
+        if (forcedClassId != 0 && (forcedClassId < 12 || forcedClassId > 32))
+        {
+            errorOut = Acore::StringFormat("class {} is not valid on Conquest of Azeroth realm (only custom classes 12..32 allowed)", uint32(forcedClassId));
+            return false;
+        }
+        if (forcedSpec != 0 && forcedClassId != 0)
+        {
+            auto const specs = BotAI::GetAllSpecs(forcedClassId);
+            bool found = false;
+            for (auto const& s : specs)
+            {
+                if (s.specId == forcedSpec)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+            {
+                errorOut = Acore::StringFormat("spec {} does not belong to class {} on Conquest of Azeroth realm", forcedSpec, uint32(forcedClassId));
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requestedBuildId)
 {
     if (!bot)
         return;
 
-    // 1. Ensure character game mode flag 64 (Wildcard) is set
+    // 1. Ensure character game mode flag 64 (Wildcard) is set and Mystic Enchants are cleared
     CharacterDatabase.DirectExecute(
         "REPLACE INTO coa_character_gamemode (guid, gameMode) VALUES ({}, 64)",
         bot->GetGUID().GetCounter());
+    AscensionMysticEnchant::ClearActivePreset(bot);
 
     bot->LearnDefaultSkills();
 
@@ -105,17 +244,23 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requeste
 
     if (!requestedBuildId.empty())
     {
-        QueryResult buildRes = CharacterDatabase.Query(
-            "SELECT entry, id, name, roles, primary_stat FROM coa_build_creator WHERE id = '{}' LIMIT 1",
-            requestedBuildId);
+        if (!IsValidBuildUuid(requestedBuildId))
+        {
+            LOG_ERROR("module.coa-playerbots", "BotMgr: rejected malformed archetype UUID '{}' for bot '{}' (guid {})!",
+                requestedBuildId, bot->GetName(), bot->GetGUID().GetCounter());
+            return;
+        }
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_COA_BUILD_CREATOR_BY_ID);
+        stmt->SetData(0, requestedBuildId);
+        PreparedQueryResult buildRes = CharacterDatabase.Query(stmt);
         if (buildRes)
         {
             Field* fields = buildRes->Fetch();
             chosenEntry = fields[0].Get<uint32>();
             chosenId = fields[1].Get<std::string>();
             chosenName = fields[2].Get<std::string>();
-            chosenRoles = fields[3].Get<uint32>();
-            chosenPrimaryStat = fields[4].Get<uint32>();
+            chosenRoles = fields[3].Get<uint8>();
+            chosenPrimaryStat = fields[4].Get<uint8>();
         }
         else
         {
@@ -138,8 +283,8 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requeste
             chosenEntry = fields[0].Get<uint32>();
             chosenId = fields[1].Get<std::string>();
             chosenName = fields[2].Get<std::string>();
-            chosenRoles = fields[3].Get<uint32>();
-            chosenPrimaryStat = fields[4].Get<uint32>();
+            chosenRoles = fields[3].Get<uint8>();
+            chosenPrimaryStat = fields[4].Get<uint8>();
         }
     }
 
@@ -183,8 +328,8 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requeste
             chosenEntry = fields[0].Get<uint32>();
             chosenId = fields[1].Get<std::string>();
             chosenName = fields[2].Get<std::string>();
-            chosenRoles = fields[3].Get<uint32>();
-            chosenPrimaryStat = fields[4].Get<uint32>();
+            chosenRoles = fields[3].Get<uint8>();
+            chosenPrimaryStat = fields[4].Get<uint8>();
         }
     }
 
@@ -432,7 +577,7 @@ void ApplyRebornBotSetup(Player* bot, uint8 level, uint32 forcedSpec)
 
 namespace
 {
-void ApplyFreshBotSetup(Player* bot, uint8 level);
+void ApplyFreshBotSetup(Player* bot, uint8 level, uint32 forcedSpec = 0, std::string const& requestedArchetype = "");
 
 // Available races for bot spawning.
 // Respects custom races switches and bot exclusion settings:
@@ -1206,6 +1351,16 @@ std::vector<std::pair<std::string, std::string>> FreshCharacterOverrides(uint8 l
 // papered over.
 ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId = 0, uint32 forcedSpec = 0, std::string const& requestedArchetype = "")
 {
+    uint8 const checkLevel = level ? level : uint8(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL));
+    std::string validationError;
+    if (!ValidateCustomSpawnParams(1, checkLevel, forcedClassId, forcedSpec, requestedArchetype, validationError))
+    {
+        LOG_ERROR("module.coa-playerbots", "BotMgr: rejected bot creation request: {}", validationError);
+        if (handler)
+            handler->PSendSysMessage("BotMgr: rejected bot creation request: {}.", validationError);
+        return 0;
+    }
+
     auto const allowedRaces = GetValidBotRaces();
     if (std::find(allowedRaces.begin(), allowedRaces.end(), race) == allowedRaces.end())
         return 0;
@@ -1303,22 +1458,14 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
             newGuid, spec);
         if (!requestedArchetype.empty())
         {
-            QueryResult checkRes = CharacterDatabase.Query(
-                "SELECT 1 FROM coa_build_creator WHERE id = '{}' LIMIT 1",
-                requestedArchetype);
-            if (checkRes)
-            {
-                uint32 specIdx = (spec > 0) ? (spec - 1) : 0;
-                CharacterDatabase.DirectExecute(
-                    "REPLACE INTO coa_build_creator_active (guid, spec, build_id, flag_1, flag_2) VALUES ({}, {}, '{}', 1, 0)",
-                    newGuid, specIdx, requestedArchetype);
-            }
-            else
-            {
-                LOG_ERROR("module.coa-playerbots",
-                    "BotMgr: requested archetype '{}' does not exist in coa_build_creator; skipping coa_build_creator_active record.",
-                    requestedArchetype);
-            }
+            uint32 specIdx = (spec > 0) ? (spec - 1) : 0;
+            CharacterDatabasePreparedStatement* activeStmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_COA_BUILD_CREATOR_ACTIVE);
+            activeStmt->SetData(0, newGuid);
+            activeStmt->SetData(1, uint8(specIdx));
+            activeStmt->SetData(2, requestedArchetype);
+            activeStmt->SetData(3, 1);
+            activeStmt->SetData(4, 0);
+            CharacterDatabase.Execute(activeStmt);
         }
     }
 
@@ -1433,6 +1580,15 @@ void SpawnCustomBots(uint32 count, uint8 level, uint8 forcedClassId, uint32 forc
         return;
     }
 
+    std::string validationError;
+    if (!ValidateCustomSpawnParams(count, level, forcedClassId, forcedSpec, requestedArchetype, validationError))
+    {
+        LOG_ERROR("module.coa-playerbots", "BotMgr: spawncustom rejected: {}", validationError);
+        if (handler)
+            handler->PSendSysMessage("BotMgr: spawncustom rejected: {}.", validationError);
+        return;
+    }
+
     uint32 created = 0;
     for (uint32 i = 0; i < count; ++i)
     {
@@ -1443,19 +1599,7 @@ void SpawnCustomBots(uint32 count, uint8 level, uint8 forcedClassId, uint32 forc
 
         ++created;
         sBotMgr->SpawnBot(newGuid, handler, [level, forcedSpec, requestedArchetype](Player* bot) {
-            BotAI::BotRuleset ruleset = BotAI::GetBotRuleset(bot);
-            if (ruleset == BotAI::BotRuleset::Wildcard)
-            {
-                ApplyWildcardBotSetup(bot, level, requestedArchetype);
-            }
-            else if (ruleset == BotAI::BotRuleset::Reborn)
-            {
-                ApplyRebornBotSetup(bot, level, forcedSpec);
-            }
-            else
-            {
-                ApplyFreshBotSetup(bot, level);
-            }
+            ApplyFreshBotSetup(bot, level, forcedSpec, requestedArchetype);
         });
     }
 
@@ -1787,7 +1931,7 @@ void GrantShapedProfessions(Player* bot, uint8 level)
 // callback -- it needs a real logged-in Player for learnSpell/SetSkill/StoreNewItemInBestSlots. The
 // order matters: bags before anything that goes in them, abilities from the book before talents
 // (a pick can build on an ability), skills before recipes (recipes are gated on skill).
-void ApplyFreshBotSetup(Player* bot, uint8 level)
+void ApplyFreshBotSetup(Player* bot, uint8 level, uint32 forcedSpec, std::string const& requestedArchetype)
 {
     if (!bot)
         return;
@@ -1808,11 +1952,11 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
     BotAI::BotRuleset ruleset = BotAI::GetBotRuleset(bot);
     if (ruleset == BotAI::BotRuleset::Wildcard)
     {
-        ApplyWildcardBotSetup(bot, level);
+        ApplyWildcardBotSetup(bot, level, requestedArchetype);
     }
     else if (ruleset == BotAI::BotRuleset::Reborn)
     {
-        ApplyRebornBotSetup(bot, level);
+        ApplyRebornBotSetup(bot, level, forcedSpec);
     }
     else
     {
@@ -1820,7 +1964,7 @@ void ApplyFreshBotSetup(Player* bot, uint8 level)
 
         if (level >= 10)
         {
-            uint32 activeSpec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+            uint32 activeSpec = forcedSpec ? forcedSpec : bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
             if (!activeSpec)
             {
                 activeSpec = BotTalentBuilds::ChooseSpecForBot(bot);
