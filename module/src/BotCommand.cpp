@@ -64,6 +64,7 @@ public:
             { "loginall",     HandleBotLoginAllCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "spawncancel",  HandleBotSpawnCancelCommand,  rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "purgeall",     HandleBotPurgeAllCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "purgecustomraces", HandleBotPurgeCustomRacesCommand, rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "listauras",    HandleBotListAurasCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "runchat",      HandleBotRunChatCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "hasspells",    HandleBotHasSpellsCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -576,6 +577,12 @@ public:
     static bool HandleBotPurgeAllCommand(ChatHandler* handler)
     {
         sBotMgr->PurgeAllBots(handler);
+        return true;
+    }
+
+    static bool HandleBotPurgeCustomRacesCommand(ChatHandler* handler)
+    {
+        sBotMgr->PurgeCustomRaceBots(handler);
         return true;
     }
 
