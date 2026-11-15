@@ -61,6 +61,15 @@
 
 namespace
 {
+    // A client without the custom races patch crashes on a unit of race 12 or above; the world refuses them.
+    bool CustomRacesOff()
+    {
+        return !sConfigMgr->GetOption<bool>("CoACustomRaces.Enable", false);
+    }
+}
+
+namespace
+{
 // Acore::NearestHostileUnitCheck (GridNotifiers.h) does exactly this shrinking-radius
 // "nearest" search already, but its constructor only accepts a Creature const* -- a bot is a
 // Player, so it can't be reused directly. This is the same check, generalized to any Unit.
@@ -781,6 +790,9 @@ ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, 
         uint8 race = fields[1].Get<uint8>();
 
         if (team != TEAM_NEUTRAL && Player::TeamIdForRace(race) != team)
+            continue;
+
+        if (race > 11 && CustomRacesOff())
             continue;
 
         if (excludedGuids.count(guid) || FindBotSession(guid))
@@ -3217,9 +3229,9 @@ void BotMgr::QueueAllBotsForAutoLogin()
         "SELECT c.guid FROM characters c "
         "LEFT JOIN guild_member gm ON c.guid = gm.guid "
         "LEFT JOIN mod_coa_bot_guild_gather_orders go ON c.guid = go.bot_guid "
-        "WHERE c.account IN ({}) "
+        "WHERE c.account IN ({}){} "
         "ORDER BY (gm.guildid IS NOT NULL OR go.bot_guid IS NOT NULL) DESC, c.guid ASC",
-        idList
+        idList, CustomRacesOff() ? " AND c.race BETWEEN 1 AND 11" : ""
     );
     if (!chars)
         return;
