@@ -205,6 +205,7 @@ public:
     // ones with .botcmd spawnrandom or spawnleveled -- does not create any replacement bots
     // itself.
     void PurgeAllBots(ChatHandler* handler);
+    void PurgeCustomRaceBots(ChatHandler* handler);
 
     // Logs every online bot out and forgets the queued automatic logins, WITHOUT deleting anything: the bot characters
     // stay in the database and come back with the next auto-login or spawnbot. Returns how many were logged out.

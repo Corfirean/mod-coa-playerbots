@@ -2120,6 +2120,45 @@ uint32 BotMgr::DespawnAllBots()
     return uint32(onlineGuids.size());
 }
 
+void BotMgr::PurgeCustomRaceBots(ChatHandler* handler)
+{
+    std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+    QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE id > 2 AND username LIKE '{}%'", accountPrefix);
+    if (!accounts)
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: deleted 0 custom race bot(s).");
+        return;
+    }
+    std::ostringstream accountIdList;
+    do
+    {
+        accountIdList << (*accounts)[0].Get<uint32>() << ",";
+    } while (accounts->NextRow());
+    std::string idList = accountIdList.str();
+    idList.pop_back();
+
+    QueryResult chars = CharacterDatabase.Query(
+        "SELECT guid, account FROM characters WHERE account IN ({}) AND race > 11", idList);
+    uint32 deleted = 0;
+    if (chars)
+    {
+        do
+        {
+            Field* fields = chars->Fetch();
+            ObjectGuid::LowType guid = fields[0].Get<uint32>();
+            uint32 accountId = fields[1].Get<uint32>();
+            if (FindBotSession(guid))
+                DespawnBot(guid, nullptr);
+            Player::DeleteFromDB(guid, accountId, true, true);
+            ++deleted;
+        } while (chars->NextRow());
+    }
+    LOG_INFO("module.coa-playerbots", "BotMgr: deleted {} custom race bot(s).", deleted);
+    if (handler)
+        handler->PSendSysMessage("BotMgr: deleted {} custom race bot(s).", deleted);
+}
+
 void BotMgr::PurgeAllBots(ChatHandler* handler)
 {
     // Despawn every online bot first -- every session in _botSessions is one of ours (BotMgr
