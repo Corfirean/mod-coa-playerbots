@@ -771,7 +771,7 @@ bool BotMgr::IsProtectedBot(ObjectGuid::LowType charLowGuid) const
     BotProtectionPolicy::ProtectionFacts facts;
 
     ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(charLowGuid);
-    if (Player const* onlineBot = FindBotPlayer(charLowGuid))
+    if (Player* onlineBot = FindBotPlayer(charLowGuid))
     {
         facts.inGuild = onlineBot->GetGuildId() != 0;
         facts.hasGuildInvite = onlineBot->GetGuildIdInvited() != 0;

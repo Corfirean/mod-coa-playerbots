@@ -769,6 +769,9 @@ struct ClassTemplates
 // for those against 12-25 for everything else.
 uint32 FindOrCreateBotAccount(std::string const& prefix, uint32 charactersPerAccount, ChatHandler* handler,
     BotCreationPolicy::Source source = BotCreationPolicy::Source::ImplicitSystem, bool inExplicitBatch = false);
+ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId = 0,
+    uint32 forcedSpec = 0, std::string const& requestedArchetype = "",
+    BotCreationPolicy::Source source = BotCreationPolicy::Source::ImplicitSystem, bool inExplicitBatch = false);
 std::string Zeros(uint32 count);
 
 std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster(bool allowTemplateSynthesis = false)
@@ -1367,9 +1370,9 @@ std::vector<std::pair<std::string, std::string>> FreshCharacterOverrides(uint8 l
 // substituting a different class when no matching-faction template exists for it. Callers that
 // need every class covered (SpawnClassFleet) need to know which ones are missing, not have gaps
 // papered over.
-ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId = 0,
-    uint32 forcedSpec = 0, std::string const& requestedArchetype = "",
-    BotCreationPolicy::Source source = BotCreationPolicy::Source::ImplicitSystem, bool inExplicitBatch = false)
+ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId,
+    uint32 forcedSpec, std::string const& requestedArchetype,
+    BotCreationPolicy::Source source, bool inExplicitBatch)
 {
     BotCreationPolicy::Decision const policy =
         BotCreationPolicy::Evaluate(source, handler != nullptr, inExplicitBatch, sBotMgr->BotsEnabled());
