@@ -26,6 +26,7 @@
  */
 
 #include "BotSpawnRandom.h"
+#include "BotLevelBracketPolicy.h"
 #include "BotGear.h"
 #include "BotPerformance.h"
 #include "AccountMgr.h"
@@ -2078,19 +2079,27 @@ std::vector<LevelBracket> LevelBrackets()
 }
 
 // Weighted level roll for SpawnLeveledBots, driven by CoaBots.LeveledSpawn.Brackets and never above
-// the server's max player level.
+// the server's max player level (PB-003: exclude brackets above cap before weighted selection).
 uint8 RollWeightedLevel(uint8 serverMaxLevel = 80)
 {
-    std::vector<LevelBracket> brackets = LevelBrackets();
+    std::vector<LevelBracket> const rawBrackets = LevelBrackets();
+    std::vector<BotLevelBracketPolicy::Bracket> policyInput;
+    policyInput.reserve(rawBrackets.size());
+    for (LevelBracket const& b : rawBrackets)
+        policyInput.push_back({ b.low, b.high, b.weight });
+
+    std::vector<BotLevelBracketPolicy::Bracket> const brackets =
+        BotLevelBracketPolicy::FilterForCap(policyInput, serverMaxLevel);
+
     uint32 total = 0;
-    for (LevelBracket const& bracket : brackets)
+    for (auto const& bracket : brackets)
         total += bracket.weight;
 
     uint32 roll = RandomInt(1, total);
-    for (LevelBracket const& bracket : brackets)
+    for (auto const& bracket : brackets)
     {
         if (roll <= bracket.weight)
-            return std::min<uint8>(uint8(RandomInt(bracket.low, bracket.high)), serverMaxLevel);
+            return uint8(RandomInt(bracket.low, bracket.high));
         roll -= bracket.weight;
     }
     return 1;

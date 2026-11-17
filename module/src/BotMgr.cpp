@@ -529,7 +529,8 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
                     bot->SetGMVisible(false);
                     BotAI::SetSuspended(bot->GetGUID(), true);
                 }
-                else if (!sConfigMgr->GetOption<bool>("CoaBots.Benchmark.PreserveLoginPosition", false))
+                else if (!sConfigMgr->GetOption<bool>("CoaBots.Benchmark.PreserveLoginPosition", false)
+                    && !IsProtectedBot(bot))
                     BotZoneProgression::RelocateBot(bot, true /*force initial relocation*/);
 
                 for (auto& onReady : callbacks)
