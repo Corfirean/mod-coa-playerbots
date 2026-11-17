@@ -269,15 +269,10 @@ void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueue
         return;
     }
 
-    uint8 race = PickRaceForTeam(team);
-    ObjectGuid::LowType newGuid = BotSpawn::CreateOneRandomBot(race, nullptr);
-    if (!newGuid)
-    {
-        LOG_ERROR("module.coa-playerbots", "BotBGFill: could not create a reserve bot for team {}.", uint32(team));
-        return;
-    }
-    sBotMgr->SpawnBot(newGuid, nullptr);
-    pendingLogins.push_back({ newGuid, bgTypeId, bgQueueTypeId, bracketEntry });
+    // PB-001: never create new bot accounts or characters when the existing pool has no eligible bot.
+    LOG_DEBUG("module.coa-playerbots",
+        "BotBGFill: no eligible existing bot for team {} (levels {}-{}); skipping without creating new bots.",
+        uint32(team), uint32(minLvl), uint32(maxLvl));
 }
 
 void TopOffQueue(BattlegroundTypeId bgTypeId, BattlegroundQueueTypeId bgQueueTypeId, Battleground* bgTemplate,

@@ -251,22 +251,10 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
         return;
     }
 
-    uint8 race = PickRaceForTeam(team);
-    ObjectGuid::LowType newGuid = BotSpawn::CreateOneRandomBot(race, nullptr);
-    if (!newGuid)
-    {
-        LOG_ERROR("module.coa-playerbots", "BotLfgFill: could not create reserve dps bot for team {}.", uint32(team));
-        return;
-    }
-
-    if (itOp != activeOperations.end())
-    {
-        ++itOp->second.creationAttempts;
-        itOp->second.spawnedBotGuids.insert(newGuid);
-    }
-
-    sBotMgr->SpawnBot(newGuid, nullptr);
-    pendingLogins.push_back({ newGuid, roleBit, dungeons, 0, opId });
+    // PB-001: never create new bot accounts or characters when the existing pool has no eligible bot.
+    LOG_DEBUG("module.coa-playerbots",
+        "BotLfgFill: no eligible existing bot for team {} role {} (levels {}-{}); skipping without creating new bots.",
+        uint32(team), roleBit, uint32(minLvl), uint32(maxLvl));
 }
 
 void ProcessPendingLogins(uint32 diff)
