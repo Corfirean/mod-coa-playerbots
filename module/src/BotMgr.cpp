@@ -380,11 +380,12 @@ BotMgr* BotMgr::instance()
 
 WorldSession* BotMgr::FindBotSession(ObjectGuid::LowType charLowGuid) const
 {
-    for (WorldSession* session : _botSessions)
+    auto itr = _botSessionByLowGuid.find(charLowGuid);
+    if (itr != _botSessionByLowGuid.end())
     {
-        if (Player* bot = session->GetPlayer())
-            if (bot->GetGUID().GetCounter() == charLowGuid)
-                return session;
+        WorldSession* session = itr->second;
+        if (session && session->GetPlayer() && session->GetPlayer()->GetGUID().GetCounter() == charLowGuid)
+            return session;
     }
     return nullptr;
 }
@@ -497,6 +498,7 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
     }
 
     _botSessions.push_back(botSession);
+    _botSessionByLowGuid[charLowGuid] = botSession;
     auto& callbacks = _pendingBotLogins[charLowGuid];
     if (onReady) callbacks.push_back(std::move(onReady));
 
@@ -2147,6 +2149,7 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
     session->LogoutPlayer(true);
     delete session;
     _botSessions.erase(itr);
+    _botSessionByLowGuid.erase(charLowGuid);
     _aiWaitMs.erase(botGuid);
     CoaBotScheduling::Forget(botGuid);
     // Also drop it from the pending-teleport-ack queue if it's there -- otherwise
