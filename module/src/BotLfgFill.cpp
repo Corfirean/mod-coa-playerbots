@@ -201,9 +201,8 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
         }
 
         LOG_INFO("module.coa-playerbots.lfgfill",
-            "BotLfgFill: no online {} bot available for team {} (none to respec either).",
+            "BotLfgFill: no online {} bot available for team {} (trying offline pool).",
             roleBit == lfg::PLAYER_ROLE_TANK ? "tank" : "healer", uint32(team));
-        return;
     }
 
     // Pass 3: Damage role. Try every remaining eligible candidate.

@@ -187,16 +187,16 @@ void PortBotIntoBattleground(Player* bot, BattlegroundQueueTypeId bgQueueTypeId)
 }
 
 // Replicates HandleBattlemasterJoinOpcode's solo-join branch for a bot already online.
-void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueTypeId bgQueueTypeId,
+bool JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueTypeId bgQueueTypeId,
     PvPDifficultyEntry const* bracketEntry)
 {
     Battleground* bgTemplate = sBattlegroundMgr->GetBattlegroundTemplate(bgTypeId);
     if (!bgTemplate || bot->InBattleground() || bot->InBattlegroundQueueForBattlegroundQueueType(bgQueueTypeId))
-        return;
+        return false;
     if (!bot->CanJoinToBattleground(bgTemplate) || !bot->HasFreeBattlegroundQueueId())
-        return;
+        return false;
     if (bracketEntry && (bot->GetLevel() < bracketEntry->minLevel || bot->GetLevel() > bracketEntry->maxLevel))
-        return; // never queue a bot into a bracket its level does not belong to
+        return false; // never queue a bot into a bracket its level does not belong to
 
     BattlegroundQueue& bgQueue = sBattlegroundMgr->GetBattlegroundQueue(bgQueueTypeId);
 
@@ -215,11 +215,11 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
     // every possible caller.
     GroupQueueInfo existingInfo;
     if (bgQueue.GetPlayerGroupInfoData(bot->GetGUID(), &existingInfo))
-        return;
+        return false;
 
     GroupQueueInfo* ginfo = bgQueue.AddGroup(bot, nullptr, bgTypeId, bracketEntry, 0, false, false, 0, 0);
     if (!ginfo)
-        return;
+        return false;
     if (bot->GetPlayerSetting("coa.bot.gear", 0).value != 1)
     {
         bot->UpdatePlayerSetting("coa.bot.gear", 0, 1);
@@ -232,6 +232,7 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
         bot->GetName(), uint32(bot->GetTeamId()), uint32(bgTypeId));
 
     queuedBots.push_back({ bot->GetGUID().GetCounter(), bgTypeId, bgQueueTypeId, bracketEntry->GetBracketId() });
+    return true;
 }
 
 // Finds an already-online, idle bot of the given faction and queues it; if none exists,
@@ -254,8 +255,8 @@ void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueue
         // and even level 80 bots), so only bots whose own level fits the bracket are taken.
         if (bot->GetLevel() < minLvl || bot->GetLevel() > maxLvl)
             continue;
-        JoinBotToQueue(bot, bgTypeId, bgQueueTypeId, bracketEntry);
-        return;
+        if (JoinBotToQueue(bot, bgTypeId, bgQueueTypeId, bracketEntry))
+            return;
     }
 
     // Reuse an existing offline bot character before creating a brand new one
