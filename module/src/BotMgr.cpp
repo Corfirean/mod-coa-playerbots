@@ -4,6 +4,7 @@
 #include "training/TrainingArenaManager.h"
 #include "engine/BotDebugLog.h"
 #include "BotMgr.h"
+#include "BotProtectionPolicy.h"
 #include "BotGear.h"
 #include <algorithm>
 #include <array>
@@ -759,6 +760,70 @@ Player* BotMgr::FindBotPlayer(ObjectGuid::LowType charLowGuid) const
     return session ? session->GetPlayer() : nullptr;
 }
 
+bool BotMgr::IsProtectedBot(ObjectGuid::LowType charLowGuid) const
+{
+    if (!charLowGuid)
+        return true;
+
+    BotProtectionPolicy::ProtectionFacts facts;
+
+    ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(charLowGuid);
+    if (Player const* onlineBot = FindBotPlayer(charLowGuid))
+    {
+        facts.inGuild = onlineBot->GetGuildId() != 0;
+        facts.hasGuildInvite = onlineBot->GetGuildIdInvited() != 0;
+        facts.inOnlineGroupOrRaid = onlineBot->GetGroup() != nullptr;
+    }
+
+    facts.hasActiveOrder = (_guildGatherOrders.find(guid) != _guildGatherOrders.end())
+        || (_craftOrders.find(guid) != _craftOrders.end())
+        || (!BotEconomy::GoldOrderTask(const_cast<Player*>(FindBotPlayer(charLowGuid))).empty());
+
+    if (BotProtectionPolicy::IsProtected(facts))
+        return true;
+
+    if (QueryResult guildRes = CharacterDatabase.Query("SELECT 1 FROM guild_member WHERE guid = {} LIMIT 1", charLowGuid))
+        facts.inGuild = true;
+
+    if (!facts.inGuild)
+    {
+        if (QueryResult groupRes = CharacterDatabase.Query("SELECT 1 FROM group_member WHERE memberGuid = {} LIMIT 1", charLowGuid))
+            facts.inPersistedGroupOrRaid = true;
+    }
+
+    if (!facts.inGuild && !facts.inPersistedGroupOrRaid)
+    {
+        if (QueryResult friendRes = CharacterDatabase.Query(
+            "SELECT DISTINCT c.account FROM character_social cs "
+            "JOIN characters c ON c.guid = cs.guid "
+            "WHERE cs.friend = {} AND (cs.flags & 1) <> 0", charLowGuid))
+        {
+            std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+            do
+            {
+                uint32 ownerAccountId = (*friendRes)[0].Get<uint32>();
+                QueryResult botAcct = LoginDatabase.Query(
+                    "SELECT 1 FROM account WHERE id = {} AND id > 2 AND username LIKE '{}%' LIMIT 1",
+                    ownerAccountId, accountPrefix);
+                if (!botAcct)
+                {
+                    facts.hasIncomingPlayerFriend = true;
+                    break;
+                }
+            } while (friendRes->NextRow());
+        }
+    }
+
+    return BotProtectionPolicy::IsProtected(facts);
+}
+
+bool BotMgr::IsProtectedBot(Player const* bot) const
+{
+    if (!bot)
+        return true;
+    return IsProtectedBot(bot->GetGUID().GetCounter());
+}
+
 ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, uint8 maxLevel,
     std::unordered_set<ObjectGuid::LowType> const& excludedGuids) const
 {
@@ -776,7 +841,9 @@ ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, 
     idList.pop_back();
 
     std::string query = Acore::StringFormat(
-        "SELECT guid, race, level FROM characters WHERE account IN ({}) AND level BETWEEN {} AND {}",
+        "SELECT guid, race, level FROM characters c WHERE c.account IN ({}) AND c.level BETWEEN {} AND {} "
+        "AND NOT EXISTS (SELECT 1 FROM guild_member gm WHERE gm.guid = c.guid) "
+        "AND NOT EXISTS (SELECT 1 FROM group_member grm WHERE grm.memberGuid = c.guid)",
         idList, uint32(minLevel), uint32(maxLevel));
     QueryResult chars = CharacterDatabase.Query(query);
     if (!chars)
@@ -796,6 +863,9 @@ ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, 
             continue;
 
         if (excludedGuids.count(guid) || FindBotSession(guid))
+            continue;
+
+        if (IsProtectedBot(guid))
             continue;
 
         candidates.push_back(guid);
@@ -3692,7 +3762,7 @@ void BotMgr::Update(uint32 diff)
     for (WorldSession* session : _botSessions)
     {
         Player* bot = session->GetPlayer();
-        LOG_INFO("module.coa-playerbots", "BotMgr heartbeat: account {} -> {}",
+        LOG_DEBUG("module.coa-playerbots", "BotMgr heartbeat: account {} -> {}",
             session->GetAccountId(),
             bot ? (bot->IsInWorld() ? "in world" : "player exists, not in world") : "no player yet (login pending)");
     }

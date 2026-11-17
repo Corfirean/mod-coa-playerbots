@@ -433,6 +433,12 @@ public:
     ObjectGuid::LowType FindEligibleOfflineBot(TeamId team, uint8 minLevel = 0, uint8 maxLevel = 80,
         std::unordered_set<ObjectGuid::LowType> const& excludedGuids = {}) const;
 
+    // Unified protection predicate (PB-002): true if the bot is in a guild, has a guild invite,
+    // is in an online or persisted group/raid, is on a real player's friends list, or is executing
+    // an active player/guild order.
+    bool IsProtectedBot(ObjectGuid::LowType charLowGuid) const;
+    bool IsProtectedBot(Player const* bot) const;
+
     // Called every world tick via a WorldScript hook. Auto-accepts any
     // pending group invite and auto-rolls Greed on any pending loot roll for
     // every active bot (both checked every tick, not throttled — a human

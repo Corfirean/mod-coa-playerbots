@@ -246,6 +246,8 @@ void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueue
     {
         if (bot->GetTeamId() != team || !bot->IsAlive())
             continue;
+        if (bot->GetGroup() || sBotMgr->IsProtectedBot(bot))
+            continue;
         if (bot->InBattleground() || bot->InBattlegroundQueue())
             continue;
         // The queue is the bracket of the player who queued; a bot outside its level range was put there anyway (a level 20 player got level 30+

@@ -155,7 +155,7 @@ void FillRole(uint8 roleBit, TeamId team, lfg::LfgDungeonSet const& dungeons, Ob
             continue;
         if (bot->GetTeamId() != team || !bot->IsAlive())
             continue;
-        if (bot->GetGroup())
+        if (bot->GetGroup() || sBotMgr->IsProtectedBot(bot))
             continue;
         if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE)
             continue;

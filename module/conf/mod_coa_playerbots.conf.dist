@@ -515,7 +515,7 @@ CoaBots.RestrictExpansionZones = 2
 
 BotAI.DynamicEncounters.Enable = 1
 BotAI.DynamicEncounters.ThinkIntervalMs = 5000
-BotAI.DynamicEncounters.RareScanIntervalMs = 20000
+BotAI.DynamicEncounters.RareHunter.ScanIntervalMs = 20000
 
 BotAI.DynamicEncounters.AssassinContract.Enable = 1
 BotAI.DynamicEncounters.TheWatcher.Enable = 1
@@ -532,50 +532,51 @@ BotAI.DynamicEncounters.RareHunter.Enable = 1
 BotAI.DynamicEncounters.MysteryEncounter.Enable = 1
 
 BotAI.DynamicEncounters.MaxGlobalActive = 12
-BotAI.DynamicEncounters.MaxActivePerMap = 4
-BotAI.DynamicEncounters.MaxActiveNearPlayer = 1
+BotAI.DynamicEncounters.MaxMapActive = 4
+BotAI.DynamicEncounters.MaxPerPlayerActive = 1
 
-BotAI.DynamicEncounters.PlayerCooldownSec = 900
-BotAI.DynamicEncounters.PlayerHostileCooldownSec = 1500
+BotAI.DynamicEncounters.PersonalCooldownSec = 900
 BotAI.DynamicEncounters.BotCooldownSec = 600
 BotAI.DynamicEncounters.TypeCooldownSec = 300
 
-BotAI.DynamicEncounters.MaxLevelDiffHostile = 4
-BotAI.DynamicEncounters.MaxLevelDiffAmbient = 8
-BotAI.DynamicEncounters.MaxPlayerPartySizeForSoloHostile = 2
+BotAI.DynamicEncounters.MaxLevelDiff = 4
+BotAI.DynamicEncounters.AssassinContract.MaxPlayerPartySize = 2
 BotAI.DynamicEncounters.SearchRadiusYards = 220
 BotAI.DynamicEncounters.MaxChaseDistanceYards = 280
-BotAI.DynamicEncounters.MinDistanceFromCapitalYards = 180
+BotAI.DynamicEncounters.MinCityDistanceYards = 180
 
 BotAI.DynamicEncounters.PrepareTimeoutSec = 90
 BotAI.DynamicEncounters.ActiveTimeoutSec = 180
 BotAI.DynamicEncounters.ResolveTimeoutSec = 20
+BotAI.DynamicEncounters.Caravan.TimeoutSec = 300
 
 BotAI.DynamicEncounters.Narrator.Enable = 1
 BotAI.DynamicEncounters.Narrator.PlayerCooldownSec = 120
 BotAI.DynamicEncounters.Narrator.BotCooldownSec = 45
-BotAI.DynamicEncounters.Narrator.MaxRangeYards = 45
+BotAI.DynamicEncounters.Narrator.MaxDistanceYards = 45
 
-BotAI.DynamicEncounters.Bounty.KillThreshold = 3
-BotAI.DynamicEncounters.Bounty.WindowSec = 1200
-BotAI.DynamicEncounters.Bounty.CooldownSec = 1800
+BotAI.DynamicEncounters.BountyHunter.KillScore = 25
+BotAI.DynamicEncounters.BountyHunter.Threshold = 75
+BotAI.DynamicEncounters.BountyHunter.DecayPerMinute = 2
+BotAI.DynamicEncounters.BountyHunter.CooldownSec = 1800
 
-BotAI.DynamicEncounters.Nemesis.MemoryTtlSec = 3600
-BotAI.DynamicEncounters.Nemesis.MaxTrackedPairs = 256
-BotAI.DynamicEncounters.Nemesis.MinKillsForTrigger = 1
+BotAI.DynamicEncounters.Nemesis.TtlSec = 3600
+BotAI.DynamicEncounters.Nemesis.DecayIntervalSec = 300
+BotAI.DynamicEncounters.Nemesis.MinGrudgeScore = 10
 
 BotAI.DynamicEncounters.Caravan.MinMembers = 2
 BotAI.DynamicEncounters.Caravan.MaxMembers = 5
-BotAI.DynamicEncounters.Skirmish.MinPerSide = 2
-BotAI.DynamicEncounters.Skirmish.MaxPerSide = 4
-BotAI.DynamicEncounters.RivalParty.MinMembers = 3
-BotAI.DynamicEncounters.RivalParty.MaxMembers = 5
+BotAI.DynamicEncounters.FactionSkirmish.MinPerSide = 2
+BotAI.DynamicEncounters.FactionSkirmish.MaxPerSide = 4
+BotAI.DynamicEncounters.RivalAdventuringParty.MinMembers = 3
+BotAI.DynamicEncounters.RivalAdventuringParty.MaxMembers = 5
 BotAI.DynamicEncounters.RareHunter.MaxBots = 3
 
-BotAI.DynamicEncounters.Mystery.ChancePermil = 15
-BotAI.DynamicEncounters.Mystery.MorphDisplayId = 0
-BotAI.DynamicEncounters.Mystery.RuneGameObjectEntry = 0
-BotAI.DynamicEncounters.Mystery.SpellVisualId = 0
+BotAI.DynamicEncounters.MysteryEncounter.ChancePermil = 15
+BotAI.DynamicEncounters.MysteryEncounter.CooldownSec = 1200
+BotAI.DynamicEncounters.MysteryEncounter.MorphDisplayId = 0
+BotAI.DynamicEncounters.MysteryEncounter.RuneGameObjectEntry = 0
+BotAI.DynamicEncounters.MysteryEncounter.SpellVisualId = 0
 
 ###################################################################################################
 # Bot strength scaling (dungeons and raids)
