@@ -101,6 +101,12 @@ end
 
 local function RequestRoster()
     rosterRowsData = {}
+    if rosterPage and rosterPage.pageText then
+        rosterPage.pageText:SetText("Loading...")
+    end
+    for _, rowFrame in ipairs(rosterRowFrames) do
+        rowFrame:Hide()
+    end
     SendWire("GETBOTROSTER:" .. tostring(currentRosterPage) .. ":" .. currentRosterFilter)
 end
 

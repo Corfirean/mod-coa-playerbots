@@ -460,20 +460,21 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         std::string filter = (parts.size() >= 3 && !parts[2].empty()) ? parts[2] : "all";
         bool const isGm = commander->GetSession() && commander->GetSession()->GetSecurity() >= SEC_GAMEMASTER;
 
-        struct RosterRow
+        LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GETBOTROSTER page={} filter={}.",
+            commander->GetName(), page, filter);
+
+        struct RosterCandidate
         {
-            ObjectGuid::LowType guid;
-            std::string name;
-            uint32 level;
-            char const* role;
+            Player* bot;
             std::string tag;
             bool prot;
-            std::string activity;
         };
 
-        static char const* const ROLE_NAMES[] = { "DPS", "Tank", "Healer", "Support" };
-        std::vector<RosterRow> matched;
-        for (Player* bot : sBotMgr->GetOnlineBots())
+        std::vector<RosterCandidate> matched;
+        auto const& onlineBots = sBotMgr->GetOnlineBots();
+        matched.reserve(std::min<std::size_t>(onlineBots.size(), 512));
+
+        for (Player* bot : onlineBots)
         {
             if (!bot || !bot->IsInWorld())
                 continue;
@@ -482,12 +483,31 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
             if (!isGm && !sameGroup && !sameGuild)
                 continue;
 
-            std::string tag, activity, castName;
-            classifyBot(bot, tag, activity, castName);
-
             bool const isProt = (bot->GetGuildId() != 0) || (bot->GetGroup() != nullptr)
                 || (sBotMgr->GetGuildGatherOrder(bot->GetGUID()) != nullptr)
                 || (sBotMgr->GetCraftOrder(bot->GetGUID()) != nullptr);
+
+            std::string tag;
+            if (!bot->IsAlive())
+                tag = "dead";
+            else if (WorldEncounterDirector::IsBotInEncounter(bot->GetGUID()))
+                tag = "encounter";
+            else if (bot->IsInCombat())
+                tag = "combat";
+            else
+            {
+                MoveOwner const owner = BotMovement::CurrentOwner(bot);
+                if (owner == MoveOwner::Quest)
+                    tag = "quest";
+                else if (owner == MoveOwner::Gather)
+                    tag = "gather";
+                else if (owner == MoveOwner::Corpse)
+                    tag = "dead";
+                else if (bot->GetGroup())
+                    tag = "grouped";
+                else
+                    tag = "idle";
+            }
 
             if (filter != "all")
             {
@@ -507,17 +527,7 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
                 }
             }
 
-            BotRole r = BotAI::GetRole(bot->GetGUID());
-            char const* roleStr = ROLE_NAMES[r == BotRole::Tank ? 1 : r == BotRole::Healer ? 2 : r == BotRole::Support ? 3 : 0];
-            matched.push_back({
-                bot->GetGUID().GetCounter(),
-                sanitizePipe(bot->GetName()),
-                uint32(bot->GetLevel()),
-                roleStr,
-                tag,
-                isProt,
-                activity
-            });
+            matched.push_back({ bot, std::move(tag), isProt });
         }
 
         constexpr uint32 PAGE_SIZE = 12;
@@ -529,14 +539,24 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         SendCoaBotReply(commander, "BOTROSTER_HDR:" + std::to_string(page) + "|" +
             std::to_string(totalPages) + "|" + std::to_string(total));
 
+        static char const* const ROLE_NAMES[] = { "DPS", "Tank", "Healer", "Support" };
         uint32 const startIdx = page * PAGE_SIZE;
         uint32 const endIdx = std::min<uint32>(total, startIdx + PAGE_SIZE);
         for (uint32 i = startIdx; i < endIdx; ++i)
         {
-            RosterRow const& r = matched[i];
+            RosterCandidate const& c = matched[i];
+            std::string fullTag, activity, castName;
+            classifyBot(c.bot, fullTag, activity, castName);
+            BotRole r = BotAI::GetRole(c.bot->GetGUID());
+            char const* roleStr = ROLE_NAMES[r == BotRole::Tank ? 1 : r == BotRole::Healer ? 2 : r == BotRole::Support ? 3 : 0];
             std::ostringstream rowOut;
-            rowOut << "BOTROSTER_ROW:" << r.guid << "|" << r.name << "|" << r.level << "|"
-                   << r.role << "|" << r.tag << "|" << (r.prot ? 1 : 0) << "|" << r.activity;
+            rowOut << "BOTROSTER_ROW:" << c.bot->GetGUID().GetCounter() << "|"
+                   << sanitizePipe(c.bot->GetName()) << "|"
+                   << uint32(c.bot->GetLevel()) << "|"
+                   << roleStr << "|"
+                   << fullTag << "|"
+                   << (c.prot ? 1 : 0) << "|"
+                   << activity;
             SendCoaBotReply(commander, rowOut.str());
         }
         return;
