@@ -16,4 +16,5 @@ CoABotMapMarkers.lua
 CoABotMapSettings.lua
 CoABotWorldMap.lua
 CoABotUI.lua
+CoABotInspector.lua
 CoAContentScaling.lua

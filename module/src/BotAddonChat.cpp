@@ -27,8 +27,12 @@
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
+#include "Spell.h"
+#include "SpellInfo.h"
 #include "Unit.h"
 #include "WorldPacket.h"
+#include "WorldSession.h"
+#include "world/encounters/WorldEncounterDirector.h"
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -364,10 +368,116 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
             SendCoaBotReply(commander, line);
         return;
     }
+    // MAPEVENTS: CoA World Map Intelligence
     if (verb == "MAPEVENTS")
     {
         for (std::string const& line : sBotMapService->HandleMapEvents(commander, parts))
             SendCoaBotReply(commander, line);
+        return;
+    }
+
+    // GETBOTSTATE:<botGuidLow>: live single-bot activity & status inspector for CoABotInspector.
+    // Allowed for bots in the commander's group/guild, or any bot when commander is a GM.
+    if (verb == "GETBOTSTATE" && parts.size() >= 2)
+    {
+        ObjectGuid::LowType inspectGuid = std::strtoul(parts[1].c_str(), nullptr, 10);
+        Player* targetBot = inspectGuid ? sBotMgr->FindBotPlayer(inspectGuid) : nullptr;
+        if (!targetBot)
+            return;
+
+        bool const isGm = commander->GetSession() && commander->GetSession()->GetSecurity() >= SEC_GAMEMASTER;
+        bool const sameGroup = targetBot->GetGroup() && targetBot->GetGroup() == commander->GetGroup();
+        bool const sameGuild = commander->GetGuildId() && targetBot->GetGuildId() == commander->GetGuildId();
+        if (!isGm && !sameGroup && !sameGuild)
+            return;
+
+        auto sanitize = [](std::string s)
+        {
+            for (char& ch : s)
+                if (ch == '|' || ch == '\n' || ch == '\r')
+                    ch = ' ';
+            return s;
+        };
+
+        static char const* const ROLE_NAMES[] = { "DPS", "Tank", "Healer", "Support" };
+        BotRole role = BotAI::GetRole(targetBot->GetGUID());
+        char const* roleStr = ROLE_NAMES[role == BotRole::Tank ? 1 : role == BotRole::Healer ? 2 : role == BotRole::Support ? 3 : 0];
+
+        uint32 hpPct = uint32(std::max(0.0f, std::min(100.0f, targetBot->GetHealthPct())));
+        Powers pType = targetBot->getPowerType();
+        uint32 maxPower = targetBot->GetMaxPower(pType);
+        uint32 powerPct = maxPower ? uint32((uint64(targetBot->GetPower(pType)) * 100) / maxPower) : 0;
+
+        Spell* curSpell = targetBot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        if (!curSpell)
+            curSpell = targetBot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        std::string castName = (curSpell && curSpell->GetSpellInfo()) ? sanitize(curSpell->GetSpellInfo()->SpellName[0]) : "None";
+
+        Unit* victim = targetBot->GetVictim();
+        Unit* selUnit = victim ? victim : targetBot->GetSelectedUnit();
+        std::string targetName = selUnit ? sanitize(selUnit->GetName()) : "None";
+
+        MoveOwner owner = BotMovement::CurrentOwner(targetBot);
+        auto ownerStr = [](MoveOwner o) -> char const*
+        {
+            switch (o)
+            {
+                case MoveOwner::Combat:     return "Combat";
+                case MoveOwner::Avoidance:  return "Avoidance";
+                case MoveOwner::Quest:      return "Quest";
+                case MoveOwner::Gather:     return "Gather";
+                case MoveOwner::Travel:     return "Travel";
+                case MoveOwner::Corpse:     return "Corpse";
+                case MoveOwner::Encounter:  return "Encounter";
+                case MoveOwner::Ambient:    return "Ambient";
+                case MoveOwner::Battleground: return "Battleground";
+                default:                    return "None";
+            }
+        };
+
+        bool const inEncounter = WorldEncounterDirector::IsBotInEncounter(targetBot->GetGUID());
+        bool const isProtected = sBotMgr->IsProtectedBot(targetBot);
+
+        std::string activity;
+        std::string goldTask = BotEconomy::GoldOrderTask(targetBot);
+        if (!targetBot->IsAlive())
+            activity = targetBot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST) ? "Ghost / Corpse Run" : "Dead";
+        else if (inEncounter)
+            activity = "Dynamic Encounter";
+        else if (targetBot->IsInCombat())
+            activity = "In Combat";
+        else if (castName != "None")
+            activity = "Casting " + castName;
+        else if (!goldTask.empty())
+            activity = sanitize(goldTask);
+        else if (owner == MoveOwner::Quest)
+            activity = "Questing";
+        else if (owner == MoveOwner::Gather)
+            activity = "Gathering";
+        else if (owner == MoveOwner::Travel)
+            activity = "Traveling / Following";
+        else if (owner == MoveOwner::Corpse)
+            activity = "Corpse Run";
+        else if (targetBot->GetGroup())
+            activity = "Following / Ready";
+        else
+            activity = "Idle / Roaming";
+
+        std::ostringstream out;
+        out << "BOTSTATE:" << inspectGuid << "|"
+            << sanitize(targetBot->GetName()) << "|"
+            << uint32(targetBot->GetLevel()) << "|"
+            << roleStr << "|"
+            << hpPct << "|"
+            << powerPct << "|"
+            << (targetBot->IsInCombat() ? 1 : 0) << "|"
+            << castName << "|"
+            << targetName << "|"
+            << ownerStr(owner) << "|"
+            << (inEncounter ? 1 : 0) << "|"
+            << (isProtected ? 1 : 0) << "|"
+            << activity;
+        SendCoaBotReply(commander, out.str());
         return;
     }
 
