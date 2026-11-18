@@ -4202,7 +4202,8 @@ void UpdateOffensive(Player* bot, uint32 diff, BotRole combatRole, BotRole profi
     if (!target || !target->IsAlive() || !bot->IsValidAttackTarget(target))
     {
         MoveOwner activeOwner = BotMovement::CurrentOwner(bot);
-        if (activeOwner == MoveOwner::Combat || bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+        if (activeOwner == MoveOwner::Combat
+            || (activeOwner == MoveOwner::None && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE))
             BotMovement::ForceStopOwner(bot, MoveOwner::Combat);
         if (activeOwner == MoveOwner::Avoidance && !state.flee.fleeing)
             BotMovement::ForceStopOwner(bot, MoveOwner::Avoidance);
@@ -5601,6 +5602,7 @@ void Forget(ObjectGuid botGuid)
     SpecStrategyRegistry::ForgetBot(botGuid);
     BotBattlegroundAI::Forget(botGuid);
     BotMovement::Forget(botGuid);
+    BotEconomy::Forget(botGuid);
     BotWorldBehavior::Forget(botGuid);
     WorldBrain::Forget(botGuid);
 }

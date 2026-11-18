@@ -26,6 +26,7 @@
  */
 
 #include "BotSpawnRandom.h"
+#include "BotLevelBracketPolicy.h"
 #include "BotGear.h"
 #include "BotPerformance.h"
 #include "AccountMgr.h"
@@ -766,10 +767,14 @@ struct ClassTemplates
 // with only one, a class existed for one faction alone, and 311 Horde bots were split across the
 // five classes whose lowest-guid template happened to be Horde -- confirmed live at 52-75 bots each
 // for those against 12-25 for everything else.
-uint32 FindOrCreateBotAccount(std::string const& prefix, uint32 charactersPerAccount, ChatHandler* handler);
+uint32 FindOrCreateBotAccount(std::string const& prefix, uint32 charactersPerAccount, ChatHandler* handler,
+    BotCreationPolicy::Source source = BotCreationPolicy::Source::ImplicitSystem, bool inExplicitBatch = false);
+ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId = 0,
+    uint32 forcedSpec = 0, std::string const& requestedArchetype = "",
+    BotCreationPolicy::Source source = BotCreationPolicy::Source::ImplicitSystem, bool inExplicitBatch = false);
 std::string Zeros(uint32 count);
 
-std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster()
+std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster(bool allowTemplateSynthesis = false)
 {
     std::string prefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
     std::unordered_set<uint32> botAccounts;
@@ -838,7 +843,10 @@ std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster()
         } while (result->NextRow());
     }
 
-    // 3. Self-bootstrapping template synthesis: ensure every required class has at least one template per team
+    // 3. Self-bootstrapping template synthesis: ONLY permitted during explicit admin spawn flows (PB-001).
+    if (!allowTemplateSynthesis)
+        return roster;
+
     uint32 charactersPerAccount = sWorld->getIntConfig(CONFIG_CHARACTERS_PER_ACCOUNT);
     for (uint8 classId : requiredClasses)
     {
@@ -861,7 +869,8 @@ std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster()
                 }
             }
 
-            uint32 botAccountId = FindOrCreateBotAccount(prefix, charactersPerAccount, nullptr);
+            uint32 botAccountId = FindOrCreateBotAccount(prefix, charactersPerAccount, nullptr,
+                BotCreationPolicy::Source::ExplicitAdminCommand, true);
             if (!botAccountId)
                 continue;
 
@@ -905,11 +914,12 @@ std::unordered_map<uint8, ClassTemplates> BuildClassTemplateRoster()
     return roster;
 }
 
-std::unordered_map<uint8, ClassTemplates> const& GetClassTemplateRoster(bool refresh = false)
+std::unordered_map<uint8, ClassTemplates> const& GetClassTemplateRoster(bool refresh = false,
+    bool allowTemplateSynthesis = false)
 {
     static std::unordered_map<uint8, ClassTemplates> cachedRoster;
     if (refresh || cachedRoster.empty())
-        cachedRoster = BuildClassTemplateRoster();
+        cachedRoster = BuildClassTemplateRoster(allowTemplateSynthesis);
     return cachedRoster;
 }
 
@@ -944,8 +954,19 @@ bool s_botAccountLookupInitialized = false;
 // next one in sequence. Bots need their own accounts -- never account 1, and account 2's own
 // pool is small and shared with hand-made test characters -- so a large batch has somewhere
 // to keep going once any single account fills up.
-uint32 FindOrCreateBotAccount(std::string const& prefix, uint32 charactersPerAccount, ChatHandler* handler)
+uint32 FindOrCreateBotAccount(std::string const& prefix, uint32 charactersPerAccount, ChatHandler* handler,
+    BotCreationPolicy::Source source, bool inExplicitBatch)
 {
+    BotCreationPolicy::Decision const policy =
+        BotCreationPolicy::Evaluate(source, handler != nullptr, inExplicitBatch, sBotMgr->BotsEnabled());
+    if (!policy.allowed)
+    {
+        LOG_ERROR("module.coa-playerbots",
+            "BotSpawn: blocked bot account creation (source={}, reason={}).",
+            BotCreationPolicy::SourceName(source), policy.reason);
+        return 0;
+    }
+
     if (!s_botAccountLookupInitialized || s_cachedBotAccountPrefix != prefix)
     {
         s_botAccountLookupInitialized = true;
@@ -1181,7 +1202,7 @@ void SpawnRandomBots(uint32 requestedCount, ChatHandler* handler)
 
     // Fail fast on a broken setup up front, rather than queuing a batch that would just fail
     // bot-by-bot once ProcessPendingRandomBotSpawns starts draining it.
-    if (GetClassTemplateRoster(true).empty())
+    if (GetClassTemplateRoster(true, true).empty())
     {
         if (handler)
             handler->PSendSysMessage(
@@ -1253,7 +1274,7 @@ void ProcessPendingRandomBotSpawns(uint32 diff)
         for (uint32 attempt = 0; attempt < MAX_RACE_ATTEMPTS && !newGuid; ++attempt)
         {
             uint8 race = validRaces[RandomInt(0, validRaces.size() - 1)];
-            newGuid = CreateOneRandomBot(race, nullptr);
+            newGuid = CreateBotClone(race, nullptr, 0, 0, 0, "", BotCreationPolicy::Source::ExplicitAdminCommand, true);
         }
 
         if (!newGuid)
@@ -1349,8 +1370,20 @@ std::vector<std::pair<std::string, std::string>> FreshCharacterOverrides(uint8 l
 // substituting a different class when no matching-faction template exists for it. Callers that
 // need every class covered (SpawnClassFleet) need to know which ones are missing, not have gaps
 // papered over.
-ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId = 0, uint32 forcedSpec = 0, std::string const& requestedArchetype = "")
+ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level, uint8 forcedClassId,
+    uint32 forcedSpec, std::string const& requestedArchetype,
+    BotCreationPolicy::Source source, bool inExplicitBatch)
 {
+    BotCreationPolicy::Decision const policy =
+        BotCreationPolicy::Evaluate(source, handler != nullptr, inExplicitBatch, sBotMgr->BotsEnabled());
+    if (!policy.allowed)
+    {
+        LOG_ERROR("module.coa-playerbots",
+            "BotSpawn: blocked implicit bot character creation (source={}, reason={}, race={}, level={}).",
+            BotCreationPolicy::SourceName(source), policy.reason, uint32(race), uint32(level));
+        return 0;
+    }
+
     uint8 const checkLevel = level ? level : uint8(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL));
     std::string validationError;
     if (!ValidateCustomSpawnParams(1, checkLevel, forcedClassId, forcedSpec, requestedArchetype, validationError))
@@ -1421,7 +1454,7 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
 
     std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
     uint32 charactersPerAccount = sWorld->getIntConfig(CONFIG_CHARACTERS_PER_ACCOUNT);
-    uint32 accountId = FindOrCreateBotAccount(accountPrefix, charactersPerAccount, handler);
+    uint32 accountId = FindOrCreateBotAccount(accountPrefix, charactersPerAccount, handler, source, inExplicitBatch);
     if (!accountId)
         return 0;
 
@@ -1487,14 +1520,15 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
 }
 }
 
-ObjectGuid::LowType CreateOneRandomBot(uint8 race, ChatHandler* handler)
+ObjectGuid::LowType CreateOneRandomBot(uint8 race, ChatHandler* handler, BotCreationPolicy::Source source)
 {
-    return CreateBotClone(race, handler, 0);
+    return CreateBotClone(race, handler, 0, 0, 0, "", source, false);
 }
 
-ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler)
+ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler,
+    BotCreationPolicy::Source source)
 {
-    return CreateBotClone(race, handler, level, classId);
+    return CreateBotClone(race, handler, level, classId, 0, "", source, false);
 }
 
 void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
@@ -1507,7 +1541,7 @@ void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
     }
 
     BotAI::BotDebugLog::Clear();
-    GetClassTemplateRoster(true);
+    GetClassTemplateRoster(true, true);
 
     BotAI::BotRuleset ruleset = BotAI::GetServerRuleset();
     std::vector<uint8> classesToSpawn;
@@ -1530,7 +1564,8 @@ void SpawnClassFleet(uint8 race, uint8 level, ChatHandler* handler)
     for (size_t i = 0; i < classesToSpawn.size(); ++i)
     {
         uint8 classId = classesToSpawn[i];
-        ObjectGuid::LowType newGuid = CreateClassBot(classId, race, level, handler);
+        ObjectGuid::LowType newGuid = CreateClassBot(classId, race, level, handler,
+            BotCreationPolicy::Source::ExplicitAdminCommand);
         if (!newGuid)
         {
             failedClasses.push_back(classId);
@@ -1589,11 +1624,13 @@ void SpawnCustomBots(uint32 count, uint8 level, uint8 forcedClassId, uint32 forc
         return;
     }
 
+    GetClassTemplateRoster(true, true);
     uint32 created = 0;
     for (uint32 i = 0; i < count; ++i)
     {
         uint8 race = (i % 2 == 1) ? 2 : 1;
-        ObjectGuid::LowType newGuid = CreateBotClone(race, handler, level, forcedClassId, forcedSpec, requestedArchetype);
+        ObjectGuid::LowType newGuid = CreateBotClone(race, handler, level, forcedClassId, forcedSpec,
+            requestedArchetype, BotCreationPolicy::Source::ExplicitAdminCommand, false);
         if (!newGuid)
             continue;
 
@@ -2045,19 +2082,27 @@ std::vector<LevelBracket> LevelBrackets()
 }
 
 // Weighted level roll for SpawnLeveledBots, driven by CoaBots.LeveledSpawn.Brackets and never above
-// the server's max player level.
+// the server's max player level (PB-003: exclude brackets above cap before weighted selection).
 uint8 RollWeightedLevel(uint8 serverMaxLevel = 80)
 {
-    std::vector<LevelBracket> brackets = LevelBrackets();
+    std::vector<LevelBracket> const rawBrackets = LevelBrackets();
+    std::vector<BotLevelBracketPolicy::Bracket> policyInput;
+    policyInput.reserve(rawBrackets.size());
+    for (LevelBracket const& b : rawBrackets)
+        policyInput.push_back({ b.low, b.high, b.weight });
+
+    std::vector<BotLevelBracketPolicy::Bracket> const brackets =
+        BotLevelBracketPolicy::FilterForCap(policyInput, serverMaxLevel);
+
     uint32 total = 0;
-    for (LevelBracket const& bracket : brackets)
+    for (auto const& bracket : brackets)
         total += bracket.weight;
 
     uint32 roll = RandomInt(1, total);
-    for (LevelBracket const& bracket : brackets)
+    for (auto const& bracket : brackets)
     {
         if (roll <= bracket.weight)
-            return std::min<uint8>(uint8(RandomInt(bracket.low, bracket.high)), serverMaxLevel);
+            return uint8(RandomInt(bracket.low, bracket.high));
         roll -= bracket.weight;
     }
     return 1;
@@ -2175,7 +2220,7 @@ void SpawnLeveledBots(uint32 requestedCount, ChatHandler* handler)
         return;
     }
 
-    if (GetClassTemplateRoster(true).empty())
+    if (GetClassTemplateRoster(true, true).empty())
     {
         if (handler)
             handler->PSendSysMessage(
@@ -2223,7 +2268,7 @@ void ResetAccountLookupCache()
 {
     s_botAccountLookupInitialized = false;
     s_lastBotAccountIndex = 1;
-    GetClassTemplateRoster(true);
+    GetClassTemplateRoster(true, false);
 }
 
 void ProcessPendingLeveledBotSpawns(uint32 diff)
@@ -2262,7 +2307,8 @@ void ProcessPendingLeveledBotSpawns(uint32 diff)
         for (uint32 attempt = 0; attempt < MAX_RACE_ATTEMPTS && !newGuid; ++attempt)
         {
             uint8 race = validRaces[RandomInt(0, validRaces.size() - 1)];
-            newGuid = CreateBotClone(race, nullptr, level);
+            newGuid = CreateBotClone(race, nullptr, level, 0, 0, "",
+                BotCreationPolicy::Source::ExplicitAdminCommand, true);
         }
 
         if (!newGuid)
@@ -2292,7 +2338,9 @@ void ProcessPendingLeveledBotSpawns(uint32 diff)
 }
 ObjectGuid::LowType SpawnClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler)
 {
-    ObjectGuid::LowType guid = CreateClassBot(classId, race, level, handler);
+    GetClassTemplateRoster(false, true);
+    ObjectGuid::LowType guid = CreateClassBot(classId, race, level, handler,
+        BotCreationPolicy::Source::TrainingArena);
     if (guid) sBotMgr->SpawnBot(guid, handler, [level](Player* bot) { ApplyFreshBotSetup(bot, level); });
     return guid;
 }

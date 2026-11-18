@@ -455,7 +455,8 @@ namespace EncounterHandlers
         if (part.moveToken.IsValid())
             BotMovement::Release(bot, part.moveToken);
         BotMovement::ForceReleaseOwner(bot, MoveOwner::Encounter);
-        BotMovement::ResetRequest(bot->GetGUID());
+        if (BotMovement::CurrentOwner(bot) == MoveOwner::None)
+            BotMovement::ResetRequest(bot->GetGUID());
         part.moveToken = {};
         part.navGoalId = 0;
 
@@ -473,7 +474,7 @@ namespace EncounterHandlers
         {
             if (pet->IsAlive() && pet->GetVictim() &&
                 (pet->GetVictim()->GetTypeId() == TYPEID_PLAYER ||
-                 part.role == EncounterRole::DuelistA || part.role == EncounterRole::DuelistB))
+                 (!part.assignedTargetGuid.IsEmpty() && pet->GetVictim()->GetGUID() == part.assignedTargetGuid)))
             {
                 pet->AttackStop();
             }
@@ -487,7 +488,12 @@ namespace EncounterHandlers
 
         if (part.engagedInCombat)
         {
-            bot->AttackStop();
+            if (Unit* victim = bot->GetVictim())
+            {
+                if (victim->GetTypeId() == TYPEID_PLAYER
+                    || (!part.assignedTargetGuid.IsEmpty() && victim->GetGUID() == part.assignedTargetGuid))
+                    bot->AttackStop();
+            }
             bot->GetCombatManager().EndAllPvPCombat();
             part.engagedInCombat = false;
         }

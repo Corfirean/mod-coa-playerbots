@@ -251,6 +251,13 @@ namespace
     // dungeon with stacked levels (a corridor at -37 became -52 below it) and the point would be off the mesh.
     thread_local bool g_trustGivenZ = false;
 
+    void ConfigureNavFilter(dtQueryFilter& filter, bool allowWater)
+    {
+        filter.setIncludeFlags(allowWater ? (NAV_GROUND | NAV_WATER) : NAV_GROUND);
+        filter.setExcludeFlags(NAV_GROUND_STEEP | NAV_MAGMA | NAV_SLIME);
+        filter.setAreaCost(NAV_WATER, 25.0f);
+    }
+
     uint64 ResolveStartPolyRef(Player const* bot, float x, float y, float z)
     {
         if (!bot)
@@ -263,8 +270,7 @@ namespace
             return 0;
 
         dtQueryFilter filter;
-        filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
-        filter.setExcludeFlags(0);
+        ConfigureNavFilter(filter, true);
 
         float const start[3] = { y, z, x };
         float const extents[3] = { 3.0f, 6.0f, 3.0f };
@@ -309,8 +315,8 @@ namespace
         _stats.pathQueries.fetch_add(1, std::memory_order_relaxed);
 
         dtQueryFilter filter;
-        filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
-        filter.setExcludeFlags(0);
+        bool const startedInWater = bot->IsInWater();
+        ConfigureNavFilter(filter, startedInWater);
 
         // Detour works in (y, z, x) of the world coordinates.
         float const start[3] = { bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX() };
@@ -319,16 +325,40 @@ namespace
         dtPolyRef startRef = 0, endRef = 0;
         float startPt[3], endPt[3];
         if (dtStatusFailed(query->findNearestPoly(start, extents, &filter, &startRef, startPt)) || !startRef)
-            return false;
+        {
+            if (startedInWater)
+                return false;
+            ConfigureNavFilter(filter, true);
+            if (dtStatusFailed(query->findNearestPoly(start, extents, &filter, &startRef, startPt)) || !startRef)
+                return false;
+        }
         if (dtStatusFailed(query->findNearestPoly(end, extents, &filter, &endRef, endPt)) || !endRef)
-            return false;
+        {
+            if (startedInWater)
+                return false;
+            ConfigureNavFilter(filter, true);
+            if (dtStatusFailed(query->findNearestPoly(start, extents, &filter, &startRef, startPt)) || !startRef)
+                return false;
+            if (dtStatusFailed(query->findNearestPoly(end, extents, &filter, &endRef, endPt)) || !endRef)
+                return false;
+        }
 
         constexpr int MAX_POLYS = 1024;
         constexpr int MAX_POINTS = 512;
         dtPolyRef polys[MAX_POLYS];
         int polyCount = 0;
         if (dtStatusFailed(query->findPath(startRef, endRef, startPt, endPt, &filter, polys, &polyCount, MAX_POLYS)) || polyCount <= 0)
-            return false;
+        {
+            if (startedInWater)
+                return false;
+            ConfigureNavFilter(filter, true);
+            if (dtStatusFailed(query->findNearestPoly(start, extents, &filter, &startRef, startPt)) || !startRef)
+                return false;
+            if (dtStatusFailed(query->findNearestPoly(end, extents, &filter, &endRef, endPt)) || !endRef)
+                return false;
+            if (dtStatusFailed(query->findPath(startRef, endRef, startPt, endPt, &filter, polys, &polyCount, MAX_POLYS)) || polyCount <= 0)
+                return false;
+        }
 
         float closestEnd[3];
         bool overPoly = false;
@@ -568,8 +598,7 @@ namespace BotMovement
         _stats.pathQueries.fetch_add(1, std::memory_order_relaxed);
 
         dtQueryFilter filter;
-        filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
-        filter.setExcludeFlags(0);
+        ConfigureNavFilter(filter, true);
 
         float const start[3] = { bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX() };
         float const end[3] = { gy, gz, gx };

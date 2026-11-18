@@ -11,6 +11,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "Group.h"
+#include "Chat.h"
 #include "SharedDefines.h"
 #include "Log.h"
 #else
@@ -189,9 +190,13 @@ void BotDialogueManager::Deliver(
             speaker->Yell(text, LANG_UNIVERSAL);
             break;
         case DialogueChannel::Party:
-            if (speaker->GetGroup())
+            if (Group* group = speaker->GetGroup())
             {
-                speaker->Say(text, LANG_UNIVERSAL);
+                WorldPacket packet;
+                ChatMsg const msgType = group->isRaidGroup() ? CHAT_MSG_RAID : CHAT_MSG_PARTY;
+                ChatHandler::BuildChatPacket(packet, msgType, LANG_UNIVERSAL, speaker->GetGUID(), speaker->GetGUID(),
+                    text, 0, speaker->GetName(), speaker->GetName(), 0, false);
+                group->BroadcastPacket(&packet, false);
             }
             else
             {

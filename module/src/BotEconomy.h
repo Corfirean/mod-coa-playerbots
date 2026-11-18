@@ -89,6 +89,9 @@ namespace BotEconomy
 
     // `.botcmd economy ...` (plan <guid>, journal [n], status, protect <item>, unprotect <item>).
     void HandleCommand(ChatHandler* handler, std::string const& args);
+
+    // Clears per-bot economy state (trips, cooldowns, gold orders) on logout/despawn (PB-014).
+    void Forget(ObjectGuid botGuid);
 }
 
 #endif // COA_PLAYERBOTS_BOT_ECONOMY_H

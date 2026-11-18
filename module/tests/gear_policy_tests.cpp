@@ -19,6 +19,9 @@ int main()
         assert(!FitsLevel(level, level, MaxItemLevel(level) + 1, 1));
         assert(!FitsLevel(level, level + 1, 1, 1));
     }
+    assert(MaxItemLevel(60) == 92);
+    assert(!FitsLevel(60, 60, 200, 4));
+    assert(FitsLevel(60, 60, 92, 4));
     assert(PvpPower(101715) == 15);
     assert(PvePower(101615) == 15);
     assert(PvpPower(101615) == 0);

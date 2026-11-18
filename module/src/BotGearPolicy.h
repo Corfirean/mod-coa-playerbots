@@ -8,7 +8,8 @@ namespace BotGearPolicy
 constexpr unsigned MaxItemLevel(unsigned level)
 {
     return level <= 10 ? 20 : level <= 20 ? 30 : level <= 30 ? 45 :
-        level <= 40 ? 55 : level <= 50 ? 65 : level < 60 ? 75 : level < 80 ? 200 : 232;
+        level <= 40 ? 55 : level <= 50 ? 65 : level < 60 ? 75 :
+        level <= 60 ? 92 : level <= 70 ? 164 : level < 80 ? 200 : 232;
 }
 
 constexpr unsigned MaxQuality(unsigned level)

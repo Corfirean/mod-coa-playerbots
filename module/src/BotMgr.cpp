@@ -4,6 +4,8 @@
 #include "training/TrainingArenaManager.h"
 #include "engine/BotDebugLog.h"
 #include "BotMgr.h"
+#include "BotAddonChat.h"
+#include "BotProtectionPolicy.h"
 #include "BotGear.h"
 #include <algorithm>
 #include <array>
@@ -379,11 +381,12 @@ BotMgr* BotMgr::instance()
 
 WorldSession* BotMgr::FindBotSession(ObjectGuid::LowType charLowGuid) const
 {
-    for (WorldSession* session : _botSessions)
+    auto itr = _botSessionByLowGuid.find(charLowGuid);
+    if (itr != _botSessionByLowGuid.end())
     {
-        if (Player* bot = session->GetPlayer())
-            if (bot->GetGUID().GetCounter() == charLowGuid)
-                return session;
+        WorldSession* session = itr->second;
+        if (session && session->GetPlayer() && session->GetPlayer()->GetGUID().GetCounter() == charLowGuid)
+            return session;
     }
     return nullptr;
 }
@@ -496,6 +499,7 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
     }
 
     _botSessions.push_back(botSession);
+    _botSessionByLowGuid[charLowGuid] = botSession;
     auto& callbacks = _pendingBotLogins[charLowGuid];
     if (onReady) callbacks.push_back(std::move(onReady));
 
@@ -528,7 +532,8 @@ void BotMgr::SpawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler, std
                     bot->SetGMVisible(false);
                     BotAI::SetSuspended(bot->GetGUID(), true);
                 }
-                else if (!sConfigMgr->GetOption<bool>("CoaBots.Benchmark.PreserveLoginPosition", false))
+                else if (!sConfigMgr->GetOption<bool>("CoaBots.Benchmark.PreserveLoginPosition", false)
+                    && !IsProtectedBot(bot))
                     BotZoneProgression::RelocateBot(bot, true /*force initial relocation*/);
 
                 for (auto& onReady : callbacks)
@@ -759,6 +764,70 @@ Player* BotMgr::FindBotPlayer(ObjectGuid::LowType charLowGuid) const
     return session ? session->GetPlayer() : nullptr;
 }
 
+bool BotMgr::IsProtectedBot(ObjectGuid::LowType charLowGuid) const
+{
+    if (!charLowGuid)
+        return true;
+
+    BotProtectionPolicy::ProtectionFacts facts;
+
+    ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(charLowGuid);
+    if (Player* onlineBot = FindBotPlayer(charLowGuid))
+    {
+        facts.inGuild = onlineBot->GetGuildId() != 0;
+        facts.hasGuildInvite = onlineBot->GetGuildIdInvited() != 0;
+        facts.inOnlineGroupOrRaid = onlineBot->GetGroup() != nullptr;
+    }
+
+    facts.hasActiveOrder = (_guildGatherOrders.find(guid) != _guildGatherOrders.end())
+        || (_craftOrders.find(guid) != _craftOrders.end())
+        || (!BotEconomy::GoldOrderTask(const_cast<Player*>(FindBotPlayer(charLowGuid))).empty());
+
+    if (BotProtectionPolicy::IsProtected(facts))
+        return true;
+
+    if (QueryResult guildRes = CharacterDatabase.Query("SELECT 1 FROM guild_member WHERE guid = {} LIMIT 1", charLowGuid))
+        facts.inGuild = true;
+
+    if (!facts.inGuild)
+    {
+        if (QueryResult groupRes = CharacterDatabase.Query("SELECT 1 FROM group_member WHERE memberGuid = {} LIMIT 1", charLowGuid))
+            facts.inPersistedGroupOrRaid = true;
+    }
+
+    if (!facts.inGuild && !facts.inPersistedGroupOrRaid)
+    {
+        if (QueryResult friendRes = CharacterDatabase.Query(
+            "SELECT DISTINCT c.account FROM character_social cs "
+            "JOIN characters c ON c.guid = cs.guid "
+            "WHERE cs.friend = {} AND (cs.flags & 1) <> 0", charLowGuid))
+        {
+            std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
+            do
+            {
+                uint32 ownerAccountId = (*friendRes)[0].Get<uint32>();
+                QueryResult botAcct = LoginDatabase.Query(
+                    "SELECT 1 FROM account WHERE id = {} AND id > 2 AND username LIKE '{}%' LIMIT 1",
+                    ownerAccountId, accountPrefix);
+                if (!botAcct)
+                {
+                    facts.hasIncomingPlayerFriend = true;
+                    break;
+                }
+            } while (friendRes->NextRow());
+        }
+    }
+
+    return BotProtectionPolicy::IsProtected(facts);
+}
+
+bool BotMgr::IsProtectedBot(Player const* bot) const
+{
+    if (!bot)
+        return true;
+    return IsProtectedBot(bot->GetGUID().GetCounter());
+}
+
 ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, uint8 maxLevel,
     std::unordered_set<ObjectGuid::LowType> const& excludedGuids) const
 {
@@ -776,7 +845,9 @@ ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, 
     idList.pop_back();
 
     std::string query = Acore::StringFormat(
-        "SELECT guid, race, level FROM characters WHERE account IN ({}) AND level BETWEEN {} AND {}",
+        "SELECT guid, race, level FROM characters c WHERE c.account IN ({}) AND c.level BETWEEN {} AND {} "
+        "AND NOT EXISTS (SELECT 1 FROM guild_member gm WHERE gm.guid = c.guid) "
+        "AND NOT EXISTS (SELECT 1 FROM group_member grm WHERE grm.memberGuid = c.guid)",
         idList, uint32(minLevel), uint32(maxLevel));
     QueryResult chars = CharacterDatabase.Query(query);
     if (!chars)
@@ -796,6 +867,9 @@ ObjectGuid::LowType BotMgr::FindEligibleOfflineBot(TeamId team, uint8 minLevel, 
             continue;
 
         if (excludedGuids.count(guid) || FindBotSession(guid))
+            continue;
+
+        if (IsProtectedBot(guid))
             continue;
 
         candidates.push_back(guid);
@@ -2076,6 +2150,7 @@ void BotMgr::DespawnBot(ObjectGuid::LowType charLowGuid, ChatHandler* handler)
     session->LogoutPlayer(true);
     delete session;
     _botSessions.erase(itr);
+    _botSessionByLowGuid.erase(charLowGuid);
     _aiWaitMs.erase(botGuid);
     CoaBotScheduling::Forget(botGuid);
     // Also drop it from the pending-teleport-ack queue if it's there -- otherwise
@@ -3243,16 +3318,18 @@ void BotMgr::DoRollPass(WorldSession* session, Roll* roll)
     session->HandleLootRoll(packet);
 }
 
-void BotMgr::QueueAllBotsForAutoLogin()
+uint32 BotMgr::QueueAllBotsForAutoLogin(uint32 maxCountOverride)
 {
     std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
-    uint32 maxBots = sConfigMgr->GetOption<uint32>("CoaBots.AutoLogin.MaxCount", 800);
+    uint32 maxBots = maxCountOverride > 0
+        ? maxCountOverride
+        : sConfigMgr->GetOption<uint32>("CoaBots.AutoLogin.MaxCount", 800);
 
     QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE username LIKE '{}%'", accountPrefix);
     if (!accounts)
     {
         LOG_INFO("module.coa-playerbots", "BotMgr: auto-login found no bot-hosting accounts yet.");
-        return;
+        return 0;
     }
 
     std::ostringstream accountIds;
@@ -3273,7 +3350,10 @@ void BotMgr::QueueAllBotsForAutoLogin()
         idList, CustomRacesOff() ? " AND c.race BETWEEN 1 AND 11" : ""
     );
     if (!chars)
-        return;
+        return 0;
+
+    std::unordered_set<ObjectGuid::LowType> alreadyQueued(
+        _pendingAutoLoginQueue.begin(), _pendingAutoLoginQueue.end());
 
     uint32 queued = 0;
     do
@@ -3282,9 +3362,10 @@ void BotMgr::QueueAllBotsForAutoLogin()
             break;
 
         ObjectGuid::LowType guid = (*chars)[0].Get<uint32>();
-        if (!FindBotSession(guid))
+        if (!FindBotSession(guid) && !alreadyQueued.count(guid))
         {
             _pendingAutoLoginQueue.push_back(guid);
+            alreadyQueued.insert(guid);
             ++queued;
         }
     } while (chars->NextRow());
@@ -3294,6 +3375,7 @@ void BotMgr::QueueAllBotsForAutoLogin()
     std::reverse(_pendingAutoLoginQueue.begin(), _pendingAutoLoginQueue.end());
 
     LOG_INFO("module.coa-playerbots", "BotMgr: queued {} bot(s) for gradual auto-login (cap: {}).", queued, maxBots);
+    return queued;
 }
 
 // A player who opens a trade window with a bot gets a bot that takes part: it opens its side, offers nothing and
@@ -3548,6 +3630,7 @@ void BotMgr::Update(uint32 diff)
     // costs a fraction of the world thread (a thousand bots made this loop most of the tick). The time a bot waited
     // is handed to the AI as its `diff`, so every timer inside it keeps running at the right speed, and the first
     // decision of each bot is offset by its guid so they do not all think on the same tick.
+    BotAddonChat::ProcessPendingQueries();
     sessionMaintenance.Stop();
     _aiConfigAgeMs += diff;
     if (_aiConfigAgeMs >= 10000)
@@ -3692,7 +3775,7 @@ void BotMgr::Update(uint32 diff)
     for (WorldSession* session : _botSessions)
     {
         Player* bot = session->GetPlayer();
-        LOG_INFO("module.coa-playerbots", "BotMgr heartbeat: account {} -> {}",
+        LOG_DEBUG("module.coa-playerbots", "BotMgr heartbeat: account {} -> {}",
             session->GetAccountId(),
             bot ? (bot->IsInWorld() ? "in world" : "player exists, not in world") : "no player yet (login pending)");
     }

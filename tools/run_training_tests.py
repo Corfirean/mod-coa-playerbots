@@ -39,6 +39,11 @@ def main():
                         "/I" + str(module / "src"), str(module / "tests/performance_tests.cpp"),
                         "/Fe:" + str(performance)], cwd=directory, check=True)
         subprocess.run([str(performance)], check=True)
+        creation_policy = Path(directory) / "creation_policy_tests.exe"
+        subprocess.run([compiler, "/nologo", "/std:c++20", "/EHsc", "/utf-8", "/O2",
+                        "/I" + str(module / "src"), str(module / "tests/creation_policy_tests.cpp"),
+                        "/Fe:" + str(creation_policy)], cwd=directory, check=True)
+        subprocess.run([str(creation_policy)], check=True)
         for name in ["locomotion", "world_logic", "encounter"]:
             regression = Path(directory) / (name + "_tests.exe")
             subprocess.run([compiler, "/nologo", "/std:c++20", "/EHsc", "/utf-8", "/O2",

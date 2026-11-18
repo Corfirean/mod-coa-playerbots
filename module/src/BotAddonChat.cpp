@@ -12,6 +12,7 @@
  */
 
 #include "engine/BotDebugLog.h"
+#include "BotAddonChat.h"
 #include "BotAI.h"
 #include "BotMovement.h"
 #include "BotEconomy.h"
@@ -24,12 +25,18 @@
 #include "map/BotMapService.h"
 #include "Log.h"
 #include "MotionMaster.h"
+#include "ObjectAccessor.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
+#include "Spell.h"
+#include "SpellInfo.h"
 #include "Unit.h"
 #include "WorldPacket.h"
+#include "WorldSession.h"
+#include "world/encounters/WorldEncounterDirector.h"
 #include <cstdlib>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -125,6 +132,296 @@ void SendCoaBotReply(Player* recipient, std::string const& body)
     ChatHandler::BuildChatPacket(packet, CHAT_MSG_WHISPER, LANG_ADDON, recipient->GetGUID(), recipient->GetGUID(),
         std::string(PROTOCOL_PREFIX) + body, 0, recipient->GetName(), recipient->GetName(), 0, false);
     recipient->SendDirectMessage(&packet);
+}
+
+enum class InspectorQueryKind : uint8
+{
+    Roster = 0,
+    BotState = 1,
+    TeleportToBot = 2
+};
+
+struct PendingInspectorQuery
+{
+    InspectorQueryKind kind;
+    ObjectGuid commanderGuid;
+    uint32 page = 0;
+    std::string filter;
+    ObjectGuid::LowType inspectGuid = 0;
+};
+
+std::mutex g_inspectorQueryMutex;
+std::vector<PendingInspectorQuery> g_pendingInspectorQueries;
+
+void QueueInspectorQuery(InspectorQueryKind kind, ObjectGuid commanderGuid, uint32 page,
+    std::string filter, ObjectGuid::LowType inspectGuid)
+{
+    std::lock_guard<std::mutex> lock(g_inspectorQueryMutex);
+    if (g_pendingInspectorQueries.size() < 256)
+        g_pendingInspectorQueries.push_back({ kind, commanderGuid, page, std::move(filter), inspectGuid });
+}
+
+std::string SanitizeField(std::string s)
+{
+    for (char& ch : s)
+        if (ch == ':' || ch == '|' || ch == '\n' || ch == '\r')
+            ch = ' ';
+    return s;
+}
+
+void ClassifyBot(Player* targetBot, std::string& outTag, std::string& outActivity, std::string& outCastName)
+{
+    Spell* curSpell = targetBot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!curSpell)
+        curSpell = targetBot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    outCastName = (curSpell && curSpell->GetSpellInfo()) ? SanitizeField(curSpell->GetSpellInfo()->SpellName[0]) : "None";
+
+    MoveOwner const owner = BotMovement::CurrentOwner(targetBot);
+    bool const inEncounter = WorldEncounterDirector::IsBotInEncounter(targetBot->GetGUID());
+    std::string goldTask = BotEconomy::GoldOrderTask(targetBot);
+
+    if (!targetBot->IsAlive())
+    {
+        outTag = "dead";
+        outActivity = targetBot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST) ? "Ghost / Corpse Run" : "Dead";
+    }
+    else if (inEncounter)
+    {
+        outTag = "encounter";
+        outActivity = "Dynamic Encounter";
+    }
+    else if (targetBot->IsInCombat())
+    {
+        outTag = "combat";
+        outActivity = "In Combat";
+    }
+    else if (outCastName != "None")
+    {
+        outTag = "combat";
+        outActivity = "Casting " + outCastName;
+    }
+    else if (!goldTask.empty())
+    {
+        outTag = "gather";
+        outActivity = SanitizeField(goldTask);
+    }
+    else if (owner == MoveOwner::Quest)
+    {
+        outTag = "quest";
+        outActivity = "Questing";
+    }
+    else if (owner == MoveOwner::Gather)
+    {
+        outTag = "gather";
+        outActivity = "Gathering";
+    }
+    else if (owner == MoveOwner::Travel)
+    {
+        outTag = targetBot->GetGroup() ? "grouped" : "idle";
+        outActivity = "Traveling / Following";
+    }
+    else if (owner == MoveOwner::Corpse)
+    {
+        outTag = "dead";
+        outActivity = "Corpse Run";
+    }
+    else if (targetBot->GetGroup())
+    {
+        outTag = "grouped";
+        outActivity = "Following / Ready";
+    }
+    else
+    {
+        outTag = "idle";
+        outActivity = "Idle / Roaming";
+    }
+}
+
+void ExecuteRosterQuery(Player* commander, uint32 page, std::string const& filter)
+{
+    bool const isGm = commander->GetSession() && commander->GetSession()->GetSecurity() >= SEC_GAMEMASTER;
+
+    LOG_INFO("module.coa-playerbots", "BotAddonChat: '{}' -> GETBOTROSTER page={} filter={}.",
+        commander->GetName(), page, filter);
+
+    struct RosterCandidate
+    {
+        Player* bot;
+        std::string tag;
+        bool prot;
+    };
+
+    std::vector<RosterCandidate> matched;
+    auto const& onlineBots = sBotMgr->GetOnlineBots();
+    matched.reserve(std::min<std::size_t>(onlineBots.size(), 512));
+
+    for (Player* bot : onlineBots)
+    {
+        if (!bot || !bot->IsInWorld())
+            continue;
+        bool const sameGroup = bot->GetGroup() && bot->GetGroup() == commander->GetGroup();
+        bool const sameGuild = commander->GetGuildId() && bot->GetGuildId() == commander->GetGuildId();
+        if (!isGm && !sameGroup && !sameGuild)
+            continue;
+
+        bool const isProt = (bot->GetGuildId() != 0) || (bot->GetGroup() != nullptr)
+            || (sBotMgr->GetGuildGatherOrder(bot->GetGUID()) != nullptr)
+            || (sBotMgr->GetCraftOrder(bot->GetGUID()) != nullptr);
+
+        std::string tag;
+        if (!bot->IsAlive())
+            tag = "dead";
+        else if (WorldEncounterDirector::IsBotInEncounter(bot->GetGUID()))
+            tag = "encounter";
+        else if (bot->IsInCombat())
+            tag = "combat";
+        else
+        {
+            MoveOwner const owner = BotMovement::CurrentOwner(bot);
+            if (owner == MoveOwner::Quest)
+                tag = "quest";
+            else if (owner == MoveOwner::Gather)
+                tag = "gather";
+            else if (owner == MoveOwner::Corpse)
+                tag = "dead";
+            else if (bot->GetGroup())
+                tag = "grouped";
+            else
+                tag = "idle";
+        }
+
+        if (filter != "all")
+        {
+            if (filter == "protected")
+            {
+                if (!isProt)
+                    continue;
+            }
+            else if (filter == "grouped")
+            {
+                if (!bot->GetGroup())
+                    continue;
+            }
+            else if (tag != filter)
+            {
+                continue;
+            }
+        }
+
+        matched.push_back({ bot, std::move(tag), isProt });
+    }
+
+    constexpr uint32 PAGE_SIZE = 12;
+    uint32 const total = uint32(matched.size());
+    uint32 const totalPages = std::max<uint32>(1u, (total + PAGE_SIZE - 1) / PAGE_SIZE);
+    if (page >= totalPages)
+        page = totalPages - 1;
+
+    SendCoaBotReply(commander, "BOTROSTER_HDR:" + std::to_string(page) + ":" +
+        std::to_string(totalPages) + ":" + std::to_string(total));
+
+    static char const* const ROLE_NAMES[] = { "DPS", "Tank", "Healer", "Support" };
+    uint32 const startIdx = page * PAGE_SIZE;
+    uint32 const endIdx = std::min<uint32>(total, startIdx + PAGE_SIZE);
+    for (uint32 i = startIdx; i < endIdx; ++i)
+    {
+        RosterCandidate const& c = matched[i];
+        std::string fullTag, activity, castName;
+        ClassifyBot(c.bot, fullTag, activity, castName);
+        BotRole r = BotAI::GetRole(c.bot->GetGUID());
+        char const* roleStr = ROLE_NAMES[r == BotRole::Tank ? 1 : r == BotRole::Healer ? 2 : r == BotRole::Support ? 3 : 0];
+        std::ostringstream rowOut;
+        rowOut << "BOTROSTER_ROW:" << c.bot->GetGUID().GetCounter() << ":"
+               << SanitizeField(c.bot->GetName()) << ":"
+               << uint32(c.bot->GetLevel()) << ":"
+               << roleStr << ":"
+               << fullTag << ":"
+               << (c.prot ? 1 : 0) << ":"
+               << activity;
+        SendCoaBotReply(commander, rowOut.str());
+    }
+}
+
+void ExecuteTeleportToBot(Player* commander, ObjectGuid::LowType targetGuid)
+{
+    if (!commander->GetSession() || commander->GetSession()->GetSecurity() < SEC_GAMEMASTER)
+        return;
+
+    Player* targetBot = targetGuid ? sBotMgr->FindBotPlayer(targetGuid) : nullptr;
+    if (!targetBot || !targetBot->IsInWorld())
+        return;
+
+    if (commander->IsInFlight())
+        commander->CleanupAfterTaxiFlight();
+
+    commander->TeleportTo(targetBot->GetMapId(), targetBot->GetPositionX(),
+        targetBot->GetPositionY(), targetBot->GetPositionZ(), targetBot->GetOrientation());
+}
+
+void ExecuteBotStateQuery(Player* commander, ObjectGuid::LowType inspectGuid)
+{
+    Player* targetBot = inspectGuid ? sBotMgr->FindBotPlayer(inspectGuid) : nullptr;
+    if (!targetBot)
+        return;
+
+    bool const isGm = commander->GetSession() && commander->GetSession()->GetSecurity() >= SEC_GAMEMASTER;
+    bool const sameGroup = targetBot->GetGroup() && targetBot->GetGroup() == commander->GetGroup();
+    bool const sameGuild = commander->GetGuildId() && targetBot->GetGuildId() == commander->GetGuildId();
+    if (!isGm && !sameGroup && !sameGuild)
+        return;
+
+    static char const* const ROLE_NAMES[] = { "DPS", "Tank", "Healer", "Support" };
+    BotRole role = BotAI::GetRole(targetBot->GetGUID());
+    char const* roleStr = ROLE_NAMES[role == BotRole::Tank ? 1 : role == BotRole::Healer ? 2 : role == BotRole::Support ? 3 : 0];
+
+    uint32 hpPct = uint32(std::max(0.0f, std::min(100.0f, targetBot->GetHealthPct())));
+    Powers pType = targetBot->getPowerType();
+    uint32 maxPower = targetBot->GetMaxPower(pType);
+    uint32 powerPct = maxPower ? uint32((uint64(targetBot->GetPower(pType)) * 100) / maxPower) : 0;
+
+    std::string statusTag, activity, castName;
+    ClassifyBot(targetBot, statusTag, activity, castName);
+
+    Unit* victim = targetBot->GetVictim();
+    Unit* selUnit = victim ? victim : targetBot->GetSelectedUnit();
+    std::string targetName = selUnit ? SanitizeField(selUnit->GetName()) : "None";
+
+    MoveOwner owner = BotMovement::CurrentOwner(targetBot);
+    auto ownerStr = [](MoveOwner o) -> char const*
+    {
+        switch (o)
+        {
+            case MoveOwner::Combat:       return "Combat";
+            case MoveOwner::Avoidance:    return "Avoidance";
+            case MoveOwner::Quest:        return "Quest";
+            case MoveOwner::Gather:       return "Gather";
+            case MoveOwner::Travel:       return "Travel";
+            case MoveOwner::Corpse:       return "Corpse";
+            case MoveOwner::Encounter:    return "Encounter";
+            case MoveOwner::Ambient:      return "Ambient";
+            case MoveOwner::Battleground: return "Battleground";
+            default:                      return "None";
+        }
+    };
+
+    bool const inEncounter = WorldEncounterDirector::IsBotInEncounter(targetBot->GetGUID());
+    bool const isProtected = sBotMgr->IsProtectedBot(targetBot);
+
+    std::ostringstream out;
+    out << "BOTSTATE:" << inspectGuid << ":"
+        << SanitizeField(targetBot->GetName()) << ":"
+        << uint32(targetBot->GetLevel()) << ":"
+        << roleStr << ":"
+        << hpPct << ":"
+        << powerPct << ":"
+        << (targetBot->IsInCombat() ? 1 : 0) << ":"
+        << castName << ":"
+        << targetName << ":"
+        << ownerStr(owner) << ":"
+        << (inEncounter ? 1 : 0) << ":"
+        << (isProtected ? 1 : 0) << ":"
+        << activity;
+    SendCoaBotReply(commander, out.str());
 }
 
 void HandleCoaBotMessage(Player* commander, std::string const& body)
@@ -364,10 +661,35 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
             SendCoaBotReply(commander, line);
         return;
     }
+    // MAPEVENTS: CoA World Map Intelligence
     if (verb == "MAPEVENTS")
     {
         for (std::string const& line : sBotMapService->HandleMapEvents(commander, parts))
             SendCoaBotReply(commander, line);
+        return;
+    }
+
+    if (verb == "GETBOTROSTER" && parts.size() >= 2)
+    {
+        uint32 page = std::strtoul(parts[1].c_str(), nullptr, 10);
+        std::string filter = (parts.size() >= 3 && !parts[2].empty()) ? parts[2] : "all";
+        QueueInspectorQuery(InspectorQueryKind::Roster, commander->GetGUID(), page, filter, 0);
+        return;
+    }
+
+    if (verb == "GETBOTSTATE" && parts.size() >= 2)
+    {
+        ObjectGuid::LowType inspectGuid = std::strtoul(parts[1].c_str(), nullptr, 10);
+        if (inspectGuid)
+            QueueInspectorQuery(InspectorQueryKind::BotState, commander->GetGUID(), 0, "", inspectGuid);
+        return;
+    }
+
+    if (verb == "TPTOBOT" && parts.size() >= 2)
+    {
+        ObjectGuid::LowType targetGuid = std::strtoul(parts[1].c_str(), nullptr, 10);
+        if (targetGuid)
+            QueueInspectorQuery(InspectorQueryKind::TeleportToBot, commander->GetGUID(), 0, "", targetGuid);
         return;
     }
 
@@ -530,4 +852,31 @@ public:
 void AddSC_coa_bot_addon_chat_script()
 {
     new coa_bot_addon_chat_script();
+}
+
+namespace BotAddonChat
+{
+    void ProcessPendingQueries()
+    {
+        std::vector<PendingInspectorQuery> batch;
+        {
+            std::lock_guard<std::mutex> lock(g_inspectorQueryMutex);
+            if (g_pendingInspectorQueries.empty())
+                return;
+            batch.swap(g_pendingInspectorQueries);
+        }
+
+        for (PendingInspectorQuery const& q : batch)
+        {
+            Player* commander = ObjectAccessor::FindConnectedPlayer(q.commanderGuid);
+            if (!commander || !commander->IsInWorld())
+                continue;
+            if (q.kind == InspectorQueryKind::Roster)
+                ExecuteRosterQuery(commander, q.page, q.filter);
+            else if (q.kind == InspectorQueryKind::TeleportToBot)
+                ExecuteTeleportToBot(commander, q.inspectGuid);
+            else
+                ExecuteBotStateQuery(commander, q.inspectGuid);
+        }
+    }
 }
