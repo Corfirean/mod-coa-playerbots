@@ -99,8 +99,21 @@ local function RequestInspect(guidLow)
     end
 end
 
+local lastRosterReqAt = 0
 local function RequestRoster()
+    local now = GetTime and GetTime() or 0
+    if now > 0 and (now - lastRosterReqAt) < 0.25 then
+        return
+    end
+    lastRosterReqAt = now
     rosterRowsData = {}
+    for _, fb in ipairs(filterButtons) do
+        if fb.filterId == currentRosterFilter then
+            fb:LockHighlight()
+        else
+            fb:UnlockHighlight()
+        end
+    end
     if rosterPage and rosterPage.pageText then
         rosterPage.pageText:SetText("Loading...")
     end

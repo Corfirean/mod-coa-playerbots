@@ -4,6 +4,7 @@
 #include "training/TrainingArenaManager.h"
 #include "engine/BotDebugLog.h"
 #include "BotMgr.h"
+#include "BotAddonChat.h"
 #include "BotProtectionPolicy.h"
 #include "BotGear.h"
 #include <algorithm>
@@ -3629,6 +3630,7 @@ void BotMgr::Update(uint32 diff)
     // costs a fraction of the world thread (a thousand bots made this loop most of the tick). The time a bot waited
     // is handed to the AI as its `diff`, so every timer inside it keeps running at the right speed, and the first
     // decision of each bot is offset by its guid so they do not all think on the same tick.
+    BotAddonChat::ProcessPendingQueries();
     sessionMaintenance.Stop();
     _aiConfigAgeMs += diff;
     if (_aiConfigAgeMs >= 10000)
