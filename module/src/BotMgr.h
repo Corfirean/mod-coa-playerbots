@@ -596,7 +596,7 @@ public:
     // throttled login BotMgr::Update already drains SpawnRandomBots/SpawnLeveledBots's queues
     // with. Also callable directly (e.g. from a GM command) to (re)populate the queue against an
     // already-running server without needing a restart.
-    void QueueAllBotsForAutoLogin();
+    uint32 QueueAllBotsForAutoLogin(uint32 maxCountOverride = 0);
     bool AutoLootInGroup() const { return _autoLootInGroup; }
 };
 

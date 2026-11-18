@@ -3317,16 +3317,18 @@ void BotMgr::DoRollPass(WorldSession* session, Roll* roll)
     session->HandleLootRoll(packet);
 }
 
-void BotMgr::QueueAllBotsForAutoLogin()
+uint32 BotMgr::QueueAllBotsForAutoLogin(uint32 maxCountOverride)
 {
     std::string accountPrefix = sConfigMgr->GetOption<std::string>("CoaBots.RandomSpawn.AccountPrefix", "CoaBotHost");
-    uint32 maxBots = sConfigMgr->GetOption<uint32>("CoaBots.AutoLogin.MaxCount", 800);
+    uint32 maxBots = maxCountOverride > 0
+        ? maxCountOverride
+        : sConfigMgr->GetOption<uint32>("CoaBots.AutoLogin.MaxCount", 800);
 
     QueryResult accounts = LoginDatabase.Query("SELECT id FROM account WHERE username LIKE '{}%'", accountPrefix);
     if (!accounts)
     {
         LOG_INFO("module.coa-playerbots", "BotMgr: auto-login found no bot-hosting accounts yet.");
-        return;
+        return 0;
     }
 
     std::ostringstream accountIds;
@@ -3347,7 +3349,10 @@ void BotMgr::QueueAllBotsForAutoLogin()
         idList, CustomRacesOff() ? " AND c.race BETWEEN 1 AND 11" : ""
     );
     if (!chars)
-        return;
+        return 0;
+
+    std::unordered_set<ObjectGuid::LowType> alreadyQueued(
+        _pendingAutoLoginQueue.begin(), _pendingAutoLoginQueue.end());
 
     uint32 queued = 0;
     do
@@ -3356,9 +3361,10 @@ void BotMgr::QueueAllBotsForAutoLogin()
             break;
 
         ObjectGuid::LowType guid = (*chars)[0].Get<uint32>();
-        if (!FindBotSession(guid))
+        if (!FindBotSession(guid) && !alreadyQueued.count(guid))
         {
             _pendingAutoLoginQueue.push_back(guid);
+            alreadyQueued.insert(guid);
             ++queued;
         }
     } while (chars->NextRow());
@@ -3368,6 +3374,7 @@ void BotMgr::QueueAllBotsForAutoLogin()
     std::reverse(_pendingAutoLoginQueue.begin(), _pendingAutoLoginQueue.end());
 
     LOG_INFO("module.coa-playerbots", "BotMgr: queued {} bot(s) for gradual auto-login (cap: {}).", queued, maxBots);
+    return queued;
 }
 
 // A player who opens a trade window with a bot gets a bot that takes part: it opens its side, offers nothing and
