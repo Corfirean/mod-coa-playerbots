@@ -137,7 +137,8 @@ void SendCoaBotReply(Player* recipient, std::string const& body)
 enum class InspectorQueryKind : uint8
 {
     Roster = 0,
-    BotState = 1
+    BotState = 1,
+    TeleportToBot = 2
 };
 
 struct PendingInspectorQuery
@@ -339,6 +340,22 @@ void ExecuteRosterQuery(Player* commander, uint32 page, std::string const& filte
                << activity;
         SendCoaBotReply(commander, rowOut.str());
     }
+}
+
+void ExecuteTeleportToBot(Player* commander, ObjectGuid::LowType targetGuid)
+{
+    if (!commander->GetSession() || commander->GetSession()->GetSecurity() < SEC_GAMEMASTER)
+        return;
+
+    Player* targetBot = targetGuid ? sBotMgr->FindBotPlayer(targetGuid) : nullptr;
+    if (!targetBot || !targetBot->IsInWorld())
+        return;
+
+    if (commander->IsInFlight())
+        commander->CleanupAfterTaxiFlight();
+
+    commander->TeleportTo(targetBot->GetMapId(), targetBot->GetPositionX(),
+        targetBot->GetPositionY(), targetBot->GetPositionZ(), targetBot->GetOrientation());
 }
 
 void ExecuteBotStateQuery(Player* commander, ObjectGuid::LowType inspectGuid)
@@ -668,6 +685,14 @@ void HandleCoaBotMessage(Player* commander, std::string const& body)
         return;
     }
 
+    if (verb == "TPTOBOT" && parts.size() >= 2)
+    {
+        ObjectGuid::LowType targetGuid = std::strtoul(parts[1].c_str(), nullptr, 10);
+        if (targetGuid)
+            QueueInspectorQuery(InspectorQueryKind::TeleportToBot, commander->GetGUID(), 0, "", targetGuid);
+        return;
+    }
+
     ObjectGuid::LowType botGuidLow = std::strtoul(parts[1].c_str(), nullptr, 10);
     if (!botGuidLow)
     {
@@ -848,6 +873,8 @@ namespace BotAddonChat
                 continue;
             if (q.kind == InspectorQueryKind::Roster)
                 ExecuteRosterQuery(commander, q.page, q.filter);
+            else if (q.kind == InspectorQueryKind::TeleportToBot)
+                ExecuteTeleportToBot(commander, q.inspectGuid);
             else
                 ExecuteBotStateQuery(commander, q.inspectGuid);
         }

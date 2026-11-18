@@ -48,12 +48,7 @@ local function SendWire(body)
 end
 
 local function SendDotCmd(cmd)
-    if DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.editBox then
-        ChatFrame_OpenChat(cmd, DEFAULT_CHAT_FRAME)
-        ChatEdit_SendText(DEFAULT_CHAT_FRAME.editBox, 0)
-    else
-        SendChatMessage(cmd, "SAY")
-    end
+    SendChatMessage(cmd, "SAY")
 end
 
 local function SplitFields(payload)
@@ -290,8 +285,8 @@ local function BuildInspectorFrame()
     refreshBtn:SetPoint("LEFT", goBtn, "RIGHT", 6, 0)
 
     local tpBtn = CreateActionButton(inspectorPage, 70, 22, "TP to Bot", function()
-        if selectedName and selectedName ~= "" then
-            SendDotCmd(".appear " .. selectedName)
+        if selectedGuidLow then
+            SendWire("TPTOBOT:" .. tostring(selectedGuidLow))
         end
     end)
     tpBtn:SetPoint("LEFT", refreshBtn, "RIGHT", 6, 0)
@@ -531,8 +526,8 @@ local function BuildInspectorFrame()
         row.text:SetJustifyH("LEFT")
 
         row.tpBtn = CreateActionButton(row, 40, 20, "TP", function()
-            if row.botName and row.botName ~= "" then
-                SendDotCmd(".appear " .. row.botName)
+            if row.botGuid then
+                SendWire("TPTOBOT:" .. tostring(row.botGuid))
             end
         end)
         row.tpBtn:SetPoint("RIGHT", row, "RIGHT", -62, 0)
