@@ -56,11 +56,11 @@ local function SendDotCmd(cmd)
     end
 end
 
-local function SplitPipe(payload)
+local function SplitFields(payload)
     local f = {}
     local start = 1
     while true do
-        local pos = string.find(payload, "|", start, true)
+        local pos = string.find(payload, ":", start, true)
         if not pos then
             table.insert(f, string.sub(payload, start))
             break
@@ -180,7 +180,7 @@ end
 
 local function ApplyBotState(payload)
     if not inspectorFrame or not inspectorPage then return end
-    local f = SplitPipe(payload)
+    local f = SplitFields(payload)
     if #f < 13 then return end
 
     local guidLow = tonumber(f[1])
@@ -597,14 +597,14 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, _, _)
             if string.sub(message, 1, 9) == "BOTSTATE:" then
                 ApplyBotState(string.sub(message, 10))
             elseif string.sub(message, 1, 14) == "BOTROSTER_HDR:" then
-                local f = SplitPipe(string.sub(message, 15))
+                local f = SplitFields(string.sub(message, 15))
                 currentRosterPage = tonumber(f[1]) or 0
                 totalRosterPages = tonumber(f[2]) or 1
                 totalRosterMatched = tonumber(f[3]) or 0
                 rosterRowsData = {}
                 RefreshRosterUI()
             elseif string.sub(message, 1, 14) == "BOTROSTER_ROW:" then
-                local f = SplitPipe(string.sub(message, 15))
+                local f = SplitFields(string.sub(message, 15))
                 if #f >= 7 then
                     table.insert(rosterRowsData, {
                         guid = tonumber(f[1]),

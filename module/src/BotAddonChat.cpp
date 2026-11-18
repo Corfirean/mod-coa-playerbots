@@ -160,10 +160,10 @@ void QueueInspectorQuery(InspectorQueryKind kind, ObjectGuid commanderGuid, uint
         g_pendingInspectorQueries.push_back({ kind, commanderGuid, page, std::move(filter), inspectGuid });
 }
 
-std::string SanitizePipe(std::string s)
+std::string SanitizeField(std::string s)
 {
     for (char& ch : s)
-        if (ch == '|' || ch == '\n' || ch == '\r')
+        if (ch == ':' || ch == '|' || ch == '\n' || ch == '\r')
             ch = ' ';
     return s;
 }
@@ -173,7 +173,7 @@ void ClassifyBot(Player* targetBot, std::string& outTag, std::string& outActivit
     Spell* curSpell = targetBot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
     if (!curSpell)
         curSpell = targetBot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
-    outCastName = (curSpell && curSpell->GetSpellInfo()) ? SanitizePipe(curSpell->GetSpellInfo()->SpellName[0]) : "None";
+    outCastName = (curSpell && curSpell->GetSpellInfo()) ? SanitizeField(curSpell->GetSpellInfo()->SpellName[0]) : "None";
 
     MoveOwner const owner = BotMovement::CurrentOwner(targetBot);
     bool const inEncounter = WorldEncounterDirector::IsBotInEncounter(targetBot->GetGUID());
@@ -202,7 +202,7 @@ void ClassifyBot(Player* targetBot, std::string& outTag, std::string& outActivit
     else if (!goldTask.empty())
     {
         outTag = "gather";
-        outActivity = SanitizePipe(goldTask);
+        outActivity = SanitizeField(goldTask);
     }
     else if (owner == MoveOwner::Quest)
     {
@@ -316,8 +316,8 @@ void ExecuteRosterQuery(Player* commander, uint32 page, std::string const& filte
     if (page >= totalPages)
         page = totalPages - 1;
 
-    SendCoaBotReply(commander, "BOTROSTER_HDR:" + std::to_string(page) + "|" +
-        std::to_string(totalPages) + "|" + std::to_string(total));
+    SendCoaBotReply(commander, "BOTROSTER_HDR:" + std::to_string(page) + ":" +
+        std::to_string(totalPages) + ":" + std::to_string(total));
 
     static char const* const ROLE_NAMES[] = { "DPS", "Tank", "Healer", "Support" };
     uint32 const startIdx = page * PAGE_SIZE;
@@ -330,12 +330,12 @@ void ExecuteRosterQuery(Player* commander, uint32 page, std::string const& filte
         BotRole r = BotAI::GetRole(c.bot->GetGUID());
         char const* roleStr = ROLE_NAMES[r == BotRole::Tank ? 1 : r == BotRole::Healer ? 2 : r == BotRole::Support ? 3 : 0];
         std::ostringstream rowOut;
-        rowOut << "BOTROSTER_ROW:" << c.bot->GetGUID().GetCounter() << "|"
-               << SanitizePipe(c.bot->GetName()) << "|"
-               << uint32(c.bot->GetLevel()) << "|"
-               << roleStr << "|"
-               << fullTag << "|"
-               << (c.prot ? 1 : 0) << "|"
+        rowOut << "BOTROSTER_ROW:" << c.bot->GetGUID().GetCounter() << ":"
+               << SanitizeField(c.bot->GetName()) << ":"
+               << uint32(c.bot->GetLevel()) << ":"
+               << roleStr << ":"
+               << fullTag << ":"
+               << (c.prot ? 1 : 0) << ":"
                << activity;
         SendCoaBotReply(commander, rowOut.str());
     }
@@ -367,7 +367,7 @@ void ExecuteBotStateQuery(Player* commander, ObjectGuid::LowType inspectGuid)
 
     Unit* victim = targetBot->GetVictim();
     Unit* selUnit = victim ? victim : targetBot->GetSelectedUnit();
-    std::string targetName = selUnit ? SanitizePipe(selUnit->GetName()) : "None";
+    std::string targetName = selUnit ? SanitizeField(selUnit->GetName()) : "None";
 
     MoveOwner owner = BotMovement::CurrentOwner(targetBot);
     auto ownerStr = [](MoveOwner o) -> char const*
@@ -391,18 +391,18 @@ void ExecuteBotStateQuery(Player* commander, ObjectGuid::LowType inspectGuid)
     bool const isProtected = sBotMgr->IsProtectedBot(targetBot);
 
     std::ostringstream out;
-    out << "BOTSTATE:" << inspectGuid << "|"
-        << SanitizePipe(targetBot->GetName()) << "|"
-        << uint32(targetBot->GetLevel()) << "|"
-        << roleStr << "|"
-        << hpPct << "|"
-        << powerPct << "|"
-        << (targetBot->IsInCombat() ? 1 : 0) << "|"
-        << castName << "|"
-        << targetName << "|"
-        << ownerStr(owner) << "|"
-        << (inEncounter ? 1 : 0) << "|"
-        << (isProtected ? 1 : 0) << "|"
+    out << "BOTSTATE:" << inspectGuid << ":"
+        << SanitizeField(targetBot->GetName()) << ":"
+        << uint32(targetBot->GetLevel()) << ":"
+        << roleStr << ":"
+        << hpPct << ":"
+        << powerPct << ":"
+        << (targetBot->IsInCombat() ? 1 : 0) << ":"
+        << castName << ":"
+        << targetName << ":"
+        << ownerStr(owner) << ":"
+        << (inEncounter ? 1 : 0) << ":"
+        << (isProtected ? 1 : 0) << ":"
         << activity;
     SendCoaBotReply(commander, out.str());
 }
