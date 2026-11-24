@@ -6,6 +6,7 @@
 
 #include "profiles/ProfilePaladin.h"
 #include "profiles/ProfileRegistry.h"
+#include "profiles/ProfileHelpers.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
 
@@ -113,6 +114,73 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Avenger's Shield
+            {
+                AbilityDescriptor d;
+                d.name = "Avenger's Shield";
+                d.rootSpellId = 31935;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 310.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Divine Protection
+            {
+                AbilityDescriptor d;
+                d.name = "Divine Protection";
+                d.rootSpellId = 498;
+                d.tags = AbilityTag::DefensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 390.0f;
+                d.maxSelfHpPct = 45.0f;
+                d.internalThrottleMs = 30000;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.bot->HasAura(25771) ? -1.0f : 0.0f;  // Forbearance
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Seal: Judgement needs one up
+            {
+                AbilityDescriptor d;
+                d.name = "Seal of Righteousness";
+                d.rootSpellId = 21084;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 360.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 20154, 21084, 20375, 31801, 20165, 20166, 20164, 53736, 53739 }) ? -1.0f : 0.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Hammer of Justice (stops a cast)
+            {
+                AbilityDescriptor d;
+                d.name = "Hammer of Justice";
+                d.rootSpellId = 853;
+                d.tags = AbilityTag::Interrupt | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 385.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Hammer of Justice (survival: a hurt bot stuns what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Hammer of Justice";
+                d.rootSpellId = 853;
+                d.tags = AbilityTag::CrowdControl | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 335.0f;
+                d.maxSelfHpPct = 40.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return !ctx.targetIsBossOrElite ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
             ProfileRegistry::RegisterProfile(p);
         }
 
@@ -188,6 +256,76 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Beacon of Light
+            {
+                AbilityDescriptor d;
+                d.name = "Beacon of Light";
+                d.rootSpellId = 53563;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::TankAlly;
+                d.baseScore = 330.0f;
+                d.requireAuraMissingOnTarget = true;
+                p.abilities.push_back(d);
+            }
+
+            // Sacred Shield
+            {
+                AbilityDescriptor d;
+                d.name = "Sacred Shield";
+                d.rootSpellId = 53601;
+                d.tags = AbilityTag::Shield | AbilityTag::Buff;
+                d.targetType = TargetType::TankAlly;
+                d.baseScore = 320.0f;
+                d.requireAuraMissingOnTarget = true;
+                p.abilities.push_back(d);
+            }
+
+            // Divine Plea
+            {
+                AbilityDescriptor d;
+                d.name = "Divine Plea";
+                d.rootSpellId = 54428;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 340.0f;
+                d.missingAuraOnCaster = 54428;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.botPowerPct < 40.0f ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Divine Illumination
+            {
+                AbilityDescriptor d;
+                d.name = "Divine Illumination";
+                d.rootSpellId = 31842;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 300.0f;
+                d.missingAuraOnCaster = 31842;
+                d.internalThrottleMs = 60000;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.botPowerPct < 60.0f ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Hammer of Justice (survival: a hurt bot stuns what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Hammer of Justice";
+                d.rootSpellId = 853;
+                d.tags = AbilityTag::CrowdControl | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 335.0f;
+                d.maxSelfHpPct = 40.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return !ctx.targetIsBossOrElite ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
             ProfileRegistry::RegisterProfile(p);
         }
 
@@ -257,6 +395,75 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.internalThrottleMs = 8000;
                 d.baseScore = 250.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Avenging Wrath
+            {
+                AbilityDescriptor d;
+                d.name = "Avenging Wrath";
+                d.rootSpellId = 31884;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 340.0f;
+                d.missingAuraOnCaster = 31884;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.bot->HasAura(25771) ? -1.0f : 0.0f;  // Forbearance
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Seal: Judgement needs one up (the better one first)
+            {
+                AbilityDescriptor d;
+                d.name = "Seal of Command";
+                d.rootSpellId = 20375;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 362.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 20154, 21084, 20375, 31801, 20165, 20166, 20164, 53736, 53739 }) ? -1.0f : 0.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Seal: Judgement needs one up
+            {
+                AbilityDescriptor d;
+                d.name = "Seal of Righteousness";
+                d.rootSpellId = 21084;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 360.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 20154, 21084, 20375, 31801, 20165, 20166, 20164, 53736, 53739 }) ? -1.0f : 0.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Hammer of Justice (stops a cast)
+            {
+                AbilityDescriptor d;
+                d.name = "Hammer of Justice";
+                d.rootSpellId = 853;
+                d.tags = AbilityTag::Interrupt | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 385.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Hammer of Justice (survival: a hurt bot stuns what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Hammer of Justice";
+                d.rootSpellId = 853;
+                d.tags = AbilityTag::CrowdControl | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 335.0f;
+                d.maxSelfHpPct = 40.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return !ctx.targetIsBossOrElite ? 0.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
 

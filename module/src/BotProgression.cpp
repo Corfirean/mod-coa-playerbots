@@ -439,6 +439,62 @@ namespace BotProgression
             give(PickManaPotion(bot->GetLevel()));
     }
 
+    namespace
+    {
+    // The best ammunition of one kind (arrows or bullets) a level can use: the highest required level, then the most damage.
+    uint32 BestAmmo(uint32 subclass, uint8 level)
+    {
+        static std::mutex mutex;
+        static std::unordered_map<uint32, uint32> cache;
+        std::lock_guard<std::mutex> lock(mutex);
+        uint32 const key = (subclass << 8) | level;
+        if (auto const found = cache.find(key); found != cache.end())
+            return found->second;
+        uint32 best = 0;
+        ItemTemplate const* bestProto = nullptr;
+        for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
+        {
+            if (proto.Class != ITEM_CLASS_PROJECTILE || proto.SubClass != subclass || proto.RequiredLevel > level ||
+                proto.Bonding != NO_BIND || proto.Quality > ITEM_QUALITY_NORMAL || proto.RequiredSkill || proto.RequiredSpell)
+                continue;
+            bool better = !bestProto || proto.RequiredLevel > bestProto->RequiredLevel ||
+                (proto.RequiredLevel == bestProto->RequiredLevel && proto.Damage[0].DamageMax > bestProto->Damage[0].DamageMax);
+            if (better)
+            {
+                bestProto = &proto;
+                best = entry;
+            }
+        }
+        cache[key] = best;
+        return best;
+    }
+    }
+
+    uint32 ProvisionAmmo(Player* bot)
+    {
+        if (!bot || bot->getClass() != CLASS_HUNTER)
+            return 0;
+        Item const* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+        if (!ranged)
+            return 0;
+        uint32 const weapon = ranged->GetTemplate()->SubClass;
+        uint32 const subclass = weapon == ITEM_SUBCLASS_WEAPON_GUN ? ITEM_SUBCLASS_BULLET :
+            (weapon == ITEM_SUBCLASS_WEAPON_BOW || weapon == ITEM_SUBCLASS_WEAPON_CROSSBOW) ? ITEM_SUBCLASS_ARROW : 0;
+        if (!subclass)
+            return 0;
+        uint32 const ammo = BestAmmo(subclass, bot->GetLevel());
+        if (!ammo)
+            return 0;
+        constexpr uint32 LOW_STOCK = 400;
+        constexpr uint32 FULL_STOCK = 1000;
+        uint32 const have = bot->GetItemCount(ammo);
+        if (have < LOW_STOCK)
+            bot->StoreNewItemInBestSlots(ammo, FULL_STOCK - have);
+        if (bot->GetItemCount(ammo) && bot->GetUInt32Value(PLAYER_AMMO_ID) != ammo)
+            bot->SetAmmo(ammo);
+        return bot->GetUInt32Value(PLAYER_AMMO_ID);
+    }
+
     void ProvisionFood(Player* bot, uint32 stackSize)
     {
         ConsumableTable const& table = Consumables();
@@ -470,6 +526,7 @@ namespace BotProgression
         GrantProfessionTools(bot);
         ProvisionFood(bot, 20);
         ProvisionPotions(bot, 5);
+        ProvisionAmmo(bot);
     }
 }
 

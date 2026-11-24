@@ -6,6 +6,7 @@
 
 #include "profiles/ProfileWarlock.h"
 #include "profiles/ProfileRegistry.h"
+#include "profiles/ProfileHelpers.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
 
@@ -180,6 +181,111 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.minAoETargets = 3;
                 d.baseScore = 330.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Unstable Affliction
+            {
+                AbilityDescriptor d;
+                d.name = "Unstable Affliction";
+                d.rootSpellId = 30108;
+                d.tags = AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 345.0f;
+                d.requireAuraMissingOnTarget = true;
+                p.abilities.push_back(d);
+            }
+
+            // Haunt
+            {
+                AbilityDescriptor d;
+                d.name = "Haunt";
+                d.rootSpellId = 48181;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 350.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Conflagrate
+            {
+                AbilityDescriptor d;
+                d.name = "Conflagrate";
+                d.rootSpellId = 17962;
+                d.tags = AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 330.0f;
+                p.abilities.push_back(d);
+            }
+
+            if (specId == 3u)
+            {
+                // Incinerate
+                {
+                    AbilityDescriptor d;
+                    d.name = "Incinerate";
+                    d.rootSpellId = 29722;
+                    d.tags = AbilityTag::Filler | AbilityTag::RangedAttack;
+                    d.targetType = TargetType::CurrentTarget;
+                    d.baseScore = 210.0f;
+                    p.abilities.push_back(d);
+                }
+            }
+
+            // Armor (they replace one another: cast only while none is up)
+            {
+                AbilityDescriptor d;
+                d.name = "Fel Armor";
+                d.rootSpellId = 28176;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 365.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 687, 706, 28176 }) ? -1.0f : 0.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Armor (they replace one another)
+            {
+                AbilityDescriptor d;
+                d.name = "Demon Armor";
+                d.rootSpellId = 706;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 360.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 687, 706, 28176 }) ? -1.0f : 0.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Armor (they replace one another)
+            {
+                AbilityDescriptor d;
+                d.name = "Demon Skin";
+                d.rootSpellId = 687;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 355.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 687, 706, 28176 }) ? -1.0f : 0.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Death Coil (survival: a hurt bot stuns what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Death Coil";
+                d.rootSpellId = 6789;
+                d.tags = AbilityTag::CrowdControl | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 335.0f;
+                d.maxSelfHpPct = 40.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return !ctx.targetIsBossOrElite ? 0.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
 

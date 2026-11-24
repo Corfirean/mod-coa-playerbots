@@ -67,6 +67,11 @@ namespace BotProgression
     // when a bot is made and when it levels; the economy buys them afterwards.
     void ProvisionPotions(Player* bot, uint32 count);
 
+    // A hunter's bow, crossbow or gun needs ammunition (the core refuses every ranged shot without it): keeps the best arrows or
+    // bullets its level allows in the bags (topped up below 400, to 1000) and selects them as the ammunition in use. Returns the
+    // item entry in use, 0 when the bot is no hunter, carries no such weapon or no ammunition fits.
+    uint32 ProvisionAmmo(Player* bot);
+
     // Raises profession caps to the new level, then relearns abilities, recipes, tools and food.
     // Talents are applied separately by BotTalentBuilds.
     void OnLevelUp(Player* bot, uint8 newLevel);

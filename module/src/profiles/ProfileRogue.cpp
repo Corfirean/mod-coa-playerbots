@@ -6,6 +6,7 @@
 
 #include "profiles/ProfileRogue.h"
 #include "profiles/ProfileRegistry.h"
+#include "profiles/ProfileHelpers.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
 
@@ -115,6 +116,110 @@ namespace BotAI
                 d.tags = AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 240.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Envenom
+            {
+                AbilityDescriptor d;
+                d.name = "Envenom";
+                d.rootSpellId = 32645;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 335.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.bot->GetComboPoints() >= 4 ? 60.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Hemorrhage
+            {
+                AbilityDescriptor d;
+                d.name = "Hemorrhage";
+                d.rootSpellId = 16511;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 245.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Fan of Knives
+            {
+                AbilityDescriptor d;
+                d.name = "Fan of Knives";
+                d.rootSpellId = 51723;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 260.0f;
+                d.minAoETargets = 3;
+                p.abilities.push_back(d);
+            }
+
+            // Blade Flurry
+            {
+                AbilityDescriptor d;
+                d.name = "Blade Flurry";
+                d.rootSpellId = 13877;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 330.0f;
+                d.missingAuraOnCaster = 13877;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.engagedEnemyCount >= 2 ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Adrenaline Rush
+            {
+                AbilityDescriptor d;
+                d.name = "Adrenaline Rush";
+                d.rootSpellId = 13750;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 340.0f;
+                d.missingAuraOnCaster = 13750;
+                p.abilities.push_back(d);
+            }
+
+            // Killing Spree
+            {
+                AbilityDescriptor d;
+                d.name = "Killing Spree";
+                d.rootSpellId = 51690;
+                d.tags = AbilityTag::OffensiveCD | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 340.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Kidney Shot (stops a cast)
+            {
+                AbilityDescriptor d;
+                d.name = "Kidney Shot";
+                d.rootSpellId = 408;
+                d.tags = AbilityTag::Interrupt | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 390.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.bot->GetComboPoints() >= 1 ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Kidney Shot (survival: a hurt bot stuns what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Kidney Shot";
+                d.rootSpellId = 408;
+                d.tags = AbilityTag::CrowdControl | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 335.0f;
+                d.maxSelfHpPct = 40.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (!ctx.targetIsBossOrElite && ctx.bot->GetComboPoints() >= 2) ? 0.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
 

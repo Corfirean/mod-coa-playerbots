@@ -6,6 +6,7 @@
 
 #include "profiles/ProfileMage.h"
 #include "profiles/ProfileRegistry.h"
+#include "profiles/ProfileHelpers.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
 
@@ -147,6 +148,141 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 200.0f;
                 p.abilities.push_back(d);
+            }
+
+            // Counterspell
+            {
+                AbilityDescriptor d;
+                d.name = "Counterspell";
+                d.rootSpellId = 2139;
+                d.tags = AbilityTag::Interrupt | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 400.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Evocation
+            {
+                AbilityDescriptor d;
+                d.name = "Evocation";
+                d.rootSpellId = 12051;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 370.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (ctx.botPowerPct < 15.0f && ctx.botHpPct > 50.0f) ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Icy Veins
+            {
+                AbilityDescriptor d;
+                d.name = "Icy Veins";
+                d.rootSpellId = 12472;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 350.0f;
+                d.missingAuraOnCaster = 12472;
+                p.abilities.push_back(d);
+            }
+
+            // Arcane Power
+            {
+                AbilityDescriptor d;
+                d.name = "Arcane Power";
+                d.rootSpellId = 12042;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 350.0f;
+                d.missingAuraOnCaster = 12042;
+                p.abilities.push_back(d);
+            }
+
+            // Combustion
+            {
+                AbilityDescriptor d;
+                d.name = "Combustion";
+                d.rootSpellId = 11129;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 350.0f;
+                d.missingAuraOnCaster = 11129;
+                p.abilities.push_back(d);
+            }
+
+            // Mirror Image
+            {
+                AbilityDescriptor d;
+                d.name = "Mirror Image";
+                d.rootSpellId = 55342;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 330.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Living Bomb
+            {
+                AbilityDescriptor d;
+                d.name = "Living Bomb";
+                d.rootSpellId = 44457;
+                d.tags = AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 345.0f;
+                d.requireAuraMissingOnTarget = true;
+                p.abilities.push_back(d);
+            }
+
+            // Armor (they replace one another: cast only while none is up)
+            {
+                AbilityDescriptor d;
+                d.name = "Molten Armor";
+                d.rootSpellId = 30482;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 365.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 168, 7302, 6117, 30482 }) ? -1.0f : 0.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Armor (they replace one another)
+            {
+                AbilityDescriptor d;
+                d.name = "Mage Armor";
+                d.rootSpellId = 6117;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 360.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 168, 7302, 6117, 30482 }) ? -1.0f : 0.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Armor (they replace one another)
+            {
+                AbilityDescriptor d;
+                d.name = "Frost Armor";
+                d.rootSpellId = 168;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 355.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 168, 7302, 6117, 30482 }) ? -1.0f : 0.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Each spec's own filler leads: a Fire mage casts Fireball, a Frost mage Frostbolt (both sit in this shared list).
+            for (AbilityDescriptor& ability : p.abilities)
+            {
+                if (specId == 2u && ability.rootSpellId == 133)
+                    ability.baseScore = 230.0f;
+                else if (specId == 3u && ability.rootSpellId == 116)
+                    ability.baseScore = 230.0f;
             }
 
             ProfileRegistry::RegisterProfile(p);

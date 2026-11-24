@@ -6,7 +6,9 @@
 
 #include "profiles/ProfileWarrior.h"
 #include "profiles/ProfileRegistry.h"
+#include "profiles/ProfileHelpers.h"
 #include "engine/CombatContext.h"
+#include "engine/SpellResolver.h"
 #include "Player.h"
 
 namespace BotAI
@@ -149,6 +151,41 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Shield Bash
+            {
+                AbilityDescriptor d;
+                d.name = "Shield Bash";
+                d.rootSpellId = 72;
+                d.tags = AbilityTag::Interrupt | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 400.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Devastate
+            {
+                AbilityDescriptor d;
+                d.name = "Devastate";
+                d.rootSpellId = 20243;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 285.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Demoralizing Shout
+            {
+                AbilityDescriptor d;
+                d.name = "Demoralizing Shout";
+                d.rootSpellId = 1160;
+                d.tags = AbilityTag::None;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.minPowerPct = 30.0f;
+                p.abilities.push_back(d);
+            }
+
             ProfileRegistry::RegisterProfile(p);
         }
 
@@ -162,6 +199,21 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Warrior_Arms_Dps";
             p.preferredEngageDistance = PROFILE_MELEE_ENGAGE_DISTANCE;
+
+            // Battle Stance: a Reborn warrior fights from a stance, and the Reborn versions of Charge, Rend, Overpower and
+            // Execute (spell id + 1100000) refuse to be cast without one. The stock versions the resolver prefers carry no
+            // stance requirement in this client data, so what this changes today is the stance itself, not which spells fire;
+            // nothing else ever put these bots into one (only the Protection profile entered Defensive Stance).
+            {
+                AbilityDescriptor d;
+                d.name = "Battle Stance";
+                d.rootSpellId = 2457;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 2457;
+                d.baseScore = 500.0f;
+                p.abilities.push_back(d);
+            }
 
             // Battle Shout
             {
@@ -250,6 +302,86 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Sweeping Strikes
+            {
+                AbilityDescriptor d;
+                d.name = "Sweeping Strikes";
+                d.rootSpellId = 12328;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 330.0f;
+                d.missingAuraOnCaster = 12328;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.engagedEnemyCount >= 2 ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Thunder Clap
+            {
+                AbilityDescriptor d;
+                d.name = "Thunder Clap";
+                d.rootSpellId = 6343;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 275.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.minAoETargets = 3;
+                p.abilities.push_back(d);
+            }
+
+            // Cleave
+            {
+                AbilityDescriptor d;
+                d.name = "Cleave";
+                d.rootSpellId = 845;
+                d.tags = AbilityTag::AoEDamage | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 260.0f;
+                d.minAoETargets = 2;
+                d.minPowerPct = 40.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Bladestorm
+            {
+                AbilityDescriptor d;
+                d.name = "Bladestorm";
+                d.rootSpellId = 46924;
+                d.tags = AbilityTag::OffensiveCD | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 340.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Demoralizing Shout
+            {
+                AbilityDescriptor d;
+                d.name = "Demoralizing Shout";
+                d.rootSpellId = 1160;
+                d.tags = AbilityTag::None;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.minPowerPct = 30.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Intimidating Shout (survival: a hurt bot stuns what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Intimidating Shout";
+                d.rootSpellId = 5246;
+                d.tags = AbilityTag::CrowdControl | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 330.0f;
+                d.maxSelfHpPct = 30.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (!ctx.targetIsBossOrElite && ctx.engagedEnemyCount >= 1) ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
             ProfileRegistry::RegisterProfile(p);
         }
 
@@ -263,6 +395,34 @@ namespace BotAI
             p.role = BotRole::Dps;
             p.profileName = "Warrior_Fury_Dps";
             p.preferredEngageDistance = PROFILE_MELEE_ENGAGE_DISTANCE;
+
+            // A Fury warrior fights in Berserker Stance (Whirlwind and Intercept need it, Execute takes it or Battle Stance) once it has
+            // it (level 30, from the extra trainer abilities), in Battle Stance before. The Reborn versions of these spells, which the bots
+            // now cast, refuse the wrong stance.
+            {
+                AbilityDescriptor d;
+                d.name = "Berserker Stance";
+                d.rootSpellId = 2458;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 2458;
+                d.baseScore = 500.0f;
+                p.abilities.push_back(d);
+            }
+
+            {
+                AbilityDescriptor d;
+                d.name = "Battle Stance";
+                d.rootSpellId = 2457;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.missingAuraOnCaster = 2457;
+                d.baseScore = 500.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return SpellResolver::ResolveSpell(ctx.bot, 2458) ? -1.0f : 0.0f;   // Berserker Stance known: that one
+                };
+                p.abilities.push_back(d);
+            }
 
             // Battle Shout
             {
@@ -320,6 +480,60 @@ namespace BotAI
                 d.targetType = TargetType::CurrentTarget;
                 d.minPowerPct = 35.0f;
                 d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Thunder Clap
+            {
+                AbilityDescriptor d;
+                d.name = "Thunder Clap";
+                d.rootSpellId = 6343;
+                d.tags = AbilityTag::AoEDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 270.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.minAoETargets = 3;
+                p.abilities.push_back(d);
+            }
+
+            // Cleave
+            {
+                AbilityDescriptor d;
+                d.name = "Cleave";
+                d.rootSpellId = 845;
+                d.tags = AbilityTag::AoEDamage | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 260.0f;
+                d.minAoETargets = 2;
+                d.minPowerPct = 40.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Demoralizing Shout
+            {
+                AbilityDescriptor d;
+                d.name = "Demoralizing Shout";
+                d.rootSpellId = 1160;
+                d.tags = AbilityTag::None;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 235.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.minPowerPct = 30.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Intimidating Shout (survival: a hurt bot stuns what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Intimidating Shout";
+                d.rootSpellId = 5246;
+                d.tags = AbilityTag::CrowdControl | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 330.0f;
+                d.maxSelfHpPct = 30.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (!ctx.targetIsBossOrElite && ctx.engagedEnemyCount >= 1) ? 0.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
 

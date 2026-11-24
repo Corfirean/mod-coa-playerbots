@@ -25,7 +25,7 @@ namespace BotAI
         bool usesSpellPower;
     };
 
-    inline constexpr std::array<SpecStatModel, 70> SpecStatModels =
+    inline constexpr std::array<SpecStatModel, 100> SpecStatModels =
     {{
     { 12, 1, 3, 0, true, false }, // Headhunting
     { 12, 2, 3, 0, true, false }, // Brutality
@@ -97,6 +97,38 @@ namespace BotAI
     { 32, 61, 3, 0, true, false }, // Engravement
     { 32, 62, 5, 6, false, true }, // Glyphic
     { 32, 63, 3, 0, true, false }, // Riftblade
+    // Warcraft Reborn classes (stock class ids 1-9 and 11; spec numbers as in ClassSpecRoles.cpp). Not from Sidekick: the stat each
+    // spec scales with in the classic/Reborn itemisation, so a Balance druid or an Elemental shaman is no longer scored for Agility.
+    { 1, 1, 4, 3, true, false }, // Arms
+    { 1, 2, 4, 3, true, false }, // Fury
+    { 1, 3, 4, 3, true, false }, // Protection
+    { 2, 1, 5, 6, false, true }, // Holy
+    { 2, 2, 4, 5, true, true }, // Protection
+    { 2, 3, 4, 3, true, false }, // Retribution
+    { 3, 1, 3, 5, true, false }, // Beast Mastery
+    { 3, 2, 3, 5, true, false }, // Marksmanship
+    { 3, 3, 3, 5, true, false }, // Survival
+    { 4, 1, 3, 4, true, false }, // Assassination
+    { 4, 2, 3, 4, true, false }, // Combat
+    { 4, 3, 3, 4, true, false }, // Subtlety
+    { 5, 1, 5, 6, false, true }, // Discipline
+    { 5, 2, 5, 6, false, true }, // Holy
+    { 5, 3, 5, 0, false, true }, // Shadow
+    { 7, 1, 5, 0, false, true }, // Elemental
+    { 7, 2, 3, 4, true, false }, // Enhancement
+    { 7, 3, 5, 6, false, true }, // Restoration
+    { 7, 4, 3, 4, true, false }, // Spirit Guard (tank)
+    { 8, 1, 5, 0, false, true }, // Arcane
+    { 8, 2, 5, 0, false, true }, // Fire
+    { 8, 3, 5, 0, false, true }, // Frost
+    { 9, 1, 5, 0, false, true }, // Affliction
+    { 9, 2, 5, 0, false, true }, // Demonology
+    { 9, 3, 5, 0, false, true }, // Destruction
+    { 9, 4, 5, 0, false, true }, // Dark Apotheosis (tank)
+    { 11, 1, 5, 6, false, true }, // Balance
+    { 11, 2, 3, 4, true, false }, // Feral
+    { 11, 3, 5, 6, false, true }, // Restoration
+    { 11, 4, 3, 4, true, false }, // Guardian (bear tank)
     }};
 
     inline SpecStatModel const* FindSpecStatModel(uint8_t classId, uint32_t specId)

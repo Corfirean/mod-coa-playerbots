@@ -176,6 +176,12 @@ namespace BotAI
     // operator-facing inspection tool and a deliberately small first UI for the human-behavior layer.
     void ReportProfile(Player* bot, ChatHandler* handler);
 
+    // Read-only diagnostic for "bot does not use its abilities", `.botcmd abilities <guid>`: the
+    // ruleset the module detects, the combat profile the bot gets, whether each profile ability
+    // resolves in the bot's spellbook (stock id or Reborn +1100000 twin), whether the current
+    // form/stance blocks it, and the spells the bot really knows.
+    void ReportAbilities(Player* bot, ChatHandler* handler);
+
     // Prints this bot's full resource snapshot (native power bar(s) + every custom Ascension
     // resource channel its class has) -- see engine/CombatResource.h. Live-testing/verification
     // tool for the universal resource-management engine, e.g. `.botcmd resources <guid>`.

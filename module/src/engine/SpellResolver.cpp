@@ -24,6 +24,7 @@ namespace BotAI
     {
         bool optimizeRankLookup = false;
         bool cacheLearnedRanks = false;
+        bool preferRebornTwins = false;
 #ifdef COA_LEARNED_RANK_CACHE
         struct LearnedRanks : DataMap::Base
         {
@@ -84,7 +85,21 @@ namespace BotAI
     }
     bool SpellResolver::LearnedRankCacheEnabled() { return cacheLearnedRanks; }
 
+    void SpellResolver::SetPreferRebornTwins(bool enabled) { preferRebornTwins = enabled; }
+    bool SpellResolver::PreferRebornTwins() { return preferRebornTwins; }
+
     uint32 SpellResolver::ResolveSpell(Player* bot, uint32 rootSpellId)
+    {
+        // The Reborn version first (one more lookup); when the bot has none, exactly the resolution there always was. The learned-rank
+        // cache has no twin step of its own, so the stock root is asked again here rather than relied on to come back from the first.
+        constexpr uint32 REBORN_OFFSET = 1100000;
+        if (preferRebornTwins && rootSpellId && rootSpellId < REBORN_OFFSET)
+            if (uint32 twin = ResolveStockFirst(bot, rootSpellId + REBORN_OFFSET))
+                return twin;
+        return ResolveStockFirst(bot, rootSpellId);
+    }
+
+    uint32 SpellResolver::ResolveStockFirst(Player* bot, uint32 rootSpellId)
     {
         if (!bot || !rootSpellId)
             return 0;

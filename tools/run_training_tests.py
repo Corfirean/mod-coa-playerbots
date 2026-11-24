@@ -34,6 +34,11 @@ def main():
                         str(module / "tests/combat_decisions_tests.cpp"), "/Fe:" + str(decisions)],
                        cwd=directory, check=True)
         subprocess.run([str(decisions)], check=True)
+        reborn = Path(directory) / "reborn_data_tests.exe"
+        subprocess.run([compiler, "/nologo", "/std:c++20", "/EHsc", "/utf-8", "/O2",
+                        "/I" + str(module / "src"), str(module / "tests/reborn_data_tests.cpp"),
+                        "/Fe:" + str(reborn)], cwd=directory, check=True)
+        subprocess.run([str(reborn)], check=True)
         performance = Path(directory) / "performance_tests.exe"
         subprocess.run([compiler, "/nologo", "/std:c++20", "/EHsc", "/utf-8", "/O2",
                         "/I" + str(module / "src"), str(module / "tests/performance_tests.cpp"),
@@ -51,6 +56,7 @@ def main():
             subprocess.run([str(regression)], check=True)
     subprocess.run([sys.executable, "-B", str(module / "tests/test_training_reports.py")], check=True)
     subprocess.run([sys.executable, "-B", str(module / "tests/test_ci_compare.py")], check=True)
+    subprocess.run([sys.executable, "-B", str(module / "tests/test_reborn_bot_check.py")], check=True)
     for name in ["benchmark", "matrix", "stack_report", "windows", "wait_chains"]:
         subprocess.run([sys.executable, "-B", str(module / ("tests/test_performance_" + name + ".py"))],
                        check=True)
