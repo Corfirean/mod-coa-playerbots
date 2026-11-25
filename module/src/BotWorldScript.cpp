@@ -69,6 +69,8 @@ public:
         BotAI::SpellResolver::SetRankLookupOptimization(sConfigMgr->GetOption<bool>("CoaBots.Spells.OptimizeRankLookup", false));
         BotAI::CombatUtility::SetLazyCleanseScan(sConfigMgr->GetOption<bool>("CoaBots.Spells.LazyCleanseScan", false));
         BotAI::SpellResolver::SetLearnedRankCache(sConfigMgr->GetOption<bool>("CoaBots.Spells.CacheLearnedRanks", false));
+        BotAI::SpellResolver::SetPreferRebornTwins(sConfigMgr->GetOption<bool>("CoaBots.Spells.PreferRebornTwins", true) &&
+            BotAI::GetServerRuleset() == BotAI::BotRuleset::Reborn);
         CoaBotScheduling::Configure();
         CoaBotScheduling::ConfigureBudgets();
         CoaBotBenchmark::Configure();

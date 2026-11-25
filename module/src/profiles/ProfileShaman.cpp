@@ -6,6 +6,7 @@
 
 #include "profiles/ProfileShaman.h"
 #include "profiles/ProfileRegistry.h"
+#include "profiles/ProfileHelpers.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
 
@@ -24,18 +25,8 @@ namespace BotAI
             p.profileName = "Shaman_SpiritGuard_Tank";
             p.preferredEngageDistance = PROFILE_MELEE_ENGAGE_DISTANCE;
 
-            // Rockbiter Weapon Imbue
-            {
-                AbilityDescriptor d;
-                d.name = "Rockbiter Weapon";
-                d.rootSpellId = 8017;
-                d.tags = AbilityTag::Buff;
-                d.targetType = TargetType::Self;
-                d.internalThrottleMs = 60000;
-                d.baseScore = 480.0f;
-                p.abilities.push_back(d);
-            }
-
+            // The weapon imbue (Rockbiter) is applied by BotAI's weapon-imbue upkeep: it needs an item target, which a
+            // profile entry cannot give.
             // Earth Shock (Taunt & High Threat)
             {
                 AbilityDescriptor d;
@@ -85,11 +76,22 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Flame Shock";
-                d.rootSpellId = 8042;
+                d.rootSpellId = 8050;   // 8042 is Earth Shock rank 1: this descriptor never cast Flame Shock
                 d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
                 d.baseScore = 260.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Wind Shear
+            {
+                AbilityDescriptor d;
+                d.name = "Wind Shear";
+                d.rootSpellId = 57994;
+                d.tags = AbilityTag::Interrupt | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 400.0f;
                 p.abilities.push_back(d);
             }
 
@@ -169,6 +171,20 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Water Shield
+            {
+                AbilityDescriptor d;
+                d.name = "Water Shield";
+                d.rootSpellId = 52127;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 345.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 52127, 324 }) ? -1.0f : 0.0f;  // shields replace one another
+                };
+                p.abilities.push_back(d);
+            }
+
             ProfileRegistry::RegisterProfile(p);
         }
 
@@ -187,7 +203,7 @@ namespace BotAI
             {
                 AbilityDescriptor d;
                 d.name = "Flame Shock";
-                d.rootSpellId = 8042;
+                d.rootSpellId = 8050;   // 8042 is Earth Shock rank 1: this descriptor never cast Flame Shock
                 d.tags = AbilityTag::PeriodicDamage;
                 d.targetType = TargetType::CurrentTarget;
                 d.requireAuraMissingOnTarget = true;
@@ -228,6 +244,73 @@ namespace BotAI
                 d.tags = AbilityTag::Filler | AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Wind Shear
+            {
+                AbilityDescriptor d;
+                d.name = "Wind Shear";
+                d.rootSpellId = 57994;
+                d.tags = AbilityTag::Interrupt | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 400.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Elemental Mastery
+            {
+                AbilityDescriptor d;
+                d.name = "Elemental Mastery";
+                d.rootSpellId = 16166;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 330.0f;
+                d.missingAuraOnCaster = 16166;
+                p.abilities.push_back(d);
+            }
+
+            // Bloodlust
+            {
+                AbilityDescriptor d;
+                d.name = "Bloodlust";
+                d.rootSpellId = 2825;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 320.0f;
+                d.missingAuraOnCaster = 2825;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (ctx.bot->HasAura(57724) || ctx.bot->HasAura(57723)) ? -1.0f : 0.0f;  // Sated / Exhaustion
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Heroism
+            {
+                AbilityDescriptor d;
+                d.name = "Heroism";
+                d.rootSpellId = 32182;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 320.0f;
+                d.missingAuraOnCaster = 32182;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (ctx.bot->HasAura(57724) || ctx.bot->HasAura(57723)) ? -1.0f : 0.0f;  // Sated / Exhaustion
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Water Shield
+            {
+                AbilityDescriptor d;
+                d.name = "Water Shield";
+                d.rootSpellId = 52127;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 340.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return HasAuraOfAny(ctx.bot, { 52127, 324 }) ? -1.0f : 0.0f;  // shields replace one another
+                };
                 p.abilities.push_back(d);
             }
 
@@ -287,6 +370,73 @@ namespace BotAI
                 d.targetType = TargetType::Self;
                 d.missingAuraOnCaster = 324;
                 d.baseScore = 250.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Wind Shear
+            {
+                AbilityDescriptor d;
+                d.name = "Wind Shear";
+                d.rootSpellId = 57994;
+                d.tags = AbilityTag::Interrupt | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 400.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Feral Spirit
+            {
+                AbilityDescriptor d;
+                d.name = "Feral Spirit";
+                d.rootSpellId = 51533;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 340.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Shamanistic Rage
+            {
+                AbilityDescriptor d;
+                d.name = "Shamanistic Rage";
+                d.rootSpellId = 30823;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 350.0f;
+                d.missingAuraOnCaster = 30823;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (ctx.botPowerPct < 40.0f || ctx.botHpPct < 50.0f) ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Bloodlust
+            {
+                AbilityDescriptor d;
+                d.name = "Bloodlust";
+                d.rootSpellId = 2825;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 320.0f;
+                d.missingAuraOnCaster = 2825;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (ctx.bot->HasAura(57724) || ctx.bot->HasAura(57723)) ? -1.0f : 0.0f;  // Sated / Exhaustion
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Heroism
+            {
+                AbilityDescriptor d;
+                d.name = "Heroism";
+                d.rootSpellId = 32182;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 320.0f;
+                d.missingAuraOnCaster = 32182;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (ctx.bot->HasAura(57724) || ctx.bot->HasAura(57723)) ? -1.0f : 0.0f;  // Sated / Exhaustion
+                };
                 p.abilities.push_back(d);
             }
 

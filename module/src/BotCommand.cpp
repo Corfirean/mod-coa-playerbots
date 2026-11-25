@@ -72,6 +72,7 @@ public:
             { "setrole",      HandleBotSetRoleCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "checkrole",    HandleBotCheckRoleCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "profile",      HandleBotProfileCommand,      rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
+            { "abilities",    HandleBotAbilitiesCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "resources",    HandleBotResourcesCommand,    rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "strategy",     HandleBotStrategyCommand,     rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
             { "brain",        HandleBotBrainCommand,        rbac::RBAC_PERM_COMMAND_DEBUG, Console::Yes },
@@ -755,6 +756,20 @@ public:
             return true;
         }
         BotAI::ReportProfile(bot, handler);
+        return true;
+    }
+
+    // Why a bot may not use its abilities: ruleset, profile, per-ability resolution, form gating, real spellbook.
+    static bool HandleBotAbilitiesCommand(ChatHandler* handler, ObjectGuid::LowType charLowGuid)
+    {
+        Player* bot = sBotMgr->FindBotPlayer(charLowGuid);
+        if (!bot)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: no online bot with guid {}.", charLowGuid);
+            return true;
+        }
+        BotAI::ReportAbilities(bot, handler);
         return true;
     }
 

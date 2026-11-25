@@ -377,6 +377,38 @@ void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requeste
     bot->SaveToDB(false, false);
 }
 
+namespace
+{
+struct RebornExtraSpell
+{
+    uint8 classId;
+    uint8 level;
+    uint32 spell;
+};
+
+#include "RebornExtraSpells.inc"
+}
+
+uint32 LearnRebornExtraSpells(Player* bot)
+{
+    if (!bot || BotAI::GetBotRuleset(bot) != BotAI::BotRuleset::Reborn)
+        return 0;
+
+    // The stock trainer table the setup reads leaves out part of what a Reborn trainer teaches (demons, pet spells,
+    // poisons, stances, ...). Learned at the level a player could train them; a spell the bot knows is left alone.
+    uint32 learned = 0;
+    uint8 const classId = bot->getClass();
+    uint8 const level = bot->GetLevel();
+    for (RebornExtraSpell const& entry : REBORN_EXTRA_SPELLS)
+    {
+        if (entry.classId != classId || entry.level > level || bot->HasSpell(entry.spell) || !sSpellMgr->GetSpellInfo(entry.spell))
+            continue;
+        bot->learnSpell(entry.spell, false);
+        ++learned;
+    }
+    return learned;
+}
+
 void ApplyRebornBotSetup(Player* bot, uint8 level, uint32 forcedSpec)
 {
     if (!bot)
@@ -413,6 +445,8 @@ void ApplyRebornBotSetup(Player* bot, uint8 level, uint32 forcedSpec)
         } while (trainerRes->NextRow());
     }
 
+    LearnRebornExtraSpells(bot);
+
     // 2. Reborn Class Specializations and Non-Standard Roles:
     uint32 maxSpecs = (classId == CLASS_SHAMAN || classId == CLASS_WARLOCK || classId == CLASS_DRUID) ? 4 : 3;
     uint32 spec = forcedSpec;
@@ -421,7 +455,9 @@ void ApplyRebornBotSetup(Player* bot, uint8 level, uint32 forcedSpec)
         spec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
         if (!spec || spec > maxSpecs)
         {
-            spec = (bot->GetGUID().GetCounter() % maxSpecs) + 1;
+            spec = BotTalentBuilds::ChooseRebornSpec(bot);
+            if (!spec || spec > maxSpecs)
+                spec = (bot->GetGUID().GetCounter() % maxSpecs) + 1;
         }
     }
     bot->UpdatePlayerSetting("core.ascension_active_spec", 0, spec);

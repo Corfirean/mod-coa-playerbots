@@ -20,6 +20,8 @@
 #include "engine/ActionEvaluator.h"
 #include "BotSpawnRandom.h"
 #include "BotTalentBuilds.h"
+#include "engine/BotRuleset.h"
+#include "engine/SpellResolver.h"
 #include "BotZoneProgression.h"
 #include "WorldBrain.h"
 #include "world/encounters/WorldEncounterDirector.h"
@@ -2547,6 +2549,32 @@ void BotMgr::LearnSpecialization(ObjectGuid::LowType charLowGuid, uint32 specId,
     {
         if (handler)
             handler->PSendSysMessage("BotMgr: no active bot session for guid {}.", charLowGuid);
+        return;
+    }
+
+    // A Warcraft Reborn class has no CoA specialization to switch: its spec is a talent tree of the free-pick catalog. Setting the
+    // spec number and spending the points on that spec's build is the whole switch; the respec of the old build costs gold per
+    // talent, so a test bot is given enough first (this command is for GMs and test tooling).
+    if (BotAI::GetBotRuleset(bot) == BotAI::BotRuleset::Reborn)
+    {
+        uint8 const classId = bot->getClass();
+        uint32 const maxSpecs = (classId == CLASS_SHAMAN || classId == CLASS_WARLOCK || classId == CLASS_DRUID) ? 4 : 3;
+        if (specId < 1 || specId > maxSpecs)
+        {
+            if (handler)
+                handler->PSendSysMessage("BotMgr: specialization {} is not valid for bot '{}' (class {}, specs 1-{}).",
+                    specId, bot->GetName(), uint32(classId), maxSpecs);
+            return;
+        }
+        constexpr uint32 TEST_PURSE = 100000 * GOLD;
+        if (bot->GetMoney() < TEST_PURSE)
+            bot->SetMoney(TEST_PURSE);
+        BotSpawn::ApplyRebornBotSetup(bot, bot->GetLevel(), specId);
+        bool const built = BotTalentBuilds::ApplyRebornBuild(bot);
+        BotAI::SpellResolver::Invalidate(bot->GetGUID());
+        if (handler)
+            handler->PSendSysMessage("BotMgr: Reborn bot '{}' is now spec {} ({}); talent build {}.", bot->GetName(), specId,
+                BotAI::GetSpecName(classId, specId), built ? "applied" : "not applied yet (dead or in combat; the upkeep retries)");
         return;
     }
 

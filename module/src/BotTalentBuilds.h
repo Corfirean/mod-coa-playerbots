@@ -46,6 +46,16 @@ namespace BotTalentBuilds
     // Safely removes obsolete lower ranks, learns new ranks, and updates free talent points.
     void ApplyBuildForLevel(Player* bot, uint8 toLevel);
 
+    // Warcraft Reborn bots: spends the bot's talent points on its spec's 51-point build, as far as its level pays for
+    // (through the core's free-pick build, the same path a player's talent window uses). Returns true when the build is
+    // up to date or there is nothing to do, false when the bot cannot respec right now (dead, in combat, refused) and
+    // the caller should try again later.
+    bool ApplyRebornBuild(Player* bot);
+
+    // The specialization a Warcraft Reborn bot of this class should take, by the population's tank and healer shares
+    // (CoaBots.SpecBalance.*) and spread over the class's damage specs; see BotRebornSpecChoice.h.
+    uint32 ChooseRebornSpec(Player* bot);
+
     // Debug: why each pick of the bot's build up to its level was or was not accepted by the talent budget (one line per refused pick).
     std::string DescribeBuildPicks(Player* bot);
 

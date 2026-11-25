@@ -1029,7 +1029,12 @@ void Command(ChatHandler* h, std::string const& args)
             }
             else if (ruleset == BotAI::BotRuleset::Reborn)
             {
+                // Same normalization as the CoA classes: the default level, the spells of that level, the spec's talent build
+                // (the arena owns the bot, so the ordinary upkeep that picks talents and ammunition does not run) and a hunter's ammunition.
+                p->GiveLevel(uint8(sConfigMgr->GetOption<uint32>("CoaBots.Training.DefaultLevel", 60)));
                 BotSpawn::ApplyRebornBotSetup(p, p->GetLevel(), m.spec);
+                BotTalentBuilds::ApplyRebornBuild(p);
+                BotProgression::ProvisionAmmo(p);
             }
             p->UpdateSkillsForLevel();
             m.level = p->GetLevel();

@@ -98,6 +98,9 @@ bool IsValidBuildUuid(std::string const& id);
 bool ValidateCustomSpawnParams(uint32 count, uint8 level, uint8 forcedClassId, uint32 forcedSpec, std::string const& requestedArchetype, std::string& errorOut);
 void ApplyWildcardBotSetup(Player* bot, uint8 level, std::string const& requestedBuildId = "");
 void ApplyRebornBotSetup(Player* bot, uint8 level, uint32 forcedSpec = 0);
+// Reborn abilities of the bot's class (up to its level) that the stock trainer table does not teach; returns how many it learned.
+// Safe to repeat: a bot made before this existed gets them once per login.
+uint32 LearnRebornExtraSpells(Player* bot);
 void SpawnCustomBots(uint32 count, uint8 level, uint8 forcedClassId = 0, uint32 forcedSpec = 0, std::string const& requestedArchetype = "", ChatHandler* handler = nullptr);
 }
 

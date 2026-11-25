@@ -628,6 +628,11 @@ CoaBots.Perf.OutputDir = "bot-performance"
 CoaBots.Spells.OptimizeRankLookup = 0
 CoaBots.Spells.LazyCleanseScan = 0
 CoaBots.Spells.CacheLearnedRanks = 0
+
+# Warcraft Reborn realms only: cast the Reborn version of a spell (its id + 1100000) when the bot knows it, the stock one otherwise.
+# The Reborn versions are the ones a Reborn player casts (their costs, cast times, stance requirements and scripts are the realm's
+# own; several stock spells carry odd stance masks and cooldowns). Set to 0 to cast the stock spell whenever the bot knows both.
+CoaBots.Spells.PreferRebornTwins = 1
 CoaBots.Scheduling.Enable = 0
 CoaBots.Scheduling.Adaptive = 0
 CoaBots.Scheduling.IdleIntervalMs = 200

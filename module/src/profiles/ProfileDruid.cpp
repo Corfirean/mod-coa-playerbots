@@ -6,6 +6,7 @@
 
 #include "profiles/ProfileDruid.h"
 #include "profiles/ProfileRegistry.h"
+#include "profiles/ProfileHelpers.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
 
@@ -128,6 +129,45 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Lacerate
+            {
+                AbilityDescriptor d;
+                d.name = "Lacerate";
+                d.rootSpellId = 33745;
+                d.tags = AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 295.0f;
+                d.requireAuraMissingOnTarget = true;
+                d.refreshBelowMs = 5000;
+                p.abilities.push_back(d);
+            }
+
+            // Bash (stops a cast)
+            {
+                AbilityDescriptor d;
+                d.name = "Bash";
+                d.rootSpellId = 5211;
+                d.tags = AbilityTag::Interrupt | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 385.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Bash (survival: a hurt bot stuns what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Bash";
+                d.rootSpellId = 5211;
+                d.tags = AbilityTag::CrowdControl | AbilityTag::MeleeAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 335.0f;
+                d.maxSelfHpPct = 40.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return !ctx.targetIsBossOrElite ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
             ProfileRegistry::RegisterProfile(p);
         }
 
@@ -203,6 +243,18 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Wild Growth
+            {
+                AbilityDescriptor d;
+                d.name = "Wild Growth";
+                d.rootSpellId = 48438;
+                d.tags = AbilityTag::AoEHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.baseScore = 370.0f;
+                d.minInjuredAllies = 3;
+                p.abilities.push_back(d);
+            }
+
             ProfileRegistry::RegisterProfile(p);
         }
 
@@ -274,6 +326,28 @@ namespace BotAI
                 d.tags = AbilityTag::Filler | AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 220.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Starfall
+            {
+                AbilityDescriptor d;
+                d.name = "Starfall";
+                d.rootSpellId = 48505;
+                d.tags = AbilityTag::OffensiveCD | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 340.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Force of Nature
+            {
+                AbilityDescriptor d;
+                d.name = "Force of Nature";
+                d.rootSpellId = 33831;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 330.0f;
                 p.abilities.push_back(d);
             }
 
@@ -353,6 +427,60 @@ namespace BotAI
                 d.tags = AbilityTag::Filler | AbilityTag::MeleeAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 200.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Rake
+            {
+                AbilityDescriptor d;
+                d.name = "Rake";
+                d.rootSpellId = 1822;
+                d.tags = AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 330.0f;
+                d.requireAuraMissingOnTarget = true;
+                p.abilities.push_back(d);
+            }
+
+            // Savage Roar
+            {
+                AbilityDescriptor d;
+                d.name = "Savage Roar";
+                d.rootSpellId = 52610;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 335.0f;
+                d.missingAuraOnCaster = 52610;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.bot->GetComboPoints() >= 1 ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Tiger's Fury
+            {
+                AbilityDescriptor d;
+                d.name = "Tiger's Fury";
+                d.rootSpellId = 5217;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 300.0f;
+                d.missingAuraOnCaster = 5217;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.botPowerPct < 35.0f ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Berserk
+            {
+                AbilityDescriptor d;
+                d.name = "Berserk";
+                d.rootSpellId = 50334;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::Self;
+                d.baseScore = 340.0f;
+                d.missingAuraOnCaster = 50334;
                 p.abilities.push_back(d);
             }
 

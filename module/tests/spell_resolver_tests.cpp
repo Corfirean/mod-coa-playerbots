@@ -46,6 +46,37 @@ int main()
             assert(BotAI::SpellResolver::ResolveSpell(nullptr, 100) == 0);
             assert(BotAI::SpellResolver::ResolveSpell(&player, 0) == 0);
         }
+    // Reborn realm: a root resolves to its Reborn version (id + 1100000) when known, to the stock spell otherwise.
+    for (bool cached : {false, true})
+    {
+        BotAI::SpellResolver::SetLearnedRankCache(cached);
+        BotAI::SpellResolver::SetRankLookupOptimization(false);
+        BotAI::SpellResolver::SetPreferRebornTwins(true);
+        assert(BotAI::SpellResolver::PreferRebornTwins());
+        Player twinPlayer;
+        PlayerSpell stock, twin;
+        twinPlayer.book[900] = &stock;
+        SpellBookRevision::Changed(twinPlayer.CustomData);
+        assert(BotAI::SpellResolver::ResolveSpell(&twinPlayer, 900) == 900);          // only the stock spell known
+        twinPlayer.book[1100900] = &twin;
+        SpellBookRevision::Changed(twinPlayer.CustomData);
+        assert(BotAI::SpellResolver::ResolveSpell(&twinPlayer, 900) == 1100900);      // both known: the Reborn one
+        assert(BotAI::SpellResolver::ResolveSpell(&twinPlayer, 1100900) == 1100900);  // a Reborn root stays itself
+        twin.Active = false;
+        SpellBookRevision::Changed(twinPlayer.CustomData);
+        assert(BotAI::SpellResolver::ResolveSpell(&twinPlayer, 900) == 900);          // the Reborn one inactive: the stock one
+        twin.Active = true;
+        BotAI::SpellResolver::SetPreferRebornTwins(false);
+        SpellBookRevision::Changed(twinPlayer.CustomData);
+        assert(BotAI::SpellResolver::ResolveSpell(&twinPlayer, 900) == 900);          // off: the stock one first, as before
+        BotAI::SpellResolver::SetPreferRebornTwins(true);
+        Player onlyTwin;
+        onlyTwin.book[1100900] = &twin;
+        SpellBookRevision::Changed(onlyTwin.CustomData);
+        assert(BotAI::SpellResolver::ResolveSpell(&onlyTwin, 900) == 1100900);        // a bot with only the Reborn spell resolves it
+    }
+    BotAI::SpellResolver::SetPreferRebornTwins(false);
+
     BotAI::SpellResolver::SetLearnedRankCache(true);
     Player player;
     PlayerSpell learned;

@@ -11,7 +11,10 @@
 #include "AscensionCoATalentData.h"
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "AscensionFreepick.h"
+#include "BotRebornSpecChoice.h"
 #include "ClassSpecRoles.h"
+#include "engine/BotRuleset.h"
 #include "Config.h"
 #include "Log.h"
 #include "Player.h"
@@ -31,6 +34,31 @@ namespace
 std::unordered_map<uint32, TalentBuild> s_builds;
 std::mutex s_buildsMutex;
 bool s_initialized = false;
+
+// Warcraft Reborn talent builds: one 51-point plan per class and spec (see RebornTalentBuilds.inc).
+struct RebornPick
+{
+    uint32 spell;
+    uint32 level;
+};
+
+struct RebornBuild
+{
+    uint8 classId;
+    uint8 spec;
+    uint16 first;
+    uint16 count;
+};
+
+#include "RebornTalentBuilds.inc"
+
+RebornBuild const* FindRebornBuild(uint8 classId, uint32 spec)
+{
+    for (RebornBuild const& build : REBORN_BUILDS)
+        if (build.classId == classId && build.spec == spec)
+            return &build;
+    return nullptr;
+}
 
 uint32 MakeBuildKey(uint8 classId, uint32 specId)
 {
@@ -227,6 +255,90 @@ void ApplyBuildForLevel(Player* bot, uint8 toLevel)
     // UI from showing unspent points for a character that never spends them the normal way.
     uint32 totalEarned = bot->CalculateTalentsPoints();
     bot->SetFreeTalentPoints(totalEarned >= pointsSpent ? totalEarned - pointsSpent : 0);
+}
+
+uint32 ChooseRebornSpec(Player* bot)
+{
+    if (!bot)
+        return 0;
+    uint8 const classId = bot->getClass();
+    uint32 const maxSpecs = (classId == CLASS_SHAMAN || classId == CLASS_WARLOCK || classId == CLASS_DRUID) ? 4 : 3;
+
+    std::vector<BotRebornSpec::Option> options;
+    for (uint32 spec = 1; spec <= maxSpecs; ++spec)
+    {
+        BotRole const role = BotAI::GetRoleForClassSpec(classId, spec);
+        options.push_back({ spec, role == BotRole::Tank ? BotRebornSpec::Kind::Tank :
+            role == BotRole::Healer ? BotRebornSpec::Kind::Healer : BotRebornSpec::Kind::Damage, 1 });
+    }
+
+    BotRebornSpec::Population population;
+    for (Player* other : sBotMgr->GetOnlineBots())
+    {
+        if (!other || other == bot)
+            continue;
+        ++population.total;
+        BotRole const role = BotAI::GetRole(other->GetGUID());
+        if (role == BotRole::Tank)
+            ++population.tanks;
+        else if (role == BotRole::Healer)
+            ++population.healers;
+    }
+    return BotRebornSpec::Choose(options, population, sConfigMgr->GetOption<float>("CoaBots.SpecBalance.TankTargetPct", 20.0f),
+        sConfigMgr->GetOption<float>("CoaBots.SpecBalance.HealerTargetPct", 20.0f), bot->GetGUID().GetCounter());
+}
+
+bool ApplyRebornBuild(Player* bot)
+{
+    if (!bot || !bot->IsInWorld())
+        return false;
+
+    // Talent points start at level 10 on a Reborn realm (one point, then one per level: 51 at level 60).
+    uint8 const level = bot->GetLevel();
+    if (level < 10 || BotAI::GetBotRuleset(bot) != BotAI::BotRuleset::Reborn || !AscensionFreepick::HasFreepickBuild(bot))
+        return true;
+    // The core refuses a respec while dead or in combat; the caller tries again later.
+    if (!bot->IsAlive() || bot->IsInCombat())
+        return false;
+
+    uint8 const classId = bot->getClass();
+    uint32 const maxSpecs = (classId == CLASS_SHAMAN || classId == CLASS_WARLOCK || classId == CLASS_DRUID) ? 4 : 3;
+    uint32 spec = bot->GetPlayerSetting("core.ascension_active_spec", 0).value;
+    if (!spec || spec > maxSpecs)
+    {
+        // Same choice ApplyRebornBotSetup makes, for a bot that reached level 10 without one.
+        spec = ChooseRebornSpec(bot);
+        bot->UpdatePlayerSetting("core.ascension_active_spec", 0, spec);
+    }
+
+    RebornBuild const* build = FindRebornBuild(classId, spec);
+    if (!build)
+        return true;
+
+    // The build lists each pick at the level that pays for it; the core keeps the picks valid for this level.
+    std::vector<AscensionFreepick::GuideSpell> guide;
+    guide.reserve(build->count);
+    for (uint32 index = 0; index < build->count; ++index)
+    {
+        RebornPick const& pick = REBORN_PICKS[build->first + index];
+        if (pick.level <= level)
+            guide.push_back({ pick.spell, pick.level });
+    }
+
+    AscensionFreepick::UploadResult const result = AscensionFreepick::ApplyGuide(bot, guide, 0);
+    std::string_view const outcome = result.Result ? result.Result : "";
+    if (outcome == "CA_UPDATE_ENTRIES_OK")
+    {
+        LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotTalentBuilds: Reborn bot '{}' (class {}, spec {}) spent {} talent point(s) at level {}.",
+            bot->GetName(), uint32(classId), spec, guide.size(), uint32(level));
+        return true;
+    }
+    if (outcome == "CA_UPDATE_ENTRIES_NO_DIFF")
+        return true;
+
+    LOG_DEBUG(BotAI::BotDebugLog::LoggerName(bot->GetGUID()), "BotTalentBuilds: Reborn bot '{}' (class {}, spec {}) could not apply its build at level {}: {} {} (entry {}, rank {}).",
+        bot->GetName(), uint32(classId), spec, uint32(level), outcome, result.Learn ? result.Learn : "", result.EntryId, result.Rank);
+    return false;
 }
 
 std::string DescribeBuildPicks(Player* bot)

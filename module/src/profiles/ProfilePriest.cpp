@@ -6,6 +6,7 @@
 
 #include "profiles/ProfilePriest.h"
 #include "profiles/ProfileRegistry.h"
+#include "profiles/ProfileHelpers.h"
 #include "engine/CombatContext.h"
 #include "Player.h"
 
@@ -113,6 +114,71 @@ namespace BotAI
                 p.abilities.push_back(d);
             }
 
+            // Prayer of Mending
+            {
+                AbilityDescriptor d;
+                d.name = "Prayer of Mending";
+                d.rootSpellId = 33076;
+                d.tags = AbilityTag::PeriodicHeal;
+                d.targetType = TargetType::TankAlly;
+                d.baseScore = 345.0f;
+                d.internalThrottleMs = 10000;
+                p.abilities.push_back(d);
+            }
+
+            // Pain Suppression
+            {
+                AbilityDescriptor d;
+                d.name = "Pain Suppression";
+                d.rootSpellId = 33206;
+                d.tags = AbilityTag::EmergencyHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.baseScore = 475.0f;
+                d.maxTargetHpPct = 35.0f;
+                d.internalThrottleMs = 60000;
+                p.abilities.push_back(d);
+            }
+
+            // Guardian Spirit
+            {
+                AbilityDescriptor d;
+                d.name = "Guardian Spirit";
+                d.rootSpellId = 47788;
+                d.tags = AbilityTag::EmergencyHeal;
+                d.targetType = TargetType::LowestHealthAlly;
+                d.baseScore = 470.0f;
+                d.maxTargetHpPct = 30.0f;
+                d.internalThrottleMs = 60000;
+                p.abilities.push_back(d);
+            }
+
+            // Inner Fire
+            {
+                AbilityDescriptor d;
+                d.name = "Inner Fire";
+                d.rootSpellId = 588;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 340.0f;
+                d.missingAuraOnCaster = 588;
+                p.abilities.push_back(d);
+            }
+
+            // Psychic Scream (survival: a hurt priest fears what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Psychic Scream";
+                d.rootSpellId = 8122;
+                d.tags = AbilityTag::CrowdControl;
+                d.targetType = TargetType::Self;
+                d.baseScore = 335.0f;
+                d.maxSelfHpPct = 35.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (!ctx.targetIsBossOrElite && ctx.engagedEnemyCount >= 1) ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
             ProfileRegistry::RegisterProfile(p);
         }
 
@@ -193,6 +259,100 @@ namespace BotAI
                 d.tags = AbilityTag::Filler | AbilityTag::RangedAttack;
                 d.targetType = TargetType::CurrentTarget;
                 d.baseScore = 150.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Devouring Plague
+            {
+                AbilityDescriptor d;
+                d.name = "Devouring Plague";
+                d.rootSpellId = 2944;
+                d.tags = AbilityTag::PeriodicDamage;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 330.0f;
+                d.requireAuraMissingOnTarget = true;
+                p.abilities.push_back(d);
+            }
+
+            // Shadow Word: Death
+            {
+                AbilityDescriptor d;
+                d.name = "Shadow Word: Death";
+                d.rootSpellId = 32379;
+                d.tags = AbilityTag::Execute | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 390.0f;
+                d.maxTargetHpPct = 25.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.botHpPct > 40.0f ? 0.0f : -1.0f;  // it hurts the caster
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Silence
+            {
+                AbilityDescriptor d;
+                d.name = "Silence";
+                d.rootSpellId = 15487;
+                d.tags = AbilityTag::Interrupt | AbilityTag::RangedAttack;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 395.0f;
+                p.abilities.push_back(d);
+            }
+
+            // Shadowfiend
+            {
+                AbilityDescriptor d;
+                d.name = "Shadowfiend";
+                d.rootSpellId = 34433;
+                d.tags = AbilityTag::OffensiveCD;
+                d.targetType = TargetType::CurrentTarget;
+                d.baseScore = 330.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.botPowerPct < 70.0f ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Dispersion
+            {
+                AbilityDescriptor d;
+                d.name = "Dispersion";
+                d.rootSpellId = 47585;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 360.0f;
+                d.missingAuraOnCaster = 47585;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return ctx.botPowerPct < 30.0f ? 0.0f : -1.0f;
+                };
+                p.abilities.push_back(d);
+            }
+
+            // Inner Fire
+            {
+                AbilityDescriptor d;
+                d.name = "Inner Fire";
+                d.rootSpellId = 588;
+                d.tags = AbilityTag::Buff;
+                d.targetType = TargetType::Self;
+                d.baseScore = 340.0f;
+                d.missingAuraOnCaster = 588;
+                p.abilities.push_back(d);
+            }
+
+            // Psychic Scream (survival: a hurt priest fears what is hitting it)
+            {
+                AbilityDescriptor d;
+                d.name = "Psychic Scream";
+                d.rootSpellId = 8122;
+                d.tags = AbilityTag::CrowdControl;
+                d.targetType = TargetType::Self;
+                d.baseScore = 335.0f;
+                d.maxSelfHpPct = 35.0f;
+                d.customScorer = [](CombatContext const& ctx, AbilityDescriptor const&) -> float {
+                    return (!ctx.targetIsBossOrElite && ctx.engagedEnemyCount >= 1) ? 0.0f : -1.0f;
+                };
                 p.abilities.push_back(d);
             }
 
