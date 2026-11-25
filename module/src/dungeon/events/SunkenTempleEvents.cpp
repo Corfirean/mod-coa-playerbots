@@ -59,6 +59,8 @@
 //   each carrying a KillCreature(engage) event (events 10/11) so the real kill
 //   still flips the real DBC bit. See that file + §9 of the plan.
 
+namespace CoaDungeon
+{
 namespace
 {
     // GATE 1 — the six Atal'ai defenders (each on its own upper balcony,
@@ -437,3 +439,4 @@ void RegisterSunkenTempleRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

@@ -66,6 +66,8 @@
 // rule; DC runs are explicit `.dc on ubrs` / test runs, and LFG 44 has no
 // lfg_dungeon_template row on this core, so a queue-filled UBRS run cannot exist.
 
+namespace CoaDungeon
+{
 namespace
 {
     using namespace DcBlackrockSpire;
@@ -516,3 +518,4 @@ void RegisterBlackrockSpireWings(std::unordered_map<uint32, DungeonWingLayout>& 
         }, "ubrs", /*lfgDungeonId*/ 44, /*terminalBossEntry*/ 10363, /*encounterMask*/ 0x3E00u},
     }, WingSelect::Explicit, /*defaultWing*/ "lbrs"};
 }
+}  // namespace CoaDungeon

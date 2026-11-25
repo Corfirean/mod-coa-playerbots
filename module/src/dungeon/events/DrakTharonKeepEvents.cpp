@@ -186,6 +186,8 @@
 //     question; it is a known cost, recorded here so it is not re-derived as a
 //     dungeon-clear bug.
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 DTK_MAP = 600;
@@ -468,3 +470,4 @@ void RegisterDrakTharonKeepRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(heroic));
 }
+}  // namespace CoaDungeon

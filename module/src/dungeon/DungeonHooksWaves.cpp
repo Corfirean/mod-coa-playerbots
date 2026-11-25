@@ -31,6 +31,8 @@
 #include <map>
 #include <vector>
 
+namespace CoaDungeon
+{
 namespace
 {
     using Result = ObjectiveArriveResult;
@@ -349,3 +351,4 @@ namespace DungeonHooks
         table[36] = &CullingWaves;
     }
 }
+}  // namespace CoaDungeon

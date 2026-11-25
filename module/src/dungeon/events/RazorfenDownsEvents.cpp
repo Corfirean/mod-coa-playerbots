@@ -69,6 +69,8 @@
 // walks back to reset. The condition reads false once his encounter bit is set
 // (killed), ending the loop. Folded under Tuten'kash in the panel (he gates it).
 
+namespace CoaDungeon
+{
 namespace
 {
     bool RfdGong(Player* bot, AiObjectContext* context);
@@ -217,3 +219,4 @@ void RegisterRazorfenDownsRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

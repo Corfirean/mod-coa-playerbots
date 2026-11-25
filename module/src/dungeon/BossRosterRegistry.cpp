@@ -11,6 +11,8 @@
 
 #include "dungeon/DungeonEventTables.h"
 
+namespace CoaDungeon
+{
 static_assert(BossRosterRegistry::ObjectiveEntry(0) == 0x4F000000u,
               "objective entry base must stay in the synthetic range");
 
@@ -202,4 +204,4 @@ std::vector<DungeonBossInfo> BossRosterRegistry::Apply(uint32 mapId, DcDiffKey k
     }
     return base;
 }
-
+}  // namespace CoaDungeon

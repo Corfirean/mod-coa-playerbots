@@ -42,6 +42,8 @@
 #include <string>
 #include <vector>
 
+using namespace CoaDungeon;  // the scripted dungeon code, kept apart from mod-dungeon-clear
+
 using namespace Acore::ChatCommands;
 
 class botcmd_commandscript : public CommandScript

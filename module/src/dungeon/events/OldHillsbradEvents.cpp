@@ -37,6 +37,8 @@
 // threat-assist (both attack Thrall). No standalone boss anchors — a boss anchor
 // would have DC navigate to them independently and fight the escort.
 
+namespace CoaDungeon
+{
 namespace
 {
     // Instance progress counter (old_hillsbrad.h DATA_ESCORT_PROGRESS) + the
@@ -264,3 +266,4 @@ void RegisterOldHillsbradRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

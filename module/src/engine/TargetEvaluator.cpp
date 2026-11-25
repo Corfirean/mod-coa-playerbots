@@ -17,6 +17,8 @@
 #include <unordered_map>
 #include <vector>
 
+using namespace CoaDungeon;  // the scripted dungeon code, kept apart from mod-dungeon-clear
+
 namespace BotAI
 {
     namespace

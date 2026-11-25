@@ -6,6 +6,8 @@
 #include "dungeon/DcCompat.h"
 #include "dungeon/RouteSweepRegistry.h"
 
+namespace CoaDungeon
+{
 namespace
 {
     // The maps, each earned by its own run data. Measured off acore_world.creature.
@@ -47,3 +49,4 @@ bool RouteSweepRegistry::SweepsRoute(uint32 mapId)
             return true;
     return false;
 }
+}  // namespace CoaDungeon

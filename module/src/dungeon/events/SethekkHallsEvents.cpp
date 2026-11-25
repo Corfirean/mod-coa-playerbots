@@ -75,6 +75,8 @@
 // and Anzu re-summons. Optional means even a persistent failure just advances
 // to Ikiss. Acceptable.
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 SH_MAP            = 556;
@@ -257,3 +259,4 @@ void RegisterSethekkHallsRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

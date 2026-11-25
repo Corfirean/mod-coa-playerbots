@@ -8,6 +8,8 @@
 
 #include <vector>
 
+namespace CoaDungeon
+{
 namespace
 {
     // ---- the table ------------------------------------------------------
@@ -105,3 +107,4 @@ bool BossPullbackRegistry::HasRows(uint32 mapId)
             return true;
     return false;
 }
+}  // namespace CoaDungeon

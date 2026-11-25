@@ -8,7 +8,11 @@
 #include "dungeon/DungeonRuntime.h"
 
 // Due while the room of the next room-aggro boss (Scarlet Cathedral, Scholomance, ...) still holds hostile creatures that should go first.
+
+namespace CoaDungeon
+{
 bool DcRoomAggroPreClearCondition(Player* bot, AiObjectContext* /*context*/)
 {
     return DungeonRuntime::RoomTrashRemaining(bot);
 }
+}  // namespace CoaDungeon

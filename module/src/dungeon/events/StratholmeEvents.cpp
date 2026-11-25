@@ -100,6 +100,8 @@
 // Ramstein dies, never closes), and the whole event completes the moment the
 // Baron door reads open (CompleteWhenGOState), whichever step it is on.
 
+namespace CoaDungeon
+{
 namespace
 {
     // --- live side: Dathrohan -> Balnazzar -------------------------------
@@ -650,3 +652,4 @@ void RegisterStratholmeRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

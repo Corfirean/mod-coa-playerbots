@@ -23,6 +23,9 @@ class Map;
 class Unit;
 class InstanceScript;
 class PlayerbotAI;
+
+namespace CoaDungeon
+{
 struct DungeonBossInfo;
 
 // Outcome of a Custom-step hook (see dungeon/DungeonHooks.h).
@@ -157,5 +160,6 @@ namespace DcKaraLibraryPit
     constexpr uint32 MAP_KARAZHAN = 532;
     constexpr uint32 HOOK_PIT_RESCUE = 65;
 }
+}  // namespace CoaDungeon
 
 #endif

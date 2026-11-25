@@ -8,6 +8,8 @@
 
 #include <cmath>
 
+namespace CoaDungeon
+{
 namespace
 {
     // Karazhan (532). The radius is sized off the Banquet Hall pull in
@@ -38,3 +40,4 @@ bool HealLeashRegistry::WithinLeash(float campX, float campY, float radius, floa
     float const dy = y - campY;
     return std::sqrt(dx * dx + dy * dy) <= radius;
 }
+}  // namespace CoaDungeon

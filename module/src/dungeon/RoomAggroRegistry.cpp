@@ -8,6 +8,8 @@
 
 #include <algorithm>
 
+namespace CoaDungeon
+{
 namespace
 {
     // Tier-1 MVP scope (deployment-files/docs/mod-dungeon-clear_room-aggro-bosses
@@ -353,3 +355,4 @@ bool RoomAggroRegistry::IsRoomTrash(RoomAggroBoss const& boss, uint32 entry,
         return false;
     return true;
 }
+}  // namespace CoaDungeon

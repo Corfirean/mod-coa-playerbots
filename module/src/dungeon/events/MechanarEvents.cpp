@@ -94,6 +94,8 @@
 // below only REORDERS them onto the travel path and interleaves the three
 // objectives (mirrors the ZulFarrak reorder+objectives shape).
 
+namespace CoaDungeon
+{
 namespace
 {
     // --- floor-1 bosses (reorder targets) --------------------------------
@@ -340,3 +342,4 @@ void RegisterMechanarRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

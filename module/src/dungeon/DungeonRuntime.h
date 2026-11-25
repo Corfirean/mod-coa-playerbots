@@ -17,6 +17,8 @@ class Group;
 class Map;
 class Player;
 
+namespace CoaDungeon
+{
 namespace DungeonRuntime
 {
     // Whether the roster-driven dungeon logic is switched on (CoaBots.Dungeon.UseRoster, default off).
@@ -48,5 +50,6 @@ namespace DungeonRuntime
     // A member of the group dropped far below where it stood (a hole in the floor): the next Advance puts the group at its target, on the far side.
     void NoteFall(Group* group);
 }
+}  // namespace CoaDungeon
 
 #endif

@@ -54,6 +54,9 @@
 // Maps NOT listed here are single-wing and pass through unfiltered. The lists
 // are static game data (vanilla dungeon layouts never change), so they live in
 // code rather than the DB.
+
+namespace CoaDungeon
+{
 struct DungeonWing
 {
     std::string name;                  // human-readable, for logs/chat
@@ -120,5 +123,6 @@ public:
     // The wing owning `bossEntry` on `mapId`, or nullptr.
     static DungeonWing const* WingOf(uint32 mapId, uint32 bossEntry);
 };
+}  // namespace CoaDungeon
 
 #endif

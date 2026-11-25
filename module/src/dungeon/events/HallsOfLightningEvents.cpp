@@ -45,6 +45,8 @@
 // is a straight, flat, 41yd-wide walkway and four followers behind one tank have
 // `follow tank` (relevance 25) already. Measure before adding a rung.
 
+namespace CoaDungeon
+{
 namespace
 {
     using namespace DcHallsOfLightning;
@@ -296,3 +298,4 @@ void RegisterHallsOfLightningRoute()
             { 1332.38f, -102.08f, 56.98f },       // 28  Volkhan
         });
 }
+}  // namespace CoaDungeon

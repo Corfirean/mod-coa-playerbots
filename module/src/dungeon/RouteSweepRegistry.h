@@ -39,6 +39,9 @@
 // there the same aggro spheres already bend the WALK (PullEnRouteAvoid, on by
 // default), heroic rooms are wide enough for that detour to exist, and the
 // heroic pull profile is tuned against measured baselines.
+
+namespace CoaDungeon
+{
 class RouteSweepRegistry
 {
 public:
@@ -46,5 +49,6 @@ public:
     // testable on its own. Linear scan; the table is tiny.
     static bool SweepsRoute(uint32 mapId);
 };
+}  // namespace CoaDungeon
 
 #endif  // _PLAYERBOT_ROUTESWEEPREGISTRY_H

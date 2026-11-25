@@ -11,6 +11,9 @@
 
 // Per-anchor behavior bits for a registered dungeon route. Bitmasked into
 // `WaypointHint::flags`. Unused bits are reserved for future hints.
+
+namespace CoaDungeon
+{
 enum class AnchorFlag : uint16
 {
     NONE        = 0,
@@ -47,5 +50,6 @@ struct WaypointHint
     uint16 flags{0};             // Bitmask of AnchorFlag
     float arriveRadius{6.0f};    // Distance from the hint at which Advance considers it reached
 };
+}  // namespace CoaDungeon
 
 #endif

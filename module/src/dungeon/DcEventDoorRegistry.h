@@ -24,6 +24,9 @@
 // script/event-opened only; the door-blocked action consults it before deciding
 // it is "entitled" to open a door, and leaves a listed door for the events
 // framework or the human instead.
+
+namespace CoaDungeon
+{
 namespace DcEventDoorRegistry
 {
     inline bool IsScriptOnly(uint32 goEntry)
@@ -1251,5 +1254,6 @@ namespace DcEventDoorRegistry
         }
     }
 }
+}  // namespace CoaDungeon
 
 #endif

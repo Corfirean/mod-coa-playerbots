@@ -143,6 +143,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+using namespace CoaDungeon;  // the scripted dungeon code, kept apart from mod-dungeon-clear
+
 namespace
 {
 // Real per-spell GCD is now queried directly off the engine's own Player::GetGlobalCooldownMgr()

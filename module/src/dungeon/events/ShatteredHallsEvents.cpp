@@ -220,6 +220,9 @@
 // enough on its own: the RP runs, and either he finishes killing his four
 // peons and AttackStarts the nearest player himself, or the tank engages him
 // first and JustEngagedWith cancels the RP — both end in a normal fight.
+
+namespace CoaDungeon
+{
 namespace
 {
     // --- wake Nethekurse (first boss immune until his client-only intro) ---
@@ -584,3 +587,4 @@ void RegisterShatteredHallsRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

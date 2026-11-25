@@ -40,6 +40,8 @@
 // whenever the party is on the wrong island, and yields the moment the tank is on
 // foot on the right one.
 
+namespace CoaDungeon
+{
 namespace
 {
     using namespace DcOculus;
@@ -281,3 +283,4 @@ void RegisterOculusRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

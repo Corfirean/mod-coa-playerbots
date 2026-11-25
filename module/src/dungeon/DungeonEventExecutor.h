@@ -16,7 +16,10 @@
 
 class Group;
 class Player;
+class Creature;
 
+namespace CoaDungeon
+{
 enum class EventResult : uint8
 {
     Running,  // still working: call again next tick
@@ -24,7 +27,6 @@ enum class EventResult : uint8
     Blocked,  // a step timed out or cannot be done unaided
 };
 
-class Creature;
 
 namespace DungeonEventExecutor
 {
@@ -54,5 +56,6 @@ namespace DungeonEventExecutor
     bool IsLatched(uint32 instanceId, uint32 mapId, uint32 eventId);
     void Latch(uint32 instanceId, uint32 mapId, uint32 eventId);
 }
+}  // namespace CoaDungeon
 
 #endif

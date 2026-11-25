@@ -34,6 +34,8 @@
 #include <set>
 #include <tuple>
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 DEFAULT_STEP_TIMEOUT_MS = 120000;
@@ -928,3 +930,4 @@ namespace DungeonEventExecutor
         g_latched.insert({ instanceId, mapId, eventId });
     }
 }
+}  // namespace CoaDungeon

@@ -25,6 +25,9 @@
 // On a leashed map the healer only accepts a standoff point within `radius` of the
 // camp. When none exists it stays put and heals what it can see from the camp — the
 // DPS that ran out has to come back to it, not the other way round.
+
+namespace CoaDungeon
+{
 struct HealLeashRow
 {
     uint32 mapId{0};
@@ -43,5 +46,6 @@ public:
     // unleashed and always passes.
     static bool WithinLeash(float campX, float campY, float radius, float x, float y);
 };
+}  // namespace CoaDungeon
 
 #endif  // _PLAYERBOT_HEALLEASHREGISTRY_H

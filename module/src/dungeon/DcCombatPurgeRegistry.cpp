@@ -6,6 +6,8 @@
 #include "dungeon/DcCompat.h"
 #include "dungeon/DcCombatPurgeRegistry.h"
 
+namespace CoaDungeon
+{
 namespace
 {
     // ---- the table ------------------------------------------------------
@@ -114,3 +116,4 @@ bool DcCombatPurgeRegistry::HasRowsFor(uint32 mapId)
             return true;
     return false;
 }
+}  // namespace CoaDungeon

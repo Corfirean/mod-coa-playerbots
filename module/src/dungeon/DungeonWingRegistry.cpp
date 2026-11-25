@@ -12,6 +12,8 @@
 
 #include "dungeon/DungeonEventTables.h"
 
+namespace CoaDungeon
+{
 namespace
 {
     // mapId -> wings. Boss entries are the ENCOUNTER_CREDIT_KILL_CREATURE
@@ -107,3 +109,4 @@ DungeonWing const* DungeonWingRegistry::WingOf(uint32 mapId, uint32 bossEntry)
             return &wing;
     return nullptr;
 }
+}  // namespace CoaDungeon

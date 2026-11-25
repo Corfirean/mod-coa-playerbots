@@ -24,6 +24,9 @@
 // BossRosterRegistry keeps its Apply/HasPatch API and just aggregates the
 // appenders. Open the namespace with `using namespace DcRoster;` at the top of
 // each Register<Dungeon>Roster body.
+
+namespace CoaDungeon
+{
 namespace DcRoster
 {
     // Synthetic entry for the seq-th non-creature objective on a map. Thin alias
@@ -151,5 +154,6 @@ namespace DcRoster
         return o;
     }
 }
+}  // namespace CoaDungeon
 
 #endif

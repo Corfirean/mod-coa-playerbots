@@ -13,6 +13,9 @@
 // Resolve whichever member exists so the module compiles against both layouts
 // without an #ifdef on a core version macro. The int/long overload ranking
 // prefers `id` when both members are present.
+
+namespace CoaDungeon
+{
 namespace DungeonClear
 {
     template <typename T>
@@ -34,5 +37,6 @@ namespace DungeonClear
         return SpawnEntry(data, 0);
     }
 }
+}  // namespace CoaDungeon
 
 #endif

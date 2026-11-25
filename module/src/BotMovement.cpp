@@ -32,6 +32,8 @@
 #include <unordered_set>
 #include <vector>
 
+using namespace CoaDungeon;  // the scripted dungeon code, kept apart from mod-dungeon-clear
+
 namespace
 {
     // =========================================================================

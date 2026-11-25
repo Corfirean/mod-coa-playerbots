@@ -106,6 +106,9 @@
 // below is a DcGundrak constant, and qualifying each one would bury the shape of
 // the events under the prefix. (A using-directive inside the anonymous namespace
 // would only be in effect inside it — the appenders below are at file scope.)
+
+namespace CoaDungeon
+{
 using namespace DcGundrak;
 
 namespace
@@ -715,3 +718,4 @@ void RegisterGundrakRoster(std::vector<BossRosterPatch>& t)
 
     t.push_back(std::move(heroic));
 }
+}  // namespace CoaDungeon

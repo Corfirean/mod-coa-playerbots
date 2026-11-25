@@ -8,6 +8,8 @@
 
 #include <cmath>
 
+namespace CoaDungeon
+{
 namespace
 {
     // --- Magisters' Terrace (585) — Selin Fireheart -----------------------------
@@ -270,3 +272,4 @@ bool SealedEncounterRegistry::InApproachRange(SealedEncounterRow const& row,
     float const dz = z - bz;
     return (dx * dx + dy * dy + dz * dz) <= (row.approachRadius * row.approachRadius);
 }
+}  // namespace CoaDungeon

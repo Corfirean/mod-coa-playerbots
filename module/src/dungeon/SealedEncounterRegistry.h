@@ -50,6 +50,9 @@
 //
 // Both are scoped to the last stretch before the boss (`approachRadius`) so nothing
 // about the rest of the run changes.
+
+namespace CoaDungeon
+{
 struct SealedEncounterRow
 {
     uint32 mapId{0};
@@ -104,5 +107,6 @@ public:
     static bool InApproachRange(SealedEncounterRow const& row, float x, float y, float z,
                                 float bx, float by, float bz);
 };
+}  // namespace CoaDungeon
 
 #endif  // _PLAYERBOT_SEALEDENCOUNTERREGISTRY_H

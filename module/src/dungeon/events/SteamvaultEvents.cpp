@@ -49,6 +49,8 @@
 // the rest. Steps are MoveTo/UseGO/Wait — none is a rewind hazard, so the
 // event does not need .Persistent().
 
+namespace CoaDungeon
+{
 namespace
 {
     // Mekgineer Steamrigger's Main Chambers Access Panel.
@@ -90,3 +92,4 @@ void RegisterSteamvaultRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

@@ -8,6 +8,8 @@
 
 #include "Map.h"
 
+namespace CoaDungeon
+{
 namespace DcDifficulty
 {
     DcDiffKey Of(Map const* map)
@@ -17,3 +19,4 @@ namespace DcDifficulty
         return { map->IsRaid(), static_cast<uint8>(map->GetDifficulty()) };
     }
 }
+}  // namespace CoaDungeon

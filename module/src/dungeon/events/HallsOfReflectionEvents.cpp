@@ -109,6 +109,8 @@
 //     credit entry and no mask bit. encounterMask 0x3 IS the expected final mask
 //     on a fully cleared run; a run reporting a third bit has read something else.
 
+namespace CoaDungeon
+{
 namespace
 {
     using namespace DcHallsOfReflection;
@@ -684,3 +686,4 @@ void RegisterHallsOfReflectionRoute()
             { PATH_WAYPOINTS[18].x, PATH_WAYPOINTS[18].y, PATH_WAYPOINTS[18].z },
         });
 }
+}  // namespace CoaDungeon

@@ -115,6 +115,8 @@
 //   * SealedEncounterRegistry — Anub'arak's arena, whose three DOOR_TYPE_ROOM
 //     doors shut 5s after the pull.
 
+namespace CoaDungeon
+{
 namespace
 {
     // --- Hadronox ---------------------------------------------------------
@@ -385,3 +387,4 @@ void RegisterAzjolNerubRoute()
             { 550.52f, 268.66f, 224.37f },
         });
 }
+}  // namespace CoaDungeon

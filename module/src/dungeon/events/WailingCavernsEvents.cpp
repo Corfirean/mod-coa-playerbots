@@ -38,6 +38,8 @@
 // idempotent (Done once within radius of the landing), a second guard against
 // re-firing.
 
+namespace CoaDungeon
+{
 void RegisterWailingCavernsEvents(std::vector<DungeonEvent>& out)
 {
     // The ledge the party leaps FROM (approach-side mesh, where the objective
@@ -236,3 +238,4 @@ void RegisterWailingCavernsRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

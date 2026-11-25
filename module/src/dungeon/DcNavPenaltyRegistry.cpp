@@ -8,6 +8,8 @@
 
 #include <array>
 
+namespace CoaDungeon
+{
 namespace
 {
     // ---- the table ------------------------------------------------------
@@ -467,3 +469,4 @@ char const* DcNavPenaltyRegistry::WingRegionAt(uint32 mapId, float x, float y, f
             return p.wing;
     return nullptr;
 }
+}  // namespace CoaDungeon

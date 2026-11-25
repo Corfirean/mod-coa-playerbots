@@ -54,6 +54,8 @@
 // summon objective itself gets only the ordinary between-pulls readiness plus
 // the leading dwell below) is deliberately left to live iteration.
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 kMapId = 409;
@@ -149,3 +151,4 @@ void RegisterMoltenCoreRoster(std::vector<BossRosterPatch>& t)
 
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

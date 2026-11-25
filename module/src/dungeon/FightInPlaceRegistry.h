@@ -29,6 +29,9 @@
 // region test needs no per-mob bookkeeping. The zone is sized off the live spawn data
 // (see FightInPlaceRegistry.cpp) to cover the room while excluding the antechamber and
 // the instance's other encounters.
+
+namespace CoaDungeon
+{
 struct FightInPlaceZone
 {
     uint32 mapId{0};
@@ -47,5 +50,6 @@ public:
     // table is tiny.
     static bool IsNoPullZone(uint32 mapId, float x, float y);
 };
+}  // namespace CoaDungeon
 
 #endif  // _PLAYERBOT_FIGHTINPLACEREGISTRY_H

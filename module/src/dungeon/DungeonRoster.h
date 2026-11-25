@@ -17,6 +17,8 @@
 class Map;
 class Player;
 
+namespace CoaDungeon
+{
 namespace DungeonRoster
 {
     // Every anchor of the map in clear order, patches and wing filter applied, done ones included.
@@ -52,5 +54,6 @@ namespace DungeonRoster
     // Short description of the list for logs: "Name (entry) done/todo, ...".
     std::string Describe(Map* map, Player* ref);
 }
+}  // namespace CoaDungeon
 
 #endif

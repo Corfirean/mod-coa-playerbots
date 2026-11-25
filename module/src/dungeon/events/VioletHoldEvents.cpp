@@ -91,6 +91,8 @@
 // the emergency position for the runs where something did get through: rule 2 of
 // VhDriveWave, armed by reading the seal's own aura list.
 
+namespace CoaDungeon
+{
 using namespace DcVioletHold;
 
 namespace
@@ -461,3 +463,4 @@ void RegisterVioletHoldRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

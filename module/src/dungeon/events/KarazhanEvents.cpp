@@ -74,6 +74,8 @@
 // Netherspite, Chess. Nightbane's slot was measured on the navmesh: fitting the urn in
 // after Opera costs 249yd of extra walking, the next best slot 693yd.
 
+namespace CoaDungeon
+{
 using namespace DcKarazhan;
 
 namespace
@@ -398,4 +400,4 @@ void RegisterKarazhanRoute()
             { -10980.88f, -1892.25f, 82.35f },  // 32 Moroes' dais
         });
 }
-
+}  // namespace CoaDungeon

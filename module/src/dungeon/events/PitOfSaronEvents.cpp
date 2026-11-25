@@ -105,6 +105,8 @@
 //     its own branch, NOT a DC one: DC has no seam that suppresses a bot's own
 //     heals, and inventing one here would be the wrong layer.
 
+namespace CoaDungeon
+{
 namespace
 {
     using namespace DcPitOfSaron;
@@ -592,3 +594,4 @@ void RegisterPitOfSaronRoute()
             { TYRANNUS_X, TYRANNUS_Y, TYRANNUS_Z },  // 3  his exitPos / home
         });
 }
+}  // namespace CoaDungeon

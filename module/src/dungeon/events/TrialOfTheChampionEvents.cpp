@@ -33,6 +33,8 @@
 // but the holds wait on 6, 8 and 9, which no rewind can reach early; they simply
 // keep holding while the driver re-does the clicks.
 
+namespace CoaDungeon
+{
 namespace
 {
     using namespace DcTrialOfTheChampion;
@@ -186,3 +188,4 @@ void RegisterTrialOfTheChampionRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

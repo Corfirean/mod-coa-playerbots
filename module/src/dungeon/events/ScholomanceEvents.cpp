@@ -25,6 +25,8 @@
 // the tracked boss's keep-away sphere protects the close trash and Marduk (off
 // the roster) is excluded from being chased as a faction-15 student.
 
+namespace CoaDungeon
+{
 void RegisterScholomanceEvents(std::vector<DungeonEvent>& out)
 {
     out.push_back(EventBuilder(289, 1, "Clear the room (Marduk & Vectus)")
@@ -71,3 +73,4 @@ void RegisterScholomanceRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

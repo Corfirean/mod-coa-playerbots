@@ -14,6 +14,8 @@
 #include "DBCStructure.h"
 #include "ObjectMgr.h"
 
+namespace CoaDungeon
+{
 std::unordered_map<uint64, std::vector<DungeonBossInfo>> BossSpawnIndex::_store;
 std::once_flag BossSpawnIndex::_once;
 
@@ -162,3 +164,4 @@ void BossSpawnIndex::Build()
         v = std::move(deduped);
     }
 }
+}  // namespace CoaDungeon

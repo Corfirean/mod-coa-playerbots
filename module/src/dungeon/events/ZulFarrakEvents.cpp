@@ -56,6 +56,8 @@
 // the engage steps reuse the normal engage pipeline (long-range path + combat +
 // follower assist) so the party fights alongside the NPC helpers.
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 ZF_EXECUTIONER = 7274;
@@ -320,3 +322,4 @@ void RegisterZulFarrakRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

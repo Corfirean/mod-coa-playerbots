@@ -28,6 +28,8 @@
 #include <map>
 #include <mutex>
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 UNREACHABLE_MS = 6 * 60 * 1000;
@@ -724,3 +726,4 @@ namespace DungeonRuntime
         return true;
     }
 }
+}  // namespace CoaDungeon

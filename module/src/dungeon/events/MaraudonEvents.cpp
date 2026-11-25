@@ -21,6 +21,9 @@
 // RegisterMaraudonRoster).
 
 // --- wing layout (relocated from DungeonWingRegistry) --------------------
+
+namespace CoaDungeon
+{
 void RegisterMaraudonWings(std::unordered_map<uint32, DungeonWingLayout>& store)
 {
     // --- Maraudon (map 349) --------------------------------------
@@ -109,3 +112,4 @@ void RegisterMaraudonRoster(std::vector<BossRosterPatch>& t)
     p.remove = {13596};  // Rotgrip
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

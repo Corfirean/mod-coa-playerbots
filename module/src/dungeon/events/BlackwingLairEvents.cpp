@@ -76,6 +76,8 @@
 // The other six BWL bosses need nothing here: all eight carry kill-credit rows
 // (instance_encounters 610-617) so BossSpawnIndex derives the roster by itself.
 
+namespace CoaDungeon
+{
 namespace
 {
     using namespace DcBlackwingLair;
@@ -989,3 +991,4 @@ void RegisterBlackwingLairRoute()
             { TRANSIT_END_X, TRANSIT_END_Y, TRANSIT_END_Z },
         });
 }
+}  // namespace CoaDungeon

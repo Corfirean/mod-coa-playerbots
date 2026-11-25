@@ -66,6 +66,9 @@
 // a plan has proven it cannot avoid waking, and the boss whose approach the plan
 // is running. Outside that boss's window the zone does not exist and the room is
 // stock.
+
+namespace CoaDungeon
+{
 struct DcQuarantineZone
 {
     uint32 mapId{0};
@@ -117,5 +120,6 @@ public:
     // True iff `entry` is one of the zone's members.
     static bool IsZoneEntry(DcQuarantineZone const& z, uint32 entry);
 };
+}  // namespace CoaDungeon
 
 #endif  // _PLAYERBOT_DCSOCIALQUARANTINEREGISTRY_H

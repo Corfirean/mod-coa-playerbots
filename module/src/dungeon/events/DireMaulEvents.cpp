@@ -50,6 +50,8 @@
 // once he has walked off / despawned; Optional degrades a non-firing script to
 // the normal door-blocked stall (the door still opens, driven by his own AI).
 
+namespace CoaDungeon
+{
 namespace
 {
     bool GordokCourtyardDoor(Player* bot, AiObjectContext* context);
@@ -611,3 +613,4 @@ void RegisterDireMaulWings(std::unordered_map<uint32, DungeonWingLayout>& store)
         }, "dm-north"},
     }};
 }
+}  // namespace CoaDungeon

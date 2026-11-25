@@ -17,6 +17,8 @@
 #include "GridNotifiersImpl.h"
 #include <cmath>
 
+using namespace CoaDungeon;  // the scripted dungeon code, kept apart from mod-dungeon-clear
+
 namespace
 {
     // Does any effect of `spellInfo` actually threaten anyone besides the caster -- the same

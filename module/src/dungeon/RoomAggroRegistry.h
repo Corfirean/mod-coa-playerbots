@@ -22,6 +22,9 @@
 // boss (some flagged bosses wander). Whole-instance pulls (SetInCombatWithZone
 // on the boss itself) are deliberately NOT in this registry — a whole zone
 // cannot be pre-cleared.
+
+namespace CoaDungeon
+{
 struct RoomAggroBoss
 {
     uint32 mapId{0};
@@ -171,5 +174,6 @@ public:
     static bool IsRoomTrash(RoomAggroBoss const& boss, uint32 entry,
                             float distToBoss, float bossSafeRadius);
 };
+}  // namespace CoaDungeon
 
 #endif

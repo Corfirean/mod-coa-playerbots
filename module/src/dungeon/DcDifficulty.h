@@ -10,7 +10,6 @@
 #include "DBCEnums.h"
 #include "Define.h"
 
-class Map;
 
 // The module's difficulty key: (isRaid, raw difficulty) as ONE value, because a
 // raw Difficulty is meaningless without the map type it came from. The core
@@ -26,6 +25,11 @@ class Map;
 // fields, so kernel tests exercise the whole matrix without a Map; only the
 // Of(Map*) reader lives in the .cpp (keeping Map.h out of this header and the
 // registry headers that include it).
+
+class Map;
+
+namespace CoaDungeon
+{
 struct DcDiffKey
 {
     bool  isRaid     = false;
@@ -69,5 +73,6 @@ namespace DcDifficulty
     // (dungeon normal).
     DcDiffKey Of(Map const* map);
 }
+}  // namespace CoaDungeon
 
 #endif  // _PLAYERBOT_DCDIFFICULTY_H

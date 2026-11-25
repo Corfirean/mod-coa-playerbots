@@ -35,6 +35,8 @@
 // tick it fires (and is idempotent on a restart), so there is no multi-tick fall
 // for a tick-gap to rewind.
 
+namespace CoaDungeon
+{
 void RegisterSlavePensEvents(std::vector<DungeonEvent>& out)
 {
     out.push_back(EventBuilder(547, 1, "Drop down past Mennu")
@@ -81,3 +83,4 @@ void RegisterSlavePensRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

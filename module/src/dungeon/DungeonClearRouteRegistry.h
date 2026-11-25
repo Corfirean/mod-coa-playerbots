@@ -28,6 +28,9 @@
 // — a self-registering static in a TU nothing references is stripped from the
 // module static lib, taking its route with it. Adding a route is one appender
 // plus one line in the seed.
+
+namespace CoaDungeon
+{
 class DungeonClearRouteRegistry
 {
 public:
@@ -60,5 +63,6 @@ private:
 
     static std::unordered_map<Key, std::vector<WaypointHint>, KeyHash>& Store();
 };
+}  // namespace CoaDungeon
 
 #endif

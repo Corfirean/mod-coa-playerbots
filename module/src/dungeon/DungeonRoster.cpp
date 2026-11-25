@@ -19,6 +19,8 @@
 #include <mutex>
 #include <set>
 
+namespace CoaDungeon
+{
 namespace
 {
     std::mutex g_mutex;
@@ -248,3 +250,4 @@ namespace DungeonRoster
         return out;
     }
 }
+}  // namespace CoaDungeon

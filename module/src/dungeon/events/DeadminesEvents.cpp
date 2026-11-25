@@ -38,6 +38,8 @@
 // re-fire the cannon (summoning two more each time); persistence keeps the step
 // progress so the cannon fires exactly once.
 
+namespace CoaDungeon
+{
 void RegisterDeadminesEvents(std::vector<DungeonEvent>& out)
 {
     constexpr uint32 DM_GO_IRON_CLAD_DOOR = 16397;
@@ -106,3 +108,4 @@ void RegisterDeadminesRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

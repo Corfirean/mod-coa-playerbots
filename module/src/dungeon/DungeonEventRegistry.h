@@ -18,6 +18,9 @@
 #include "dungeon/DcDifficultyGate.h"
 
 class Player;
+
+namespace CoaDungeon
+{
 class AiObjectContext;
 
 // A Conditional event's activation predicate: a pure-ish read-only test over the
@@ -1101,5 +1104,6 @@ public:
     // the conditional-event path (relevance 31) is the single room-clear driver.
     static bool HasRoomAggroEvent(uint32 mapId);
 };
+}  // namespace CoaDungeon
 
 #endif

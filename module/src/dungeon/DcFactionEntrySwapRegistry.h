@@ -33,6 +33,9 @@
 // cleared-anchor sets are all keyed off that same list, they stay consistent.
 //
 // This table is data only (no Player, no Map) so the registry gtests can pin it.
+
+namespace CoaDungeon
+{
 namespace DcFactionEntrySwap
 {
     struct Rule
@@ -76,5 +79,6 @@ namespace DcFactionEntrySwap
         return false;
     }
 }
+}  // namespace CoaDungeon
 
 #endif

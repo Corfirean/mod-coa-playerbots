@@ -50,6 +50,9 @@
 //
 // Mirrors RoomAggroRegistry / BossRosterRegistry: adding a fix is a single table
 // edit inside DungeonClear/, never an mmap regen or a core change.
+
+namespace CoaDungeon
+{
 struct DcNavPenaltyVolume
 {
     uint32 mapId{0};
@@ -106,5 +109,6 @@ public:
     // whatever the run wing, or nullptr when the point is in no wing region.
     static char const* WingRegionAt(uint32 mapId, float x, float y, float z);
 };
+}  // namespace CoaDungeon
 
 #endif

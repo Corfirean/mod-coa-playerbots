@@ -87,6 +87,8 @@
 // Ingvar's thrown axe is a DcHazardRegistry row (entry 23997), and the airborne
 // Proto-Drake Riders are a targeting question, not a clear-order one.
 
+namespace CoaDungeon
+{
 namespace
 {
     // The forge masters. One entry, three spawns, three fixed positions.
@@ -215,3 +217,4 @@ void RegisterUtgardeKeepRoster(std::vector<BossRosterPatch>& t)
 
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

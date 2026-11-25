@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 
+namespace CoaDungeon
+{
 namespace
 {
     uint32 constexpr MGT_MAP      = 585;
@@ -180,3 +182,4 @@ bool DcSocialQuarantineRegistry::IsZoneEntry(DcQuarantineZone const& z, uint32 e
 {
     return std::find(z.entries.begin(), z.entries.end(), entry) != z.entries.end();
 }
+}  // namespace CoaDungeon

@@ -16,6 +16,9 @@
 // encounter credit) or a non-combat "objective": a navmesh anchor the tank
 // travels to in order to progress an event (trigger a spawn, traverse a gate),
 // after which it is marked done and the clear advances. See BossRosterRegistry.
+
+namespace CoaDungeon
+{
 enum class DungeonAnchorKind : uint8
 {
     Boss,
@@ -181,5 +184,6 @@ inline DcAnchorDoneVia AnchorDoneByInstanceValues(DungeonBossInfo const& b, uint
         return DcAnchorDoneVia::InstanceData;
     return DcAnchorDoneVia::None;
 }
+}  // namespace CoaDungeon
 
 #endif

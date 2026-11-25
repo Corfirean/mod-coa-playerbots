@@ -6,6 +6,8 @@
 #include "dungeon/DcCompat.h"
 #include "dungeon/DcNeverTargetRegistry.h"
 
+namespace CoaDungeon
+{
 namespace
 {
     // ---- the table ------------------------------------------------------
@@ -405,3 +407,4 @@ bool DcNeverTargetRegistry::IsNeverTarget(uint32 mapId, uint32 entry, float x, f
     }
     return false;
 }
+}  // namespace CoaDungeon

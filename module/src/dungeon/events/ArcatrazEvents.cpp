@@ -83,6 +83,8 @@
 // "Explode" (36719) needs no handling — it self-stuns for the wind-up, so the party
 // bursts it down before it detonates. See DcHazardRegistry.h.
 
+namespace CoaDungeon
+{
 namespace
 {
     // The wave arena floor centroid — where the whole finale is fought.
@@ -415,3 +417,4 @@ void RegisterArcatrazRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

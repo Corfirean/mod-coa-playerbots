@@ -124,6 +124,8 @@
 // top and the "Tribunal DONE" branch that teleports him to the door does not
 // remove it. No fallback hook is needed and none is authored.
 
+namespace CoaDungeon
+{
 using namespace DcHallsOfStone;
 
 namespace
@@ -444,3 +446,4 @@ void RegisterHallsOfStoneRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

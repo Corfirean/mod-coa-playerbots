@@ -14,11 +14,13 @@
 
 #include "dungeon/DungeonEventRegistry.h"
 
-
 class Player;
 class Creature;
 class Map;
 class PlayerbotAI;
+
+namespace CoaDungeon
+{
 class AiObjectContext;
 struct BossRosterPatch;
 struct DungeonWingLayout;
@@ -6050,5 +6052,6 @@ void RegisterHallsOfReflectionRoute();
 // back wall of Midnight's pen inside the at-boss handoff range, and the row is
 // what holds the engage until the party has come round to the pen's west mouth.
 void RegisterKarazhanRoute();
+}  // namespace CoaDungeon
 
 #endif

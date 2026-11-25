@@ -15,6 +15,8 @@
 #include "DBCEnums.h"
 #include "DungeonBossInfo.h"
 
+namespace CoaDungeon
+{
 class BossSpawnIndex
 {
 public:
@@ -36,5 +38,6 @@ private:
         return (static_cast<uint64>(mapId) << 32) | static_cast<uint32>(difficulty);
     }
 };
+}  // namespace CoaDungeon
 
 #endif

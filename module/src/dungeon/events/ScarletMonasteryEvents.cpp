@@ -29,6 +29,8 @@
 // other RoomAggroRegistry maps migrate by adding one more row each (and keep the
 // legacy path until they do).
 
+namespace CoaDungeon
+{
 void RegisterScarletMonasteryEvents(std::vector<DungeonEvent>& out)
 {
     out.push_back(EventBuilder(189, 1, "Clear the Cathedral (room-aggro pre-clear)")
@@ -122,3 +124,4 @@ void RegisterScarletMonasteryWings(std::unordered_map<uint32, DungeonWingLayout>
         }, "sm-cath"},
     }};
 }
+}  // namespace CoaDungeon

@@ -74,6 +74,8 @@
 // kill them. A KillCreature gate on top would add a second opinion about what the
 // tank should be hitting during a scripted fight.
 
+namespace CoaDungeon
+{
 namespace
 {
     using namespace DcCullingOfStratholme;
@@ -666,3 +668,4 @@ void RegisterCullingOfStratholmeRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(heroic));
 }
+}  // namespace CoaDungeon

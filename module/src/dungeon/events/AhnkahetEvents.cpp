@@ -206,6 +206,8 @@
 // bosses are only restated on a 1..8 scale so the three objectives have integer
 // slots to sit in.
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 AK_MAP = 619;
@@ -471,3 +473,4 @@ void RegisterAhnkahetRoster(std::vector<BossRosterPatch>& t)
 
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

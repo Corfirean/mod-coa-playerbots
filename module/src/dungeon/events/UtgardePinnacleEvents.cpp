@@ -87,6 +87,8 @@
 //   * SKADI_HITS (30) and SKADI_IN_RANGE (31) are dead instance fields — read by
 //     GetData, written by nobody. Never gate anything on them.
 
+namespace CoaDungeon
+{
 namespace
 {
     using namespace DcUtgardePinnacle;
@@ -748,3 +750,4 @@ void RegisterUtgardePinnacleRoute()
             { 392.53f, -287.20f, 109.47f },  // 22  the throne
         });
 }
+}  // namespace CoaDungeon

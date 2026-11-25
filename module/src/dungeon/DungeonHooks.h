@@ -18,6 +18,8 @@
 
 class Player;
 
+namespace CoaDungeon
+{
 namespace DungeonHooks
 {
     // The hooks of the wave dungeons (DungeonHooksWaves.cpp): Violet Hold, Culling of Stratholme, Halls of Lightning.
@@ -34,5 +36,6 @@ namespace DungeonHooks
     // crate of the Culling of Stratholme for good, because the Arcane Disruptor had no room.
     bool GiveItem(Player* bot, uint32 itemId);
 }
+}  // namespace CoaDungeon
 
 #endif

@@ -57,6 +57,9 @@
 //
 // Mirrors FightInPlaceRegistry / RoomAggroRegistry: adding a fix is a single
 // table edit inside DungeonClear/, never a core change.
+
+namespace CoaDungeon
+{
 struct DcNeverTargetRow
 {
     uint32 mapId{0};
@@ -88,5 +91,6 @@ public:
     // caller with a creature in hand should use this one.
     static bool IsNeverTarget(uint32 mapId, uint32 entry, float x, float y);
 };
+}  // namespace CoaDungeon
 
 #endif  // _PLAYERBOT_DCNEVERTARGETREGISTRY_H

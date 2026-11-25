@@ -71,6 +71,8 @@
 // (wipe, corpse-run) SKIPS and the repeat re-fires fresh, so it never stalls the
 // run for a human.
 
+namespace CoaDungeon
+{
 namespace
 {
     // --- creature entries (the_black_morass.h) ----------------------------
@@ -499,3 +501,4 @@ void RegisterBlackMorassRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon

@@ -60,6 +60,9 @@
 //            UnreachableCombatPurgeSecs reads exactly like a freeze. This gate
 //            is what keeps the table from breaking the fights it is meant to
 //            unstick: an evading creature at full health is never part of one.
+
+namespace CoaDungeon
+{
 enum class DcCombatPurgeWhen : uint8
 {
     Always,
@@ -92,5 +95,6 @@ public:
     // before it walks anybody's combat references.
     static bool HasRowsFor(uint32 mapId);
 };
+}  // namespace CoaDungeon
 
 #endif  // _PLAYERBOT_DCCOMBATPURGEREGISTRY_H

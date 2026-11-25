@@ -6,6 +6,8 @@
 #include "dungeon/DcCompat.h"
 #include "dungeon/FightInPlaceRegistry.h"
 
+namespace CoaDungeon
+{
 namespace
 {
     // The rooms, sized off live spawn data (acore_world.creature on map 585):
@@ -137,3 +139,4 @@ bool FightInPlaceRegistry::IsNoPullZone(uint32 mapId, float x, float y)
     }
     return false;
 }
+}  // namespace CoaDungeon

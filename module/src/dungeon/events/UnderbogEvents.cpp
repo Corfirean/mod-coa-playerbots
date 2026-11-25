@@ -76,6 +76,8 @@
 // second hop fires. Each TeleportParty is itself idempotent (Done immediately if
 // the leader is already on its landing), so a tick-gap restart never re-teleports.
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 UB_GHAZAN = 18105;
@@ -197,3 +199,4 @@ void RegisterUnderbogRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

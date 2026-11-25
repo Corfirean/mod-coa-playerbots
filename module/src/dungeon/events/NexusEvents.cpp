@@ -113,6 +113,8 @@
 // The Crystalline Frayers of Ormorok's garden are NOT an event: they are a
 // targeting question, and live in DcNeverTargetRegistry.
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 NEX_MAP = 576;
@@ -281,3 +283,4 @@ void RegisterNexusRoster(std::vector<BossRosterPatch>& t)
 
     t.push_back(std::move(heroic));
 }
+}  // namespace CoaDungeon

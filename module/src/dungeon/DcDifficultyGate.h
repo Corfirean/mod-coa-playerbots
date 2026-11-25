@@ -21,6 +21,9 @@
 // here mean the heroic TIER of whatever the map is: dungeon heroic, or raid
 // heroic (10H/25H) when WotLK raids arrive. Classic raids are all difficulty
 // 0 and read as normal-tier.
+
+namespace CoaDungeon
+{
 enum class DcDifficultyGate : uint8
 {
     Any,         // every difficulty (the default — most content is shared)
@@ -40,5 +43,6 @@ inline bool DcGateMatches(DcDifficultyGate gate, DcDiffKey key)
             return true;
     }
 }
+}  // namespace CoaDungeon
 
 #endif

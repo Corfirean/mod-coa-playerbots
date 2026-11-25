@@ -47,6 +47,8 @@
 //     reads false and boss-nav walks the tank through to the now-attackable
 //     Broggok. Both events are folded under Broggok in the panel.
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 BF_BROGGOK = 17380;         // boss creature (auto-anchored)
@@ -144,4 +146,4 @@ void RegisterBloodFurnaceEvents(std::vector<DungeonEvent>& out)
                       .MoveTo(/*lever spot*/ 456.56f, 54.35f, 9.62f, /*radius*/ 6.0f)
                       .Build());
 }
-
+}  // namespace CoaDungeon

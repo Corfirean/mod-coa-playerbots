@@ -27,6 +27,9 @@
 // BossRosterRegistry.cpp), mirroring RoomAggroRegistry. This is link-safe in
 // the static-lib build (a hardcoded table in a GLOBed .cpp), unlike
 // self-registering static initializers which the linker strips.
+
+namespace CoaDungeon
+{
 struct BossRosterPatch
 {
     uint32 mapId{0};
@@ -93,5 +96,6 @@ public:
     // True if any patch exists for the map (cheap gate for callers).
     static bool HasPatch(uint32 mapId);
 };
+}  // namespace CoaDungeon
 
 #endif

@@ -30,6 +30,9 @@
 
 // Appenders defined in the imported dungeon files.
 #define DC_HOOK_APPENDER(name) void name(ObjectiveHookRegistry::HookTable& out);
+
+namespace CoaDungeon
+{
 #include "dungeon/HookRegistrations.inc"
 #undef DC_HOOK_APPENDER
 
@@ -412,3 +415,4 @@ namespace DungeonHooks
         return it->second(tank);
     }
 }
+}  // namespace CoaDungeon

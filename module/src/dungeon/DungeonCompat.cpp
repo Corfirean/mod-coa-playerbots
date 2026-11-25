@@ -17,6 +17,8 @@
 #include "Timer.h"
 #include <mutex>
 
+namespace CoaDungeon
+{
 template <>
 AiObjectContext::Value<std::optional<DungeonBossInfo>>* AiObjectContext::GetValue<std::optional<DungeonBossInfo>>(int key)
 {
@@ -100,3 +102,4 @@ void ObjectiveHookRegistry::AddHook(HookTable& table, uint32 id, Hook hook)
     }
     table.emplace(id, std::move(hook));
 }
+}  // namespace CoaDungeon

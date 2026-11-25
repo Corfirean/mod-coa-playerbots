@@ -49,6 +49,8 @@
 // mandatory spine boss, so a non-firing seal should stall for the human rather
 // than silently skip into a dead-end at the shut door.
 
+namespace CoaDungeon
+{
 namespace
 {
     constexpr uint32 ULD_KEYSTONE  = 124371;
@@ -312,3 +314,4 @@ void RegisterUldamanRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

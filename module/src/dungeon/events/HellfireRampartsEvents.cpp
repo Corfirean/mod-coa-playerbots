@@ -44,6 +44,8 @@
 // Vazruden's encounter bit is set (killed), ending the loop. Folded under
 // Vazruden in the panel.
 
+namespace CoaDungeon
+{
 namespace
 {
     bool HfrApproach(Player* bot, AiObjectContext* context);
@@ -170,3 +172,4 @@ void RegisterHellfireRampartsRoster(std::vector<BossRosterPatch>& t)
         t.push_back(std::move(p));
     }
 }
+}  // namespace CoaDungeon

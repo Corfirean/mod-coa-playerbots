@@ -21,6 +21,9 @@
 // next boss skipped for a far spawned one — memory `dc-boss-ordering-fixes`).
 // The game-state resolution (candidate filtering by kill-mask / skip / corpse,
 // sticky-order lookup) stays in NextDungeonBossValue::Calculate.
+
+namespace CoaDungeon
+{
 namespace DcBossOrdering
 {
     // From the encounter-ordered candidate list, pick the boss to head toward.
@@ -102,5 +105,6 @@ namespace DcBossOrdering
         return cands.front();
     }
 }
+}  // namespace CoaDungeon
 
 #endif

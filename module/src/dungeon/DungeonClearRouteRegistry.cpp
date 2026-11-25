@@ -8,6 +8,8 @@
 
 #include "dungeon/DungeonEventTables.h"
 
+namespace CoaDungeon
+{
 namespace
 {
     // One-time seed of the hand-authored routes.
@@ -66,3 +68,4 @@ std::vector<WaypointHint> const* DungeonClearRouteRegistry::Get(uint32 mapId, Di
         return nullptr;
     return &it->second;
 }
+}  // namespace CoaDungeon

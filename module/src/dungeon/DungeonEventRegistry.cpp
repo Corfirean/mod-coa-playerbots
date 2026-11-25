@@ -12,6 +12,8 @@
 
 // --- EventBuilder ---------------------------------------------------------
 
+namespace CoaDungeon
+{
 EventBuilder::EventBuilder(uint32 mapId, uint32 id, std::string name)
 {
     _ev.mapId = mapId;
@@ -672,3 +674,4 @@ bool DungeonEventRegistry::HasRoomAggroEvent(uint32 mapId)
             return true;
     return false;
 }
+}  // namespace CoaDungeon

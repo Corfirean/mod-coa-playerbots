@@ -91,6 +91,8 @@
 // wave/boss fight (the bot is on the combat engine); a non-persistent event
 // would rewind to step 0 each time.
 
+namespace CoaDungeon
+{
 namespace
 {
     // Instance-data accessor + state (mirrors instance_blackrock_depths.cpp's
@@ -1431,3 +1433,4 @@ void RegisterBlackrockDepthsWings(std::unordered_map<uint32, DungeonWingLayout>&
         }, "brd-uc", /*lfgDungeonId*/ 276, /*terminalBossEntry*/ 9019, /*encounterMask*/ 0x7FE00u},
     }, WingSelect::Explicit, /*defaultWing*/ "brd-db"};
 }
+}  // namespace CoaDungeon

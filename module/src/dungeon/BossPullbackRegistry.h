@@ -43,6 +43,9 @@
 // human who has watched the encounter knows the party has to stand somewhere
 // else. Mirrors RoomAggroRegistry / BossRosterRegistry: adding a fix is a single
 // table edit inside DungeonClear/, never a core change or an mmap regen.
+
+namespace CoaDungeon
+{
 struct BossPullback
 {
     uint32 mapId{0};
@@ -108,5 +111,6 @@ public:
     // bool and nothing else.
     static bool HasRows(uint32 mapId);
 };
+}  // namespace CoaDungeon
 
 #endif  // _PLAYERBOT_BOSSPULLBACKREGISTRY_H

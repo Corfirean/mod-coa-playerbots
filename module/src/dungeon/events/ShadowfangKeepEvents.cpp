@@ -69,6 +69,9 @@
 // fixed here: DcEventDoorRegistry::IsScriptOnly now refuses the click, and this
 // event holds the party on the room's spawn ring until the adds arrive, kills
 // them, and lets the gate open itself.
+
+namespace CoaDungeon
+{
 namespace
 {
     bool SfkCourtyardAlliance(Player* bot, AiObjectContext* context);
@@ -313,3 +316,4 @@ namespace
         return DcTargeting::FindLiveCreatureOnMap(bot, SFK_FENRUS) == nullptr;
     }
 }
+}  // namespace CoaDungeon

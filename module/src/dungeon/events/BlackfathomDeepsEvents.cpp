@@ -112,6 +112,8 @@
 // wrong jump coordinate shows up as a fall, which the chain handler logs,
 // counts (`chainFalls`) and retries; it cannot wedge a run.
 
+namespace CoaDungeon
+{
 namespace
 {
     // Instance script slots (blackfathom_deeps.h) and the encounter state value
@@ -354,3 +356,4 @@ void RegisterBlackfathomDeepsRoster(std::vector<BossRosterPatch>& t)
     };
     t.push_back(std::move(p));
 }
+}  // namespace CoaDungeon
