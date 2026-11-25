@@ -1472,6 +1472,19 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
         return 0;
     }
 
+    // The client data also names races that have no starting data for a class: such a character is created and
+    // then refused by the core at every login.
+    availableClasses.erase(std::remove_if(availableClasses.begin(), availableClasses.end(),
+        [race](uint8 candidate) { return !sObjectMgr->GetPlayerInfo(race, candidate); }), availableClasses.end());
+
+    if (availableClasses.empty())
+    {
+        if (handler)
+            handler->PSendSysMessage("BotMgr: race {} has no starting data for any available class -- skipped.",
+                uint32(race));
+        return 0;
+    }
+
     uint8 classId;
     if (forcedClassId)
     {
@@ -1479,8 +1492,9 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
         {
             if (handler)
                 handler->PSendSysMessage(
-                    "BotMgr: class {} has no level 80+ template character of race {}'s faction "
-                    "(not on account 1) -- skipped, not substituted.", uint32(forcedClassId), uint32(race));
+                    "BotMgr: class {} has no level 80+ template character of race {}'s faction (not on account 1) "
+                    "or race {} cannot be that class -- skipped, not substituted.", uint32(forcedClassId),
+                    uint32(race), uint32(race));
             return 0;
         }
         classId = forcedClassId;
@@ -1521,7 +1535,10 @@ ObjectGuid::LowType CreateBotClone(uint8 race, ChatHandler* handler, uint8 level
     uint32 spec = 0;
     if (level)
     {
-        spec = forcedSpec ? forcedSpec : RollSpecForClass(classId);
+        // A Reborn bot's spec is chosen at its first login, against the bots already online, so that the tank and
+        // healer shares hold (BotTalentBuilds::ChooseRebornSpec). 0 leaves that choice open.
+        bool const chosenAtLogin = BotAI::GetServerRuleset() == BotAI::BotRuleset::Reborn;
+        spec = forcedSpec ? forcedSpec : chosenAtLogin ? 0 : RollSpecForClass(classId);
         CharacterDatabase.DirectExecute(
             "REPLACE INTO character_settings (guid, source, data) VALUES ({}, 'core.ascension_active_spec', '{} ')",
             newGuid, spec);
