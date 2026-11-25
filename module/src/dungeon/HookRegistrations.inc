@@ -1,0 +1,5 @@
+DC_HOOK_APPENDER(RegisterBlackfathomDeepsHooks)
+DC_HOOK_APPENDER(RegisterBlackrockDepthsHooks)
+DC_HOOK_APPENDER(RegisterBlackrockSpireHooks)
+DC_HOOK_APPENDER(RegisterKarazhanHooks)
+DC_HOOK_APPENDER(RegisterStratholmeHooks)

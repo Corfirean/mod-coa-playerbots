@@ -30,6 +30,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 namespace
 {
@@ -145,6 +149,28 @@ namespace
         return false;
     }
 
+    struct Hit
+    {
+        uint32 spellId;
+        uint32 damage;
+        uint32 attackerEntry;
+        uint32 atMs;
+    };
+    std::mutex g_hitMutex;
+    std::unordered_map<ObjectGuid, std::deque<Hit>> g_hits;
+
+    void NoteHit(Unit* target, Unit* attacker, uint32 damage, SpellInfo const* spellInfo)
+    {
+        Player* player = target ? target->ToPlayer() : nullptr;
+        if (!player || !attacker || !attacker->IsCreature() || !player->GetMap() || !player->GetMap()->IsDungeon())
+            return;
+        std::lock_guard<std::mutex> lock(g_hitMutex);
+        std::deque<Hit>& hits = g_hits[player->GetGUID()];
+        hits.push_back({ spellInfo ? spellInfo->Id : 0u, damage, attacker->GetEntry(), getMSTime() });
+        while (hits.size() > 6)
+            hits.pop_front();
+    }
+
     float Scaled(float value, float multiplier)
     {
         return std::ceil(value * multiplier);
@@ -177,6 +203,7 @@ namespace
             damage = std::max<uint32>(1, uint32(Scaled(float(damage), cfg.damageTaken)));
         if (BossTuning const* tuning = cfg.bossTuning ? TuningFor(attacker) : nullptr; tuning && attacker->IsCreature() && !PlayerBehind(attacker) && BotBehind(target))
             damage = std::max<uint32>(1, uint32(Scaled(float(damage), tuning->damageTaken)));
+        NoteHit(target, attacker, damage, spellInfo);
     }
 
     class coa_bot_scaling_unit : public UnitScript
@@ -214,6 +241,19 @@ namespace
                 heal = uint32(Scaled(float(heal), cfg.healingDone));
         }
     };
+}
+
+std::string BotScaling::RecentHits(ObjectGuid guid)
+{
+    std::lock_guard<std::mutex> lock(g_hitMutex);
+    auto it = g_hits.find(guid);
+    if (it == g_hits.end())
+        return {};
+    std::string out;
+    uint32 const now = getMSTime();
+    for (Hit const& h : it->second)
+        out += "spell " + std::to_string(h.spellId) + " for " + std::to_string(h.damage) + " by " + std::to_string(h.attackerEntry) + " " + std::to_string((now - h.atMs) / 100) + " ds ago; ";
+    return out;
 }
 
 void AddSC_coa_bot_scaling_script()

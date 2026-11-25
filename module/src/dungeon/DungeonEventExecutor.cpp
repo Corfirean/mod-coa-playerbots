@@ -1,0 +1,930 @@
+/*
+ * mod-coa-playerbots -- dungeon automation
+ *
+ * The step vocabulary follows jrad7/mod-dungeon-clear (AGPL-3.0-or-later); the implementation is written for this module's movement layer.
+ */
+
+#include "dungeon/DungeonEventExecutor.h"
+#include "dungeon/DungeonHooks.h"
+#include "BotMovement.h"
+#include "Config.h"
+#include "Creature.h"
+#include "CreatureAI.h"
+#include "GameObject.h"
+#include "GameObjectAI.h"
+#include "Group.h"
+#include "InstanceScript.h"
+#include "Item.h"
+#include "Log.h"
+#include "Map.h"
+#include "MotionMaster.h"
+#include "ObjectMgr.h"
+#include "Opcodes.h"
+#include "Player.h"
+#include "Spell.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "StringFormat.h"
+#include "Timer.h"
+#include "WorldPacket.h"
+#include "WorldSession.h"
+#include <algorithm>
+#include <map>
+#include <mutex>
+#include <set>
+#include <tuple>
+
+namespace
+{
+    constexpr uint32 DEFAULT_STEP_TIMEOUT_MS = 120000;
+    constexpr float DEFAULT_ARRIVE_RADIUS = 3.0f;
+
+    enum class StepResult : uint8 { Running, Done, Blocked, Restart };
+
+    struct Run
+    {
+        uint32 mapId = 0;
+        uint32 eventId = 0;
+        size_t step = 0;
+        uint32 stepStartedMs = 0;
+        uint32 lastDriveMs = 0;
+        uint32 stage = 0;          // per-step sub-state (gossip: 0 hello, 1 select)
+        uint32 stageAtMs = 0;
+        bool used = false;         // the step's one-shot action was taken
+    };
+
+    std::mutex g_mutex;
+    std::map<ObjectGuid, Run> g_runs;
+    std::set<std::tuple<uint32, uint32, uint32>> g_latched;
+
+    uint32 StepTimeout(EventStep const& s)
+    {
+        static uint32 const configured = sConfigMgr->GetOption<uint32>("CoaBots.Dungeon.EventStepTimeoutMs", DEFAULT_STEP_TIMEOUT_MS);
+        // Scales every step timer, the ones authored on the rows too (CoaBots.Dungeon.EventTimeoutScale, 1 = as authored). The authored timers
+        // assume a group that walks and fights like the original bots; ours is slower, and a step that is cut off only gets the whole event
+        // blocked for six minutes.
+        static float const scale = std::max(1.0f, sConfigMgr->GetOption<float>("CoaBots.Dungeon.EventTimeoutScale", 1.0f));
+        uint32 base = configured;
+        if (s.timeoutMs)
+            base = s.timeoutMs;
+        // An escort walks the whole dungeon with the escortee: it ends by the dungeon's own progress, not by a short timer.
+        else if (s.kind == EventStepKind::EscortCreature)
+            base = 20 * 60 * 1000;
+        return uint32(base * scale);
+    }
+
+    InstanceScript* InstanceOf(Player* bot)
+    {
+        Map* map = bot ? bot->GetMap() : nullptr;
+        InstanceMap* instanceMap = map ? map->ToInstanceMap() : nullptr;
+        return instanceMap ? instanceMap->GetInstanceScript() : nullptr;
+    }
+
+    bool HasAnchor(EventStep const& s)
+    {
+        return s.x != 0.0f || s.y != 0.0f || s.z != 0.0f;
+    }
+
+    uint64 GoalId(DungeonEvent const& ev, size_t step)
+    {
+        return 0xDC00000000ull | (uint64(ev.mapId & 0xFFFF) << 24) | (uint64(ev.id & 0xFFFF) << 8) | uint64(step & 0xFF);
+    }
+
+    // Walks the tank to a point. Done when within `radius`; Blocked when the movement layer gives up.
+    // Per tank: how the walk to the current goal goes (see WalkTo).
+    struct WalkState
+    {
+        uint64 goal = 0;
+        uint32 straightSince = 0;  // non-zero: the leg is walked in a straight line since then
+        float best = 1.0e9f;
+        uint32 improvedAt = 0;
+    };
+    std::map<ObjectGuid, WalkState> g_walks;
+
+    StepResult WalkTo(Player* tank, DungeonEvent const& ev, size_t step, float x, float y, float z, float radius)
+    {
+        if (tank->GetExactDist(x, y, z) <= radius)
+        {
+            g_walks.erase(tank->GetGUID());
+            BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
+            return StepResult::Done;
+        }
+        // When the pathfinder gives up, or the tank does not get closer for a while, the leg is walked in a straight line for up to half a minute
+        // before the step is called blocked (Old Hillsbrad's walk to the north-east houses was refused outright and the whole event was written off
+        // with four bombs unplanted; the walk to Thrall's cell went on for good without getting closer).
+        uint64 const goal = GoalId(ev, step);
+        uint32 const now = getMSTime();
+        float const dist = tank->GetExactDist(x, y, z);
+        WalkState& w = g_walks[tank->GetGUID()];
+        if (w.goal != goal || now - w.improvedAt > 120000)
+            w = WalkState{ goal, 0, dist, now };
+        if (dist < w.best - 2.0f)
+        {
+            w.best = dist;
+            w.improvedAt = now;
+        }
+        if (tank->IsInCombat() || !tank->IsAlive())
+            w.improvedAt = now;  // a fight is not a stall
+        if (w.straightSince)
+        {
+            if (now - w.straightSince < 30000)
+            {
+                BotMovement::MoveTo(tank, MoveOwner::AutoDungeon, x, y, z, true);
+                return StepResult::Running;
+            }
+            g_walks.erase(tank->GetGUID());
+            return StepResult::Blocked;
+        }
+        NavStatus const status = BotMovement::Navigate(tank, MoveOwner::AutoDungeon, goal, x, y, z, std::max(1.0f, radius * 0.8f));
+        if (status == NavStatus::Arrived)
+        {
+            g_walks.erase(tank->GetGUID());
+            return StepResult::Done;
+        }
+        if (status == NavStatus::Stuck || (!tank->IsInCombat() && now - w.improvedAt > 15000))
+        {
+            w.straightSince = now;
+            LOG_INFO("module.coa-playerbots.dungeon", "Event '{}' step {}: '{}' does not get to ({:.0f}, {:.0f}, {:.0f}) ({:.0f} yd away): walking it in a straight line.", ev.name,
+                step, tank->GetName(), x, y, z, dist);
+        }
+        return StepResult::Running;
+    }
+
+    // The tank walks to the step's anchor first when it has one and is not there yet.
+    bool NeedsApproach(Player* tank, EventStep const& s, float reach)
+    {
+        return HasAnchor(s) && tank->GetExactDist(s.x, s.y, s.z) > reach;
+    }
+
+    bool InstanceGateOpen(Player* tank, EventStep const& s)
+    {
+        InstanceScript* inst = InstanceOf(tank);
+        if (!inst)
+            return true;
+        if (s.instanceDataId >= 0 && inst->GetData(uint32(s.instanceDataId)) < s.instanceDataMin)
+            return false;
+        if (s.persistentDataId >= 0 && inst->GetPersistentData(uint32(s.persistentDataId)) < s.persistentDataMin)
+            return false;
+        if (s.bossStateId >= 0)
+        {
+            uint32 const state = inst->GetBossState(uint32(s.bossStateId));
+            if (!(state < 32 && (s.bossStateClearMask & (1u << state))))
+                return false;
+        }
+        return true;
+    }
+
+    bool SpawnGateOpen(Player* tank, EventStep const& s)
+    {
+        std::vector<uint32> const entries = EventStepGateEntries(s);
+        if (entries.empty())
+            return true;
+        bool any = false;
+        for (uint32 entry : entries)
+            if (tank->FindNearestCreature(entry, 300.0f, true))
+                any = true;
+        return s.wantAlive ? any : !any;
+    }
+
+    bool HasMoveGate(EventStep const& s)
+    {
+        return s.creatureEntry || s.instanceDataId >= 0 || s.persistentDataId >= 0 || s.bossStateId >= 0;
+    }
+
+    Item* FindItem(Player* bot, uint32 itemId)
+    {
+        return bot->GetItemByEntry(itemId);
+    }
+
+    // Gives the bot the item when its bags lack it (quest items the bots never looted).
+    Item* EnsureItem(Player* bot, uint32 itemId)
+    {
+        Item* item = FindItem(bot, itemId);
+        if (!item)
+        {
+            DungeonHooks::GiveItem(bot, itemId);
+            item = FindItem(bot, itemId);
+        }
+        return item;
+    }
+
+    void DropBlockingForm(Player* bot)
+    {
+        if (bot->GetShapeshiftForm() != FORM_NONE)
+            bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+    }
+
+    // Talks to a creature the way a client would: open the menu, then pick the option.
+    void GossipHello(Player* bot, Creature* npc)
+    {
+        WorldPacket packet(CMSG_GOSSIP_HELLO, 8);
+        packet << npc->GetGUID();
+        bot->GetSession()->HandleGossipHelloOpcode(packet);
+    }
+
+    void GossipSelect(Player* bot, Creature* npc, int32 option)
+    {
+        uint32 const menuId = bot->PlayerTalkClass->GetGossipMenu().GetMenuId();
+        // The events name an option by its position in the menu. The menu keys its items by OptionID (37476 for Brann's menu 9669, not 0), and the
+        // select packet carries that key: sent raw, a position that is not a key is dropped without a word and the NPC never reacts (Brann, Thrall,
+        // Arthas stood next to the tank for good). Translate the position to the key of that item.
+        uint32 listId = uint32(option);
+        GossipMenuItemContainer const& items = bot->PlayerTalkClass->GetGossipMenu().GetMenuItems();
+        if (option >= 0 && uint32(option) < items.size() && !bot->PlayerTalkClass->GetGossipMenu().GetItem(uint32(option)))
+        {
+            auto it = items.begin();
+            std::advance(it, option);
+            listId = it->first;
+        }
+        else if (option >= 0 && !bot->PlayerTalkClass->GetGossipMenu().GetItem(uint32(option)))
+            LOG_WARN("module.coa-playerbots.dungeon", "'{}': gossip menu {} of '{}' has {} options, option {} does not exist.", bot->GetName(), menuId, npc->GetName(),
+                items.size(), option);
+        {
+            static std::map<ObjectGuid, uint32> lastLog;
+            uint32& at = lastLog[npc->GetGUID()];
+            if (getMSTime() - at > 20000)
+            {
+                at = getMSTime();
+                LOG_INFO("module.coa-playerbots.dungeon", "'{}' selects gossip option {} (key {}) of menu {} with {} options at '{}' ({}), npc flags {}.", bot->GetName(), option, listId,
+                    menuId, items.size(), npc->GetName(), npc->GetEntry(), npc->GetUInt32Value(UNIT_NPC_FLAGS));
+            }
+        }
+        WorldPacket packet(CMSG_GOSSIP_SELECT_OPTION, 8 + 4 + 4 + 1);
+        packet << npc->GetGUID() << menuId << listId;
+        packet << std::string();
+        bot->GetSession()->HandleGossipSelectOptionOpcode(packet);
+    }
+
+    // Takes the quests an NPC offers, the way a client's accept button does. Some dungeon scripts start on the accept (Chromie's "A Royal Escort"
+    // starts the Culling of Stratholme intro) and the gossip alone never fires them.
+    void AcceptOfferedQuests(Player* bot, Creature* npc)
+    {
+        auto const bounds = sObjectMgr->GetCreatureQuestRelationBounds(npc->GetEntry());
+        for (auto it = bounds.first; it != bounds.second; ++it)
+        {
+            uint32 const questId = it->second;
+            if (!sObjectMgr->GetQuestTemplate(questId) || bot->GetQuestStatus(questId) != QUEST_STATUS_NONE)
+                continue;
+            WorldPacket packet(CMSG_QUESTGIVER_ACCEPT_QUEST, 8 + 4 + 4);
+            packet << npc->GetGUID() << questId << uint32(0);
+            bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(packet);
+            LOG_INFO("module.coa-playerbots.dungeon", "'{}' took quest {} from '{}'.", bot->GetName(), questId, npc->GetName());
+        }
+    }
+
+    struct TeleportWatch { uint32 atMs; float x, y, z; uint32 logged; };
+    std::map<ObjectGuid, TeleportWatch> g_teleportWatch;
+
+    void TeleportParty(Player* tank, float x, float y, float z)
+    {
+        float const fromX = tank->GetPositionX(), fromY = tank->GetPositionY();
+        tank->NearTeleportTo(x, y, z, tank->GetOrientation());
+        std::string members;
+        if (Group* group = tank->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member != tank && member->IsInWorld() && member->GetMapId() == tank->GetMapId())
+                {
+                    member->NearTeleportTo(x, y, z, member->GetOrientation());
+                    members += std::string(" ") + (member->IsAlive() ? "alive" : "dead") + (member->IsBeingTeleported() ? "(teleporting)" : "");
+                }
+        LOG_INFO("module.coa-playerbots.dungeon", "Party move to ({:.0f}, {:.0f}, {:.0f}) from ({:.0f}, {:.0f}): tank (alive {}, now at {:.0f} {:.0f} {:.0f}, being teleported {}), members:{}.", x, y, z, fromX, fromY,
+            tank->IsAlive() ? 1 : 0, tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), tank->IsBeingTeleported() ? 1 : 0, members);
+    }
+
+    StepResult RunStep(Player* tank, Group* group, DungeonEvent const& ev, size_t index, EventStep const& s, Run& run)
+    {
+        float const radius = s.radius > 0.0f ? s.radius : DEFAULT_ARRIVE_RADIUS;
+        switch (s.kind)
+        {
+            case EventStepKind::MoveTo:
+            {
+                if (HasMoveGate(s))
+                {
+                    // Garrison: walk to the point and stay until the gate opens; a displaced tank walks back.
+                    bool const open = InstanceGateOpen(tank, s) && SpawnGateOpen(tank, s);
+                    if (open && !s.creatureEntry)
+                        return StepResult::Done;
+                    if (s.creatureEntry && open)
+                        return StepResult::Done;
+                    StepResult const walked = WalkTo(tank, ev, index, s.x, s.y, s.z, radius);
+                    return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                }
+                return WalkTo(tank, ev, index, s.x, s.y, s.z, radius);
+            }
+
+            case EventStepKind::Wait:
+                return getMSTime() - run.stepStartedMs >= s.durationMs ? StepResult::Done : StepResult::Running;
+
+            case EventStepKind::UseGameObject:
+            {
+                if (s.skipIfDataId >= 0)
+                    if (InstanceScript* inst = InstanceOf(tank); inst && inst->GetData(uint32(s.skipIfDataId)) == s.skipIfDataValue)
+                        return StepResult::Done;
+                if (NeedsApproach(tank, s, std::max(radius, 12.0f)))
+                {
+                    StepResult const walked = WalkTo(tank, ev, index, s.x, s.y, s.z, std::max(radius, 6.0f));
+                    return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                }
+                GameObject* go = tank->FindNearestGameObject(s.goEntry, 80.0f);
+                if (!go)
+                    return StepResult::Running;
+                if (tank->GetExactDist(go) > 5.0f)
+                {
+                    StepResult const walked = WalkTo(tank, ev, index, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), 3.5f);
+                    return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                }
+                BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
+                if (s.itemId && !tank->GetItemByEntry(s.itemId))
+                    DungeonHooks::GiveItem(tank, s.itemId);
+                if (s.reportUse && go->AI())
+                    go->AI()->GossipHello(tank, true);
+                else
+                    go->Use(tank);
+                return StepResult::Done;
+            }
+
+            case EventStepKind::WaitForGameObjectState:
+            {
+                GameObject* go = tank->FindNearestGameObject(s.goEntry, 200.0f);
+                return go && uint32(go->GetGoState()) == s.wantState ? StepResult::Done : StepResult::Running;
+            }
+
+            case EventStepKind::WaitForSpawn:
+                return SpawnGateOpen(tank, s) ? StepResult::Done : StepResult::Running;
+
+            case EventStepKind::KillCreature:
+            {
+                if (!s.creatureEntry)
+                    return StepResult::Done;  // "room trash": the ordinary pull logic clears it
+                Creature* target = tank->FindNearestCreature(s.creatureEntry, 300.0f, true);
+                if (!target)
+                    return StepResult::Done;
+                if (s.engage && !tank->IsInCombat())
+                {
+                    if (tank->GetExactDist(target) > 30.0f)
+                    {
+                        StepResult const walked = WalkTo(tank, ev, index, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), 25.0f);
+                        return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                    }
+                    if (tank->IsValidAttackTarget(target))
+                        tank->Attack(target, true);
+                }
+                return StepResult::Running;
+            }
+
+            case EventStepKind::ClearRadius:
+            {
+                // Done when no hostile creature stands inside the volume. The tank walks to the centre; the pull logic fights what it meets.
+                Creature* nearest = nullptr;
+                float best = 1.0e9f;
+                float const zBand = s.zBand > 0.0f ? s.zBand : 12.0f;
+                std::list<Creature*> found;
+                tank->GetCreatureListWithEntryInGrid(found, 0, radius + 40.0f);
+                for (Creature* c : found)
+                {
+                    if (!c->IsAlive() || !tank->IsValidAttackTarget(c) || c->IsCritter() || c->IsTotem())
+                        continue;
+                    if (std::hypot(c->GetPositionX() - s.x, c->GetPositionY() - s.y) > radius || std::fabs(c->GetPositionZ() - s.z) > zBand)
+                        continue;
+                    if (!s.entryFilter.empty() && std::find(s.entryFilter.begin(), s.entryFilter.end(), c->GetEntry()) == s.entryFilter.end())
+                        continue;
+                    float const d = tank->GetExactDist(c);
+                    if (d < best)
+                    {
+                        best = d;
+                        nearest = c;
+                    }
+                }
+                if (!nearest)
+                    return StepResult::Done;
+                if (!tank->IsInCombat() && best > 25.0f)
+                {
+                    StepResult const walked = WalkTo(tank, ev, index, nearest->GetPositionX(), nearest->GetPositionY(), nearest->GetPositionZ(), 22.0f);
+                    return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                }
+                if (!tank->IsInCombat())
+                    tank->Attack(nearest, true);
+                return StepResult::Running;
+            }
+
+            case EventStepKind::Gossip:
+            {
+                Creature* npc = tank->FindNearestCreature(s.creatureEntry, HasAnchor(s) ? 60.0f : 200.0f, true);
+                if (!npc)
+                    return s.skipIfMissing ? StepResult::Done : StepResult::Running;
+                if (s.waitForStill && !npc->movespline->Finalized())
+                    return StepResult::Running;
+                if (tank->GetExactDist(npc) > 4.5f)
+                {
+                    StepResult const walked = WalkTo(tank, ev, index, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), 3.5f);
+                    return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                }
+                BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
+                uint32 const now = getMSTime();
+                if (run.stage == 0)
+                {
+                    GossipHello(tank, npc);
+                    run.stage = 1;
+                    run.stageAtMs = now;
+                    if (s.gossipOption < 0)
+                        AcceptOfferedQuests(tank, npc);
+                    return s.gossipOption < 0 ? StepResult::Done : StepResult::Running;
+                }
+                if (now - run.stageAtMs < 600)
+                    return StepResult::Running;
+                GossipSelect(tank, npc, s.gossipOption);
+                // Chromie of the Culling of Stratholme (27915): her menus chain 9610 -> 9611 -> 9612, and only the choice made IN menu 9612 starts Arthas's
+                // introduction (npc_cos_chromie_middle::OnGossipSelect). One choice never did; each further menu is answered with its first option.
+                if (npc->GetEntry() == 27915)
+                    for (uint32 hop = 0; hop < 3; ++hop)
+                    {
+                        uint32 const menu = tank->PlayerTalkClass->GetGossipMenu().GetMenuId();
+                        if (menu != 9611 && menu != 9612)
+                            break;
+                        LOG_INFO("module.coa-playerbots.dungeon", "'{}': Chromie's menu {}: choosing again.", tank->GetName(), menu);
+                        GossipSelect(tank, npc, 0);
+                    }
+                AcceptOfferedQuests(tank, npc);
+                return StepResult::Done;
+            }
+
+            case EventStepKind::CastSpell:
+                tank->CastSpell(tank, s.spellId, false);
+                return StepResult::Done;
+
+            case EventStepKind::UseItem:
+            {
+                Item* item = EnsureItem(tank, s.itemId);
+                if (!item)
+                    return StepResult::Running;
+                DropBlockingForm(tank);
+                SpellCastTargets targets;
+                targets.SetUnitTarget(tank);
+                tank->CastItemUseSpell(item, targets, 0, 0);
+                return StepResult::Done;
+            }
+
+            case EventStepKind::UseItemOnGO:
+            {
+                // The object of THIS step is the one at the step's anchor (Old Hillsbrad: one barrel per house, a different spot per pool roll),
+                // not the one nearest to the tank: that is the same barrel for all five steps, and when it was already burning every step
+                // read "done" at once and no bomb was planted.
+                if (auto w = g_teleportWatch.find(tank->GetGUID()); w != g_teleportWatch.end())
+                {
+                    uint32 const sinceMs = getMSTime() - w->second.atMs;
+                    if (sinceMs < 40000 && sinceMs / 2000 >= w->second.logged)
+                    {
+                        w->second.logged = sinceMs / 2000 + 1;
+                        LOG_INFO("module.coa-playerbots.dungeon", "Teleport watch: '{}' {} s after the move is at ({:.0f}, {:.0f}, {:.0f}), {:.0f} yd from the target, teleporting {}, in combat {}.", tank->GetName(),
+                            sinceMs / 1000, tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), tank->GetExactDist(w->second.x, w->second.y, w->second.z),
+                            tank->IsBeingTeleported() ? 1 : 0, tank->IsInCombat() ? 1 : 0);
+                    }
+                }
+                GameObject* go = nullptr;
+                if (HasAnchor(s))
+                {
+                    std::list<GameObject*> found;
+                    tank->GetGameObjectListWithEntryInGrid(found, s.goEntry, 400.0f);
+                    float best = 1.0e9f;
+                    for (GameObject* candidate : found)
+                    {
+                        float const d = candidate && candidate->IsInWorld() ? candidate->GetExactDist(s.x, s.y, s.z) : 1.0e9f;
+                        if (d <= 30.0f && d < best)
+                        {
+                            best = d;
+                            go = candidate;
+                        }
+                    }
+                    if (!go && tank->GetExactDist(s.x, s.y, s.z) > 25.0f)
+                    {
+                        StepResult const walked = WalkTo(tank, ev, index, s.x, s.y, s.z, 15.0f);
+                        return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                    }
+                }
+                if (!go)
+                    return StepResult::Running;
+                if (go->GetGoState() != GO_STATE_READY)
+                    return StepResult::Done;
+                if (tank->GetExactDist(go) > 6.0f)
+                {
+                    StepResult const walked = WalkTo(tank, ev, index, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), 4.0f);
+                    // A fight on the way can throw the tank far off (it chased a guard): a step that has taken long and is still far away is
+                    // answered the same way, at most every 20 s.
+                    static std::map<ObjectGuid, uint32> lastMove;
+                    uint32 const nowMs = getMSTime();
+                    bool const slow = nowMs - run.stepStartedMs > 45000 && tank->GetExactDist(go) > 25.0f && nowMs - lastMove[tank->GetGUID()] > 20000;
+                    if (walked == StepResult::Blocked || slow)
+                    {
+                        lastMove[tank->GetGUID()] = nowMs;
+                        // Neither the pathfinder nor a straight walk gets there (Old Hillsbrad's north-east houses, 170 yd of streets the mesh does not
+                        // connect): the party is put next to the object, the way the elevators of other dungeons are done.
+                        LOG_WARN("module.coa-playerbots.dungeon", "Event '{}' step {}: '{}' cannot walk to the object, {:.0f} yd away; moving the party next to it.", ev.name, index,
+                            tank->GetName(), tank->GetExactDist(go));
+                        // Old Hillsbrad's barrels: a party that could neither walk nor be moved to a barrel a second time sets it alight the way its bomb
+                        // would: the barrel burns and the instance counts one bomb (five of them bring Lieutenant Drake, and Thrall's gossip stays empty
+                        // until he is dead).
+                        static std::map<std::pair<ObjectGuid, uint64>, uint32> barrelTries;
+                        uint32& tries = barrelTries[{ tank->GetGUID(), go->GetGUID().GetRawValue() }];
+                        ++tries;
+                        if (tank->GetMapId() == 560 && s.goEntry == 182589 && tries >= 2)
+                        {
+                            if (InstanceScript* ins = InstanceOf(tank))
+                            {
+                                ins->SetData(10 /*DATA_BOMBS_PLACED*/, 1);
+                                go->SetGoState(GO_STATE_ACTIVE);
+                                LOG_WARN("module.coa-playerbots.dungeon", "Event '{}' step {}: the barrel at ({:.0f}, {:.0f}, {:.0f}) is set alight without the bomb for '{}' (no way to it).", ev.name, index,
+                                    go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), tank->GetName());
+                                return StepResult::Done;
+                            }
+                        }
+                        TeleportParty(tank, go->GetPositionX(), go->GetPositionY() - 3.0f, go->GetPositionZ() + 0.5f);
+                        g_teleportWatch[tank->GetGUID()] = { nowMs, go->GetPositionX(), go->GetPositionY() - 3.0f, go->GetPositionZ() + 0.5f, 0 };
+                        LOG_INFO("module.coa-playerbots.dungeon", "'{}' is now at ({:.0f}, {:.0f}, {:.0f}), the object at ({:.0f}, {:.0f}, {:.0f}), {} cannot ack.", tank->GetName(),
+                            tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(),
+                            tank->IsBeingTeleported() ? "teleport pending:" : "no teleport pending:");
+                    }
+                    return StepResult::Running;
+                }
+                if (tank->IsNonMeleeSpellCast(false))
+                    return StepResult::Running;
+                Item* item = EnsureItem(tank, s.itemId);
+                if (!item)
+                    return StepResult::Running;
+                DropBlockingForm(tank);
+                SpellCastTargets targets;
+                targets.SetGOTarget(go);
+                tank->CastItemUseSpell(item, targets, 0, 0);
+                return StepResult::Running;
+            }
+
+            case EventStepKind::UseItemAt:
+            {
+                if (s.goEntry)
+                    if (GameObject* receipt = tank->FindNearestGameObject(s.goEntry, 15.0f); receipt && receipt->GetExactDist(s.x, s.y, s.z) < 15.0f)
+                        return StepResult::Done;
+                {
+                    static std::map<ObjectGuid, uint32> lastNote;
+                    uint32& at = lastNote[tank->GetGUID()];
+                    if (getMSTime() - at > 20000)
+                    {
+                        at = getMSTime();
+                        LOG_INFO("module.coa-playerbots.dungeon", "Event '{}' step {}: '{}' is {:.1f} yd from ({:.0f}, {:.0f}, {:.0f}), item {} {}, casting {}.", ev.name, index,
+                            tank->GetName(), tank->GetExactDist(s.x, s.y, s.z), s.x, s.y, s.z, s.itemId, tank->HasItemCount(s.itemId, 1) ? "in the bags" : "missing",
+                            tank->IsNonMeleeSpellCast(false) ? "yes" : "no");
+                    }
+                }
+                if (tank->GetExactDist(s.x, s.y, s.z) > radius)
+                {
+                    StepResult const walked = WalkTo(tank, ev, index, s.x, s.y, s.z, radius);
+                    return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                }
+                if (tank->IsNonMeleeSpellCast(false))
+                    return StepResult::Running;
+                Item* item = EnsureItem(tank, s.itemId);
+                if (!item)
+                    return StepResult::Running;
+                DropBlockingForm(tank);
+                SpellCastTargets targets;
+                targets.SetUnitTarget(tank);
+                tank->CastItemUseSpell(item, targets, 0, 0);
+                return StepResult::Running;
+            }
+
+            case EventStepKind::Jump:
+            {
+                if (tank->GetExactDist(s.x, s.y, s.z) <= radius)
+                    return StepResult::Done;
+                // While the arc is in flight the bot reads as moving: never re-issue it (the jump would restart and never land).
+                if (tank->isMoving())
+                    return StepResult::Running;
+                uint32 const now = getMSTime();
+                if (run.used && now - run.stageAtMs < 1500)
+                    return StepResult::Running;  // settling after the landing
+                if (run.used && ++run.stage >= 4)
+                {
+                    LOG_WARN("module.coa-playerbots.dungeon", "Event '{}': the jump to ({:.1f}, {:.1f}, {:.1f}) ended {:.1f} yd short, 4 times.", ev.name, s.x, s.y,
+                        s.z, tank->GetExactDist(s.x, s.y, s.z));
+                    return StepResult::Blocked;
+                }
+                BotMovement::ForceReleaseOwner(tank, MoveOwner::AutoDungeon);
+                float const speed = tank->GetSpeed(MOVE_RUN);
+                tank->GetMotionMaster()->Clear();
+                tank->GetMotionMaster()->MoveJump(s.x, s.y, s.z, speed, s.jumpSpeedZ > 0.0f ? s.jumpSpeedZ : speed, 1);
+                run.used = true;
+                run.stageAtMs = now;
+                return StepResult::Running;
+            }
+
+            case EventStepKind::TeleportParty:
+            case EventStepKind::DropInHole:
+            {
+                // The checkpoint is reached on foot; then everybody is relocated to the landing (a one-way drop the bots cannot take).
+                if (s.kind == EventStepKind::TeleportParty && tank->GetExactDist(s.x, s.y, s.z) > radius + 3.0f)
+                {
+                    StepResult const walked = WalkTo(tank, ev, index, s.x, s.y, s.z, radius);
+                    return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                }
+                if (tank->GetExactDist(s.landX, s.landY, s.landZ) <= radius + 3.0f)
+                    return StepResult::Done;
+                TeleportParty(tank, s.landX, s.landY, s.landZ);
+                return StepResult::Done;
+            }
+
+            case EventStepKind::RawPath:
+            {
+                // Without a raw spline driver the leg is flown point by point in a straight line.
+                if (s.path.empty())
+                    return StepResult::Done;
+                G3D::Vector3 const& last = s.path.back();
+                if (tank->GetExactDist(last.x, last.y, last.z) <= radius + 1.0f)
+                    return StepResult::Done;
+                if (!run.used || getMSTime() - run.stageAtMs > 3000)
+                {
+                    tank->GetMotionMaster()->MovePoint(0, last.x, last.y, last.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, false);
+                    run.used = true;
+                    run.stageAtMs = getMSTime();
+                }
+                return StepResult::Running;
+            }
+
+            case EventStepKind::EscortCreature:
+            {
+                // The escort is over when the dungeon's own progress says so (the counter reached the value, or the encounter bit is set).
+                if (InstanceScript* inst = InstanceOf(tank))
+                {
+                    if (s.instanceDataId >= 0 && inst->GetData(uint32(s.instanceDataId)) >= s.instanceDataMin)
+                        return StepResult::Done;
+                    if (s.escortDoneBit >= 0 && (inst->GetCompletedEncounterMask() & (1u << uint32(s.escortDoneBit))))
+                        return StepResult::Done;
+                }
+                Creature* escortee = tank->FindNearestCreature(s.creatureEntry, s.radius > 0.0f ? s.radius : 120.0f, true);
+                if (s.escortDoneEntry && tank->FindNearestCreature(s.escortDoneEntry, 300.0f, true))
+                    return StepResult::Done;
+                if (!escortee)
+                {
+                    // Not in the scan radius: the escortee waits somewhere else (Arthas at the start of the Culling of Stratholme waits for the
+                    // party to come and speak to him). Walk to him wherever he is on the map instead of waiting for him to appear.
+                    if (Creature* distant = tank->FindNearestCreature(s.creatureEntry, 1500.0f, true))
+                    {
+                        static std::map<ObjectGuid, uint32> lastFar;
+                        uint32 const farNow = getMSTime();
+                        if (farNow - lastFar[tank->GetGUID()] > 20000)
+                        {
+                            lastFar[tank->GetGUID()] = farNow;
+                            LOG_INFO("module.coa-playerbots.dungeon", "Escortee '{}' is {:.0f} yd from '{}' (outside the scan radius), at ({:.0f}, {:.0f}, {:.0f}): walking to it.", distant->GetName(), tank->GetExactDist(distant),
+                                tank->GetName(), distant->GetPositionX(), distant->GetPositionY(), distant->GetPositionZ());
+                        }
+                        // Far beyond reach on foot (Thrall rode on to Tarren Mill): the party is put next to it.
+                        if (tank->GetExactDist(distant) > 200.0f)
+                            TeleportParty(tank, distant->GetPositionX(), distant->GetPositionY() - 2.0f, distant->GetPositionZ() + 0.5f);
+                        else
+                            WalkTo(tank, ev, index, distant->GetPositionX(), distant->GetPositionY(), distant->GetPositionZ(), 3.5f);
+                        return StepResult::Running;
+                    }
+                    {
+                        static std::map<ObjectGuid, uint32> lastNone;
+                        uint32 const noneNow = getMSTime();
+                        if (noneNow - lastNone[tank->GetGUID()] > 30000)
+                        {
+                            lastNone[tank->GetGUID()] = noneNow;
+                            LOG_INFO("module.coa-playerbots.dungeon", "Escortee (entry {}) of '{}' is nowhere on the map (dead or not spawned); instance data {}.", s.creatureEntry, tank->GetName(),
+                                InstanceOf(tank) && s.instanceDataId >= 0 ? InstanceOf(tank)->GetData(uint32(s.instanceDataId)) : 0u);
+                        }
+                    }
+                    return StepResult::Running;
+                }
+                // The escortee offers its gossip again whenever it waits for the party (at the start and at each pause of the scripted escort):
+                // talk to it again every few seconds while the flag is up.
+                bool const wantsTalk = s.gossipOption >= 0 && escortee->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP);
+                {
+                    static std::map<ObjectGuid, uint32> lastEscortLog;
+                    uint32 const logNow = getMSTime();
+                    if (logNow - lastEscortLog[tank->GetGUID()] > 20000)
+                    {
+                        lastEscortLog[tank->GetGUID()] = logNow;
+                        InstanceScript* ins = InstanceOf(tank);
+                        LOG_INFO("module.coa-playerbots.dungeon", "Escort of '{}' by '{}': instance data {} = {} (done at {}), escortee at ({:.0f}, {:.0f}, {:.0f}), {:.0f} yd away, gossip flag {}, moving {}, tank in combat {}.",
+                            escortee->GetName(), tank->GetName(), s.instanceDataId, ins && s.instanceDataId >= 0 ? ins->GetData(uint32(s.instanceDataId)) : 0u, s.instanceDataMin,
+                            escortee->GetPositionX(), escortee->GetPositionY(), escortee->GetPositionZ(), tank->GetExactDist(escortee), wantsTalk ? 1 : 0, escortee->isMoving() ? 1 : 0,
+                            tank->IsInCombat() ? 1 : 0);
+                        // What the escortee is doing: in combat with whom, and which creatures stand around it.
+                        std::string around;
+                        std::list<Creature*> nearThem;
+                        escortee->GetDeadCreatureListInGrid(nearThem, 35.0f, false);
+                        nearThem.remove_if([escortee](Creature* c) { return !c || c == escortee || !c->IsAlive(); });
+                        uint32 shown = 0;
+                        for (Creature* c : nearThem)
+                            if (shown++ < 5)
+                                around += " '" + c->GetName() + "'(" + std::to_string(c->GetEntry()) + ") " + std::to_string(int(escortee->GetExactDist(c))) + "yd" + (c->IsInCombat() ? " cmb" : "") +
+                                    (tank->IsValidAttackTarget(c) ? " atk" : "");
+                        LOG_INFO("module.coa-playerbots.dungeon", "  '{}' hp {:.0f}%, in combat {}, victim {}, flags {:#x}, near:{}.", escortee->GetName(), escortee->GetHealthPct(), escortee->IsInCombat() ? 1 : 0,
+                            escortee->GetVictim() ? escortee->GetVictim()->GetName() : std::string("-"), escortee->GetUInt32Value(UNIT_FIELD_FLAGS), around);
+                    }
+                }
+                // The first choice is made when the escortee offers its gossip: Arthas of the Culling of Stratholme stands without the flag
+                // while his introduction plays, a choice made then is lost and was never repeated (his flag only comes up once, and the
+                // step had "used" its talk). Without the flag the tank waits up to 90 s, then tries anyway.
+                bool const mayTalk = wantsTalk || getMSTime() - run.stepStartedMs > 90000;
+                if (s.gossipOption >= 0 && mayTalk && (!run.used || (wantsTalk && getMSTime() - run.stageAtMs > 5000)))
+                {
+                    if (tank->GetExactDist(escortee) > 4.5f)
+                    {
+                        StepResult const walked = WalkTo(tank, ev, index, escortee->GetPositionX(), escortee->GetPositionY(), escortee->GetPositionZ(), 3.5f);
+                        return walked == StepResult::Blocked ? StepResult::Blocked : StepResult::Running;
+                    }
+                    GossipHello(tank, escortee);
+                    GossipSelect(tank, escortee, s.gossipOption);
+                    // Some resume menus take two clicks (Arthas at the Town Hall, Thrall after Skarloc): the first option opens a second menu, and the
+                    // escortee only moves on when its option is chosen too. A hello for every click would start from the first menu again, for good.
+                    for (int hop = 0; hop < 3 && tank->PlayerTalkClass && tank->PlayerTalkClass->GetGossipMenu().GetMenuItemCount() > 0; ++hop)
+                    {
+                        LOG_INFO("module.coa-playerbots.dungeon", "'{}': '{}' opened a second menu ({} options): choosing its first option.", tank->GetName(), escortee->GetName(),
+                            uint32(tank->PlayerTalkClass->GetGossipMenu().GetMenuItemCount()));
+                        GossipSelect(tank, escortee, 0);
+                    }
+                    run.used = true;
+                    run.stageAtMs = getMSTime();
+                    return StepResult::Running;
+                }
+                // An escortee that runs ahead (Thrall mounted, or fighting an ambush alone far down the road) must not be left behind: a party that
+                // has been far away from it for a while is put next to it.
+                {
+                    static std::map<ObjectGuid, uint32> farSince;
+                    uint32 const farNow = getMSTime();
+                    uint32& since = farSince[tank->GetGUID()];
+                    if (tank->GetExactDist(escortee) > 70.0f && tank->IsAlive())
+                    {
+                        if (!since)
+                            since = farNow;
+                        else if (farNow - since > 15000)
+                        {
+                            since = 0;
+                            LOG_WARN("module.coa-playerbots.dungeon", "Escort of '{}': '{}' is {:.0f} yd behind; the party is moved next to it.", escortee->GetName(), tank->GetName(), tank->GetExactDist(escortee));
+                            TeleportParty(tank, escortee->GetPositionX(), escortee->GetPositionY() - 2.0f, escortee->GetPositionZ() + 0.5f);
+                            return StepResult::Running;
+                        }
+                    }
+                    else
+                        since = 0;
+                }
+                // Follow the escortee; the pull logic fights what attacks it.
+                if (!tank->IsInCombat() && tank->GetExactDist(escortee) > (s.escortStandoff > 0.0f ? s.escortStandoff : 8.0f))
+                    WalkTo(tank, ev, index, escortee->GetPositionX(), escortee->GetPositionY(), escortee->GetPositionZ(), 6.0f);
+                return StepResult::Running;
+            }
+
+            case EventStepKind::EnsureWaterBreathing:
+                return StepResult::Done;
+
+            case EventStepKind::Custom:
+            {
+                ObjectiveArriveResult const r = DungeonHooks::Run(s.hookId, tank, nullptr);
+                switch (r)
+                {
+                    case ObjectiveArriveResult::Done: return StepResult::Done;
+                    case ObjectiveArriveResult::Running: return StepResult::Running;
+                    case ObjectiveArriveResult::Restart: return StepResult::Restart;
+                    default: return StepResult::Blocked;
+                }
+            }
+        }
+        (void)group;
+        return StepResult::Blocked;
+    }
+}
+
+namespace DungeonEventExecutor
+{
+    void TalkTo(Player* bot, Creature* npc, int32 option)
+    {
+        GossipHello(bot, npc);
+        if (option >= 0)
+            GossipSelect(bot, npc, option);
+    }
+
+    uint32 OpenMenuId(Player* bot)
+    {
+        return bot && bot->PlayerTalkClass ? bot->PlayerTalkClass->GetGossipMenu().GetMenuId() : 0;
+    }
+
+    void SelectOption(Player* bot, Creature* npc, int32 option)
+    {
+        GossipSelect(bot, npc, option);
+    }
+
+    EventResult Drive(Player* tank, Group* group, DungeonEvent const& ev)
+    {
+        if (!tank || !group)
+            return EventResult::Blocked;
+
+        ObjectGuid const key = group->GetGUID();
+        uint32 const now = getMSTime();
+
+        std::lock_guard<std::mutex> lock(g_mutex);
+        Run& run = g_runs[key];
+        bool const fresh = run.mapId != ev.mapId || run.eventId != ev.id;
+        bool const gap = !ev.persistent && run.lastDriveMs && now - run.lastDriveMs > 1500;
+        if (fresh || gap)
+        {
+            run = Run{};
+            run.mapId = ev.mapId;
+            run.eventId = ev.id;
+            run.stepStartedMs = now;
+            LOG_INFO("module.coa-playerbots.dungeon", "Event '{}' ({}/{}) starts for '{}'.", ev.name, ev.mapId, ev.id, tank->GetName());
+        }
+        run.lastDriveMs = now;
+
+        if (ev.completeGoEntry)
+            if (GameObject* go = tank->FindNearestGameObject(ev.completeGoEntry, ev.completeGoRadius > 0.0f ? ev.completeGoRadius : 150.0f);
+                go && uint32(go->GetGoState()) == ev.completeGoState)
+        {
+            LOG_INFO("module.coa-playerbots.dungeon", "Event '{}' is complete: object {} (entry {}, spawn {}) at ({:.0f}, {:.0f}, {:.0f}) reads state {}; '{}' is {:.0f} yd from it.", ev.name,
+                go->GetGUID().ToString(), go->GetEntry(), go->GetSpawnId(), go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), uint32(go->GetGoState()), tank->GetName(),
+                tank->GetExactDist(go));
+            return EventResult::Done;
+        }
+
+        for (int hops = 0; hops < 4; ++hops)
+        {
+            if (run.step >= ev.steps.size())
+                return EventResult::Done;
+            EventStep const& s = ev.steps[run.step];
+            StepResult const r = RunStep(tank, group, ev, run.step, s, run);
+            switch (r)
+            {
+                case StepResult::Running:
+                    if (now - run.stepStartedMs > StepTimeout(s))
+                    {
+                        LOG_WARN("module.coa-playerbots.dungeon", "Event '{}' step {} (kind {}) timed out after {} s for '{}'.", ev.name, run.step,
+                            uint32(s.kind), (now - run.stepStartedMs) / 1000, tank->GetName());
+                        return ev.required ? EventResult::Blocked : EventResult::Done;
+                    }
+                    return EventResult::Running;
+                case StepResult::Done:
+                    LOG_INFO("module.coa-playerbots.dungeon", "Event '{}' step {} (kind {}) done after {} s for '{}'.", ev.name, run.step, uint32(s.kind),
+                        (now - run.stepStartedMs) / 1000, tank->GetName());
+                    ++run.step;
+                    run.stage = 0;
+                    run.used = false;
+                    run.stepStartedMs = now;
+                    continue;
+                case StepResult::Restart:
+                    run.step = 0;
+                    run.stage = 0;
+                    run.used = false;
+                    run.stepStartedMs = now;
+                    return EventResult::Running;
+                case StepResult::Blocked:
+                    LOG_WARN("module.coa-playerbots.dungeon", "Event '{}' step {} (kind {}) is blocked for '{}'.", ev.name, run.step, uint32(s.kind),
+                        tank->GetName());
+                    return ev.required ? EventResult::Blocked : EventResult::Done;
+            }
+        }
+        return EventResult::Running;
+    }
+
+    bool Active(ObjectGuid groupKey, uint32 mapId, uint32 eventId)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_runs.find(groupKey);
+        return it != g_runs.end() && it->second.mapId == mapId && it->second.eventId == eventId && getMSTime() - it->second.lastDriveMs < 15000;
+    }
+
+    bool Progress(ObjectGuid groupKey, DungeonEventProgress& out)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_runs.find(groupKey);
+        if (it == g_runs.end())
+            return false;
+        out.eventId = it->second.eventId;
+        out.stepIndex = uint32(it->second.step);
+        out.stepStartMs = it->second.stepStartedMs;
+        out.lastDriveMs = it->second.lastDriveMs;
+        return true;
+    }
+
+    int32 CurrentStep(ObjectGuid groupKey)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_runs.find(groupKey);
+        return it == g_runs.end() ? -1 : int32(it->second.step);
+    }
+
+    void Forget(ObjectGuid groupKey)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_runs.erase(groupKey);
+    }
+
+    bool IsLatched(uint32 instanceId, uint32 mapId, uint32 eventId)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        return g_latched.count({ instanceId, mapId, eventId }) != 0;
+    }
+
+    void Latch(uint32 instanceId, uint32 mapId, uint32 eventId)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_latched.insert({ instanceId, mapId, eventId });
+    }
+}

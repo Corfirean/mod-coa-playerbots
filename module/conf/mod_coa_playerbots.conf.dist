@@ -649,3 +649,15 @@ CoaBots.Budgets.NavigationUs = 4000
 
 
 CoaBots.Navigation.ReuseValidatedPath = 0
+
+###################################################################################################
+# SCRIPTED DUNGEON RUNS (experimental)
+#
+#    CoaBots.Dungeon.UseRoster     With auto-dungeon mode, bot groups follow a prepared list of bosses and objectives for each dungeon and
+#                                  perform its scripted parts (levers, conversations, escorts, waves). It includes shortcuts such as moving
+#                                  the group to a target it cannot walk to. Default 0 (off: the group goes from boss to boss).
+#
+#    Needs a world server restart.
+###################################################################################################
+
+CoaBots.Dungeon.UseRoster = 0

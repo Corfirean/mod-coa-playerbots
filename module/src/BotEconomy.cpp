@@ -22,6 +22,7 @@
 #include "Mail.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "SpellMgr.h"
 #include "Player.h"
 #include "Random.h"
 #include "StringFormat.h"
@@ -824,6 +825,28 @@ namespace
 
 namespace BotEconomy
 {
+    uint32 RestSpell(Player* bot, bool food)
+    {
+        uint32 const itemId = food ? BotProgression::PickFood(bot->GetLevel()) : BotProgression::PickDrink(bot->GetLevel());
+        ItemTemplate const* proto = itemId ? sObjectMgr->GetItemTemplate(itemId) : nullptr;
+        uint32 const spellId = proto ? proto->Spells[0].SpellId : 0;
+        return spellId && sSpellMgr->GetSpellInfo(spellId) ? spellId : (food ? 433u : 431u);
+    }
+
+    bool HasRestAura(Player* bot, bool food)
+    {
+        return bot->HasAura(food ? 433 : 431) || bot->HasAura(RestSpell(bot, food));
+    }
+
+    void StopRestAuras(Player* bot)
+    {
+        for (bool food : { true, false })
+        {
+            bot->RemoveAurasDueToSpell(food ? 433 : 431);
+            bot->RemoveAurasDueToSpell(RestSpell(bot, food));
+        }
+    }
+
     void ProcessGoldOrders();
     void BalanceStock();
     void EndStockRun(ObjectGuid bot);
@@ -1355,7 +1378,7 @@ namespace BotEconomy
 
     void StartRestAura(Player* bot, bool food)
     {
-        uint32 const spell = food ? 433 : 431;
+        uint32 const spell = BotEconomy::RestSpell(bot, food);
         if (!g_settings.consumeSupplies || !g_settings.enable)
         {
             bot->CastSpell(bot, spell, true);

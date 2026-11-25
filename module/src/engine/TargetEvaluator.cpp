@@ -8,6 +8,7 @@
 #include "engine/TargetEvaluator.h"
 #include "engine/SpellPredicates.h"
 #include "BotAI.h"
+#include "dungeon/DungeonRuntime.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -91,6 +92,11 @@ namespace BotAI
 
         float score = 100.0f;
         Group* group = bot->GetGroup();
+
+        // A boss that raises an endless stream of adds (Stratholme's Baron Rivendare: Raise Dead every ten seconds, six at a time) is the target of
+        // the fight, not the adds: a group that kills skeletons never kills him, and he resets when the fight drifts toward the hall.
+        if (DungeonRuntime::Enabled() && candidate->GetTypeId() == TYPEID_UNIT && candidate->GetEntry() == 10440)
+            score += 400.0f;
 
         if (group)
         {
