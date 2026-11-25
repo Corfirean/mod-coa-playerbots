@@ -1662,4 +1662,13 @@ namespace BotEconomy
 
         handler->SendSysMessage("Usage: .botcmd economy [status | trips | goldorder <player guid> <gold> | stock <player guid> | stocklimit <player guid> <item> <keep, -1 clears> | plan <bot guid> | journal [n] | protect <item id> | unprotect <item id>]");
     }
+
+    void Forget(ObjectGuid botGuid)
+    {
+        g_trips.erase(botGuid);
+        g_wantsTrip.erase(botGuid);
+        g_nextTripAt.erase(botGuid);
+        g_goldOrders.erase(botGuid);
+        EndStockRun(botGuid);
+    }
 }

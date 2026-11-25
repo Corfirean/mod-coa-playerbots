@@ -542,7 +542,7 @@ public:
     }
 
     // Queues all offline bots to log in gradually (see BotMgr::QueueAllBotsForAutoLogin).
-    static bool HandleBotLoginAllCommand(ChatHandler* handler)
+    static bool HandleBotLoginAllCommand(ChatHandler* handler, Optional<uint32> count)
     {
         if (!sBotMgr->BotsEnabled())
         {
@@ -550,9 +550,9 @@ public:
                 handler->SendSysMessage("BotMgr: companions are switched off (CoaBots.Enable = 0).");
             return true;
         }
-        sBotMgr->QueueAllBotsForAutoLogin();
+        uint32 queued = sBotMgr->QueueAllBotsForAutoLogin(count.value_or(0));
         if (handler)
-            handler->SendSysMessage("BotMgr: queued offline bots for login.");
+            handler->PSendSysMessage("BotMgr: queued {} offline bot(s) for login.", queued);
         return true;
     }
 

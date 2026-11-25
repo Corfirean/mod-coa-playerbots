@@ -187,16 +187,16 @@ void PortBotIntoBattleground(Player* bot, BattlegroundQueueTypeId bgQueueTypeId)
 }
 
 // Replicates HandleBattlemasterJoinOpcode's solo-join branch for a bot already online.
-void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueTypeId bgQueueTypeId,
+bool JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueTypeId bgQueueTypeId,
     PvPDifficultyEntry const* bracketEntry)
 {
     Battleground* bgTemplate = sBattlegroundMgr->GetBattlegroundTemplate(bgTypeId);
     if (!bgTemplate || bot->InBattleground() || bot->InBattlegroundQueueForBattlegroundQueueType(bgQueueTypeId))
-        return;
+        return false;
     if (!bot->CanJoinToBattleground(bgTemplate) || !bot->HasFreeBattlegroundQueueId())
-        return;
+        return false;
     if (bracketEntry && (bot->GetLevel() < bracketEntry->minLevel || bot->GetLevel() > bracketEntry->maxLevel))
-        return; // never queue a bot into a bracket its level does not belong to
+        return false; // never queue a bot into a bracket its level does not belong to
 
     BattlegroundQueue& bgQueue = sBattlegroundMgr->GetBattlegroundQueue(bgQueueTypeId);
 
@@ -215,11 +215,11 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
     // every possible caller.
     GroupQueueInfo existingInfo;
     if (bgQueue.GetPlayerGroupInfoData(bot->GetGUID(), &existingInfo))
-        return;
+        return false;
 
     GroupQueueInfo* ginfo = bgQueue.AddGroup(bot, nullptr, bgTypeId, bracketEntry, 0, false, false, 0, 0);
     if (!ginfo)
-        return;
+        return false;
     if (bot->GetPlayerSetting("coa.bot.gear", 0).value != 1)
     {
         bot->UpdatePlayerSetting("coa.bot.gear", 0, 1);
@@ -232,6 +232,7 @@ void JoinBotToQueue(Player* bot, BattlegroundTypeId bgTypeId, BattlegroundQueueT
         bot->GetName(), uint32(bot->GetTeamId()), uint32(bgTypeId));
 
     queuedBots.push_back({ bot->GetGUID().GetCounter(), bgTypeId, bgQueueTypeId, bracketEntry->GetBracketId() });
+    return true;
 }
 
 // Finds an already-online, idle bot of the given faction and queues it; if none exists,
@@ -246,14 +247,16 @@ void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueue
     {
         if (bot->GetTeamId() != team || !bot->IsAlive())
             continue;
+        if (bot->GetGroup() || sBotMgr->IsProtectedBot(bot))
+            continue;
         if (bot->InBattleground() || bot->InBattlegroundQueue())
             continue;
         // The queue is the bracket of the player who queued; a bot outside its level range was put there anyway (a level 20 player got level 30+
         // and even level 80 bots), so only bots whose own level fits the bracket are taken.
         if (bot->GetLevel() < minLvl || bot->GetLevel() > maxLvl)
             continue;
-        JoinBotToQueue(bot, bgTypeId, bgQueueTypeId, bracketEntry);
-        return;
+        if (JoinBotToQueue(bot, bgTypeId, bgQueueTypeId, bracketEntry))
+            return;
     }
 
     // Reuse an existing offline bot character before creating a brand new one
@@ -269,15 +272,10 @@ void QueueBotForSide(TeamId team, BattlegroundTypeId bgTypeId, BattlegroundQueue
         return;
     }
 
-    uint8 race = PickRaceForTeam(team);
-    ObjectGuid::LowType newGuid = BotSpawn::CreateOneRandomBot(race, nullptr);
-    if (!newGuid)
-    {
-        LOG_ERROR("module.coa-playerbots", "BotBGFill: could not create a reserve bot for team {}.", uint32(team));
-        return;
-    }
-    sBotMgr->SpawnBot(newGuid, nullptr);
-    pendingLogins.push_back({ newGuid, bgTypeId, bgQueueTypeId, bracketEntry });
+    // PB-001: never create new bot accounts or characters when the existing pool has no eligible bot.
+    LOG_DEBUG("module.coa-playerbots",
+        "BotBGFill: no eligible existing bot for team {} (levels {}-{}); skipping without creating new bots.",
+        uint32(team), uint32(minLvl), uint32(maxLvl));
 }
 
 void TopOffQueue(BattlegroundTypeId bgTypeId, BattlegroundQueueTypeId bgQueueTypeId, Battleground* bgTemplate,

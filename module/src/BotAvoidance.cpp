@@ -2,6 +2,7 @@
 #include "BotAvoidance.h"
 #include "BotBossKnowledge.h"
 #include "BotMovement.h"
+#include "dialogue/TacticalCalloutManager.h"
 #include "Player.h"
 #include "Creature.h"
 #include "DynamicObject.h"
@@ -472,7 +473,11 @@ bool BotAvoidance::TryAvoidBossTelegraphedAttacks(Player* bot, Unit* target)
                 // against the real terrain 16yd away, which is routinely a different
                 // floor height in raid/dungeon rooms (stairs, pillars, pits).
                 if (BotMovement::MoveTo(bot, MoveOwner::Avoidance, retreatX, retreatY, boss->GetPositionZ()))
+                {
+                    if (bot->GetGroup())
+                        sTacticalCalloutMgr.OnHazardousGround(bot, spellInfo->Id, getMSTime());
                     return true;
+                }
             }
         }
     }

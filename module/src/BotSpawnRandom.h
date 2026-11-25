@@ -11,6 +11,7 @@
 #ifndef COA_PLAYERBOTS_BOT_SPAWN_RANDOM_H
 #define COA_PLAYERBOTS_BOT_SPAWN_RANDOM_H
 
+#include "BotCreationPolicy.h"
 #include "Define.h"
 #include "ObjectGuid.h"
 #include <string>
@@ -40,7 +41,10 @@ void ProcessPendingRandomBotSpawns(uint32 diff);
 // specific side. Random class/name/gender, same cloning mechanism as SpawnRandomBots. Does NOT
 // log the bot in -- returns 0 on failure (no template roster, no free/creatable account),
 // otherwise the new character's guid for the caller to pass to BotMgr::SpawnBot when ready.
-ObjectGuid::LowType CreateOneRandomBot(uint8 race, ChatHandler* handler = nullptr);
+// Explicit creation only (PB-001): implicit background callers (LFG/BG fill, world ticks)
+// are forbidden from creating new accounts or characters.
+ObjectGuid::LowType CreateOneRandomBot(uint8 race, ChatHandler* handler = nullptr,
+    BotCreationPolicy::Source source = BotCreationPolicy::Source::ImplicitSystem);
 
 // `.botcmd spawnleveled [count]` -- same gradual-queue mechanism as SpawnRandomBots, but each
 // bot gets a random level (weighted mostly 1-10, tapering off toward 80 -- see
@@ -80,7 +84,8 @@ void GrantAllProfessions(Player* bot, uint8 level);
 // for a debugging population that needs guaranteed class coverage. Returns 0 (and reports via
 // handler) if that class has no matching-faction template character, rather than silently
 // substituting a different class.
-ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler = nullptr);
+ObjectGuid::LowType CreateClassBot(uint8 classId, uint8 race, uint8 level, ChatHandler* handler = nullptr,
+    BotCreationPolicy::Source source = BotCreationPolicy::Source::ImplicitSystem);
 
 // `.botcmd spawnfleet <race> <level>` -- one bot per custom class (ids 12-32, 21 total), same
 // race and level, logged in immediately and synchronously (no gradual-queue throttling; this is
